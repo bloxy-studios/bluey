@@ -6,6 +6,7 @@
 |---|---|---|---|
 | Rust core | `cargo test -p bluey-core` | `bun run test:rust` | state machine matrix, event names ⇄ TS list, model routing & fallbacks, token budgeting, snapshot trimming, adapters, built-in modes, shortcut parsing/conflicts, session rules, text utils |
 | Rust storage | `cargo test -p bluey-storage` | `bun run test:rust` | migrations, every repository, FTS sync & session search, document parsing (PDF/DOCX/TXT/MD), chunking, keyword/semantic retrieval, retention really deleting |
+| Rust protocols | `cargo test -p bluey-protocols` | `bun run check:rust` | SSE parsing, provider request/chunk codecs (Azure v1 + legacy, OpenAI-compatible, Anthropic incl. `input_json_delta`), Exa/Firecrawl models, realtime transcription messages, sidecar envelopes + helper/agent mappers, panel geometry, Clerk key derivation |
 | TypeScript unit | Vitest | `bun run test` | context fusion, budget, intent, prompt builder, code-fence buffering, generation gate, optimizer, structured parsing, classifier, speaker labels, research router + privacy scrubbing, summaries, stores |
 | TypeScript integration | Vitest + fake transport | `bun run test` | capture → context → request, transcript → detection → prepare/take, stale-request protection, retrieval scoping, session → summary, command-surface parity |
 | UI | Vitest + Testing Library + MockTransport | `bun run test` | HUD per app state, keybind recording, mode editor, settings toggles, response rendering/copy, onboarding flow |

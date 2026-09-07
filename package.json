@@ -22,7 +22,7 @@
     "build:agent": "bash scripts/build-agent.sh",
     "build:helpers": "bash scripts/build-helper.sh && bash scripts/build-agent.sh",
     "check:rust": "bash scripts/check-rust.sh",
-    "test:rust": "cd src-tauri && cargo test -p bluey-core -p bluey-storage",
+    "test:rust": "cd src-tauri && cargo test -p bluey-core -p bluey-storage -p bluey-protocols",
     "release": "bash scripts/release.sh"
   },
   "dependencies": {

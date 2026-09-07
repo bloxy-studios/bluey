@@ -60,6 +60,10 @@ src-tauri/                 Rust Tauri v2 application (macOS)
   crates/bluey-core/       platform-independent domain: types, errors, state machine, events,
                            router policy, token budget, snapshot hygiene, adapters, built-in modes, shortcuts
   crates/bluey-storage/    SQLite (rusqlite): migrations, repositories, FTS5 search, documents (parse/chunk/index/retrieve), retention
+  crates/bluey-protocols/  pure wire codecs (tested on any host): SSE parser, Azure/OpenAI/Anthropic/Exa/Firecrawl request+response
+                           models, realtime transcription messages, sidecar JSON-Lines envelopes + helper/agent mappers,
+                           panel geometry, Clerk Frontend-API host derivation
+  Info.plist               usage strings (microphone, speech, accessibility, screen capture) + LSUIElement, merged by the bundler
   src/                     app crate: commands/, state/, ai/ (providers, streaming, cancellation), sidecar/ (helper client),
                            agent/ (research sidecar client), research/ (Exa, Firecrawl), transcription/ (cloud realtime),
                            capture/ audio/ accessibility/ (helper-backed managers), overlay/ (NSPanel), shortcuts/, tray/,

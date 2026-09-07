@@ -16,9 +16,9 @@ cd "$ROOT/src-tauri"
 echo "▶ cargo fmt --check"
 cargo fmt --all -- --check
 echo "▶ cargo test (bluey-core, bluey-storage)"
-cargo test -p bluey-core -p bluey-storage
+cargo test -p bluey-core -p bluey-storage -p bluey-protocols
 echo "▶ cargo clippy (bluey-core, bluey-storage)"
-cargo clippy -p bluey-core -p bluey-storage --all-targets -- -D warnings
+cargo clippy -p bluey-core -p bluey-storage -p bluey-protocols --all-targets -- -D warnings
 
 if [[ "${1:-}" == "--darwin" ]]; then
   echo "▶ cargo check --target aarch64-apple-darwin (app crate)"
