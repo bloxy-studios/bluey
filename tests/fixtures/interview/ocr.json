@@ -1,0 +1,50 @@
+{
+  "blocks": [
+    {
+      "text": "Zoom Meeting",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 40,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Recording...",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 68,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Acme Corp - Final Round Interview",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 96,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Mute  Stop Video  Share Screen",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 124,
+        "width": 720,
+        "height": 24
+      }
+    }
+  ],
+  "text": "Zoom Meeting\nRecording...\nAcme Corp - Final Round Interview\nMute  Stop Video  Share Screen",
+  "level": "accurate",
+  "languages": [
+    "en"
+  ],
+  "durationMs": 84
+}

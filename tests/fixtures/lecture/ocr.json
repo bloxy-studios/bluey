@@ -1,0 +1,101 @@
+{
+  "blocks": [
+    {
+      "text": "CS 310 - Algorithm Analysis",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 40,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Lecture 4: Asymptotic Notation",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 68,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Big-O gives an asymptotic upper bound:",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 96,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "f(n) = O(g(n)) if there exist c > 0 and n0 such that f(n) <= c*g(n) for all n >= n0",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 124,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Examples:",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 152,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "3n + 7 = O(n)",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 180,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "n log n = O(n^2) (a loose bound)",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 208,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Binary search runs in O(log n)",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 236,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Common growth rates: O(1) < O(log n) < O(n) < O(n log n) < O(n^2) < O(2^n)",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 264,
+        "width": 720,
+        "height": 24
+      }
+    }
+  ],
+  "text": "CS 310 - Algorithm Analysis\nLecture 4: Asymptotic Notation\nBig-O gives an asymptotic upper bound:\nf(n) = O(g(n)) if there exist c > 0 and n0 such that f(n) <= c*g(n) for all n >= n0\nExamples:\n3n + 7 = O(n)\nn log n = O(n^2) (a loose bound)\nBinary search runs in O(log n)\nCommon growth rates: O(1) < O(log n) < O(n) < O(n log n) < O(n^2) < O(2^n)",
+  "level": "accurate",
+  "languages": [
+    "en"
+  ],
+  "durationMs": 84,
+  "frameId": "frame_lec_1"
+}

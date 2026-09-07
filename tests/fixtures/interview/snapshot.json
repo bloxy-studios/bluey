@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-09-07T09:00:13.000Z",
+  "activeApplication": {
+    "name": "zoom.us",
+    "bundleId": "us.zoom.xos"
+  },
+  "activeWindow": {
+    "title": "Zoom Meeting",
+    "adapter": "zoom",
+    "hints": {
+      "meetingDetected": true
+    }
+  },
+  "transcript": {
+    "segments": [
+      {
+        "id": "seg_int_1",
+        "source": "microphone",
+        "text": "Hi, great to meet you, thanks for making the time today.",
+        "startTime": 0,
+        "endTime": 3500,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:03.500Z",
+        "confidence": 0.92
+      },
+      {
+        "id": "seg_int_2",
+        "source": "system",
+        "text": "Thanks for joining. I lead the platform team here at Acme Corp.",
+        "startTime": 4000,
+        "endTime": 9000,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:09.000Z",
+        "confidence": 0.92
+      },
+      {
+        "id": "seg_int_3",
+        "source": "system",
+        "text": "Why do you want to work at Acme Corp?",
+        "startTime": 9500,
+        "endTime": 12500,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:12.500Z",
+        "confidence": 0.92
+      }
+    ],
+    "windowSeconds": 180
+  },
+  "timings": {
+    "transcript": 3,
+    "assembly": 6
+  }
+}

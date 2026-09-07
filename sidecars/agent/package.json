@@ -1,0 +1,28 @@
+{
+  "name": "bluey-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bluey deep-research agent sidecar (Claude Agent SDK, compiled with bun build --compile)",
+  "scripts": {
+    "build": "bash ../../scripts/build-agent.sh",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run tests/sidecar"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.263",
+    "zod": "^4"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/claude-agent-sdk-darwin-arm64": "^0.3.263",
+    "@anthropic-ai/claude-agent-sdk-darwin-x64": "^0.3.263"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "~6.0.3",
+    "vitest": "^3"
+  },
+  "engines": {
+    "bun": ">=1.2"
+  }
+}

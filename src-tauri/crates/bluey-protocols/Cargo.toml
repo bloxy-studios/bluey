@@ -1,0 +1,17 @@
+[package]
+name = "bluey-protocols"
+version = "0.1.0"
+description = "Pure protocol codecs for Bluey: SSE, provider request/response models, sidecar JSON-Lines envelopes, panel geometry, Clerk key derivation"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bluey-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1"

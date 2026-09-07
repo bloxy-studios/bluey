@@ -1,0 +1,4 @@
+{"id":"p-1","method":"permissions.request","params":{"kind":"screenRecording"}}
+{"id":"p-2","method":"permissions.request","params":{"kind":"microphone"}}
+{"id":"p-3","method":"permissions.request","params":{"kind":"accessibility"}}
+{"id":"p-4","method":"permissions.request","params":{"kind":"speechRecognition"}}

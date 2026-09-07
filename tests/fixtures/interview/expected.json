@@ -1,0 +1,8 @@
+{
+  "task": "answer",
+  "schemaId": "suggested-response",
+  "responseType": "suggestion",
+  "visionRequired": false,
+  "detectedEventType": "question",
+  "requiresResponse": true
+}

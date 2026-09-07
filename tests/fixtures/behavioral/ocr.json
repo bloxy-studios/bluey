@@ -1,0 +1,40 @@
+{
+  "blocks": [
+    {
+      "text": "Zoom Meeting",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 40,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Acme Corp - Hiring Manager Round",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 68,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Participants (2)",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 96,
+        "width": 720,
+        "height": 24
+      }
+    }
+  ],
+  "text": "Zoom Meeting\nAcme Corp - Hiring Manager Round\nParticipants (2)",
+  "level": "accurate",
+  "languages": [
+    "en"
+  ],
+  "durationMs": 84
+}

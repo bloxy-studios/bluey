@@ -1,0 +1,31 @@
+{
+  "blocks": [
+    {
+      "text": "Untitled - Excalidraw",
+      "confidence": 0.9,
+      "boundingBox": {
+        "x": 40,
+        "y": 40,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Free draw",
+      "confidence": 0.9,
+      "boundingBox": {
+        "x": 40,
+        "y": 68,
+        "width": 720,
+        "height": 24
+      }
+    }
+  ],
+  "text": "Untitled - Excalidraw\nFree draw",
+  "level": "accurate",
+  "languages": [
+    "en"
+  ],
+  "durationMs": 84,
+  "frameId": "frame_sd_1"
+}

@@ -1,0 +1,3 @@
+{"id":"au-1","method":"audio.devices"}
+{"id":"au-2","method":"audio.testMicrophone","params":{"durationMs":1500}}
+{"id":"au-3","method":"audio.start","params":{"microphone":{"enabled":true},"systemAudio":{"enabled":true},"sampleRate":16000,"vad":{"enabled":true,"sensitivity":"medium"},"emitPcm":false,"chunkMs":200,"transcription":{"enabled":true,"locale":"en-US","onDevice":true,"sources":["microphone","system"]},"levels":{"enabled":true,"intervalMs":100}}}

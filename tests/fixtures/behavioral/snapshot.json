@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-09-07T09:00:11.000Z",
+  "activeApplication": {
+    "name": "zoom.us",
+    "bundleId": "us.zoom.xos"
+  },
+  "activeWindow": {
+    "title": "Zoom Meeting",
+    "adapter": "zoom"
+  },
+  "transcript": {
+    "segments": [
+      {
+        "id": "seg_beh_1",
+        "source": "system",
+        "text": "Let's shift to some behavioral questions now.",
+        "startTime": 0,
+        "endTime": 3000,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:03.000Z",
+        "confidence": 0.92
+      },
+      {
+        "id": "seg_beh_2",
+        "source": "microphone",
+        "text": "Sure, sounds good.",
+        "startTime": 3400,
+        "endTime": 4600,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:04.600Z",
+        "confidence": 0.92
+      },
+      {
+        "id": "seg_beh_3",
+        "source": "system",
+        "text": "Tell me about a time you had a conflict with a teammate, and how you handled it.",
+        "startTime": 5000,
+        "endTime": 10500,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:10.500Z",
+        "confidence": 0.92
+      }
+    ],
+    "windowSeconds": 180
+  },
+  "timings": {
+    "transcript": 2,
+    "assembly": 5
+  }
+}

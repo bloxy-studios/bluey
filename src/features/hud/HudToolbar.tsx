@@ -1,0 +1,138 @@
+import { AudioLines, ChevronDown, Eye, EyeOff, Grid2x2, Image } from "lucide-react";
+import { useEffect, useState } from "react";
+
+import { BlueyMark } from "@/components/BlueyMark";
+import { IconButton } from "@/components/ui/IconButton";
+import { Keycaps } from "@/components/ui/Keycap";
+import { Tooltip } from "@/components/ui/Tooltip";
+import { bluey } from "@/lib/tauri/api";
+import { useAppStore } from "@/stores/appStore";
+import { modeById, useModesStore } from "@/stores/modesStore";
+import { ModeMenu } from "./ModeMenu";
+import { StatePill } from "./StatePill";
+
+export interface HudToolbarProps {
+  screenEnabled: boolean;
+  onToggleScreen: () => void;
+  hasChat: boolean;
+  onNewChat: () => void;
+}
+
+/**
+ * HUD bottom row (52px): logo + state pill · screen / visibility / mode / |
+ * / audio icon cluster · "New Chat ⌘R" or "History ↓".
+ */
+export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat }: HudToolbarProps) {
+  const status = useAppStore((s) => s.status);
+  const modes = useModesStore((s) => s.modes);
+  const [protection, setProtection] = useState<boolean | null>(null);
+
+  const audioActive = status?.audioActive ?? false;
+  const activeModeName = modeById(modes, status?.modeId)?.name ?? "General";
+
+  useEffect(() => {
+    let alive = true;
+    void bluey.capture
+      .getProtection()
+      .then((p) => {
+        if (alive) setProtection(p.enabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const toggleProtection = async () => {
+    if (protection === null) return;
+    try {
+      const next = await bluey.capture.setProtection({ enabled: !protection });
+      setProtection(next.enabled);
+    } catch (error) {
+      console.warn("[hud] setProtection failed", error);
+    }
+  };
+
+  const toggleAudio = async () => {
+    try {
+      if (audioActive) await bluey.audio.stop();
+      else await bluey.audio.start();
+    } catch (error) {
+      console.warn("[hud] audio toggle failed", error);
+    }
+  };
+
+  return (
+    <div data-tauri-drag-region className="flex h-[52px] items-center gap-3 px-3">
+      <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-2.5">
+        <BlueyMark size={22} className="ml-1 text-fg" />
+        <StatePill />
+      </div>
+
+      <div className="flex items-center gap-1">
+        <Tooltip label={screenEnabled ? "Uses Screen" : "Screen off"}>
+          <IconButton aria-label={screenEnabled ? "Screen context on" : "Screen context off"} active={screenEnabled} onClick={onToggleScreen}>
+            <Image className="size-[18px]" strokeWidth={1.8} aria-hidden />
+          </IconButton>
+        </Tooltip>
+
+        <Tooltip label={protection ? "Content-protected" : "Detectable"}>
+          <IconButton
+            aria-label={protection ? "Content protection on" : "Content protection off"}
+            onClick={() => void toggleProtection()}
+            disabled={protection === null}
+          >
+            {protection ? <EyeOff className="size-[18px]" strokeWidth={1.8} aria-hidden /> : <Eye className="size-[18px]" strokeWidth={1.8} aria-hidden />}
+          </IconButton>
+        </Tooltip>
+
+        <ModeMenu>
+          <span>
+            <Tooltip label={activeModeName}>
+              <IconButton aria-label={`Mode: ${activeModeName}`}>
+                <Grid2x2 className="size-[18px]" strokeWidth={1.8} aria-hidden />
+              </IconButton>
+            </Tooltip>
+          </span>
+        </ModeMenu>
+
+        <div className="mx-1 h-5 w-px bg-hud-border" aria-hidden />
+
+        <Tooltip label={audioActive ? "Stop Audio Session" : "Start Audio Session"}>
+          <IconButton aria-label={audioActive ? "Stop audio session" : "Start audio session"} onClick={() => void toggleAudio()} className="relative">
+            <AudioLines className="size-[18px]" strokeWidth={1.8} aria-hidden />
+            {audioActive ? (
+              <span className="absolute right-1 top-1 size-[6px] rounded-full bg-success motion-safe:animate-pulse-dot" aria-hidden />
+            ) : null}
+          </IconButton>
+        </Tooltip>
+      </div>
+
+      <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center justify-end gap-2">
+        {hasChat ? (
+          <button
+            type="button"
+            onClick={onNewChat}
+            className="flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-[13px] text-fg-muted transition-colors hover:bg-white/8 hover:text-fg"
+          >
+            New Chat
+            <Keycaps accelerator="CmdOrCtrl+R" />
+          </button>
+        ) : (
+          <>
+            <span className="text-[13px] text-fg-muted">History</span>
+            <Tooltip label="Open sessions">
+              <IconButton
+                aria-label="Open session history"
+                variant="chip"
+                onClick={() => void bluey.window.open({ label: "settings", route: "sessions" })}
+              >
+                <ChevronDown className="size-4" aria-hidden />
+              </IconButton>
+            </Tooltip>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

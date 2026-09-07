@@ -1,0 +1,18 @@
+{
+  "description": "Track decisions, action items and questions live.",
+  "icon": "users",
+  "preferredLatency": "fast",
+  "builtIn": true,
+  "attachedDocumentIds": [],
+  "createdAt": "2026-09-07T09:00:00.000Z",
+  "updatedAt": "2026-09-07T09:00:00.000Z",
+  "id": "team-meeting",
+  "name": "Team Meeting",
+  "systemInstructions": "The user is in a team meeting. Surface decisions, action items with owners and deadlines, and open questions. Stay out of the way otherwise.",
+  "responseSchema": "meeting",
+  "contextRequirements": [
+    "transcript",
+    "session_memory"
+  ],
+  "group": "Work"
+}

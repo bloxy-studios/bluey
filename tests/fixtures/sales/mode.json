@@ -1,0 +1,19 @@
+{
+  "description": "Live objection handling and next steps.",
+  "icon": "phone",
+  "preferredLatency": "ultra-fast",
+  "builtIn": true,
+  "attachedDocumentIds": [],
+  "createdAt": "2026-09-07T09:00:00.000Z",
+  "updatedAt": "2026-09-07T09:00:00.000Z",
+  "id": "sales",
+  "name": "Sales Call",
+  "systemInstructions": "The user is the seller on a live sales call. Handle objections honestly, surface value, and always propose a concrete next step.",
+  "responseSchema": "sales",
+  "contextRequirements": [
+    "transcript",
+    "documents",
+    "session_memory"
+  ],
+  "group": "Work"
+}

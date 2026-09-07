@@ -1,0 +1,8 @@
+{
+  "task": "coding",
+  "schemaId": "coding",
+  "responseType": "code",
+  "visionRequired": false,
+  "detectedEventType": "coding_problem",
+  "requiresResponse": true
+}

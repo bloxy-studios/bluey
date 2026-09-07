@@ -1,0 +1,1 @@
+{"id":"ob-1","method":"observe.start","params":{"intervalMs":1500,"minDelta":0.04}}

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Merged by Tauri into the bundle's Info.plist (Tauri looks for Info.plist next to tauri.conf.json). -->
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Bluey uses your microphone to transcribe conversations in real time, only while you have started listening.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Bluey uses on-device speech recognition to turn audio into a live transcript.</string>
+  <key>NSAccessibilityUsageDescription</key>
+  <string>Bluey reads the focused window's accessibility tree to understand the text and controls on screen.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Bluey captures your screen only when you ask it to, so it can understand what you are looking at.</string>
+</dict>
+</plist>

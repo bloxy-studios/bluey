@@ -22,3 +22,15 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Bluey
+.env
+.env.*
+!.env.example
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+src-tauri/swift/**/.build
+sidecars/**/dist
+coverage
+research/
+src-tauri/target-darwin

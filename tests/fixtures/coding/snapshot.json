@@ -1,0 +1,258 @@
+{
+  "timestamp": "2026-09-07T09:00:15.000Z",
+  "activeApplication": {
+    "name": "Google Chrome",
+    "bundleId": "com.google.Chrome"
+  },
+  "activeWindow": {
+    "title": "Two Sum - LeetCode",
+    "adapter": "chrome",
+    "hints": {
+      "url": "https://leetcode.com/problems/two-sum/"
+    }
+  },
+  "screen": {
+    "width": 1600,
+    "height": 1000,
+    "frameId": "frame_cod_1",
+    "mimeType": "image/jpeg"
+  },
+  "ocr": {
+    "blocks": [
+      {
+        "text": "1. Two Sum",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 40,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Easy",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 68,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 96,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "You may assume that each input would have exactly one valid answer, and you may not use the same element twice.",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 124,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "You can return the answer in any order.",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 152,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Example 1:",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 180,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Input: nums = [2,7,11,15], target = 9",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 208,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Output: [0,1]",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 236,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Explanation: Because nums[0] + nums[1] == 9, we return [0, 1].",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 264,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Example 2:",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 292,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Input: nums = [3,2,4], target = 6",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 320,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Output: [1,2]",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 348,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Constraints:",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 376,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "2 <= nums.length <= 10^4",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 404,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "-10^9 <= nums[i] <= 10^9",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 432,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Only one valid answer exists.",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 460,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Follow-up: Can you come up with an algorithm that is less than O(n^2) time complexity?",
+        "confidence": 0.95,
+        "boundingBox": {
+          "x": 40,
+          "y": 488,
+          "width": 720,
+          "height": 24
+        }
+      }
+    ],
+    "text": "1. Two Sum\nEasy\nGiven an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.\nYou may assume that each input would have exactly one valid answer, and you may not use the same element twice.\nYou can return the answer in any order.\nExample 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\nExplanation: Because nums[0] + nums[1] == 9, we return [0, 1].\nExample 2:\nInput: nums = [3,2,4], target = 6\nOutput: [1,2]\nConstraints:\n2 <= nums.length <= 10^4\n-10^9 <= nums[i] <= 10^9\nOnly one valid answer exists.\nFollow-up: Can you come up with an algorithm that is less than O(n^2) time complexity?",
+    "level": "accurate",
+    "languages": [
+      "en"
+    ],
+    "durationMs": 84,
+    "frameId": "frame_cod_1"
+  },
+  "accessibility": {
+    "application": {
+      "name": "Google Chrome"
+    },
+    "elements": [],
+    "visibleText": "Two Sum. Given an array of integers nums and an integer target, return indices of the two numbers.",
+    "truncated": false,
+    "capturedAt": "2026-09-07T09:00:14.900Z",
+    "focusedElement": {
+      "role": "AXTextArea",
+      "label": "Code editor",
+      "value": "def twoSum(self, nums, target):",
+      "depth": 3
+    }
+  },
+  "transcript": {
+    "segments": [
+      {
+        "id": "seg_cod_1",
+        "source": "system",
+        "text": "Let's do a short coding exercise. I've shared the problem link in the chat.",
+        "startTime": 0,
+        "endTime": 5200,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:05.200Z",
+        "confidence": 0.92
+      },
+      {
+        "id": "seg_cod_2",
+        "source": "microphone",
+        "text": "Cool, I have it open. Give me a second to read through it.",
+        "startTime": 5600,
+        "endTime": 8800,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:08.800Z",
+        "confidence": 0.92
+      },
+      {
+        "id": "seg_cod_3",
+        "source": "system",
+        "text": "Can you implement twoSum, walk me through your approach, and tell me the time complexity?",
+        "startTime": 9200,
+        "endTime": 14600,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:14.600Z",
+        "confidence": 0.92
+      }
+    ],
+    "windowSeconds": 180
+  },
+  "timings": {
+    "capture": 41,
+    "ocr": 88,
+    "accessibility": 12,
+    "transcript": 3,
+    "assembly": 9
+  }
+}

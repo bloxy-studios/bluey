@@ -1,0 +1,32 @@
+[
+  {
+    "id": "seg_cod_1",
+    "source": "system",
+    "text": "Let's do a short coding exercise. I've shared the problem link in the chat.",
+    "startTime": 0,
+    "endTime": 5200,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:05.200Z",
+    "confidence": 0.92
+  },
+  {
+    "id": "seg_cod_2",
+    "source": "microphone",
+    "text": "Cool, I have it open. Give me a second to read through it.",
+    "startTime": 5600,
+    "endTime": 8800,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:08.800Z",
+    "confidence": 0.92
+  },
+  {
+    "id": "seg_cod_3",
+    "source": "system",
+    "text": "Can you implement twoSum, walk me through your approach, and tell me the time complexity?",
+    "startTime": 9200,
+    "endTime": 14600,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:14.600Z",
+    "confidence": 0.92
+  }
+]

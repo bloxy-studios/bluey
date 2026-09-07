@@ -1,0 +1,2 @@
+{"id":"o-1","method":"ocr.recognize","params":{"path":"tests/native/fixtures/ocr-sample.png","level":"accurate","languages":["en-US"],"minConfidence":0.3}}
+{"id":"o-2","method":"ocr.recognize","params":{"path":"tests/native/fixtures/ocr-sample.png","level":"fast","languages":["en-US"],"minConfidence":0.1}}

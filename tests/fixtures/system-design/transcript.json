@@ -1,0 +1,22 @@
+[
+  {
+    "id": "seg_sd_1",
+    "source": "system",
+    "text": "Alright, let's spend the next forty-five minutes on system design.",
+    "startTime": 0,
+    "endTime": 4600,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:04.600Z",
+    "confidence": 0.92
+  },
+  {
+    "id": "seg_sd_2",
+    "source": "system",
+    "text": "How would you design a URL shortener like bit.ly that needs to handle about a hundred million redirects per day?",
+    "startTime": 5200,
+    "endTime": 13400,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:13.400Z",
+    "confidence": 0.92
+  }
+]

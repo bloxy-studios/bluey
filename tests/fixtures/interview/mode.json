@@ -1,0 +1,20 @@
+{
+  "description": "Live help during a job interview call.",
+  "icon": "briefcase",
+  "preferredLatency": "ultra-fast",
+  "builtIn": true,
+  "attachedDocumentIds": [],
+  "createdAt": "2026-09-07T09:00:00.000Z",
+  "updatedAt": "2026-09-07T09:00:00.000Z",
+  "id": "interview",
+  "name": "Job Interview",
+  "systemInstructions": "The user is a candidate in a live job interview. Help them answer the interviewer's questions credibly, grounded in their real background.",
+  "responseSchema": "suggested-response",
+  "contextRequirements": [
+    "transcript",
+    "resume",
+    "job_description",
+    "session_memory"
+  ],
+  "group": "Looking for work"
+}

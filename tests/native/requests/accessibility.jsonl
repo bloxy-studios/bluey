@@ -1,0 +1,3 @@
+{"id":"a-1","method":"app.frontmost"}
+{"id":"a-2","method":"accessibility.snapshot","params":{"maxDepth":6,"maxElements":150,"includeSelectedText":true}}
+{"id":"a-3","method":"accessibility.snapshot","params":{"maxDepth":3,"maxElements":25,"includeSelectedText":false}}

@@ -1,0 +1,20 @@
+{
+  "description": "Solve live coding problems from the screen.",
+  "icon": "code",
+  "preferredLatency": "fast",
+  "builtIn": true,
+  "attachedDocumentIds": [],
+  "createdAt": "2026-09-07T09:00:00.000Z",
+  "updatedAt": "2026-09-07T09:00:00.000Z",
+  "id": "coding-interview",
+  "name": "Coding Interview",
+  "systemInstructions": "The user is in a live coding interview. Solve the visible problem with clean, correct code and explain the approach and complexity.",
+  "responseSchema": "coding",
+  "contextRequirements": [
+    "screen",
+    "accessibility",
+    "transcript"
+  ],
+  "group": "Looking for work",
+  "preferredModelRole": "reasoning"
+}

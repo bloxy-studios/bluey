@@ -1,0 +1,7 @@
+{"id":"c-1","method":"displays.list"}
+{"id":"c-2","method":"windows.list","params":{"onScreenOnly":true}}
+{"id":"c-3","method":"app.frontmost"}
+{"id":"c-4","method":"capture.display","params":{"format":"jpeg","quality":0.8,"maxDimension":1600,"inline":false}}
+{"id":"c-5","method":"capture.display","params":{"inline":true,"maxDimension":320,"format":"png"}}
+{"id":"c-6","method":"capture.activeWindow","params":{"maxDimension":1200}}
+{"id":"c-7","method":"capture.region","params":{"rect":{"x":0,"y":0,"width":400,"height":300},"inline":true,"maxDimension":800}}
