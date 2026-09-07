@@ -1,0 +1,19 @@
+{
+  "description": "Turn lectures into study notes in real time.",
+  "icon": "graduation-cap",
+  "preferredLatency": "balanced",
+  "builtIn": true,
+  "attachedDocumentIds": [],
+  "createdAt": "2026-09-07T09:00:00.000Z",
+  "updatedAt": "2026-09-07T09:00:00.000Z",
+  "id": "lecture",
+  "name": "Lecture",
+  "systemInstructions": "The user is attending a lecture. Capture concepts, precise definitions, worked examples and likely exam questions.",
+  "responseSchema": "lecture",
+  "contextRequirements": [
+    "screen",
+    "transcript",
+    "session_memory"
+  ],
+  "group": "Learning"
+}

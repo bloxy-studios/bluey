@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "bluey",
+  "productName": "Bluey",
   "version": "0.1.0",
   "identifier": "com.codewithabdul.bluey",
   "build": {
@@ -10,26 +10,88 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
+    "withGlobalTauri": false,
     "windows": [
       {
-        "title": "bluey",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "Bluey",
+        "url": "index.html?window=main",
+        "width": 690,
+        "height": 108,
+        "minWidth": 420,
+        "minHeight": 88,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": false,
+        "acceptFirstMouse": true,
+        "center": true
+      },
+      {
+        "label": "settings",
+        "title": "Bluey Settings",
+        "url": "index.html?window=settings",
+        "width": 930,
+        "height": 690,
+        "minWidth": 760,
+        "minHeight": 520,
+        "resizable": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "onboarding",
+        "title": "Welcome to Bluey",
+        "url": "index.html?window=onboarding",
+        "width": 760,
+        "height": 560,
+        "resizable": false,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data: blob: https://img.clerk.com https://*.clerk.com https://*.clerk.accounts.dev; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; connect-src 'self' ipc: http://ipc.localhost https://*.clerk.accounts.dev https://*.clerk.com https://clerk.bluey.app; frame-src https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:",
+      "devCsp": null
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["app", "dmg"],
+    "category": "Productivity",
+    "shortDescription": "Bluey — real-time AI desktop copilot",
+    "longDescription": "Bluey understands what is happening on your screen and in your conversations, with your explicit permission, and prepares concise contextual help.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "externalBin": ["binaries/bluey-helper", "binaries/bluey-agent"],
+    "resources": ["resources/**/*"],
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "entitlements": "entitlements.plist",
+      "hardenedRuntime": true,
+      "infoPlist": "Info.plist"
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
   }
 }

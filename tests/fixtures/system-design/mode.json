@@ -1,0 +1,20 @@
+{
+  "description": "Whiteboard-grade system design support.",
+  "icon": "network",
+  "preferredLatency": "deep",
+  "builtIn": true,
+  "attachedDocumentIds": [],
+  "createdAt": "2026-09-07T09:00:00.000Z",
+  "updatedAt": "2026-09-07T09:00:00.000Z",
+  "id": "system-design",
+  "name": "System Design Interview",
+  "systemInstructions": "The user is in a system design interview. Provide a structured design: requirements, estimates, high-level design, data model, deep dive and trade-offs.",
+  "responseSchema": "system-design",
+  "contextRequirements": [
+    "screen",
+    "transcript",
+    "session_memory"
+  ],
+  "group": "Looking for work",
+  "preferredModelRole": "reasoning"
+}

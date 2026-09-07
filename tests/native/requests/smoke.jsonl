@@ -1,0 +1,5 @@
+{"id":"s-1","method":"helper.ping"}
+{"id":"s-2","method":"helper.version"}
+{"id":"s-3","method":"permissions.status"}
+{"id":"s-4","method":"displays.list"}
+{"id":"s-5","method":"audio.devices"}

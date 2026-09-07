@@ -1,0 +1,9 @@
+{
+  "instruction": "Summarize the key decisions from this standup so far.",
+  "task": "summarization",
+  "schemaId": "meeting",
+  "responseType": "summary",
+  "visionRequired": false,
+  "detectedEventType": "decision",
+  "requiresResponse": false
+}

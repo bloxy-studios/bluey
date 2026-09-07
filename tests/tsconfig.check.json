@@ -1,0 +1,20 @@
+{
+  // Shadow config for checking the intelligence layer in isolation
+  // (tests/sidecar and sidecars/ belong to the sidecar workstream and use
+  // bun types the root config does not load).
+  // Usage: bunx tsc -p tests/tsconfig.check.json --noEmit
+  "extends": "../tsconfig.json",
+  "include": [
+    "../src/ai",
+    "../src/context",
+    "../src/transcript",
+    "../src/modes",
+    "../src/sessions",
+    "./unit",
+    "./integration",
+    "./fixtures",
+    "../vitest.setup.ts"
+  ],
+  "exclude": ["../node_modules", "../dist", "../src-tauri", "../sidecars"],
+  "references": []
+}

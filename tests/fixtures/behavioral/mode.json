@@ -1,0 +1,19 @@
+{
+  "description": "STAR-grounded answers to behavioral questions.",
+  "icon": "messages-square",
+  "preferredLatency": "fast",
+  "builtIn": true,
+  "attachedDocumentIds": [],
+  "createdAt": "2026-09-07T09:00:00.000Z",
+  "updatedAt": "2026-09-07T09:00:00.000Z",
+  "id": "behavioral-interview",
+  "name": "Behavioral Interview",
+  "systemInstructions": "The user is answering behavioral interview questions. Draft natural spoken answers grounded in their actual experience; never invent stories.",
+  "responseSchema": "behavioral",
+  "contextRequirements": [
+    "transcript",
+    "resume",
+    "session_memory"
+  ],
+  "group": "Looking for work"
+}

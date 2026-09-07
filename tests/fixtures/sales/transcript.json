@@ -1,0 +1,22 @@
+[
+  {
+    "id": "seg_sal_1",
+    "source": "microphone",
+    "text": "So the Growth plan covers all fifty seats with SSO and audit logs, at two thousand a month.",
+    "startTime": 0,
+    "endTime": 6800,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:06.800Z",
+    "confidence": 0.92
+  },
+  {
+    "id": "seg_sal_2",
+    "source": "system",
+    "text": "Honestly, that seems too expensive compared to what we're paying Competitor X today.",
+    "startTime": 7400,
+    "endTime": 12600,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:12.600Z",
+    "confidence": 0.92
+  }
+]

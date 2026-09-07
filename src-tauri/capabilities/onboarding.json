@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "onboarding",
+  "description": "First-run wizard — sign in, permissions, tests. Minimal surface.",
+  "windows": ["onboarding"],
+  "platforms": ["macOS"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-focus",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "opener:allow-open-url",
+    "notification:default",
+    "os:allow-platform",
+    "os:allow-version"
+  ]
+}

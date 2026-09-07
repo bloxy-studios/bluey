@@ -1,0 +1,22 @@
+[
+  {
+    "id": "seg_lec_1",
+    "source": "system",
+    "text": "Last week we looked at how runtime grows with input size.",
+    "startTime": 0,
+    "endTime": 4400,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:04.400Z",
+    "confidence": 0.92
+  },
+  {
+    "id": "seg_lec_2",
+    "source": "system",
+    "text": "Big-O notation is defined as an asymptotic upper bound on the growth rate of a function.",
+    "startTime": 5000,
+    "endTime": 11200,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:11.200Z",
+    "confidence": 0.92
+  }
+]

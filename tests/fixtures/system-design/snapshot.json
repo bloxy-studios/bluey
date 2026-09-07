@@ -1,0 +1,82 @@
+{
+  "timestamp": "2026-09-07T09:00:14.000Z",
+  "activeApplication": {
+    "name": "Google Chrome",
+    "bundleId": "com.google.Chrome"
+  },
+  "activeWindow": {
+    "title": "Excalidraw",
+    "adapter": "chrome",
+    "hints": {
+      "url": "https://excalidraw.com"
+    }
+  },
+  "screen": {
+    "width": 1600,
+    "height": 1000,
+    "frameId": "frame_sd_1",
+    "mimeType": "image/jpeg"
+  },
+  "ocr": {
+    "blocks": [
+      {
+        "text": "Untitled - Excalidraw",
+        "confidence": 0.9,
+        "boundingBox": {
+          "x": 40,
+          "y": 40,
+          "width": 720,
+          "height": 24
+        }
+      },
+      {
+        "text": "Free draw",
+        "confidence": 0.9,
+        "boundingBox": {
+          "x": 40,
+          "y": 68,
+          "width": 720,
+          "height": 24
+        }
+      }
+    ],
+    "text": "Untitled - Excalidraw\nFree draw",
+    "level": "accurate",
+    "languages": [
+      "en"
+    ],
+    "durationMs": 84,
+    "frameId": "frame_sd_1"
+  },
+  "transcript": {
+    "segments": [
+      {
+        "id": "seg_sd_1",
+        "source": "system",
+        "text": "Alright, let's spend the next forty-five minutes on system design.",
+        "startTime": 0,
+        "endTime": 4600,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:04.600Z",
+        "confidence": 0.92
+      },
+      {
+        "id": "seg_sd_2",
+        "source": "system",
+        "text": "How would you design a URL shortener like bit.ly that needs to handle about a hundred million redirects per day?",
+        "startTime": 5200,
+        "endTime": 13400,
+        "finalized": true,
+        "createdAt": "2026-09-07T09:00:13.400Z",
+        "confidence": 0.92
+      }
+    ],
+    "windowSeconds": 180
+  },
+  "timings": {
+    "capture": 38,
+    "ocr": 31,
+    "transcript": 2,
+    "assembly": 7
+  }
+}

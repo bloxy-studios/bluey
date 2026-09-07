@@ -1,0 +1,9 @@
+{
+  "instruction": "Explain what the professor just said about asymptotic upper bounds in simple terms.",
+  "task": "answer",
+  "schemaId": "lecture",
+  "responseType": "answer",
+  "visionRequired": false,
+  "detectedEventType": "important_statement",
+  "requiresResponse": false
+}

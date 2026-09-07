@@ -1,0 +1,20 @@
+[package]
+name = "bluey-core"
+version = "0.1.0"
+description = "Platform-independent Bluey domain: types, state machine, events, errors, routing, budgeting"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1"

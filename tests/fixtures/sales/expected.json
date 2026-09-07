@@ -1,0 +1,8 @@
+{
+  "task": "answer",
+  "schemaId": "sales",
+  "responseType": "suggestion",
+  "visionRequired": false,
+  "detectedEventType": "objection",
+  "requiresResponse": true
+}

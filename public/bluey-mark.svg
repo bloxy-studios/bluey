@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" fill="none">
+  <!-- Bluey mark: monochrome circle with a diagonal slash -->
+  <circle cx="14" cy="14" r="10.5" stroke="currentColor" stroke-width="2.4" />
+  <line x1="7.2" y1="20.8" x2="20.8" y2="7.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+</svg>

@@ -1,0 +1,8 @@
+{
+  "task": "answer",
+  "schemaId": "behavioral",
+  "responseType": "suggestion",
+  "visionRequired": false,
+  "detectedEventType": "behavioral_question",
+  "requiresResponse": true
+}

@@ -1,0 +1,8 @@
+{
+  "task": "system_design",
+  "schemaId": "system-design",
+  "responseType": "system-design",
+  "visionRequired": true,
+  "detectedEventType": "technical_question",
+  "requiresResponse": true
+}

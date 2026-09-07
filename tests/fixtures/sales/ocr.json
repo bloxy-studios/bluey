@@ -1,0 +1,40 @@
+{
+  "blocks": [
+    {
+      "text": "Google Meet",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 40,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Northwind Logistics <> Flowdesk - Pricing Call",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 68,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Turn off camera  Present now",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 96,
+        "width": 720,
+        "height": 24
+      }
+    }
+  ],
+  "text": "Google Meet\nNorthwind Logistics <> Flowdesk - Pricing Call\nTurn off camera  Present now",
+  "level": "accurate",
+  "languages": [
+    "en"
+  ],
+  "durationMs": 84
+}

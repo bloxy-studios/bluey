@@ -1,0 +1,40 @@
+{
+  "blocks": [
+    {
+      "text": "Linear - Sprint 34",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 40,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "DB migration: benchmark Postgres vs CockroachDB",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 68,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "In Progress  Done  Blocked",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 96,
+        "width": 720,
+        "height": 24
+      }
+    }
+  ],
+  "text": "Linear - Sprint 34\nDB migration: benchmark Postgres vs CockroachDB\nIn Progress  Done  Blocked",
+  "level": "accurate",
+  "languages": [
+    "en"
+  ],
+  "durationMs": 84
+}

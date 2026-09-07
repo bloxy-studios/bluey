@@ -1,0 +1,32 @@
+[
+  {
+    "id": "seg_mtg_1",
+    "source": "system",
+    "text": "Quick standup - the main topic is the database migration.",
+    "startTime": 0,
+    "endTime": 4200,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:04.200Z",
+    "confidence": 0.92
+  },
+  {
+    "id": "seg_mtg_2",
+    "source": "microphone",
+    "text": "I finished the benchmark comparison between Postgres fifteen and CockroachDB yesterday. Postgres wins on cost.",
+    "startTime": 4800,
+    "endTime": 11400,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:11.400Z",
+    "confidence": 0.92
+  },
+  {
+    "id": "seg_mtg_3",
+    "source": "system",
+    "text": "Okay, let's go with the phased Postgres migration then. Sarah, can you own the rollout plan by Friday?",
+    "startTime": 12000,
+    "endTime": 18200,
+    "finalized": true,
+    "createdAt": "2026-09-07T09:00:18.200Z",
+    "confidence": 0.92
+  }
+]

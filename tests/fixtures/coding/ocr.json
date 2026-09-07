@@ -1,0 +1,181 @@
+{
+  "blocks": [
+    {
+      "text": "1. Two Sum",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 40,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Easy",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 68,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 96,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "You may assume that each input would have exactly one valid answer, and you may not use the same element twice.",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 124,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "You can return the answer in any order.",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 152,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Example 1:",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 180,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Input: nums = [2,7,11,15], target = 9",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 208,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Output: [0,1]",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 236,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Explanation: Because nums[0] + nums[1] == 9, we return [0, 1].",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 264,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Example 2:",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 292,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Input: nums = [3,2,4], target = 6",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 320,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Output: [1,2]",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 348,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Constraints:",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 376,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "2 <= nums.length <= 10^4",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 404,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "-10^9 <= nums[i] <= 10^9",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 432,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Only one valid answer exists.",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 460,
+        "width": 720,
+        "height": 24
+      }
+    },
+    {
+      "text": "Follow-up: Can you come up with an algorithm that is less than O(n^2) time complexity?",
+      "confidence": 0.95,
+      "boundingBox": {
+        "x": 40,
+        "y": 488,
+        "width": 720,
+        "height": 24
+      }
+    }
+  ],
+  "text": "1. Two Sum\nEasy\nGiven an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.\nYou may assume that each input would have exactly one valid answer, and you may not use the same element twice.\nYou can return the answer in any order.\nExample 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\nExplanation: Because nums[0] + nums[1] == 9, we return [0, 1].\nExample 2:\nInput: nums = [3,2,4], target = 6\nOutput: [1,2]\nConstraints:\n2 <= nums.length <= 10^4\n-10^9 <= nums[i] <= 10^9\nOnly one valid answer exists.\nFollow-up: Can you come up with an algorithm that is less than O(n^2) time complexity?",
+  "level": "accurate",
+  "languages": [
+    "en"
+  ],
+  "durationMs": 84,
+  "frameId": "frame_cod_1"
+}
