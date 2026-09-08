@@ -109,9 +109,12 @@ const hangingQueryFn: QueryFn = ({ options }) => ({
   },
 });
 
-describe("sidecar end-to-end (mock mode)", () => {
+describe.each([
+  { backend: "gemini", env: { BLUEY_AGENT_MOCK: "1" } },
+  { backend: "claude", env: { BLUEY_AGENT_MOCK: "1", RESEARCH_BACKEND: "claude" } },
+])("sidecar end-to-end (mock mode, $backend backend)", ({ env }) => {
   it("runs a full research job over the protocol and exits cleanly", async () => {
-    const harness = makeHarness({ env: { BLUEY_AGENT_MOCK: "1" } });
+    const harness = makeHarness({ env });
     harness.send(baseRun);
 
     const accepted = await harness.waitFor((f) => f["id"] === 1, "accepted response");
@@ -156,7 +159,7 @@ describe("sidecar end-to-end (mock mode)", () => {
   });
 
   it("serves document_read through the document.request/response round-trip", async () => {
-    const harness = makeHarness({ env: { BLUEY_AGENT_MOCK: "1" } });
+    const harness = makeHarness({ env });
     harness.send({
       ...baseRun,
       params: {
@@ -192,8 +195,12 @@ describe("sidecar end-to-end (mock mode)", () => {
   });
 });
 
-/** Enough env for a job to start when the query itself is stubbed out. */
+/**
+ * Enough env for a Claude-backend job to start when the query itself is stubbed
+ * out (`queryFn` only drives the Claude backend, so the backend is explicit).
+ */
 const stubKeys = {
+  RESEARCH_BACKEND: "claude",
   ANTHROPIC_API_KEY: "test-anthropic",
   EXA_API_KEY: "test-exa",
   FIRECRAWL_API_KEY: "test-firecrawl",
@@ -229,26 +236,40 @@ describe("sidecar cancellation", () => {
 });
 
 describe("sidecar configuration failures", () => {
-  it("fails with missing_api_key naming ANTHROPIC_API_KEY (never a value)", async () => {
-    const harness = makeHarness({ env: {} });
+  it("by default (Gemini) fails with missing_api_key naming GEMINI_API_KEY (never a value)", async () => {
+    const harness = makeHarness({ env: { ANTHROPIC_API_KEY: "sk-not-a-gemini-key" } });
+    harness.send(baseRun);
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    const error = (failed["data"] as Frame)["error"] as Frame;
+    expect(error["code"]).toBe("missing_api_key");
+    expect(error["kind"]).toBe("configuration");
+    expect(error["message"]).toContain("GEMINI_API_KEY");
+    expect(JSON.stringify(harness.frames)).not.toContain("sk-not-a-gemini-key");
+    expect(await harness.done).toBe(0);
+  });
+
+  it("with RESEARCH_BACKEND=claude fails with missing_api_key naming ANTHROPIC_API_KEY", async () => {
+    const harness = makeHarness({ env: { RESEARCH_BACKEND: "claude", GEMINI_API_KEY: "AIza-secret" } });
     harness.send(baseRun);
 
     const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
     const error = (failed["data"] as Frame)["error"] as Frame;
     expect(error["code"]).toBe("missing_api_key");
     expect(error["message"]).toContain("ANTHROPIC_API_KEY");
+    expect(JSON.stringify(harness.frames)).not.toContain("AIza-secret");
     expect(await harness.done).toBe(0);
   });
 
   it("fails with missing_api_key naming EXA_API_KEY when the tool needs it", async () => {
-    const harness = makeHarness({ env: { ANTHROPIC_API_KEY: "sk-test-secret" } });
+    const harness = makeHarness({ env: { GEMINI_API_KEY: "AIza-test-secret" } });
     harness.send({ ...baseRun, params: { ...baseRun.params, tools: ["exa_search"] } });
 
     const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
     const error = (failed["data"] as Frame)["error"] as Frame;
     expect(error["code"]).toBe("missing_api_key");
     expect(error["message"]).toContain("EXA_API_KEY");
-    expect(JSON.stringify(harness.frames)).not.toContain("sk-test-secret");
+    expect(JSON.stringify(harness.frames)).not.toContain("AIza-test-secret");
     expect(await harness.done).toBe(0);
   });
 
@@ -271,7 +292,7 @@ describe("sidecar configuration failures", () => {
 
   it("on Microsoft Foundry, fails with invalid_configuration when no resource/base URL is set", async () => {
     const harness = makeHarness({
-      env: { CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_API_KEY: "foundry-secret", ...stubKeys },
+      env: { ...stubKeys, CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_API_KEY: "foundry-secret" },
     });
     harness.send(baseRun);
 

@@ -1,9 +1,13 @@
 /**
- * The research job runner: builds the in-process MCP server with the scoped
- * bluey tools, runs the Claude Agent SDK `query()`, and maps SDK messages onto
- * the sidecar protocol events.
+ * The research job runner: builds the scoped tool handlers, runs the selected
+ * backend (`gemini` function-calling loop or the Claude Agent SDK `query()`)
+ * and maps its output onto the sidecar protocol events.
  *
- * Security posture (see docs/AGENT_SIDECAR_PROTOCOL.md):
+ * Both backends share the tool handlers, the citation store (only tool-observed
+ * URLs survive), the document broker and the system prompt; only the model
+ * loop differs (`runGemini` in ./gemini.ts, `runClaude` below).
+ *
+ * Security posture of the Claude backend (see docs/AGENT_SIDECAR_PROTOCOL.md):
  *  - `tools: []` removes every built-in tool from the agent;
  *  - `allowedTools` lists only the requested `mcp__bluey__*` tools;
  *  - `disallowedTools` re-bans the built-ins (belt and braces);
@@ -13,6 +17,7 @@
  *    controlled copy with the model credentials injected (see
  *    `buildSubprocessEnv`): ANTHROPIC_API_KEY for Anthropic direct, or the
  *    CLAUDE_CODE_USE_FOUNDRY / ANTHROPIC_FOUNDRY_* set for Microsoft Foundry.
+ *    Gemini keys are stripped from it — Claude Code never needs them.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -25,7 +30,8 @@ import { z } from "zod";
 import { CitationStore } from "./citations";
 import { resolveClaudeCliPath } from "./cli-path";
 import { checkModelCredentials, type AgentConfig } from "./config";
-import { createMockQueryFn } from "./mock";
+import { createGeminiGenerate, GeminiRunError, mapGeminiError, runGemini, type GenerateFn } from "./gemini";
+import { createMockGeminiGenerate, createMockQueryFn } from "./mock";
 import {
   type DeepResearchRequest,
   type DocumentResponseParams,
@@ -34,6 +40,7 @@ import {
   type WireCitation,
 } from "./protocol";
 import { buildSystemPrompt } from "./system-prompt";
+import { TOOL_SPECS } from "./tool-specs";
 import { DocumentBroker } from "./tools/documents";
 import { ToolError } from "./tools/errors";
 import { createExaClient, type ExaClient } from "./tools/exa";
@@ -59,7 +66,10 @@ export type ToolHandlers = Partial<Record<ResearchToolName, ToolHandler>>;
 export type QueryFn = (params: { prompt: string; options: Options }) => AsyncIterable<unknown>;
 
 export interface AgentRunDeps {
+  /** Claude backend injection (tests / mock mode). */
   queryFn?: QueryFn;
+  /** Gemini backend injection (tests / mock mode). */
+  generateFn?: GenerateFn;
   exaClient?: ExaClient;
   firecrawlClient?: FirecrawlClient;
   /** Passed by the compiled per-target entrypoint (embedded CLI binary). */
@@ -146,6 +156,8 @@ const structuredOutputSchema = z.object({
     .optional(),
 });
 
+type StructuredReport = z.infer<typeof structuredOutputSchema>;
+
 const DOCUMENT_TEXT_MAX_CHARS = 40_000;
 
 // ── Structural narrowing helpers (SDK messages are handled as `unknown`) ────
@@ -180,9 +192,25 @@ function toolFailure(err: unknown, label: string): TextToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
+/** Fallback: final text that happens to be our JSON shape. */
+export function tryParseReportJson(text: string): StructuredReport | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    const parsed = structuredOutputSchema.safeParse(JSON.parse(trimmed));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ── Subprocess environment ───────────────────────────────────────────────────
 
-/** Variables that select the Claude endpoint/credentials inside Claude Code. */
+/**
+ * Variables that select a model endpoint/credential. All of them are cleared
+ * from the Claude Code subprocess environment; the Claude routing is then
+ * re-added from `config`. Gemini keys never reach the CLI.
+ */
 const PROVIDER_ENV_VARS = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
@@ -195,6 +223,8 @@ const PROVIDER_ENV_VARS = [
   "ANTHROPIC_DEFAULT_OPUS_MODEL",
   "ANTHROPIC_DEFAULT_SONNET_MODEL",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
 ] as const;
 
 /**
@@ -285,7 +315,7 @@ export function startResearchJob(
     emitFailed("cancelled", "research job was cancelled", "cancelled");
   };
 
-  // ── Tool handlers (shared by the real MCP server and the mock query) ──────
+  // ── Tool handlers (shared by both backends and the mocks) ─────────────────
 
   function buildHandlers(): ToolHandlers | { missingKey: string } {
     const handlers: ToolHandlers = {};
@@ -387,7 +417,7 @@ export function startResearchJob(
     return handlers;
   }
 
-  // ── SDK message mapping ────────────────────────────────────────────────────
+  // ── Claude backend: SDK message mapping ───────────────────────────────────
 
   let sawStreamText = false;
 
@@ -477,85 +507,28 @@ export function startResearchJob(
     }
   }
 
-  /** Fallback: final assistant text that happens to be our JSON shape. */
-  function tryParseReportJson(
-    text: string,
-  ): { report: string; citations?: Array<{ title: string; url: string; snippet?: string }> } | undefined {
-    const trimmed = text.trim();
-    if (!trimmed.startsWith("{")) return undefined;
-    try {
-      const parsed = structuredOutputSchema.safeParse(JSON.parse(trimmed));
-      return parsed.success ? parsed.data : undefined;
-    } catch {
-      return undefined;
-    }
+  const prompt =
+    `Research query: ${request.query}\n\n` +
+    `Goal: ${request.goal}\n\n` +
+    "Investigate with your tools, then finish with the structured output: the full Markdown " +
+    "report in `report` and the sources you actually used in `citations`.";
+
+  function systemPrompt(handlers: ToolHandlers, activeToolNames: ResearchToolName[]): string {
+    return buildSystemPrompt({
+      goal: request.goal,
+      toolNames: activeToolNames,
+      hasDocuments: Boolean(handlers.document_read && (request.allowedDocumentIds?.length ?? 0) > 0),
+    });
   }
 
-  // ── Main run ───────────────────────────────────────────────────────────────
+  // ── Claude backend ────────────────────────────────────────────────────────
 
-  async function run(): Promise<void> {
-    writer.event("research.started", { jobId, model });
-
-    const usingInjectedQuery = Boolean(deps.queryFn) || config.mockMode;
-    if (!usingInjectedQuery) {
-      const problem = checkModelCredentials(config);
-      if (problem) {
-        emitFailed(problem.code, problem.message, "configuration");
-        return;
-      }
-    }
-
-    const handlersOrMissing = buildHandlers();
-    if ("missingKey" in handlersOrMissing) {
-      emitFailed(
-        "missing_api_key",
-        `${handlersOrMissing.missingKey} is not set — required by the requested tools`,
-        "configuration",
-      );
-      return;
-    }
-    const handlers = handlersOrMissing;
-    const activeToolNames = request.tools.filter((name) => handlers[name]);
-
-    const sdkTools = [
-      handlers.exa_search
-        ? tool(
-            "exa_search",
-            "Search the public web (Exa). Returns titles, URLs and snippets/summaries.",
-            {
-              query: z.string().min(1).describe("Public web search query"),
-              numResults: z
-                .number()
-                .int()
-                .min(1)
-                .max(10)
-                .optional()
-                .describe("How many results to return (default 8)"),
-              startPublishedDate: z
-                .string()
-                .optional()
-                .describe("ISO 8601 date — only results published after this date"),
-            },
-            async (args) => handlers.exa_search!(args as Record<string, unknown>),
-          )
-        : undefined,
-      handlers.firecrawl_scrape
-        ? tool(
-            "firecrawl_scrape",
-            "Fetch a web page as clean Markdown (Firecrawl). Use URLs from search results.",
-            { url: z.string().min(1).describe("Absolute URL of the page to scrape") },
-            async (args) => handlers.firecrawl_scrape!(args as Record<string, unknown>),
-          )
-        : undefined,
-      handlers.document_read
-        ? tool(
-            "document_read",
-            "Read one of the local documents explicitly shared with this research job.",
-            { documentId: z.string().min(1).describe("Id of an allowed document") },
-            async (args) => handlers.document_read!(args as Record<string, unknown>),
-          )
-        : undefined,
-    ].filter((t) => t !== undefined);
+  async function runClaude(handlers: ToolHandlers, activeToolNames: ResearchToolName[]): Promise<void> {
+    const sdkTools = activeToolNames.map((name) =>
+      tool(name, TOOL_SPECS[name].description, TOOL_SPECS[name].shape, async (args) =>
+        handlers[name]!(args as Record<string, unknown>),
+      ),
+    );
 
     const server = createSdkMcpServer({
       name: MCP_SERVER_NAME,
@@ -576,11 +549,7 @@ export function startResearchJob(
 
     const options: Options = {
       abortController,
-      systemPrompt: buildSystemPrompt({
-        goal: request.goal,
-        toolNames: activeToolNames,
-        hasDocuments: Boolean(handlers.document_read && (request.allowedDocumentIds?.length ?? 0) > 0),
-      }),
+      systemPrompt: systemPrompt(handlers, activeToolNames),
       // Remove ALL built-in tools; the agent can only use our MCP tools.
       tools: [],
       allowedTools: activeToolNames.map((name) => `${MCP_TOOL_PREFIX}${name}`),
@@ -604,12 +573,6 @@ export function startResearchJob(
     const queryFn: QueryFn =
       deps.queryFn ??
       (config.mockMode ? createMockQueryFn({ request, handlers }) : (params) => query(params));
-
-    const prompt =
-      `Research query: ${request.query}\n\n` +
-      `Goal: ${request.goal}\n\n` +
-      "Investigate with your tools, then finish with the structured output: the full Markdown " +
-      "report in `report` and the sources you actually used in `citations`.";
 
     let sawResult = false;
     for await (const raw of queryFn({ prompt, options })) {
@@ -651,10 +614,107 @@ export function startResearchJob(
     }
   }
 
+  // ── Gemini backend ────────────────────────────────────────────────────────
+
+  async function runGeminiBackend(
+    handlers: ToolHandlers,
+    activeToolNames: ResearchToolName[],
+  ): Promise<void> {
+    const generate: GenerateFn =
+      deps.generateFn ??
+      (config.mockMode
+        ? createMockGeminiGenerate({ request, handlers })
+        : createGeminiGenerate(config.geminiApiKey ?? ""));
+    progress(`agent session started (model ${model}, ${activeToolNames.length} tool(s))`);
+
+    let outcome;
+    try {
+      outcome = await runGemini({
+        model,
+        maxTurns,
+        systemPrompt: systemPrompt(handlers, activeToolNames),
+        prompt,
+        handlers,
+        activeToolNames,
+        signal: abortController.signal,
+        generate,
+        onTextDelta: (text) => writer.event("research.textDelta", { jobId, text }),
+        onToolCall: (toolName, input) => writer.event("research.toolCall", { jobId, tool: toolName, input }),
+        onProgress: progress,
+      });
+    } catch (err) {
+      if (cancelRequested || (err instanceof Error && err.name === "AbortError")) {
+        emitCancelled();
+        return;
+      }
+      const mapped = mapGeminiError(err);
+      if (mapped) {
+        emitFailed(mapped.code, mapped.message, mapped.kind);
+        return;
+      }
+      throw err;
+    }
+    if (cancelRequested) {
+      emitCancelled();
+      return;
+    }
+
+    const structured = tryParseReportJson(outcome.reportJson);
+    const report = structured?.report ?? outcome.reportJson;
+    if (!report.trim()) {
+      emitFailed("agent_empty_report", "the agent finished without producing a report", "research");
+      return;
+    }
+    emitCompleted({
+      report,
+      citations: store.finalize(structured?.citations),
+      turns: outcome.turns,
+      usage: outcome.usage,
+    });
+  }
+
+  // ── Main run ───────────────────────────────────────────────────────────────
+
+  async function run(): Promise<void> {
+    writer.event("research.started", { jobId, model });
+
+    const usingInjectedModel =
+      config.mockMode || Boolean(config.backend === "gemini" ? deps.generateFn : deps.queryFn);
+    if (!usingInjectedModel) {
+      const problem = checkModelCredentials(config);
+      if (problem) {
+        emitFailed(problem.code, problem.message, "configuration");
+        return;
+      }
+    }
+
+    const handlersOrMissing = buildHandlers();
+    if ("missingKey" in handlersOrMissing) {
+      emitFailed(
+        "missing_api_key",
+        `${handlersOrMissing.missingKey} is not set — required by the requested tools`,
+        "configuration",
+      );
+      return;
+    }
+    const handlers = handlersOrMissing;
+    const activeToolNames = request.tools.filter((name) => handlers[name]);
+
+    if (config.backend === "gemini") {
+      await runGeminiBackend(handlers, activeToolNames);
+    } else {
+      await runClaude(handlers, activeToolNames);
+    }
+  }
+
   const done = run()
     .catch((err: unknown) => {
       if (cancelRequested || (err instanceof Error && err.name === "AbortError")) {
         emitCancelled();
+        return;
+      }
+      if (err instanceof GeminiRunError) {
+        emitFailed(err.code, err.message, err.kind);
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
