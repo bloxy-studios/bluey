@@ -5,7 +5,15 @@
 #   src-tauri/binaries/bluey-agent-aarch64-apple-darwin
 #   src-tauri/binaries/bluey-agent-x86_64-apple-darwin
 #
-# Notes on the Claude CLI binary:
+# Variants (BLUEY_AGENT_VARIANT):
+#   lite (default) — Gemini backend only needs `@google/genai` (pure JS): the
+#                    binary is a few MB and embeds no Claude CLI. The Claude
+#                    backend still works when BLUEY_CLAUDE_CLI points at a CLI.
+#   full           — embeds the platform Claude Code CLI (~250 MB per arch) so
+#                    RESEARCH_BACKEND=claude works with no external binary.
+#   The default flips to `full` when RESEARCH_BACKEND=claude is exported.
+#
+# Notes on the Claude CLI binary (full variant only):
 #   The Claude Agent SDK ships its CLI as a NATIVE binary inside per-platform
 #   optional dependencies (@anthropic-ai/claude-agent-sdk-darwin-{arm64,x64}).
 #   Each compiled target embeds its own platform binary via
@@ -36,24 +44,43 @@ if ! command -v bun >/dev/null 2>&1; then
   exit 1
 fi
 
+VARIANT="${BLUEY_AGENT_VARIANT:-}"
+if [ -z "$VARIANT" ]; then
+  if [ "${RESEARCH_BACKEND:-gemini}" = "claude" ]; then VARIANT=full; else VARIANT=lite; fi
+fi
+case "$VARIANT" in
+  lite|full) ;;
+  *)
+    echo "error: BLUEY_AGENT_VARIANT must be 'lite' or 'full' (got '$VARIANT')" >&2
+    exit 1
+    ;;
+esac
+echo "→ agent variant: $VARIANT"
+
 cd "$AGENT_DIR"
 
-echo "→ installing sidecar dependencies (including both darwin CLI binaries)"
-if ! bun install --os darwin --cpu '*'; then
-  echo "error: bun install failed. If your bun predates --os/--cpu, run:" >&2
-  echo "       bun add --optional @anthropic-ai/claude-agent-sdk-darwin-arm64 @anthropic-ai/claude-agent-sdk-darwin-x64" >&2
-  exit 1
-fi
-
-# The embedded import fails at build time when a platform package is missing —
-# check up front for a clearer error.
-for pkg in claude-agent-sdk-darwin-arm64 claude-agent-sdk-darwin-x64; do
-  if [ ! -f "node_modules/@anthropic-ai/$pkg/claude" ] && [ ! -f "$ROOT/node_modules/@anthropic-ai/$pkg/claude" ]; then
-    echo "error: @anthropic-ai/$pkg is not installed — the compiled sidecar cannot embed the Claude CLI." >&2
-    echo "       Run: bun add --optional @anthropic-ai/$pkg" >&2
+if [ "$VARIANT" = "full" ]; then
+  echo "→ installing sidecar dependencies (including both darwin CLI binaries)"
+  if ! bun install --os darwin --cpu '*'; then
+    echo "error: bun install failed. If your bun predates --os/--cpu, run:" >&2
+    echo "       bun add --optional @anthropic-ai/claude-agent-sdk-darwin-arm64 @anthropic-ai/claude-agent-sdk-darwin-x64" >&2
     exit 1
   fi
-done
+  # The embedded import fails at build time when a platform package is missing —
+  # check up front for a clearer error.
+  for pkg in claude-agent-sdk-darwin-arm64 claude-agent-sdk-darwin-x64; do
+    if [ ! -f "node_modules/@anthropic-ai/$pkg/claude" ] && [ ! -f "$ROOT/node_modules/@anthropic-ai/$pkg/claude" ]; then
+      echo "error: @anthropic-ai/$pkg is not installed — the compiled sidecar cannot embed the Claude CLI." >&2
+      echo "       Run: bun add --optional @anthropic-ai/$pkg" >&2
+      exit 1
+    fi
+  done
+  ENTRY_SUFFIX=""
+else
+  echo "→ installing sidecar dependencies"
+  bun install
+  ENTRY_SUFFIX="-lite"
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -74,7 +101,7 @@ sign() {
 
 build_target() {
   local entry="$1" target="$2" outfile="$3"
-  echo "→ bun build --compile --target=$target"
+  echo "→ bun build --compile --target=$target ($entry)"
   bun build "$entry" --compile --target="$target" --outfile "$outfile"
   chmod +x "$outfile"
   sign "$outfile"
@@ -84,10 +111,10 @@ build_target() {
 if [[ "${1:-}" == "host" ]]; then
     case "$(uname -m)" in
         arm64)
-            build_target ./src/entry-darwin-arm64.ts bun-darwin-arm64 "$OUT_DIR/bluey-agent-aarch64-apple-darwin"
+            build_target "./src/entry-darwin-arm64$ENTRY_SUFFIX.ts" bun-darwin-arm64 "$OUT_DIR/bluey-agent-aarch64-apple-darwin"
             ;;
         x86_64)
-            build_target ./src/entry-darwin-x64.ts bun-darwin-x64 "$OUT_DIR/bluey-agent-x86_64-apple-darwin"
+            build_target "./src/entry-darwin-x64$ENTRY_SUFFIX.ts" bun-darwin-x64 "$OUT_DIR/bluey-agent-x86_64-apple-darwin"
             ;;
         *)
             echo "error: unsupported host arch $(uname -m)" >&2
@@ -95,8 +122,8 @@ if [[ "${1:-}" == "host" ]]; then
             ;;
     esac
 else
-    build_target ./src/entry-darwin-arm64.ts bun-darwin-arm64 "$OUT_DIR/bluey-agent-aarch64-apple-darwin"
-    build_target ./src/entry-darwin-x64.ts bun-darwin-x64 "$OUT_DIR/bluey-agent-x86_64-apple-darwin"
+    build_target "./src/entry-darwin-arm64$ENTRY_SUFFIX.ts" bun-darwin-arm64 "$OUT_DIR/bluey-agent-aarch64-apple-darwin"
+    build_target "./src/entry-darwin-x64$ENTRY_SUFFIX.ts" bun-darwin-x64 "$OUT_DIR/bluey-agent-x86_64-apple-darwin"
 fi
 
-echo "✓ bluey-agent sidecar binaries built"
+echo "✓ bluey-agent sidecar binaries built ($VARIANT)"

@@ -8,10 +8,24 @@ import { describe, expect, it } from "vitest";
 import { buildSubprocessEnv } from "../../sidecars/agent/src/agent";
 import {
   checkModelCredentials,
+  DEFAULT_GEMINI_MODEL,
   DEFAULT_RESEARCH_MODEL,
   foundryResourceFromEndpoint,
   loadConfig,
+  parseBackend,
 } from "../../sidecars/agent/src/config";
+
+describe("parseBackend", () => {
+  it("defaults to gemini and accepts both spellings", () => {
+    expect(parseBackend(undefined)).toBe("gemini");
+    expect(parseBackend("")).toBe("gemini");
+    expect(parseBackend("Gemini")).toBe("gemini");
+    expect(parseBackend("google")).toBe("gemini");
+    expect(parseBackend("claude")).toBe("claude");
+    expect(parseBackend(" ANTHROPIC ")).toBe("claude");
+    expect(parseBackend("unknown")).toBe("gemini");
+  });
+});
 
 describe("foundryResourceFromEndpoint", () => {
   it("extracts the custom-subdomain resource name from any Foundry host", () => {
@@ -32,11 +46,32 @@ describe("foundryResourceFromEndpoint", () => {
 });
 
 describe("loadConfig", () => {
-  it("defaults to Anthropic direct with no Foundry block", () => {
-    const config = loadConfig({ ANTHROPIC_API_KEY: "sk-test" });
+  it("defaults to the Gemini backend with the Gemini model", () => {
+    const config = loadConfig({ GEMINI_API_KEY: "AIza-test" });
+    expect(config.backend).toBe("gemini");
+    expect(config.geminiApiKey).toBe("AIza-test");
+    expect(config.model).toBe(DEFAULT_GEMINI_MODEL);
+    expect(config.foundry).toBeUndefined();
+  });
+
+  it("accepts GOOGLE_API_KEY as an alias (GEMINI_API_KEY wins)", () => {
+    expect(loadConfig({ GOOGLE_API_KEY: "g" }).geminiApiKey).toBe("g");
+    expect(loadConfig({ GEMINI_API_KEY: "a", GOOGLE_API_KEY: "g" }).geminiApiKey).toBe("a");
+  });
+
+  it("selects Anthropic direct with RESEARCH_BACKEND=claude and no Foundry block", () => {
+    const config = loadConfig({ RESEARCH_BACKEND: "claude", ANTHROPIC_API_KEY: "sk-test" });
+    expect(config.backend).toBe("claude");
     expect(config.anthropicApiKey).toBe("sk-test");
     expect(config.foundry).toBeUndefined();
     expect(config.model).toBe(DEFAULT_RESEARCH_MODEL);
+  });
+
+  it("lets BLUEY_RESEARCH_MODEL override the backend default", () => {
+    expect(loadConfig({ BLUEY_RESEARCH_MODEL: "gemini-3.5-flash-lite" }).model).toBe("gemini-3.5-flash-lite");
+    expect(loadConfig({ RESEARCH_BACKEND: "claude", BLUEY_MODEL_RESEARCH: "claude-opus-5" }).model).toBe(
+      "claude-opus-5",
+    );
   });
 
   it("ignores Foundry variables unless CLAUDE_CODE_USE_FOUNDRY is truthy", () => {
@@ -106,25 +141,43 @@ describe("loadConfig", () => {
 });
 
 describe("checkModelCredentials", () => {
-  it("requires ANTHROPIC_API_KEY for Anthropic direct", () => {
+  const claude = { RESEARCH_BACKEND: "claude" };
+
+  it("requires GEMINI_API_KEY for the Gemini backend (default)", () => {
     expect(checkModelCredentials(loadConfig({}))).toMatchObject({
+      code: "missing_api_key",
+      variable: "GEMINI_API_KEY",
+    });
+    // A Claude key is not a Gemini credential.
+    expect(checkModelCredentials(loadConfig({ ANTHROPIC_API_KEY: "k" }))).toMatchObject({
+      variable: "GEMINI_API_KEY",
+    });
+    expect(checkModelCredentials(loadConfig({ GEMINI_API_KEY: "k" }))).toBeUndefined();
+    expect(checkModelCredentials(loadConfig({ GOOGLE_API_KEY: "k" }))).toBeUndefined();
+  });
+
+  it("requires ANTHROPIC_API_KEY for Anthropic direct", () => {
+    expect(checkModelCredentials(loadConfig({ ...claude }))).toMatchObject({
       code: "missing_api_key",
       variable: "ANTHROPIC_API_KEY",
     });
-    expect(checkModelCredentials(loadConfig({ ANTHROPIC_API_KEY: "k" }))).toBeUndefined();
+    expect(checkModelCredentials(loadConfig({ ...claude, ANTHROPIC_API_KEY: "k" }))).toBeUndefined();
   });
 
   it("requires an endpoint and a credential for Foundry", () => {
-    expect(checkModelCredentials(loadConfig({ CLAUDE_CODE_USE_FOUNDRY: "1" }))).toMatchObject({
+    expect(checkModelCredentials(loadConfig({ ...claude, CLAUDE_CODE_USE_FOUNDRY: "1" }))).toMatchObject({
       code: "invalid_configuration",
       variable: "ANTHROPIC_FOUNDRY_RESOURCE",
     });
     expect(
-      checkModelCredentials(loadConfig({ CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_RESOURCE: "r" })),
+      checkModelCredentials(
+        loadConfig({ ...claude, CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_RESOURCE: "r" }),
+      ),
     ).toMatchObject({ code: "missing_api_key", variable: "ANTHROPIC_FOUNDRY_API_KEY" });
     expect(
       checkModelCredentials(
         loadConfig({
+          ...claude,
           CLAUDE_CODE_USE_FOUNDRY: "1",
           ANTHROPIC_FOUNDRY_RESOURCE: "r",
           ANTHROPIC_FOUNDRY_API_KEY: "k",
@@ -134,6 +187,7 @@ describe("checkModelCredentials", () => {
     expect(
       checkModelCredentials(
         loadConfig({
+          ...claude,
           CLAUDE_CODE_USE_FOUNDRY: "1",
           ANTHROPIC_FOUNDRY_RESOURCE: "r",
           ANTHROPIC_FOUNDRY_AUTH_TOKEN: "t",
@@ -144,6 +198,7 @@ describe("checkModelCredentials", () => {
 
   it("does not need ANTHROPIC_API_KEY when Foundry is configured", () => {
     const config = loadConfig({
+      ...claude,
       CLAUDE_CODE_USE_FOUNDRY: "1",
       ANTHROPIC_FOUNDRY_RESOURCE: "r",
       ANTHROPIC_FOUNDRY_API_KEY: "k",
@@ -164,7 +219,10 @@ describe("buildSubprocessEnv", () => {
   };
 
   it("injects only ANTHROPIC_API_KEY for Anthropic direct and clears stray routing", () => {
-    const env = buildSubprocessEnv(baseEnv, loadConfig({ ANTHROPIC_API_KEY: "sk-live" }));
+    const env = buildSubprocessEnv(
+      { ...baseEnv, GEMINI_API_KEY: "AIza-secret", GOOGLE_API_KEY: "AIza-alias" },
+      loadConfig({ RESEARCH_BACKEND: "claude", ANTHROPIC_API_KEY: "sk-live" }),
+    );
     expect(env["PATH"]).toBe("/usr/bin");
     expect(env["HOME"]).toBe("/Users/test");
     expect(env["CLAUDE_AGENT_SDK_CLIENT_APP"]).toBe("bluey-agent/0.1.0");
@@ -172,6 +230,9 @@ describe("buildSubprocessEnv", () => {
     expect(env["ANTHROPIC_BASE_URL"]).toBeUndefined();
     expect(env["ANTHROPIC_FOUNDRY_BASE_URL"]).toBeUndefined();
     expect(env["CLAUDE_CODE_USE_FOUNDRY"]).toBeUndefined();
+    // Gemini credentials never reach the Claude Code subprocess.
+    expect(env["GEMINI_API_KEY"]).toBeUndefined();
+    expect(env["GOOGLE_API_KEY"]).toBeUndefined();
   });
 
   it("switches Claude Code to Microsoft Foundry with the resource name and pinned deployments", () => {

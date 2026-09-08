@@ -5,14 +5,20 @@
  * variables (read from the macOS keychain). They must never be echoed back on
  * the protocol — error messages may name the VARIABLE, never its value.
  *
- * Two ways to reach Claude:
- *  - Anthropic direct (default): `ANTHROPIC_API_KEY` → api.anthropic.com.
- *  - Microsoft Foundry: `CLAUDE_CODE_USE_FOUNDRY=1` plus a resource name or
- *    base URL and a Foundry credential. Claude Code (which the Agent SDK drives)
- *    then talks to `https://{resource}.services.ai.azure.com/anthropic` and
- *    `model` values are Foundry *deployment names*.
+ * Backends (`RESEARCH_BACKEND`):
+ *  - `gemini` (default): Google AI Studio key (`GEMINI_API_KEY`, alias
+ *    `GOOGLE_API_KEY`) → `@google/genai` function-calling loop. No CLI.
+ *  - `claude`: the Claude Agent SDK, reached either Anthropic direct
+ *    (`ANTHROPIC_API_KEY`) or through Microsoft Foundry
+ *    (`CLAUDE_CODE_USE_FOUNDRY=1` plus a resource name or base URL and a
+ *    Foundry credential; `model` values are then Foundry *deployment names*).
  */
 
+export type ResearchBackend = "gemini" | "claude";
+
+export const DEFAULT_BACKEND: ResearchBackend = "gemini";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+/** Default model of the Claude backend. */
 export const DEFAULT_RESEARCH_MODEL = "claude-sonnet-5";
 export const DEFAULT_MAX_TURNS = 12;
 const MAX_TURNS_CEILING = 64;
@@ -37,6 +43,10 @@ export interface FoundryConfig {
 }
 
 export interface AgentConfig {
+  /** Which agent loop runs the job. */
+  backend: ResearchBackend;
+  /** Google AI Studio key (`GEMINI_API_KEY`, alias `GOOGLE_API_KEY`). */
+  geminiApiKey?: string;
   anthropicApiKey?: string;
   /** Set when `CLAUDE_CODE_USE_FOUNDRY` is truthy: route Claude through Microsoft Foundry. */
   foundry?: FoundryConfig;
@@ -46,7 +56,7 @@ export interface AgentConfig {
   model: string;
   /** Default max agent turns (request.maxTurns overrides this). */
   maxTurns: number;
-  /** BLUEY_AGENT_MOCK=1 — run the whole job against a fake query()/tool set. */
+  /** BLUEY_AGENT_MOCK=1 — run the whole job against a fake model/tool set. */
   mockMode: boolean;
   /** BLUEY_CLAUDE_CLI — explicit path to the claude CLI binary (dev override). */
   claudeCliOverride?: string;
@@ -60,6 +70,14 @@ function nonEmpty(value: string | undefined): string | undefined {
 function truthy(value: string | undefined): boolean {
   const v = value?.trim().toLowerCase();
   return v === "1" || v === "true";
+}
+
+/** `RESEARCH_BACKEND` → backend; unknown values fall back to the default. */
+export function parseBackend(value: string | undefined): ResearchBackend {
+  const v = value?.trim().toLowerCase();
+  if (v === "claude" || v === "anthropic") return "claude";
+  if (v === "gemini" || v === "google") return "gemini";
+  return DEFAULT_BACKEND;
 }
 
 /**
@@ -117,8 +135,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     Number.isFinite(parsedTurns) && parsedTurns > 0
       ? Math.min(parsedTurns, MAX_TURNS_CEILING)
       : DEFAULT_MAX_TURNS;
+  const backend = parseBackend(env["RESEARCH_BACKEND"]);
 
   return {
+    backend,
+    geminiApiKey: nonEmpty(env["GEMINI_API_KEY"]) ?? nonEmpty(env["GOOGLE_API_KEY"]),
     anthropicApiKey: nonEmpty(env["ANTHROPIC_API_KEY"]),
     foundry: loadFoundryConfig(env),
     exaApiKey: nonEmpty(env["EXA_API_KEY"]),
@@ -128,7 +149,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     model:
       nonEmpty(env["BLUEY_RESEARCH_MODEL"]) ??
       nonEmpty(env["BLUEY_MODEL_RESEARCH"]) ??
-      DEFAULT_RESEARCH_MODEL,
+      (backend === "gemini" ? DEFAULT_GEMINI_MODEL : DEFAULT_RESEARCH_MODEL),
     maxTurns,
     mockMode: truthy(env["BLUEY_AGENT_MOCK"]),
     claudeCliOverride: nonEmpty(env["BLUEY_CLAUDE_CLI"]),
@@ -136,15 +157,25 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 }
 
 /**
- * Configuration problems that must stop a job before the CLI is spawned.
+ * Configuration problems that must stop a job before any model call.
  * `variable` names the env var to set (never a value).
  */
 export type ConfigProblem =
   | { code: "missing_api_key"; variable: string; message: string }
   | { code: "invalid_configuration"; variable: string; message: string };
 
-/** Check that the model provider can be reached with the given config. */
+/** Check that the selected backend can be reached with the given config. */
 export function checkModelCredentials(config: AgentConfig): ConfigProblem | undefined {
+  if (config.backend === "gemini") {
+    if (!config.geminiApiKey) {
+      return {
+        code: "missing_api_key",
+        variable: "GEMINI_API_KEY",
+        message: "GEMINI_API_KEY is not set (nor GOOGLE_API_KEY) — cannot run deep research on Gemini",
+      };
+    }
+    return undefined;
+  }
   if (config.foundry) {
     if (!config.foundry.resource && !config.foundry.baseUrl) {
       return {

@@ -2,24 +2,28 @@
 
 Deep, multi-step research runs in a separate **agent sidecar** (`bluey-agent`,
 TypeScript in `sidecars/agent/`, compiled with `bun build --compile` into
-`src-tauri/binaries/bluey-agent-<target-triple>`). It uses the **Claude Agent SDK**
-(`@anthropic-ai/claude-agent-sdk`) with a tightly scoped tool set. The live assistant's
-normal answers never go through this process — only the `deep_agent` branch of the
-Research Router.
+`src-tauri/binaries/bluey-agent-<target-triple>`). It runs one of two model backends
+selected by `RESEARCH_BACKEND`: **Gemini** (default — a function-calling loop over
+`@google/genai` with the Google AI Studio key) or **Claude** (the **Claude Agent SDK**,
+`@anthropic-ai/claude-agent-sdk`), both with the same tightly scoped tool set. The live
+assistant's normal answers never go through this process — only the `deep_agent` branch of
+the Research Router.
 
 ## Security model
 
-- Rust spawns the sidecar per job with credentials in **environment variables**
-  (`ANTHROPIC_API_KEY` — or, for Claude on Microsoft Foundry, `CLAUDE_CODE_USE_FOUNDRY=1`
-  - `ANTHROPIC_FOUNDRY_RESOURCE` + `ANTHROPIC_FOUNDRY_API_KEY` + pinned
-    `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` deployment names — plus `EXA_API_KEY`,
-    `FIRECRAWL_API_KEY`) read from the OS keychain. The WebView never sees them. The sidecar
-    rebuilds the Claude Code subprocess environment from that configuration only
-    (`sidecars/agent/README.md` → _Claude through Microsoft Foundry_).
-- The agent gets **only** the custom in-process MCP tools listed in the request:
-  `exa_search`, `firecrawl_scrape`, `document_read`. Built-in tools (Bash, Read, Write,
-  Edit, WebFetch, WebSearch, …) are disallowed via `allowedTools`/`disallowedTools` and
-  `permissionMode` is set so nothing else can be invoked. `cwd` is an empty temp dir.
+- Rust spawns the sidecar per job with credentials in **environment variables**, read from
+  the OS keychain, and passes exactly one backend's credentials: `GEMINI_API_KEY` for
+  Gemini; for Claude `ANTHROPIC_API_KEY` — or, on Microsoft Foundry,
+  `CLAUDE_CODE_USE_FOUNDRY=1` + `ANTHROPIC_FOUNDRY_RESOURCE` + `ANTHROPIC_FOUNDRY_API_KEY` +
+  pinned `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` deployment names — plus
+  `EXA_API_KEY` / `FIRECRAWL_API_KEY` for the tools. The WebView never sees them. The sidecar
+  rebuilds the Claude Code subprocess environment from that configuration only and strips the
+  Gemini keys from it (`sidecars/agent/README.md`).
+- The agent gets **only** the tools listed in the request: `exa_search`, `firecrawl_scrape`,
+  `document_read` — as Gemini function declarations, or as custom in-process MCP tools for
+  Claude, where built-in tools (Bash, Read, Write, Edit, WebFetch, WebSearch, …) are
+  disallowed via `allowedTools`/`disallowedTools` and `permissionMode` is set so nothing else
+  can be invoked. `cwd` is an empty temp dir.
 - `document_read` can only read the document ids in `allowedDocumentIds`; Rust serves
   the text through the `document.request` round-trip so the sidecar never touches SQLite.
 - The public query/goal must not include private context. The Research Router in TS
@@ -48,7 +52,7 @@ when the job completes, fails, or is cancelled.
   "maxTurns": 12,
   "tools": ["exa_search", "firecrawl_scrape", "document_read"],
   "allowedDocumentIds": ["doc-1"],
-  "model": "claude-opus-5", // Foundry: deployment name
+  "model": "gemini-3.8-flash", // Claude backend: a Claude id / Foundry deployment name
 }
 ```
 
@@ -73,11 +77,19 @@ Rust maps these onto `DeepResearchEvent` and emits `research.event` to the front
 - Closing stdin does **not** cancel a running job (shell pipes close immediately); cancel with
   `research.cancel` or SIGTERM/SIGINT.
 - `research.failed.error.kind` is one of `research`, `cancelled`, `configuration` (missing
-  keys — the message names the env var, never its value).
+  or rejected keys — the message names the env var, never its value). Codes: `cancelled`,
+  `missing_api_key`, `invalid_api_key`, `invalid_configuration`, `max_turns_exceeded`,
+  `rate_limited` (Gemini HTTP 429), `blocked` (Gemini refusal), `budget_exceeded`,
+  `structured_output_failed`, `agent_execution_failed`, `agent_empty_report`,
+  `agent_no_result`.
 - Citations returned by the model are validated against URLs actually observed through the
   tools; invented URLs are dropped and remaining observed sources are appended (deduped).
-- Environment: `ANTHROPIC_API_KEY`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`, `BLUEY_RESEARCH_MODEL`
-  (default `claude-sonnet-5`), `BLUEY_AGENT_MAX_TURNS` (default 12), `BLUEY_AGENT_MOCK=1` for
-  the network-free mock mode, `BLUEY_CLAUDE_CLI` to point at a CLI binary in dev.
-- The compiled binary embeds the platform-specific Claude CLI (`entry-darwin-arm64.ts` /
-  `entry-darwin-x64.ts`) and extracts it with `extractFromBunfs` at runtime.
+- Environment: `RESEARCH_BACKEND` (`gemini` default \| `claude`), `GEMINI_API_KEY` (alias
+  `GOOGLE_API_KEY`), `ANTHROPIC_API_KEY`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`,
+  `BLUEY_RESEARCH_MODEL` (default `gemini-3.8-flash` / `claude-sonnet-5`),
+  `BLUEY_AGENT_MAX_TURNS` (default 12), `BLUEY_AGENT_MOCK=1` for the network-free mock mode,
+  `BLUEY_CLAUDE_CLI` to point at a CLI binary in dev.
+- Build variants (`BLUEY_AGENT_VARIANT`): the default **lite** binary
+  (`entry-darwin-*-lite.ts`) bundles only `@google/genai`; the **full** binary embeds the
+  platform-specific Claude CLI (`entry-darwin-arm64.ts` / `entry-darwin-x64.ts`) and extracts
+  it with `extractFromBunfs` at runtime.
