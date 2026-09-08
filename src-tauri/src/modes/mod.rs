@@ -127,7 +127,9 @@ impl ModeManager {
 
     pub async fn delete(&self, id: String) -> BlueyResult<()> {
         if bluey_core::modes::is_built_in(&id) {
-            return Err(BlueyError::invalid_params("built-in modes cannot be deleted"));
+            return Err(BlueyError::invalid_params(
+                "built-in modes cannot be deleted",
+            ));
         }
         if id == self.active_id() {
             // Switch to the default mode before deleting the active one.

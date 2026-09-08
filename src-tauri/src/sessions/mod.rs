@@ -60,7 +60,11 @@ impl SessionManager {
     }
 
     /// Start a new session (ending any active one first).
-    pub async fn start(&self, mode_id: Option<String>, title: Option<String>) -> BlueyResult<Session> {
+    pub async fn start(
+        &self,
+        mode_id: Option<String>,
+        title: Option<String>,
+    ) -> BlueyResult<Session> {
         if self.active().is_some() {
             let _ = self.end().await;
         }
@@ -91,7 +95,8 @@ impl SessionManager {
         self.hub.transition_soft(AppEvent::SessionChanged {
             session_id: Some(session.id.clone()),
         });
-        self.bus.publish(BlueyEvent::SessionStarted(session.clone()));
+        self.bus
+            .publish(BlueyEvent::SessionStarted(session.clone()));
         let _ = self
             .add_event_internal(
                 &session.id,
@@ -147,7 +152,8 @@ impl SessionManager {
     pub async fn resume(&self) -> BlueyResult<Session> {
         let session = self.set_status(SessionStatus::Active, None).await?;
         *self.active.lock() = Some(session.clone());
-        self.bus.publish(BlueyEvent::SessionResumed(session.clone()));
+        self.bus
+            .publish(BlueyEvent::SessionResumed(session.clone()));
         let _ = self
             .add_event_internal(
                 &session.id,
@@ -247,10 +253,7 @@ impl SessionManager {
     }
 
     pub async fn delete_all(&self) -> BlueyResult<u64> {
-        let (count, paths) = self
-            .storage
-            .run(bluey_storage::delete_all_sessions)
-            .await?;
+        let (count, paths) = self.storage.run(bluey_storage::delete_all_sessions).await?;
         Storage::remove_files(&paths);
         *self.active.lock() = None;
         self.hub

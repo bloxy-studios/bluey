@@ -34,3 +34,6 @@ sidecars/**/dist
 coverage
 research/
 src-tauri/target-darwin
+
+# Rust module directories that collide with generic ignore patterns
+!src-tauri/src/research/

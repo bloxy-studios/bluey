@@ -99,9 +99,10 @@ pub fn canonical_fast_transcription_model(model: &str) -> String {
     let n = normalize(name);
     if n.contains("mai-transcribe-2") || n.contains("mai transcribe 2") {
         MAI_TRANSCRIBE_2.to_string()
-    } else if n.contains("mai-transcribe-1.5") || n.contains("mai transcribe 1.5") {
-        MAI_TRANSCRIBE_1_5.to_string()
-    } else if is_mai_transcribe(model) {
+    } else if n.contains("mai-transcribe-1.5")
+        || n.contains("mai transcribe 1.5")
+        || is_mai_transcribe(model)
+    {
         MAI_TRANSCRIBE_1_5.to_string()
     } else {
         name.trim().to_string()

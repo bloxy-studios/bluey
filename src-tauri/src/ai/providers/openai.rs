@@ -103,7 +103,10 @@ impl AiProvider for OpenAiProvider {
 
 /// Consume an OpenAI-compatible SSE response on a task, forwarding chunk items.
 /// Shared by the OpenAI-compatible and Azure adapters.
-pub(super) fn spawn_openai_sse(response: reqwest::Response, token: CancellationToken) -> ChunkStream {
+pub(super) fn spawn_openai_sse(
+    response: reqwest::Response,
+    token: CancellationToken,
+) -> ChunkStream {
     let (tx, stream) = channel_stream();
     tauri::async_runtime::spawn(async move {
         let mut events = response.bytes_stream().eventsource();
@@ -147,8 +150,7 @@ pub(super) fn spawn_openai_sse(response: reqwest::Response, token: CancellationT
             }
             for choice in chunk.choices {
                 if let Some(content) = choice.delta.content {
-                    if !content.is_empty()
-                        && tx.send(Ok(StreamItem::Delta(content))).await.is_err()
+                    if !content.is_empty() && tx.send(Ok(StreamItem::Delta(content))).await.is_err()
                     {
                         return;
                     }

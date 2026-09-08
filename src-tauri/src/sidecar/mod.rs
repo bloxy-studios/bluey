@@ -334,7 +334,10 @@ impl HelperClient {
 
         match tokio::time::timeout(timeout_for(method), rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(BlueyError::sidecar("closed", "the helper closed unexpectedly")),
+            Ok(Err(_)) => Err(BlueyError::sidecar(
+                "closed",
+                "the helper closed unexpectedly",
+            )),
             Err(_) => {
                 self.pending.lock().remove(&id);
                 Err(BlueyError::sidecar(
