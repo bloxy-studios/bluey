@@ -97,6 +97,8 @@ pub fn add_document(
                 chunk_count: drafts.len() as u32,
                 index_status: DocumentIndexStatus::Indexed,
                 has_embeddings: false,
+                embedding_model: None,
+                embedding_dimensions: None,
                 metadata: if metadata.is_empty() {
                     None
                 } else {
@@ -125,6 +127,8 @@ pub fn add_document(
                 chunk_count: 0,
                 index_status: DocumentIndexStatus::Failed,
                 has_embeddings: false,
+                embedding_model: None,
+                embedding_dimensions: None,
                 metadata: Some(metadata),
                 created_at: now.clone(),
                 updated_at: now,
@@ -196,7 +200,8 @@ pub fn reindex(db: &Database, id: Option<&str>) -> Result<u32, BlueyError> {
             }
             conn.execute(
                 "UPDATE documents SET chunk_count = ?2, index_status = 'indexed',
-                        has_embeddings = 0, updated_at = ?3
+                        has_embeddings = 0, embedding_model = NULL, embedding_dimensions = NULL,
+                        updated_at = ?3
                   WHERE id = ?1",
                 params![doc_id, chunks.len() as i64, now_iso()],
             )

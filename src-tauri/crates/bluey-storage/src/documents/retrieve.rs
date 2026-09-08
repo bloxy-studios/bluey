@@ -247,6 +247,11 @@ fn semantic_candidates(
     let embedded = DocumentRepository::chunks_with_embeddings(db, scopes, kinds)?;
     let mut out = Vec::new();
     for chunk in embedded {
+        // Vectors from another model / MRL size live in a different space: skip
+        // them instead of scoring them at zero (they are re-embedded separately).
+        if chunk.embedding.len() != query_embedding.len() {
+            continue;
+        }
         let similarity = cosine(query_embedding, &chunk.embedding);
         let score = ((similarity + 1.0) / 2.0).clamp(0.0, 1.0);
         out.push((
@@ -500,6 +505,10 @@ mod tests {
 
         // Semantic without an embedding yields nothing.
         assert!(retrieve(&db, &semantic_query, None).unwrap().is_empty());
+        // Vectors from another embedding size are skipped, not scored at zero.
+        assert!(retrieve(&db, &semantic_query, Some(&[1.0, 0.0, 0.0]))
+            .unwrap()
+            .is_empty());
 
         // Hybrid: keyword agrees with the embedding → resume stays on top.
         let auto_query = RetrievalQuery {

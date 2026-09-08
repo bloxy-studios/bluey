@@ -111,6 +111,12 @@ pub struct BlueyDocument {
     pub chunk_count: u32,
     pub index_status: DocumentIndexStatus,
     pub has_embeddings: bool,
+    /// `providerId/model` that produced the chunk vectors (`None` until embedded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
+    /// Vector length the chunks were embedded with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_dimensions: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
     pub created_at: String,

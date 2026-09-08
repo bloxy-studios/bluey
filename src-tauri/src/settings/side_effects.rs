@@ -58,6 +58,23 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
         }
     }
 
+    // Embedding model / size changed → vectors from the old space are stale.
+    let embedding_changed = old.ai.models.embedding != new.ai.models.embedding
+        || old.ai.embedding_dimensions != new.ai.embedding_dimensions
+        || (!old.ai.embeddings_enabled && new.ai.embeddings_enabled);
+    if embedding_changed {
+        let documents = core.documents.clone();
+        tauri::async_runtime::spawn(async move {
+            match documents.reembed_stale().await {
+                Ok(count) if count > 0 => {
+                    tracing::info!(count, "documents re-embedded after settings change")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "re-embedding after settings change failed"),
+            }
+        });
+    }
+
     // Log level.
     if old.advanced.log_level != new.advanced.log_level {
         crate::app::set_log_level(new.advanced.log_level.as_str());

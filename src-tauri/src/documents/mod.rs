@@ -211,16 +211,66 @@ impl DocumentsManager {
                 "the provider returned a different number of vectors than chunks",
             ));
         }
+        let dimensions = vectors.first().map(|v| v.len() as u32).unwrap_or(0);
         let pairs: Vec<(String, Vec<f32>)> =
             chunks.into_iter().map(|c| c.id).zip(vectors).collect();
+        let tag = self.embedding_tag();
+        let id = document_id.to_string();
         self.storage
             .run(move |db| {
                 for (chunk_id, vector) in &pairs {
                     DocumentRepository::set_embedding(db, chunk_id, vector)?;
                 }
+                if let Some(tag) = tag {
+                    DocumentRepository::mark_embedded(db, &id, &tag, dimensions)?;
+                }
                 Ok(())
             })
             .await
+    }
+
+    /// `providerId/model` of the current embedding assignment (`None` when unassigned).
+    fn embedding_tag(&self) -> Option<String> {
+        let settings = self.settings.get();
+        settings
+            .ai
+            .models
+            .embedding
+            .as_ref()
+            .map(|a| format!("{}/{}", a.provider_id, a.model))
+    }
+
+    /// Re-embed every indexed document whose vectors came from a different
+    /// embedding model or size than the current assignment. Called at boot and
+    /// after the embedding assignment / `ai.embeddingDimensions` change. Returns
+    /// how many documents were re-embedded; failures are logged per document.
+    pub async fn reembed_stale(&self) -> BlueyResult<u32> {
+        if !self.ai.embeddings_ready() {
+            return Ok(0);
+        }
+        let Some(tag) = self.embedding_tag() else {
+            return Ok(0);
+        };
+        let dimensions = self.settings.get().ai.embedding_dimensions;
+        let stale = self
+            .storage
+            .run(move |db| DocumentRepository::stale_embeddings(db, &tag, dimensions))
+            .await?;
+        if stale.is_empty() {
+            return Ok(0);
+        }
+        tracing::info!(
+            documents = stale.len(),
+            "re-embedding documents for the current embedding model"
+        );
+        let mut done = 0u32;
+        for id in stale {
+            match self.embed_document(&id).await {
+                Ok(()) => done += 1,
+                Err(e) => tracing::warn!(document = %id, error = %e, "re-embedding failed"),
+            }
+        }
+        Ok(done)
     }
 
     /// Native open dialog (multi-select, document extensions). Returns absolute

@@ -331,6 +331,13 @@ async fn finish_boot(app: &AppHandle) {
             tracing::warn!(error = %e, "cannot start screen observation");
         }
     }
+    // Documents embedded with another model / size (or never embedded) catch up.
+    let documents = core.documents.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = documents.reembed_stale().await {
+            tracing::debug!(error = %e, "stale embedding sweep failed");
+        }
+    });
 }
 
 /// Stop sidecars and audio before the process exits (idempotent).
