@@ -9,12 +9,14 @@ import type {
   TranscriptSegment,
 } from "@/lib/types";
 
-export function makeSettings(overrides: {
-  ai?: Partial<Settings["ai"]>;
-  general?: Partial<Settings["general"]>;
-  screen?: Partial<Settings["screen"]>;
-  privacy?: Partial<Settings["privacy"]>;
-} = {}): Settings {
+export function makeSettings(
+  overrides: {
+    ai?: Partial<Settings["ai"]>;
+    general?: Partial<Settings["general"]>;
+    screen?: Partial<Settings["screen"]>;
+    privacy?: Partial<Settings["privacy"]>;
+  } = {},
+): Settings {
   return {
     version: 1,
     general: {
@@ -73,6 +75,8 @@ export function makeSettings(overrides: {
       embeddingsEnabled: false,
       proactivePreparation: true,
       contextTokenBudget: 8000,
+      embeddingDimensions: 768,
+      researchBackend: "gemini",
       ...overrides.ai,
     },
     privacy: {

@@ -2,16 +2,22 @@
 
 pub mod anthropic;
 pub mod azure;
+pub mod gemini;
 pub mod mock;
 pub mod openai;
 
 use bluey_core::error::RecoveryAction;
 use bluey_core::types::{
     AiMessage, AiProviderConfig, AiProviderKind, AiTask, FinishReason, JsonSchemaSpec,
+    LatencyBudget, ModelRole, ReasoningLevel,
 };
 use bluey_core::{BlueyError, BlueyErrorKind, BlueyResult};
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
+
+/// What a text is embedded for (documents get `title:` prefixes, queries
+/// `task:` prefixes on `gemini-embedding-2`; other providers ignore it).
+pub use bluey_protocols::gemini::EmbedPurpose;
 
 /// A provider-agnostic generation request (already routed to a model).
 #[derive(Debug, Clone)]
@@ -22,6 +28,9 @@ pub struct ProviderRequest {
     pub temperature: Option<f32>,
     pub output_schema: Option<JsonSchemaSpec>,
     pub task: AiTask,
+    /// Drives thinking depth on providers that expose it (Gemini `thinkingLevel`).
+    pub latency: LatencyBudget,
+    pub reasoning: ReasoningLevel,
 }
 
 /// One item of a provider stream.
@@ -50,19 +59,26 @@ pub trait AiProvider: Send + Sync {
         token: CancellationToken,
     ) -> BlueyResult<ChunkStream>;
 
-    /// Embed a batch of texts with `model`.
-    async fn embed(&self, model: &str, texts: &[String]) -> BlueyResult<Vec<Vec<f32>>>;
+    /// Embed a batch of texts with `model` for `purpose`.
+    async fn embed(
+        &self,
+        model: &str,
+        texts: &[String],
+        purpose: &EmbedPurpose,
+    ) -> BlueyResult<Vec<Vec<f32>>>;
 
-    /// List the models this provider can serve.
-    async fn list_models(&self) -> BlueyResult<Vec<String>>;
+    /// List the models this provider can serve, optionally only those fit for `role`.
+    async fn list_models(&self, role: Option<ModelRole>) -> BlueyResult<Vec<String>>;
 }
 
 /// Build the adapter for a provider config. `api_key` is `None` only for mock.
+/// `embedding_dimensions` is the configured MRL size for Gemini embeddings.
 pub fn build_provider(
     config: &AiProviderConfig,
     api_key: Option<String>,
     http: reqwest::Client,
     dev: std::sync::Arc<crate::state::DevState>,
+    embedding_dimensions: u32,
 ) -> BlueyResult<Box<dyn AiProvider>> {
     match config.kind {
         AiProviderKind::Mock => Ok(Box::new(mock::MockProvider::new(dev))),
@@ -72,6 +88,12 @@ pub fn build_provider(
                     .recoverable(RecoveryAction::ConfigureProvider)
             })?;
             match kind {
+                AiProviderKind::GoogleGemini => Ok(Box::new(gemini::GeminiProvider::new(
+                    http,
+                    config.base_url.clone(),
+                    api_key,
+                    embedding_dimensions,
+                ))),
                 AiProviderKind::AzureFoundry => Ok(Box::new(azure::AzureProvider::new(
                     http,
                     config.base_url.clone(),

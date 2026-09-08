@@ -139,7 +139,14 @@ impl DocumentsManager {
     pub async fn retrieve(&self, query: RetrievalQuery) -> BlueyResult<Vec<RetrievedChunk>> {
         let wants_semantic = !matches!(query.strategy, Some(RetrievalStrategy::Keyword));
         let embedding = if wants_semantic && self.ai.embeddings_ready() {
-            match self.ai.embed(std::slice::from_ref(&query.query)).await {
+            match self
+                .ai
+                .embed(
+                    std::slice::from_ref(&query.query),
+                    &crate::ai::EmbedPurpose::Query,
+                )
+                .await
+            {
                 Ok(mut vectors) if !vectors.is_empty() => Some(vectors.remove(0)),
                 Ok(_) => None,
                 Err(e) => {
@@ -191,7 +198,13 @@ impl DocumentsManager {
             return Ok(());
         }
         let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
-        let vectors = self.ai.embed(&texts).await?;
+        let title = self
+            .get(document_id.to_string())
+            .await
+            .ok()
+            .map(|d| d.title);
+        let purpose = crate::ai::EmbedPurpose::Document { title };
+        let vectors = self.ai.embed(&texts, &purpose).await?;
         if vectors.len() != chunks.len() {
             return Err(BlueyError::ai(
                 "embeddings_parse",

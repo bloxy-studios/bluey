@@ -23,7 +23,11 @@ export type AITask =
 export type LatencyBudget = "ultra-fast" | "fast" | "balanced" | "deep";
 export type ReasoningLevel = "none" | "light" | "deep";
 
-export type AIProviderKind = "azure_foundry" | "anthropic" | "openai_compatible" | "mock";
+/** `google_gemini` is the default provider (ADR 0007); the others are alternates. */
+export type AIProviderKind = "google_gemini" | "azure_foundry" | "anthropic" | "openai_compatible" | "mock";
+
+/** What texts are embedded for (documents get `title:` prefixes, queries `task:` prefixes on gemini-embedding-2). */
+export type EmbedPurpose = "document" | "query";
 
 export interface AIProviderConfig {
   id: string;
@@ -94,7 +98,13 @@ export type AIChunk =
   | { type: "started"; requestId: string; selection: ModelSelection }
   | { type: "delta"; requestId: string; text: string }
   | { type: "usage"; requestId: string; inputTokens?: number; outputTokens?: number }
-  | { type: "completed"; requestId: string; finishReason: "stop" | "length" | "cancelled" | "error"; totalMs: number; timeToFirstTokenMs?: number }
+  | {
+      type: "completed";
+      requestId: string;
+      finishReason: "stop" | "length" | "cancelled" | "error";
+      totalMs: number;
+      timeToFirstTokenMs?: number;
+    }
   | { type: "failed"; requestId: string; error: BlueyError };
 
 export interface AIResponse {
@@ -154,5 +164,12 @@ export type DeepResearchEvent =
   | { type: "progress"; jobId: string; message: string }
   | { type: "tool_call"; jobId: string; tool: string; input: Record<string, unknown> }
   | { type: "text_delta"; jobId: string; text: string }
-  | { type: "completed"; jobId: string; report: string; citations: Citation[]; totalMs: number; turns: number }
+  | {
+      type: "completed";
+      jobId: string;
+      report: string;
+      citations: Citation[];
+      totalMs: number;
+      turns: number;
+    }
   | { type: "failed"; jobId: string; error: BlueyError };

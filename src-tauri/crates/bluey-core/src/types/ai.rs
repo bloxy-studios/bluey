@@ -41,6 +41,8 @@ pub enum ReasoningLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderKind {
+    /// Google AI Studio (Gemini API) — the default provider (ADR 0007).
+    GoogleGemini,
     AzureFoundry,
     Anthropic,
     OpenaiCompatible,

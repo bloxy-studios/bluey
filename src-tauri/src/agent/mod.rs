@@ -11,7 +11,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bluey_core::events::BlueyEvent;
-use bluey_core::types::{AiProviderKind, DeepResearchEvent, DeepResearchRequest};
+use bluey_core::presets;
+use bluey_core::types::{
+    AiProviderConfig, AiProviderKind, DeepResearchEvent, DeepResearchRequest, ModelRole,
+    ResearchBackend, Settings,
+};
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_protocols::agent::{self as proto, AgentEvent};
 use bluey_protocols::jsonl::{self, Incoming};
@@ -22,7 +26,7 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 use crate::events::EventBus;
-use crate::secrets::{SecretsStore, AGENT_ANTHROPIC_KEY, EXA_KEY, FIRECRAWL_KEY};
+use crate::secrets::{provider_key, SecretsStore, AGENT_ANTHROPIC_KEY, EXA_KEY, FIRECRAWL_KEY};
 use crate::settings::SettingsManager;
 use crate::storage::Storage;
 
@@ -32,8 +36,8 @@ pub const AGENT_BIN: &str = "bluey-agent";
 const JOB_WALL_CLOCK: Duration = Duration::from_secs(10 * 60);
 /// Grace period between `research.cancel` and killing the process.
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
-/// Environment variables forwarded from Bluey's own environment (`.env`) when set.
-const PASSTHROUGH_ENV: &[&str] = &[
+/// Claude-backend variables forwarded from Bluey's own environment (`.env`) when set.
+const CLAUDE_PASSTHROUGH_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_FOUNDRY",
     "ANTHROPIC_FOUNDRY_RESOURCE",
     "ANTHROPIC_FOUNDRY_BASE_URL",
@@ -44,10 +48,10 @@ const PASSTHROUGH_ENV: &[&str] = &[
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "AZURE_FOUNDRY_ENDPOINT",
     "AZURE_FOUNDRY_API_KEY",
-    "BLUEY_AGENT_MAX_TURNS",
-    "BLUEY_AGENT_MOCK",
     "BLUEY_CLAUDE_CLI",
 ];
+/// Backend-independent knobs forwarded when set.
+const COMMON_PASSTHROUGH_ENV: &[&str] = &["BLUEY_AGENT_MAX_TURNS", "BLUEY_AGENT_MOCK"];
 
 struct Job {
     child: Option<CommandChild>,
@@ -96,52 +100,96 @@ impl AgentManager {
         if Self::binary_path().is_none() {
             return false;
         }
-        if env_truthy("CLAUDE_CODE_USE_FOUNDRY") {
-            return env_present("ANTHROPIC_FOUNDRY_API_KEY")
-                || env_present("ANTHROPIC_FOUNDRY_AUTH_TOKEN")
-                || env_present("AZURE_FOUNDRY_API_KEY");
+        let settings = self.settings.get();
+        match settings.ai.research_backend {
+            ResearchBackend::Gemini => match Self::gemini_provider_id(&settings) {
+                Some(id) => self.secrets.has(&provider_key(&id)).await.unwrap_or(false),
+                None => false,
+            },
+            ResearchBackend::Claude => {
+                if env_truthy("CLAUDE_CODE_USE_FOUNDRY") {
+                    return env_present("ANTHROPIC_FOUNDRY_API_KEY")
+                        || env_present("ANTHROPIC_FOUNDRY_AUTH_TOKEN")
+                        || env_present("AZURE_FOUNDRY_API_KEY");
+                }
+                self.secrets.has(AGENT_ANTHROPIC_KEY).await.unwrap_or(false)
+                    || env_present("ANTHROPIC_API_KEY")
+            }
         }
-        self.secrets.has(AGENT_ANTHROPIC_KEY).await.unwrap_or(false)
-            || env_present("ANTHROPIC_API_KEY")
     }
 
     /// Environment for one job: every credential the sidecar may need, read
     /// from the Keychain (values never logged), plus documented pass-throughs.
     async fn job_env(&self) -> BlueyResult<Vec<(String, String)>> {
+        let settings = self.settings.get();
         let mut env: Vec<(String, String)> = Vec::new();
-        if let Some(key) = self.secrets.get(AGENT_ANTHROPIC_KEY).await? {
-            env.push(("ANTHROPIC_API_KEY".into(), key));
+        // Exactly one backend's credentials travel to the sidecar (ADR 0007).
+        match settings.ai.research_backend {
+            ResearchBackend::Gemini => {
+                env.push(("RESEARCH_BACKEND".into(), "gemini".into()));
+                if let Some(id) = Self::gemini_provider_id(&settings) {
+                    if let Some(key) = self.secrets.get(&provider_key(&id)).await? {
+                        env.push(("GEMINI_API_KEY".into(), key));
+                    }
+                }
+            }
+            ResearchBackend::Claude => {
+                env.push(("RESEARCH_BACKEND".into(), "claude".into()));
+                if let Some(key) = self.secrets.get(AGENT_ANTHROPIC_KEY).await? {
+                    env.push(("ANTHROPIC_API_KEY".into(), key));
+                }
+                push_passthrough(&mut env, CLAUDE_PASSTHROUGH_ENV);
+            }
         }
+        // Tool credentials and generic knobs serve both backends.
         if let Some(key) = self.secrets.get(EXA_KEY).await? {
             env.push(("EXA_API_KEY".into(), key));
         }
         if let Some(key) = self.secrets.get(FIRECRAWL_KEY).await? {
             env.push(("FIRECRAWL_API_KEY".into(), key));
         }
-        for name in PASSTHROUGH_ENV {
-            if let Ok(value) = std::env::var(name) {
-                if !value.is_empty() {
-                    env.push(((*name).to_string(), value));
-                }
-            }
-        }
+        push_passthrough(&mut env, COMMON_PASSTHROUGH_ENV);
         if let Some(model) = self.research_model() {
             env.push(("BLUEY_RESEARCH_MODEL".into(), model));
         }
         Ok(env)
     }
 
-    /// The research-role model when it lives on an Anthropic provider (the
-    /// Claude backend only understands Claude ids / Foundry deployments).
+    /// The research-role model for the active backend: the assigned model when
+    /// it lives on a provider of the backend's kind, else the Gemini preset
+    /// default (the Claude backend only understands Claude ids / Foundry
+    /// deployments, so it gets `None` and the sidecar default).
     fn research_model(&self) -> Option<String> {
         let settings = self.settings.get();
-        let assignment = settings.ai.models.research.as_ref()?;
-        let provider = settings
+        let assignment = settings.ai.models.research.as_ref();
+        let provider_kind = assignment
+            .and_then(|a| settings.ai.providers.iter().find(|p| p.id == a.provider_id))
+            .map(|p| p.kind);
+        match settings.ai.research_backend {
+            ResearchBackend::Gemini => match (assignment, provider_kind) {
+                (Some(a), Some(AiProviderKind::GoogleGemini)) => Some(a.model.clone()),
+                _ => presets::GEMINI
+                    .model_for(ModelRole::Research)
+                    .map(str::to_string),
+            },
+            ResearchBackend::Claude => match (assignment, provider_kind) {
+                (Some(a), Some(AiProviderKind::Anthropic)) => Some(a.model.clone()),
+                _ => None,
+            },
+        }
+    }
+
+    /// The enabled Gemini provider whose key feeds the sidecar (the reserved
+    /// `gemini` id wins over user-added Gemini providers).
+    fn gemini_provider_id(settings: &Settings) -> Option<String> {
+        let mut candidates: Vec<&AiProviderConfig> = settings
             .ai
             .providers
             .iter()
-            .find(|p| p.id == assignment.provider_id)?;
-        (provider.kind == AiProviderKind::Anthropic).then(|| assignment.model.clone())
+            .filter(|p| p.kind == AiProviderKind::GoogleGemini && p.enabled)
+            .collect();
+        candidates.sort_by_key(|p| p.id != presets::GEMINI_ID);
+        candidates.first().map(|p| p.id.clone())
     }
 
     /// Spawn the sidecar for `request` and stream its events onto the bus.
@@ -409,6 +457,16 @@ impl AgentManager {
         for job in jobs {
             if let Some(child) = job.child {
                 let _ = child.kill();
+            }
+        }
+    }
+}
+
+fn push_passthrough(env: &mut Vec<(String, String)>, names: &[&str]) {
+    for name in names {
+        if let Ok(value) = std::env::var(name) {
+            if !value.is_empty() {
+                env.push(((*name).to_string(), value));
             }
         }
     }

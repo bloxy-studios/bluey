@@ -12,7 +12,7 @@ use bluey_core::events::BlueyEvent;
 use bluey_core::router::{self, RoutingInput};
 use bluey_core::types::{
     AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent, ConnectionTestResult,
-    FinishReason, ModelRole, ModelSelection,
+    FinishReason, LatencyBudget, ModelRole, ModelSelection, ReasoningLevel, Settings,
 };
 use bluey_core::{now_iso, BlueyError, BlueyResult};
 use bluey_storage::{AiRequestRecord, AiRequestRepository};
@@ -24,6 +24,7 @@ use crate::secrets::{provider_key, SecretsStore};
 use crate::settings::SettingsManager;
 use crate::state::{DevState, MetricsRecorder, StateHub};
 use crate::storage::Storage;
+pub use providers::EmbedPurpose;
 use providers::{build_provider, AiProvider, ProviderRequest, StreamItem};
 
 /// Implicit mock provider id (available in developer mode / `dev-tools`).
@@ -117,7 +118,8 @@ impl AiManager {
         } else {
             self.secrets.get(&provider_key(&config.id)).await?
         };
-        build_provider(config, key, self.http.clone(), self.dev.clone())
+        let dims = self.settings.get().ai.embedding_dimensions;
+        build_provider(config, key, self.http.clone(), self.dev.clone(), dims)
     }
 
     /// Route a request to a provider+model.
@@ -330,6 +332,8 @@ impl AiManager {
             temperature: request.temperature,
             output_schema: request.output_schema.clone(),
             task: request.task,
+            latency: request.latency_budget,
+            reasoning: request.reasoning,
         };
         let mut stream = match adapter.stream(&provider_request, token.clone()).await {
             Ok(stream) => stream,
@@ -419,8 +423,12 @@ impl AiManager {
         active.len() as u32
     }
 
-    /// Embed texts via the embedding role.
-    pub async fn embed(&self, texts: &[String]) -> BlueyResult<Vec<Vec<f32>>> {
+    /// Embed texts via the embedding role, for `purpose` (documents vs queries).
+    pub async fn embed(
+        &self,
+        texts: &[String],
+        purpose: &EmbedPurpose,
+    ) -> BlueyResult<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -430,7 +438,7 @@ impl AiManager {
         })?;
         let config = self.find_provider(&assignment.provider_id)?;
         let adapter = self.adapter_for(&config).await?;
-        adapter.embed(&assignment.model, texts).await
+        adapter.embed(&assignment.model, texts, purpose).await
     }
 
     /// Whether an embedding model is currently usable (for documents).
@@ -484,6 +492,8 @@ impl AiManager {
             temperature: Some(0.0),
             output_schema: None,
             task: AiTask::Answer,
+            latency: LatencyBudget::UltraFast,
+            reasoning: ReasoningLevel::None,
         };
         let started = Instant::now();
         let token = CancellationToken::new();
@@ -535,11 +545,38 @@ impl AiManager {
         None
     }
 
-    /// List models for one provider.
-    pub async fn list_models(&self, provider_id: &str) -> BlueyResult<Vec<String>> {
+    /// List models for one provider, optionally only those fit for `role`.
+    pub async fn list_models(
+        &self,
+        provider_id: &str,
+        role: Option<ModelRole>,
+    ) -> BlueyResult<Vec<String>> {
         let config = self.find_provider(provider_id)?;
         let adapter = self.adapter_for(&config).await?;
-        adapter.list_models().await
+        adapter.list_models(role).await
+    }
+
+    /// Point roles at the provider's recommended models (`bluey_core::presets`).
+    /// `overwrite = false` fills only unassigned roles. Returns the new settings.
+    pub async fn apply_provider_presets(
+        &self,
+        provider_id: &str,
+        overwrite: bool,
+    ) -> BlueyResult<Settings> {
+        let config = self.find_provider(provider_id)?;
+        let mut models = self.settings.get().ai.models;
+        let changed = bluey_core::presets::apply_presets(
+            &mut models,
+            &config,
+            overwrite,
+            &Default::default(),
+        )?;
+        tracing::info!(provider = %provider_id, roles = changed.len(), overwrite, "applied provider presets");
+        let (_, new) = self
+            .settings
+            .update(serde_json::json!({ "ai": { "models": models } }))
+            .await?;
+        Ok(new)
     }
 
     /// Test the provider serving the default role (setup checks).

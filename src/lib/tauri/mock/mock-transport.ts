@@ -36,6 +36,7 @@ import type {
   TranscriptSegment,
   PanelState,
 } from "../../types";
+import { applyPresets } from "../../ai/provider-presets";
 import { createId } from "../../utils/id";
 import type { CommandArgs, CommandName, CommandResult } from "../commands";
 import type { EventName, EventPayload } from "../events";
@@ -859,7 +860,42 @@ export class MockTransport implements Transport {
     },
     ai_list_models: (args) => {
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
-      return FIXTURE_MODELS_BY_KIND[provider?.kind ?? "mock"] ?? [];
+      const models = FIXTURE_MODELS_BY_KIND[provider?.kind ?? "mock"] ?? [];
+      // Mirror of the Rust per-role filter: embeddings / transcription / text generation.
+      const isEmbedding = (id: string) => /embedding/i.test(id);
+      const isTranscription = (id: string) => /transcribe/i.test(id);
+      switch (args.role) {
+        case "embedding":
+          return models.filter(isEmbedding);
+        case "transcription":
+          return models.filter(isTranscription);
+        case undefined:
+          return models;
+        default:
+          return models.filter((id) => !isEmbedding(id) && !isTranscription(id) && !/-live$/i.test(id));
+      }
+    },
+    ai_apply_provider_presets: (args) => {
+      const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
+      if (!provider)
+        throw blueyError({
+          kind: "configuration",
+          code: "config.unknown_provider",
+          message: "the provider is not configured",
+        });
+      let result: ReturnType<typeof applyPresets>;
+      try {
+        result = applyPresets(this.settings.ai.models, provider, args.overwrite);
+      } catch {
+        throw blueyError({
+          kind: "configuration",
+          code: "config.no_preset",
+          message: "this provider kind has no recommended models",
+        });
+      }
+      this.settings = { ...this.settings, ai: { ...this.settings.ai, models: result.models } };
+      this.emitSettings();
+      return this.settings;
     },
 
     // Research

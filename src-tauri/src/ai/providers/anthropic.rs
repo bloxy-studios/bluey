@@ -15,6 +15,9 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use bluey_core::types::ModelRole;
+
+use super::EmbedPurpose;
 use super::{
     channel_stream, map_http_status, map_transport_error, AiProvider, ChunkStream, ProviderRequest,
     StreamItem,
@@ -93,14 +96,19 @@ impl AiProvider for AnthropicProvider {
         Ok(spawn_anthropic_sse(response, token))
     }
 
-    async fn embed(&self, _model: &str, _texts: &[String]) -> BlueyResult<Vec<Vec<f32>>> {
+    async fn embed(
+        &self,
+        _model: &str,
+        _texts: &[String],
+        _purpose: &EmbedPurpose,
+    ) -> BlueyResult<Vec<Vec<f32>>> {
         Err(BlueyError::not_supported(
             "embeddings",
             "the Anthropic API does not serve embeddings",
         ))
     }
 
-    async fn list_models(&self) -> BlueyResult<Vec<String>> {
+    async fn list_models(&self, _role: Option<ModelRole>) -> BlueyResult<Vec<String>> {
         let response = self
             .http
             .get(proto::models_url(&self.base_url))

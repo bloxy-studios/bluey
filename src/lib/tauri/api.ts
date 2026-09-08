@@ -49,7 +49,8 @@ export const bluey = {
   capture: {
     listDisplays: callNoArgs("capture_list_displays"),
     listWindows: callNoArgs("capture_list_windows"),
-    screen: (options?: CommandArgs<"capture_screen">["options"]) => getTransport().invoke("capture_screen", { options }),
+    screen: (options?: CommandArgs<"capture_screen">["options"]) =>
+      getTransport().invoke("capture_screen", { options }),
     readFrame: call("capture_read_frame"),
     discardFrame: call("capture_discard_frame"),
     observeStart: call("capture_observe_start"),
@@ -66,7 +67,8 @@ export const bluey = {
   },
   audio: {
     listDevices: callNoArgs("audio_list_devices"),
-    start: (config?: CommandArgs<"audio_start">["config"]) => getTransport().invoke("audio_start", { config }),
+    start: (config?: CommandArgs<"audio_start">["config"]) =>
+      getTransport().invoke("audio_start", { config }),
     stop: callNoArgs("audio_stop"),
     pause: callNoArgs("audio_pause"),
     resume: callNoArgs("audio_resume"),
@@ -97,6 +99,7 @@ export const bluey = {
     embed: call("ai_embed"),
     testConnection: call("ai_test_connection"),
     listModels: call("ai_list_models"),
+    applyProviderPresets: call("ai_apply_provider_presets"),
   },
   research: {
     search: call("research_search"),
@@ -122,7 +125,8 @@ export const bluey = {
     resume: callNoArgs("sessions_resume"),
     end: callNoArgs("sessions_end"),
     getActive: callNoArgs("sessions_get_active"),
-    list: (query?: CommandArgs<"sessions_list">["query"]) => getTransport().invoke("sessions_list", { query }),
+    list: (query?: CommandArgs<"sessions_list">["query"]) =>
+      getTransport().invoke("sessions_list", { query }),
     get: call("sessions_get"),
     search: call("sessions_search"),
     delete: call("sessions_delete"),
@@ -148,9 +152,11 @@ export const bluey = {
     get: call("documents_get"),
     getText: call("documents_get_text"),
     delete: call("documents_delete"),
-    deleteAll: (args: CommandArgs<"documents_delete_all"> = {}) => getTransport().invoke("documents_delete_all", args),
+    deleteAll: (args: CommandArgs<"documents_delete_all"> = {}) =>
+      getTransport().invoke("documents_delete_all", args),
     retrieve: call("documents_retrieve"),
-    reindex: (args: CommandArgs<"documents_reindex"> = {}) => getTransport().invoke("documents_reindex", args),
+    reindex: (args: CommandArgs<"documents_reindex"> = {}) =>
+      getTransport().invoke("documents_reindex", args),
     pickFiles: callNoArgs("documents_pick_files"),
   },
   settings: {

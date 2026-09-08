@@ -35,7 +35,8 @@ pub struct RoutingInput<'a> {
 /// kinds can host vision-capable deployments; the mock provider pretends to.
 pub fn provider_supports_vision(kind: AiProviderKind) -> bool {
     match kind {
-        AiProviderKind::AzureFoundry
+        AiProviderKind::GoogleGemini
+        | AiProviderKind::AzureFoundry
         | AiProviderKind::Anthropic
         | AiProviderKind::OpenaiCompatible
         | AiProviderKind::Mock => true,
@@ -501,6 +502,7 @@ mod tests {
     #[test]
     fn all_provider_kinds_support_vision() {
         for kind in [
+            AiProviderKind::GoogleGemini,
             AiProviderKind::AzureFoundry,
             AiProviderKind::Anthropic,
             AiProviderKind::OpenaiCompatible,
