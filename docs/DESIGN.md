@@ -92,6 +92,22 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   shortcut off (row dims to 60%) without forgetting its accelerator.
 * **Profile / Security**: Clerk `<UserProfile />` bundled with dark theme variables matching the
   tokens (card background `bg-elevated`).
+* **AI tab**: opens with **Default provider** — one select that re-points every role at the
+  chosen provider's recommended models (Gemini first; ADR 0007) — then the provider cards
+  (Gemini first, "Default" accent badge on the nominated one). Each card: name + kind pill,
+  Edit, enable switch, hairline, write-only key field ("Key saved ••••" / Replace) with a
+  "Get a free key at aistudio.google.com/apikey" link for Gemini, a ghost
+  "✦ Use recommended models" button (disabled until a key is saved) and "Test connection"
+  whose failures render as the standard error banner with its recovery button. The provider
+  dialog lists Gemini first, makes the base URL optional for Gemini/Anthropic and shows API
+  version + deployments only for Foundry. Models rows show the provider's catalogue for that
+  role and a link "Use <recommended>" when the assignment differs from the preset; an
+  "Embedding size" select (768 · 1536 · 3072) appears when embeddings run on Gemini. Research:
+  Web search, Deep research agent, **Research backend** (Gemini / Claude — the Anthropic agent
+  key field only for Claude), Exa / Firecrawl keys.
+* **Onboarding → Connect Gemini** (after Name): key field with the AI Studio link, "Gemini is
+  connected" once a key is stored, "Use another provider" (opens Settings → AI) and
+  "Skip for now"; Continue is enabled once a key exists (any provider) or the step is skipped.
 * **About**: card with release note (title + date, bullet list), rows Help Center (Open ↗),
   Contact Support (Email ↗), Bluey Version (right-aligned version text).
 

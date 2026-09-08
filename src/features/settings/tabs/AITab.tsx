@@ -6,13 +6,27 @@ import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
 import { Slider } from "@/components/ui/Slider";
 import { Switch } from "@/components/ui/Switch";
+import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { presetForKind } from "@/lib/ai/provider-presets";
 import { bluey } from "@/lib/tauri/api";
 import { SECRET_KEYS } from "@/lib/tauri/commands";
-import type { AIProviderConfig, ModelRole, ResponseLength, ResponseTone } from "@/lib/types";
-import { createId } from "@/lib/utils/id";
+import {
+  toBlueyError,
+  type AIProviderConfig,
+  type ModelRole,
+  type ResearchBackend,
+  type ResponseLength,
+  type ResponseTone,
+} from "@/lib/types";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { ProviderCard, ProviderDialog } from "../ProviderCard";
-import { draftToDeployments, providerToDraft, type ProviderDraftValues } from "../provider-form";
+import {
+  draftToDeployments,
+  newProviderFromDraft,
+  providerToDraft,
+  sortProviders,
+  type ProviderDraftValues,
+} from "../provider-form";
 import { SecretKeyField } from "../SecretKeyField";
 
 const ROLES: Array<{ role: ModelRole; label: string; hint: string }> = [
@@ -21,8 +35,14 @@ const ROLES: Array<{ role: ModelRole; label: string; hint: string }> = [
   { role: "reasoning", label: "Reasoning", hint: "Hard problems" },
   { role: "vision", label: "Vision", hint: "Screenshots" },
   { role: "research", label: "Research", hint: "Deep research agent" },
-  { role: "transcription", label: "Transcription", hint: "MAI-Transcribe-1.5 (Voice Live)" },
+  { role: "transcription", label: "Transcription", hint: "Batch / live speech-to-text" },
   { role: "embedding", label: "Embedding", hint: "Document retrieval" },
+];
+
+const EMBEDDING_DIMENSION_OPTIONS = [
+  { value: "768", label: "768 (recommended)" },
+  { value: "1536", label: "1536" },
+  { value: "3072", label: "3072 (full)" },
 ];
 
 function ModelRoleRow({
@@ -41,20 +61,24 @@ function ModelRoleRow({
   const assignment = settings?.ai.models[role] ?? null;
   const [models, setModels] = useState<string[]>([]);
   const providerId = assignment?.providerId ?? providers[0]?.id ?? "";
+  const provider = providers.find((p) => p.id === providerId);
+  const recommended = provider ? (presetForKind(provider.kind)?.models[role] ?? null) : null;
 
   useEffect(() => {
     let alive = true;
     if (!providerId) return;
     void bluey.ai
-      .listModels({ providerId })
+      .listModels({ providerId, role })
       .then((list) => {
         if (alive) setModels(list);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (alive) setModels([]); // listing is best-effort; typing a model id always works
+      });
     return () => {
       alive = false;
     };
-  }, [providerId]);
+  }, [providerId, role]);
 
   const save = (nextProviderId: string, model: string) => {
     const models_ = { ...settings?.ai.models } as NonNullable<typeof settings>["ai"]["models"];
@@ -80,8 +104,9 @@ function ModelRoleRow({
         aria-label={`${label} model`}
         list={datalistId}
         defaultValue={assignment?.model ?? ""}
+        key={`${providerId}:${assignment?.model ?? ""}`}
         onBlur={(e) => save(providerId, e.target.value)}
-        placeholder="model name"
+        placeholder={recommended ?? "model name"}
         className="h-9 flex-1 rounded-control border border-border bg-bg-elevated px-3 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus-visible:border-border-strong"
       />
       <datalist id={datalistId}>
@@ -89,6 +114,16 @@ function ModelRoleRow({
           <option key={m} value={m} />
         ))}
       </datalist>
+      {recommended && assignment?.model !== recommended ? (
+        <Button
+          variant="link"
+          size="sm"
+          onClick={() => save(providerId, recommended)}
+          className="shrink-0 text-[12px]"
+        >
+          Use {recommended}
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -96,23 +131,33 @@ function ModelRoleRow({
 export default function AITab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
+  const applyRemote = useSettingsStore((s) => s.applyRemote);
   const [dialog, setDialog] = useState<{ mode: "add" } | { mode: "edit"; provider: AIProviderConfig } | null>(
     null,
   );
   const [budget, setBudget] = useState<number | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   if (!settings) return null;
   const { ai } = settings;
+  const providers = sortProviders(ai.providers);
+  const enabledProviders = providers.filter((p) => p.enabled);
+  const defaultProviderId =
+    ai.bootstrapProvider && providers.some((p) => p.id === ai.bootstrapProvider)
+      ? ai.bootstrapProvider
+      : (ai.models.default?.providerId ?? "");
+  const embeddingProvider = providers.find((p) => p.id === ai.models.embedding?.providerId);
 
   const saveProvider = (values: ProviderDraftValues) => {
-    const deployments = draftToDeployments(values.deployments);
-    let providers: AIProviderConfig[];
+    let next: AIProviderConfig[];
     if (dialog?.mode === "edit") {
-      providers = ai.providers.map((p) =>
+      const deployments =
+        values.kind === "azure_foundry" ? draftToDeployments(values.deployments) : undefined;
+      next = ai.providers.map((p) =>
         p.id === dialog.provider.id
           ? {
               ...p,
-              name: values.name.trim(),
+              name: values.name.trim() || p.name,
               kind: values.kind,
               baseUrl: values.baseUrl.trim(),
               apiVersion: values.apiVersion.trim() || undefined,
@@ -121,27 +166,56 @@ export default function AITab() {
           : p,
       );
     } else {
-      providers = [
-        ...ai.providers,
-        {
-          id: createId("provider"),
-          kind: values.kind,
-          name: values.name.trim(),
-          baseUrl: values.baseUrl.trim(),
-          apiVersion: values.apiVersion.trim() || undefined,
-          deployments,
-          enabled: true,
-          hasApiKey: false,
-        },
-      ];
+      next = [...ai.providers, newProviderFromDraft(values, ai.providers)];
     }
-    void update({ ai: { providers } });
+    void update({ ai: { providers: next } }).catch((error: unknown) =>
+      showErrorToast(toBlueyError(error, "storage")),
+    );
     setDialog(null);
+  };
+
+  const switchDefaultProvider = async (providerId: string) => {
+    if (!providerId || providerId === defaultProviderId) return;
+    const provider = providers.find((p) => p.id === providerId);
+    if (!provider) return;
+    setSwitching(true);
+    try {
+      if (presetForKind(provider.kind)) {
+        applyRemote(await bluey.ai.applyProviderPresets({ providerId, overwrite: true }));
+      }
+      await update({ ai: { bootstrapProvider: providerId } });
+      showToast(`${provider.name} is now the default provider`, 2000);
+    } catch (error) {
+      showErrorToast(toBlueyError(error, "configuration"));
+    } finally {
+      setSwitching(false);
+    }
   };
 
   return (
     <>
-      <div className="flex items-end justify-between">
+      <SectionHeader
+        title="Default provider"
+        description="One switch for every role — the provider's recommended models are assigned to chat, vision, transcription, research and embeddings. Roles it doesn't serve keep their current model."
+      />
+      <div className="flex items-center gap-3 py-1">
+        <Select
+          aria-label="Default AI provider"
+          value={defaultProviderId}
+          disabled={switching || enabledProviders.length === 0}
+          onChange={(e) => void switchDefaultProvider(e.target.value)}
+          options={[
+            ...(defaultProviderId ? [] : [{ value: "", label: "Choose a provider" }]),
+            ...enabledProviders.map((p) => ({ value: p.id, label: p.name })),
+          ]}
+          className="w-[260px] [&>select]:w-full"
+        />
+        {ai.bootstrapProvider ? (
+          <span className="text-[12.5px] text-fg-subtle">Configured from your environment / onboarding.</span>
+        ) : null}
+      </div>
+
+      <div className="mt-6 flex items-end justify-between">
         <SectionHeader
           title="Providers"
           description="Bluey keeps API keys in the macOS Keychain — never in its database"
@@ -153,10 +227,11 @@ export default function AITab() {
       </div>
 
       <div className="mt-3 flex flex-col gap-3">
-        {ai.providers.map((provider) => (
+        {providers.map((provider) => (
           <ProviderCard
             key={provider.id}
             provider={provider}
+            isDefault={provider.id === defaultProviderId}
             onEdit={() => setDialog({ mode: "edit", provider })}
             onToggleEnabled={(enabled) =>
               void update({
@@ -167,12 +242,31 @@ export default function AITab() {
         ))}
       </div>
 
-      <SectionHeader title="Models" description="Which model handles each role" />
+      <SectionHeader
+        title="Models"
+        description="Which model handles each role — pick from the provider's catalogue or type an id"
+      />
       <div className="flex flex-col divide-y divide-border/50">
         {ROLES.map(({ role, label, hint }) => (
-          <ModelRoleRow key={role} role={role} label={label} hint={hint} providers={ai.providers} />
+          <ModelRoleRow key={role} role={role} label={label} hint={hint} providers={providers} />
         ))}
       </div>
+
+      {embeddingProvider?.kind === "google_gemini" ? (
+        <div className="mt-3 flex items-center gap-3 py-1">
+          <div className="w-[150px] shrink-0">
+            <div className="text-[13.5px] font-medium text-fg">Embedding size</div>
+            <div className="text-[12px] text-fg-subtle">gemini-embedding-2 (MRL)</div>
+          </div>
+          <Select
+            aria-label="Embedding dimensions"
+            value={String(ai.embeddingDimensions)}
+            onChange={(e) => void update({ ai: { embeddingDimensions: Number(e.target.value) } })}
+            options={EMBEDDING_DIMENSION_OPTIONS}
+          />
+          <span className="text-[12px] text-fg-subtle">Changing it re-indexes your documents.</span>
+        </div>
+      ) : null}
 
       <SectionHeader title="Responses" description="Global style — modes can override" />
       <div className="flex items-center gap-3 py-1">
@@ -219,13 +313,32 @@ export default function AITab() {
           <div>
             <div className="text-[14px] font-medium text-fg">Deep research agent</div>
             <div className="text-[13px] text-fg-muted">
-              Multi-step research with the Claude agent (public queries only).
+              Multi-step research in a sandboxed sidecar (public queries only).
             </div>
           </div>
           <Switch
             aria-label="Deep research"
             checked={ai.deepResearchEnabled}
             onCheckedChange={(v) => void update({ ai: { deepResearchEnabled: v } })}
+          />
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <div>
+            <div className="text-[14px] font-medium text-fg">Research backend</div>
+            <div className="text-[13px] text-fg-muted">
+              {ai.researchBackend === "gemini"
+                ? "Gemini function calling with your Google AI Studio key — nothing else to configure."
+                : "Claude Agent SDK — needs an Anthropic key (or Claude in Foundry) and the full sidecar build."}
+            </div>
+          </div>
+          <Select
+            aria-label="Research backend"
+            value={ai.researchBackend}
+            onChange={(e) => void update({ ai: { researchBackend: e.target.value as ResearchBackend } })}
+            options={[
+              { value: "gemini", label: "Gemini" },
+              { value: "claude", label: "Claude" },
+            ]}
           />
         </div>
         <div className="flex flex-col gap-2.5 rounded-card border border-border bg-bg-elevated p-4">
@@ -237,13 +350,15 @@ export default function AITab() {
             <span className="text-[13px] text-fg-muted">Firecrawl</span>
             <SecretKeyField secretKey={SECRET_KEYS.firecrawlApiKey} aria-label="Firecrawl API key" />
           </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-[13px] text-fg-muted">Anthropic (agent)</span>
-            <SecretKeyField
-              secretKey={SECRET_KEYS.anthropicAgentApiKey}
-              aria-label="Anthropic agent API key"
-            />
-          </div>
+          {ai.researchBackend === "claude" ? (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[13px] text-fg-muted">Anthropic (agent)</span>
+              <SecretKeyField
+                secretKey={SECRET_KEYS.anthropicAgentApiKey}
+                aria-label="Anthropic agent API key"
+              />
+            </div>
+          ) : null}
         </div>
       </div>
 
