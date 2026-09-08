@@ -1,14 +1,18 @@
-import { AudioLines, ChevronDown, Eye, EyeOff, Grid2x2, Image } from "lucide-react";
+import { AudioLines, ChevronDown, Eye, EyeOff, Grid2x2, Image, Timer } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { BlueyMark } from "@/components/BlueyMark";
 import { IconButton } from "@/components/ui/IconButton";
 import { Keycaps } from "@/components/ui/Keycap";
+import { showErrorToast } from "@/components/ui/toast-store";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { bluey } from "@/lib/tauri/api";
+import { toBlueyError } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
 import { modeById, useModesStore } from "@/stores/modesStore";
+import { useSessionStore } from "@/stores/sessionStore";
 import { ModeMenu } from "./ModeMenu";
+import { SessionMenu } from "./SessionMenu";
 import { StatePill } from "./StatePill";
 
 export interface HudToolbarProps {
@@ -16,19 +20,23 @@ export interface HudToolbarProps {
   onToggleScreen: () => void;
   hasChat: boolean;
   onNewChat: () => void;
+  /** Re-asks the last question when an error offers "Retry". */
+  onRetry?: () => void;
 }
 
 /**
  * HUD bottom row (52px): logo + state pill · screen / visibility / mode / |
- * / audio icon cluster · "New Chat ⌘R" or "History ↓".
+ * / audio + session cluster · "New Chat ⌘R" or "History ↓".
  */
-export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat }: HudToolbarProps) {
+export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat, onRetry }: HudToolbarProps) {
   const status = useAppStore((s) => s.status);
   const modes = useModesStore((s) => s.modes);
+  const session = useSessionStore((s) => s.active);
   const [protection, setProtection] = useState<boolean | null>(null);
 
   const audioActive = status?.audioActive ?? false;
   const activeModeName = modeById(modes, status?.modeId)?.name ?? "General";
+  const sessionTitle = session ? (session.title ?? "Untitled session") : null;
 
   useEffect(() => {
     let alive = true;
@@ -49,7 +57,7 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat }
       const next = await bluey.capture.setProtection({ enabled: !protection });
       setProtection(next.enabled);
     } catch (error) {
-      console.warn("[hud] setProtection failed", error);
+      showErrorToast(toBlueyError(error, "capture"));
     }
   };
 
@@ -58,20 +66,30 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat }
       if (audioActive) await bluey.audio.stop();
       else await bluey.audio.start();
     } catch (error) {
-      console.warn("[hud] audio toggle failed", error);
+      showErrorToast(toBlueyError(error, "audio"));
     }
   };
+
+  const audioLabel = audioActive
+    ? sessionTitle
+      ? `Stop Audio Session · ${sessionTitle}`
+      : "Stop Audio Session"
+    : "Start Audio Session";
 
   return (
     <div data-tauri-drag-region className="flex h-[52px] items-center gap-3 px-3">
       <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-2.5">
         <BlueyMark size={22} className="ml-1 text-fg" />
-        <StatePill />
+        <StatePill onRetry={onRetry} />
       </div>
 
       <div className="flex items-center gap-1">
         <Tooltip label={screenEnabled ? "Uses Screen" : "Screen off"}>
-          <IconButton aria-label={screenEnabled ? "Screen context on" : "Screen context off"} active={screenEnabled} onClick={onToggleScreen}>
+          <IconButton
+            aria-label={screenEnabled ? "Screen context on" : "Screen context off"}
+            active={screenEnabled}
+            onClick={onToggleScreen}
+          >
             <Image className="size-[18px]" strokeWidth={1.8} aria-hidden />
           </IconButton>
         </Tooltip>
@@ -82,7 +100,11 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat }
             onClick={() => void toggleProtection()}
             disabled={protection === null}
           >
-            {protection ? <EyeOff className="size-[18px]" strokeWidth={1.8} aria-hidden /> : <Eye className="size-[18px]" strokeWidth={1.8} aria-hidden />}
+            {protection ? (
+              <EyeOff className="size-[18px]" strokeWidth={1.8} aria-hidden />
+            ) : (
+              <Eye className="size-[18px]" strokeWidth={1.8} aria-hidden />
+            )}
           </IconButton>
         </Tooltip>
 
@@ -98,14 +120,44 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat }
 
         <div className="mx-1 h-5 w-px bg-hud-border" aria-hidden />
 
-        <Tooltip label={audioActive ? "Stop Audio Session" : "Start Audio Session"}>
-          <IconButton aria-label={audioActive ? "Stop audio session" : "Start audio session"} onClick={() => void toggleAudio()} className="relative">
+        <Tooltip label={audioLabel}>
+          <IconButton
+            aria-label={audioActive ? "Stop audio session" : "Start audio session"}
+            onClick={() => void toggleAudio()}
+            className="relative"
+          >
             <AudioLines className="size-[18px]" strokeWidth={1.8} aria-hidden />
             {audioActive ? (
-              <span className="absolute right-1 top-1 size-[6px] rounded-full bg-success motion-safe:animate-pulse-dot" aria-hidden />
+              <span
+                className="absolute right-1 top-1 size-[6px] rounded-full bg-success motion-safe:animate-pulse-dot"
+                aria-hidden
+              />
             ) : null}
           </IconButton>
         </Tooltip>
+
+        <SessionMenu>
+          <span>
+            <Tooltip label={sessionTitle ? `Session: ${sessionTitle}` : "Session"}>
+              <IconButton
+                aria-label={sessionTitle ? `Session: ${sessionTitle}` : "Session menu"}
+                className="relative"
+              >
+                <Timer className="size-[18px]" strokeWidth={1.8} aria-hidden />
+                {session ? (
+                  <span
+                    className={
+                      session.status === "paused"
+                        ? "absolute right-1 top-1 size-[6px] rounded-full bg-fg-muted"
+                        : "absolute right-1 top-1 size-[6px] rounded-full bg-accent"
+                    }
+                    aria-hidden
+                  />
+                ) : null}
+              </IconButton>
+            </Tooltip>
+          </span>
+        </SessionMenu>
       </div>
 
       <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center justify-end gap-2">

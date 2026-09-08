@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
 
+import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
+import { toBlueyError } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
 
 export interface HudShortcutHandlers {
@@ -12,7 +14,10 @@ export interface HudShortcutHandlers {
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+  return (
+    target instanceof HTMLElement &&
+    (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+  );
 }
 
 /**
@@ -31,7 +36,7 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
         if (audioActive) await bluey.audio.stop();
         else await bluey.audio.start();
       } catch (error) {
-        console.warn("[hud] toggle_listening failed", error);
+        showErrorToast(toBlueyError(error, "audio"));
       }
     };
 

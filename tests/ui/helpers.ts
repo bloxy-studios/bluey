@@ -1,10 +1,16 @@
 /** Shared test setup: fresh MockTransport + stores, and a fake engine. */
 
-import type { AskInput, EngineCallbacks, EngineHandle, ResponseEngine } from "@/lib/engine-contract";
+import type {
+  AskInput,
+  ClassifyInput,
+  EngineCallbacks,
+  EngineHandle,
+  ResponseEngine,
+} from "@/lib/engine-contract";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { MockTransport } from "@/lib/tauri/mock";
 import { setTransport } from "@/lib/tauri/transport";
-import type { BlueyError, BlueyResponse } from "@/lib/types";
+import type { BlueyError, BlueyResponse, DetectedEvent, TranscriptSegment } from "@/lib/types";
 import { setEngine } from "@/stores/engine";
 import { initStores, resetStoresForTest } from "@/stores/initStores";
 
@@ -94,15 +100,19 @@ export class FakeEngine implements ResponseEngine {
     this.resolveDone?.(null);
   }
 
-  async prepare(): Promise<BlueyResponse | null> {
+  async prepare(_input: AskInput): Promise<BlueyResponse | null> {
     return null;
   }
 
-  takePrepared(): BlueyResponse | null {
+  /** Event ids ⌘⇧↵ asked for (undefined = "whatever is newest"). */
+  takeCalls: Array<string | undefined> = [];
+
+  takePrepared(eventId?: string): BlueyResponse | null {
+    this.takeCalls.push(eventId);
     return this.preparedQueue.shift() ?? null;
   }
 
-  async classify(): Promise<null> {
+  async classify(_input: ClassifyInput): Promise<DetectedEvent | null> {
     return null;
   }
 
@@ -113,4 +123,78 @@ export class FakeEngine implements ResponseEngine {
   async cancelAll(): Promise<void> {
     this.cancelled = true;
   }
+}
+
+/**
+ * Engine double for the proactive loop: segments ending in "?" classify as a
+ * question (emitting `question.detected` like the real engine), and `prepare`
+ * emits `response.prepared`. `hold` keeps `prepare` pending until `release()`.
+ */
+export class ProactiveFakeEngine extends FakeEngine {
+  classified: ClassifyInput[] = [];
+  prepared: AskInput[] = [];
+  hold = false;
+  private pending: Array<() => void> = [];
+
+  override async classify(input: ClassifyInput): Promise<DetectedEvent | null> {
+    this.classified.push(input);
+    if (!input.segment.text.trim().endsWith("?")) return null;
+    const event: DetectedEvent = {
+      id: `det-${this.classified.length}`,
+      type: "question",
+      confidence: 0.9,
+      requiresResponse: true,
+      text: input.segment.text,
+      segmentIds: [input.segment.id],
+      speaker: input.segment.speaker,
+      detectedAt: new Date().toISOString(),
+    };
+    eventBus.emit("question.detected", event);
+    return event;
+  }
+
+  override async prepare(input: AskInput): Promise<BlueyResponse | null> {
+    this.prepared.push(input);
+    if (this.hold) {
+      await new Promise<void>((resolve) => {
+        this.pending.push(resolve);
+      });
+    }
+    const response = makeResponse({
+      id: `prep-${input.detectedEvent?.id ?? "generic"}`,
+      prompt: input.detectedEvent?.text,
+      content: `Prepared for ${input.detectedEvent?.id ?? "generic"}`,
+      prepared: true,
+    });
+    this.preparedQueue.push(response);
+    eventBus.emit("response.prepared", response);
+    return response;
+  }
+
+  /** Let every held `prepare` call finish. */
+  release(): void {
+    const pending = this.pending;
+    this.pending = [];
+    pending.forEach((resolve) => resolve());
+  }
+}
+
+let segmentCounter = 0;
+
+/** Finalized transcript segment (defaults to the other party over system audio). */
+export function makeSegment(partial: Partial<TranscriptSegment> = {}): TranscriptSegment {
+  segmentCounter += 1;
+  const start = segmentCounter * 4000;
+  return {
+    id: `seg-${segmentCounter}`,
+    source: "system",
+    speaker: "Interviewer",
+    speakerConfidence: 0.6,
+    text: "Tell me about yourself.",
+    startTime: start,
+    endTime: start + 3000,
+    finalized: true,
+    createdAt: new Date().toISOString(),
+    ...partial,
+  };
 }

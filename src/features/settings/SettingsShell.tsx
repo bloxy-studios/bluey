@@ -1,5 +1,6 @@
 import {
   Bug,
+  FolderOpen,
   Image,
   Info,
   Keyboard,
@@ -22,6 +23,7 @@ import { isSettingsTab, SettingsNavContext, type SettingsTab } from "./settings-
 const PAGES: Record<SettingsTab, ReturnType<typeof lazy>> = {
   general: lazy(() => import("./tabs/GeneralTab")),
   modes: lazy(() => import("./tabs/ModesTab")),
+  context: lazy(() => import("./tabs/ContextTab")),
   keybinds: lazy(() => import("./tabs/KeybindsTab")),
   audio: lazy(() => import("./tabs/AudioTab")),
   screen: lazy(() => import("./tabs/ScreenTab")),
@@ -37,6 +39,7 @@ const PAGES: Record<SettingsTab, ReturnType<typeof lazy>> = {
 const TABS: Array<{ id: SettingsTab; label: string; icon: LucideIcon }> = [
   { id: "general", label: "General", icon: Settings },
   { id: "modes", label: "Modes", icon: LayoutGrid },
+  { id: "context", label: "Context", icon: FolderOpen },
   { id: "keybinds", label: "Keybinds", icon: Keyboard },
   { id: "audio", label: "Audio", icon: Mic },
   { id: "screen", label: "Screen", icon: Image },
@@ -68,7 +71,10 @@ export function SettingsShell() {
           <span className="text-[13px] font-semibold text-fg">Bluey Settings</span>
         </div>
 
-        <nav aria-label="Settings sections" className="flex shrink-0 justify-center border-b border-border px-3 pb-3">
+        <nav
+          aria-label="Settings sections"
+          className="flex shrink-0 justify-center border-b border-border px-3 pb-3"
+        >
           <div className="flex items-center gap-1.5 overflow-x-auto">
             {TABS.map(({ id, label, icon: Icon }) => {
               const active = id === tab;
@@ -92,7 +98,9 @@ export function SettingsShell() {
           </div>
         </nav>
 
-        <main className={cn("min-h-0 flex-1", tab === "modes" || tab === "sessions" ? "flex" : "overflow-y-auto")}>
+        <main
+          className={cn("min-h-0 flex-1", tab === "modes" || tab === "sessions" ? "flex" : "overflow-y-auto")}
+        >
           <Suspense
             fallback={
               <div className="flex h-40 w-full items-center justify-center">

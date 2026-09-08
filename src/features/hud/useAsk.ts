@@ -7,6 +7,7 @@ import { useAppStore } from "@/stores/appStore";
 import { completedResponses, useChatStore } from "@/stores/chatStore";
 import { getEngine } from "@/stores/engine";
 import { modeById, useModesStore } from "@/stores/modesStore";
+import { useProactiveStore } from "@/stores/proactive";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 
@@ -31,7 +32,8 @@ export function useAsk() {
     const modes = useModesStore.getState().modes;
     const status = useAppStore.getState().status;
     if (!settings) return null;
-    const mode = modeById(modes, status?.modeId) ?? modeById(modes, settings.general.defaultModeId) ?? modes[0];
+    const mode =
+      modeById(modes, status?.modeId) ?? modeById(modes, settings.general.defaultModeId) ?? modes[0];
     if (!mode) return null;
 
     const chat = useChatStore.getState();
@@ -49,7 +51,8 @@ export function useAsk() {
         settings,
         previousResponses: previous.length > 0 ? previous : undefined,
         detectedEvent: request.detectedEvent,
-        sessionEvents: sessionState.active && sessionState.events.length > 0 ? sessionState.events : undefined,
+        sessionEvents:
+          sessionState.active && sessionState.events.length > 0 ? sessionState.events : undefined,
       },
       {
         onPhase: (phase) => useChatStore.getState().setPhase(generation, phase),
@@ -75,12 +78,21 @@ export function useAsk() {
     }
   }, []);
 
-  /** ⌘⇧↵ — pop a prepared response first; otherwise generate from transcript. */
+  /**
+   * ⌘⇧↵ — show the response prepared for the question currently surfaced
+   * (then any other prepared response); otherwise generate from the transcript.
+   */
   const generateOrTakePrepared = useCallback(() => {
-    const prepared = getEngine().takePrepared() ?? useChatStore.getState().prepared;
+    const engine = getEngine();
+    const preparedEventId = useProactiveStore.getState().preparedEventId;
+    const prepared =
+      (preparedEventId ? engine.takePrepared(preparedEventId) : null) ??
+      engine.takePrepared() ??
+      useChatStore.getState().prepared;
     if (prepared) {
       useChatStore.getState().showResponse(prepared, prepared.prompt ?? "Suggestion");
       useChatStore.getState().setPrepared(null);
+      useProactiveStore.getState().consumePrepared();
       return;
     }
     ask({ trigger: "shortcut_generate", promptLabel: "Suggested response" });

@@ -3,6 +3,7 @@ import { createContext, useContext } from "react";
 export const SETTINGS_TABS = [
   "general",
   "modes",
+  "context",
   "keybinds",
   "audio",
   "screen",
