@@ -10,6 +10,8 @@
 //! * [`anthropic`] — Anthropic Messages API bodies + SSE event models (`input_json_delta` accumulation).
 //! * [`exa`]       — Exa search request/response models.
 //! * [`firecrawl`] — Firecrawl v2 scrape request/response models.
+//! * [`gemini`]    — Google Gemini API (Google AI Studio): generateContent bodies + response
+//!   parsing, thinking policy, error mapping, embeddings, model listing, Live API frames.
 //! * [`realtime`]  — OpenAI/Azure realtime transcription WebSocket messages.
 //! * [`voice_live`] — Foundry Voice Live (MAI-Transcribe) session codec + routing.
 //! * [`jsonl`]     — helper/agent JSON-Lines envelope (`Request`/`Response`/`Event`).
@@ -27,6 +29,7 @@ pub mod azure;
 pub mod clerk;
 pub mod exa;
 pub mod firecrawl;
+pub mod gemini;
 pub mod helper;
 pub mod jsonl;
 pub mod openai;
