@@ -35,6 +35,10 @@ export interface BlueyDocument {
   chunkCount: number;
   indexStatus: DocumentIndexStatus;
   hasEmbeddings: boolean;
+  /** `providerId/model` that produced the chunk vectors (absent until embedded). */
+  embeddingModel?: string;
+  /** Vector length the chunks were embedded with. */
+  embeddingDimensions?: number;
   metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
