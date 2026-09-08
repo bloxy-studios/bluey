@@ -40,8 +40,37 @@ visionRequired, preferredRole)` over the user's role assignments
   (`default/fast/reasoning/vision/research/transcription/embedding`) with fallbacks. Default
   strategy: classification → fast · answer → fast/balanced · coding → default · system design →
   reasoning · research → agent · summarization → fast. All model identifiers are configuration.
-- **Provider adapters** (`AIProvider` trait: `stream(request) -> Stream<AIChunk>`, `embed`,
-  `test_connection`, `list_models`):
+- **Provider presets** (`bluey_core::presets`): one table of reserved provider ids
+  (`gemini`, `azure-foundry`, `anthropic`, `openai`), display names and the recommended model
+  per role. `ai_apply_provider_presets { providerId, overwrite }` points roles at a provider's
+  presets (`overwrite = false` fills only unassigned roles); the `.env` import
+  (`app::env_import`, planned by `presets::plan_env_import`) applies the nominated provider's
+  presets at boot and honours `BLUEY_MODEL_*` overrides. `ai_list_models { providerId, role? }`
+  narrows a provider's catalogue to models fit for a role.
+- **Provider adapters** (`AIProvider` trait: `stream(request) -> Stream<AIChunk>`,
+  `embed(model, texts, purpose)`, `list_models(role?)`; connection tests are a tiny `stream`):
+  - `google_gemini` — **the default** (ADR 0007). Gemini API over REST with the AI Studio key
+    in `x-goog-api-key` (never `?key=`): `POST /v1beta/models/{model}:streamGenerateContent?alt=sse`
+    with bodies from `bluey_protocols::gemini` — roles `user`/`model`, `systemInstruction`,
+    inline base64 images, `responseJsonSchema` (top-level `$schema` stripped), and on 3.x models
+    **only** `thinkingConfig.thinkingLevel` (never `temperature`/`topP`/`topK`/`candidateCount`/
+    `thinkingBudget`). Thinking policy: `deep` reasoning, `deep_reasoning`, `system_design` with
+    reasoning ≥ light or a `deep` latency budget → `high`; `classification` / `ultra-fast` →
+    `minimal` on `gemini-3.5-flash-lite` (else `low`); `answer`/`vision` at `fast` → `low`;
+    everything else `medium` (the default, omitted). Embeddings via `batchEmbedContents` on
+    `gemini-embedding-2`, MRL-truncated to `ai.embeddingDimensions` (768 default), with the
+    documented prompt prefixes (`title: {title|none} | text: …` for chunks, `task: search result |
+    query: …` for queries). Model listing pages `GET /models` and filters by role
+    (`embedContent`, `bidiGenerateContent`+`transcribe`, or `generateContent` minus TTS/image/
+    live/embedding/transcribe ids). Presets: `gemini-3.8-flash` (default/reasoning/vision/
+    research), `gemini-3.5-flash-lite` (fast), `gemini-3.5-transcribe` (batch transcription),
+    `gemini-embedding-2`.
+    Error mapping: 400 `API_KEY_INVALID` → `config.api_key_invalid`; other 400 →
+    `ai.invalid_request`; 403 → `config.http_403`; 404 → `config.model_not_found`; 429 →
+    `network.http_429` with `details.retryAfterMs` and `details.dailyQuota` (a `quotaId`
+    containing `PerDay`); 5xx → `network.http_5xx`; refusals (`promptFeedback.blockReason` or an
+    error-class `finishReason`) → `ai.blocked_<reason>`. Retries: up to 3 attempts on 429/5xx
+    honouring `retryDelay` (never on 400/403/404); streams retry only before the first byte.
   - `azure_foundry` — Microsoft Foundry's OpenAI-compatible **v1 GA** endpoint
     `https://{resource}.openai.azure.com/openai/v1/chat/completions` (no `api-version`;
     `api_version = "preview"` opts into v1 preview features, a dated value selects the legacy

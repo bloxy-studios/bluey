@@ -15,9 +15,10 @@
 ## Secret handling
 | Secret | Where | How it is used |
 |---|---|---|
-| Provider API keys (Foundry/Azure, Anthropic, OpenAI-compatible) | Keychain `provider:<id>:api_key` | Injected into HTTPS headers by Rust provider adapters |
+| Provider API keys (Gemini, Foundry/Azure, Anthropic, OpenAI-compatible) | Keychain `provider:<id>:api_key` | Injected into HTTPS headers by Rust provider adapters (`x-goog-api-key`, `api-key`, `x-api-key`, `Authorization`) — never in URL queries, except the Gemini Live WebSocket URL, which is redacted from logs |
+| Gemini key for the research sidecar | Keychain `provider:gemini:api_key` (same entry) | `GEMINI_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=gemini` |
 | Exa / Firecrawl keys | Keychain | Rust research clients; env-injected into the agent sidecar per job |
-| Anthropic key for the agent | Keychain | `ANTHROPIC_API_KEY` env of the sidecar process only |
+| Anthropic key for the agent | Keychain | `ANTHROPIC_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=claude` |
 | Clerk client JWT | Keychain `auth:clerk:client_token` | Replayed by clerk-js at load (native mode) |
 | Clerk publishable key | `VITE_CLERK_PUBLISHABLE_KEY` (public by design) | Frontend |
 

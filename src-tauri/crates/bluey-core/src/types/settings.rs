@@ -230,6 +230,31 @@ pub struct AiSettings {
     pub embeddings_enabled: bool,
     pub proactive_preparation: bool,
     pub context_token_budget: u32,
+    /// Provider id the `.env` import nominated at boot (`BLUEY_AI_PROVIDER`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_provider: Option<String>,
+    /// MRL-truncated embedding size for `gemini-embedding-2` (768 · 1536 · 3072).
+    #[serde(default = "default_embedding_dimensions")]
+    pub embedding_dimensions: u32,
+    /// Which backend the research sidecar runs (`RESEARCH_BACKEND`).
+    #[serde(default)]
+    pub research_backend: ResearchBackend,
+}
+
+/// Default `ai.embeddingDimensions`: the recommended MRL size for `gemini-embedding-2`.
+pub const DEFAULT_EMBEDDING_DIMENSIONS: u32 = 768;
+
+fn default_embedding_dimensions() -> u32 {
+    DEFAULT_EMBEDDING_DIMENSIONS
+}
+
+/// Mirrors `ResearchBackend` (`"gemini" | "claude"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ResearchBackend {
+    #[default]
+    Gemini,
+    Claude,
 }
 
 impl Default for AiSettings {
@@ -244,6 +269,9 @@ impl Default for AiSettings {
             embeddings_enabled: false,
             proactive_preparation: true,
             context_token_budget: 12_000,
+            bootstrap_provider: None,
+            embedding_dimensions: DEFAULT_EMBEDDING_DIMENSIONS,
+            research_backend: ResearchBackend::Gemini,
         }
     }
 }

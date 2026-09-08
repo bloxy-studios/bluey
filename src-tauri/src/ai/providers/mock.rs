@@ -11,6 +11,9 @@ use bluey_core::{BlueyError, BlueyResult};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use bluey_core::types::ModelRole;
+
+use super::EmbedPurpose;
 use super::{channel_stream, AiProvider, ChunkStream, ProviderRequest, StreamItem};
 use crate::state::DevState;
 
@@ -65,11 +68,16 @@ impl AiProvider for MockProvider {
         Ok(stream)
     }
 
-    async fn embed(&self, _model: &str, texts: &[String]) -> BlueyResult<Vec<Vec<f32>>> {
+    async fn embed(
+        &self,
+        _model: &str,
+        texts: &[String],
+        _purpose: &EmbedPurpose,
+    ) -> BlueyResult<Vec<Vec<f32>>> {
         Ok(texts.iter().map(|t| pseudo_embedding(t)).collect())
     }
 
-    async fn list_models(&self) -> BlueyResult<Vec<String>> {
+    async fn list_models(&self, _role: Option<ModelRole>) -> BlueyResult<Vec<String>> {
         Ok(vec![
             "mock-fast".into(),
             "mock-default".into(),

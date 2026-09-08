@@ -56,6 +56,9 @@ export interface ScreenSettings {
   maxImageDimension: number;
 }
 
+/** Which backend the research sidecar runs (`RESEARCH_BACKEND`). */
+export type ResearchBackend = "gemini" | "claude";
+
 export interface AISettings {
   providers: AIProviderConfig[];
   models: ModelRoleAssignments;
@@ -67,6 +70,11 @@ export interface AISettings {
   proactivePreparation: boolean;
   /** Max input tokens per request (token budget). */
   contextTokenBudget: number;
+  /** Provider id the `.env` import nominated at boot (`BLUEY_AI_PROVIDER`). */
+  bootstrapProvider?: string;
+  /** MRL-truncated embedding size for gemini-embedding-2 (768 · 1536 · 3072). */
+  embeddingDimensions: number;
+  researchBackend: ResearchBackend;
 }
 
 export interface PrivacySettings {

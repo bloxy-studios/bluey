@@ -103,11 +103,59 @@ describe("MockTransport", () => {
     expect(interview?.systemInstructions).toContain("candidate in a job interview");
   });
 
+  it("seeds Gemini as the first provider and applies its presets per role", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    const settings = await mock.invoke("settings_get", undefined);
+    expect(settings.ai.providers[0]).toMatchObject({ id: "gemini", kind: "google_gemini", hasApiKey: true });
+    expect(settings.ai.bootstrapProvider).toBe("gemini");
+    expect(settings.ai.embeddingDimensions).toBe(768);
+    expect(settings.ai.researchBackend).toBe("gemini");
+
+    // Fill-only leaves the seeded Foundry assignments alone; overwrite moves them to Gemini.
+    const filled = await mock.invoke("ai_apply_provider_presets", { providerId: "gemini", overwrite: false });
+    expect(filled.ai.models.default?.providerId).toBe("azure-foundry");
+    const overwritten = await mock.invoke("ai_apply_provider_presets", {
+      providerId: "gemini",
+      overwrite: true,
+    });
+    expect(overwritten.ai.models.default).toEqual({ providerId: "gemini", model: "gemini-3.8-flash" });
+    expect(overwritten.ai.models.fast).toEqual({ providerId: "gemini", model: "gemini-3.5-flash-lite" });
+    expect(overwritten.ai.models.embedding).toEqual({ providerId: "gemini", model: "gemini-embedding-2" });
+    expect(overwritten.ai.models.transcription).toEqual({
+      providerId: "gemini",
+      model: "gemini-3.5-transcribe",
+    });
+    await expect(
+      mock.invoke("ai_apply_provider_presets", { providerId: "nope", overwrite: false }),
+    ).rejects.toMatchObject({
+      code: "config.unknown_provider",
+    });
+  });
+
+  it("ai_list_models narrows the Gemini catalogue per role", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    const all = await mock.invoke("ai_list_models", { providerId: "gemini" });
+    expect(all).toContain("gemini-3.8-flash");
+    expect(await mock.invoke("ai_list_models", { providerId: "gemini", role: "embedding" })).toEqual([
+      "gemini-embedding-2",
+      "gemini-embedding-001",
+    ]);
+    expect(await mock.invoke("ai_list_models", { providerId: "gemini", role: "transcription" })).toEqual([
+      "gemini-3.5-transcribe",
+      "gemini-3.5-transcribe-live",
+    ]);
+    const text = await mock.invoke("ai_list_models", { providerId: "gemini", role: "default" });
+    expect(text).toEqual(["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash"]);
+  });
+
   it("shortcuts_check_conflict flags bluey and system conflicts", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     const system = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+Q" });
     expect(system?.conflictsWith).toBe("system");
-    const bluey = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+R", ignoreId: "toggle_panel" });
+    const bluey = await mock.invoke("shortcuts_check_conflict", {
+      accelerator: "CmdOrCtrl+R",
+      ignoreId: "toggle_panel",
+    });
     expect(bluey?.conflictsWith).toBe("bluey");
     const ok = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+Alt+P" });
     expect(ok).toBeNull();
@@ -116,7 +164,12 @@ describe("MockTransport", () => {
   it("context_build_snapshot returns OCR text of a coding problem", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     const snapshot = await mock.invoke("context_build_snapshot", {
-      options: { includeScreen: true, includeOcr: true, includeAccessibility: false, includeTranscript: false },
+      options: {
+        includeScreen: true,
+        includeOcr: true,
+        includeAccessibility: false,
+        includeTranscript: false,
+      },
     });
     expect(snapshot.ocr?.text).toContain("Two Sum");
     expect(snapshot.screen?.width).toBeGreaterThan(0);

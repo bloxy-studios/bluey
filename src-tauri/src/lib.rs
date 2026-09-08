@@ -86,6 +86,7 @@ pub fn run() {
         commands::ai::ai_embed,
         commands::ai::ai_test_connection,
         commands::ai::ai_list_models,
+        commands::ai::ai_apply_provider_presets,
         // Research
         commands::research::research_search,
         commands::research::research_scrape,

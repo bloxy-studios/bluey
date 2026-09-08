@@ -351,6 +351,14 @@ export function createDefaultSettings(): Settings {
     ai: {
       providers: [
         {
+          id: "gemini",
+          kind: "google_gemini",
+          name: "Google Gemini",
+          baseUrl: "",
+          enabled: true,
+          hasApiKey: true,
+        },
+        {
           id: "azure-foundry",
           kind: "azure_foundry",
           name: "Azure Foundry",
@@ -384,6 +392,9 @@ export function createDefaultSettings(): Settings {
       embeddingsEnabled: true,
       proactivePreparation: true,
       contextTokenBudget: 24_000,
+      bootstrapProvider: "gemini",
+      embeddingDimensions: 768,
+      researchBackend: "gemini",
     },
     privacy: {
       displayMode: "standard",
@@ -573,6 +584,15 @@ export function createSeedData(): SeedData {
 }
 
 export const FIXTURE_MODELS_BY_KIND: Record<string, string[]> = {
+  google_gemini: [
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.5-transcribe",
+    "gemini-3.5-transcribe-live",
+    "gemini-embedding-2",
+    "gemini-embedding-001",
+  ],
   azure_foundry: [
     "gpt-6-astra",
     "gpt-5.6-sol",

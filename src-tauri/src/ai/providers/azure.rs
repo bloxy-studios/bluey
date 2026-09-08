@@ -11,7 +11,10 @@ use bluey_core::{BlueyError, BlueyResult};
 use bluey_protocols::{azure as proto, openai as openai_proto};
 use tokio_util::sync::CancellationToken;
 
+use bluey_core::types::ModelRole;
+
 use super::openai::spawn_openai_sse;
+use super::EmbedPurpose;
 use super::{map_http_status, map_transport_error, AiProvider, ChunkStream, ProviderRequest};
 
 /// Common Foundry model names offered alongside the deployments map in
@@ -98,7 +101,12 @@ impl AiProvider for AzureProvider {
         Ok(spawn_openai_sse(response, token))
     }
 
-    async fn embed(&self, model: &str, texts: &[String]) -> BlueyResult<Vec<Vec<f32>>> {
+    async fn embed(
+        &self,
+        model: &str,
+        texts: &[String],
+        _purpose: &EmbedPurpose,
+    ) -> BlueyResult<Vec<Vec<f32>>> {
         let deployment = self.deployment(model);
         let url = proto::embeddings_url(&self.base_url, self.api_version.as_deref(), deployment);
         let body = openai_proto::build_embeddings_body(deployment, texts);
@@ -121,7 +129,7 @@ impl AiProvider for AzureProvider {
         Ok(parsed.into_vectors())
     }
 
-    async fn list_models(&self) -> BlueyResult<Vec<String>> {
+    async fn list_models(&self, _role: Option<ModelRole>) -> BlueyResult<Vec<String>> {
         let mut models: Vec<String> = self
             .deployments
             .as_ref()

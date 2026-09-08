@@ -7,6 +7,9 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use bluey_core::types::ModelRole;
+
+use super::EmbedPurpose;
 use super::{
     channel_stream, map_http_status, map_transport_error, AiProvider, ChunkStream, ProviderRequest,
     StreamItem,
@@ -60,7 +63,12 @@ impl AiProvider for OpenAiProvider {
         Ok(spawn_openai_sse(response, token))
     }
 
-    async fn embed(&self, model: &str, texts: &[String]) -> BlueyResult<Vec<Vec<f32>>> {
+    async fn embed(
+        &self,
+        model: &str,
+        texts: &[String],
+        _purpose: &EmbedPurpose,
+    ) -> BlueyResult<Vec<Vec<f32>>> {
         let body = proto::build_embeddings_body(model, texts);
         let response = self
             .http
@@ -81,7 +89,7 @@ impl AiProvider for OpenAiProvider {
         Ok(parsed.into_vectors())
     }
 
-    async fn list_models(&self) -> BlueyResult<Vec<String>> {
+    async fn list_models(&self, _role: Option<ModelRole>) -> BlueyResult<Vec<String>> {
         let response = self
             .http
             .get(proto::models_url(&self.base_url))

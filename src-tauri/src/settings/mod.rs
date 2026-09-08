@@ -66,6 +66,34 @@ impl SettingsManager {
         Ok((old, new))
     }
 
+    /// Synchronous variant of [`Self::update`] for the bootstrap path (the
+    /// `.env` import runs before any async context exists).
+    pub fn update_sync(&self, patch: serde_json::Value) -> BlueyResult<Settings> {
+        let old = self.get();
+        let mut new = old
+            .apply_patch(&patch)
+            .map_err(|e| bluey_core::BlueyError::invalid_params(format!("invalid patch: {e}")))?;
+        new.shortcuts = bluey_core::shortcuts::reconcile(&new.shortcuts);
+        let mut blob = new.clone();
+        let providers = std::mem::take(&mut blob.ai.providers);
+        let shortcuts = blob.shortcuts.clone();
+        let old_ids: Vec<String> = old.ai.providers.iter().map(|p| p.id.clone()).collect();
+        let new_ids: Vec<String> = providers.iter().map(|p| p.id.clone()).collect();
+        self.storage.run_sync(move |db| {
+            SettingsRepository::save(db, &blob)?;
+            for provider in &providers {
+                ModelConfigRepository::upsert(db, provider)?;
+            }
+            for stale in old_ids.iter().filter(|id| !new_ids.contains(id)) {
+                ModelConfigRepository::delete(db, stale)?;
+            }
+            ShortcutRepository::save_all(db, &shortcuts)?;
+            Ok(())
+        })?;
+        self.replace(new.clone());
+        Ok(new)
+    }
+
     /// Reset everything to defaults (providers and shortcuts included),
     /// publish `settings.changed` and return `(old, new)`.
     pub async fn reset(&self) -> BlueyResult<(Settings, Settings)> {

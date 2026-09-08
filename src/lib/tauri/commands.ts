@@ -55,6 +55,8 @@ import type {
   SessionNote,
   SessionSearchQuery,
   SessionSummary,
+  EmbedPurpose,
+  ModelRole,
   Settings,
   SettingsPatch,
   SetupCheck,
@@ -141,9 +143,15 @@ export interface CommandMap {
   capture_set_protection: { args: { enabled: boolean }; result: CaptureProtection };
 
   // ── OCR / Accessibility ────────────────────────────────────────────────
-  ocr_recognize: { args: { frameId: string; level?: "fast" | "accurate"; languages?: string[] }; result: OCRContext };
+  ocr_recognize: {
+    args: { frameId: string; level?: "fast" | "accurate"; languages?: string[] };
+    result: OCRContext;
+  };
   accessibility_snapshot: { args: { maxDepth?: number; maxElements?: number }; result: AccessibilityContext };
-  accessibility_frontmost_app: { args: void; result: { application: ApplicationContext; window?: WindowContext } };
+  accessibility_frontmost_app: {
+    args: void;
+    result: { application: ApplicationContext; window?: WindowContext };
+  };
 
   // ── Audio / Transcript ─────────────────────────────────────────────────
   audio_list_devices: { args: void; result: AudioDevice[] };
@@ -152,8 +160,14 @@ export interface CommandMap {
   audio_pause: { args: void; result: AudioStatus };
   audio_resume: { args: void; result: AudioStatus };
   audio_get_status: { args: void; result: AudioStatus };
-  audio_test_microphone: { args: { deviceId?: string; durationMs?: number }; result: { peakLevel: number; ok: boolean } };
-  transcript_list: { args: { sessionId?: string; sinceMs?: number; limit?: number }; result: TranscriptSegment[] };
+  audio_test_microphone: {
+    args: { deviceId?: string; durationMs?: number };
+    result: { peakLevel: number; ok: boolean };
+  };
+  transcript_list: {
+    args: { sessionId?: string; sinceMs?: number; limit?: number };
+    result: TranscriptSegment[];
+  };
   transcript_recent: { args: { windowSeconds: number }; result: TranscriptSegment[] };
   transcript_clear: { args: { sessionId?: string }; result: void };
 
@@ -165,9 +179,13 @@ export interface CommandMap {
   ai_stream: { args: { request: AIRequest; onChunk: unknown }; result: void };
   ai_cancel: { args: { requestId: string }; result: boolean };
   ai_cancel_all: { args: void; result: number };
-  ai_embed: { args: { texts: string[] }; result: number[][] };
+  /** `purpose` defaults to `document`; queries get the retrieval prompt prefix on gemini-embedding-2. */
+  ai_embed: { args: { texts: string[]; purpose?: EmbedPurpose }; result: number[][] };
   ai_test_connection: { args: { providerId: string; model?: string }; result: ConnectionTestResult };
-  ai_list_models: { args: { providerId: string }; result: string[] };
+  /** `role` narrows the catalogue to models fit for that role (embedding, transcription, text). */
+  ai_list_models: { args: { providerId: string; role?: ModelRole }; result: string[] };
+  /** Point roles at the provider's recommended models; `overwrite: false` fills only unassigned roles. */
+  ai_apply_provider_presets: { args: { providerId: string; overwrite: boolean }; result: Settings };
 
   // ── Research ───────────────────────────────────────────────────────────
   research_search: { args: { query: string; numResults?: number }; result: SearchResult[] };
@@ -200,13 +218,23 @@ export interface CommandMap {
   sessions_delete_all: { args: void; result: number };
   sessions_rename: { args: { id: string; title: string }; result: Session };
   sessions_add_event: {
-    args: { sessionId: string; type: SessionEventType; title: string; detail?: string; refs?: Record<string, string>; confidence?: number };
+    args: {
+      sessionId: string;
+      type: SessionEventType;
+      title: string;
+      detail?: string;
+      refs?: Record<string, string>;
+      confidence?: number;
+    };
     result: SessionEvent;
   };
   sessions_list_events: { args: { sessionId: string }; result: SessionEvent[] };
   sessions_add_note: { args: { sessionId: string; content: string }; result: SessionNote };
   sessions_delete_note: { args: { noteId: string }; result: void };
-  sessions_save_summary: { args: { summary: Omit<SessionSummary, "id" | "createdAt"> }; result: SessionSummary };
+  sessions_save_summary: {
+    args: { summary: Omit<SessionSummary, "id" | "createdAt"> };
+    result: SessionSummary;
+  };
   sessions_get_summary: { args: { sessionId: string }; result: SessionSummary | null };
 
   // ── Responses ──────────────────────────────────────────────────────────
@@ -240,9 +268,15 @@ export interface CommandMap {
 
   // ── Shortcuts ──────────────────────────────────────────────────────────
   shortcuts_list: { args: void; result: ShortcutBinding[] };
-  shortcuts_update: { args: { id: ShortcutId; accelerator: string; enabled?: boolean }; result: ShortcutBinding[] };
+  shortcuts_update: {
+    args: { id: ShortcutId; accelerator: string; enabled?: boolean };
+    result: ShortcutBinding[];
+  };
   shortcuts_reset: { args: void; result: ShortcutBinding[] };
-  shortcuts_check_conflict: { args: { accelerator: string; ignoreId?: ShortcutId }; result: ShortcutConflict | null };
+  shortcuts_check_conflict: {
+    args: { accelerator: string; ignoreId?: ShortcutId };
+    result: ShortcutConflict | null;
+  };
 
   // ── Panel / windows ────────────────────────────────────────────────────
   panel_show: { args: void; result: PanelState };
@@ -330,6 +364,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "ai_embed",
   "ai_test_connection",
   "ai_list_models",
+  "ai_apply_provider_presets",
   "research_search",
   "research_scrape",
   "research_deep_start",

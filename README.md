@@ -37,8 +37,10 @@ Bluey is a personal tool: **no billing, subscriptions or teams.** Sign-in uses C
 ## Stack
 Tauri v2 · Rust (tokio, rusqlite, reqwest) · Swift native helper (ScreenCaptureKit, Vision,
 Accessibility, AVFoundation, Speech) · React 19 + TypeScript + Tailwind v4 + Zustand · Clerk ·
-Microsoft Foundry / Azure OpenAI, Anthropic and OpenAI-compatible providers · Claude Agent SDK
-(Bun sidecar) · Exa · Firecrawl · SQLite (FTS5) · macOS Keychain.
+Google Gemini (default — one AI Studio key for chat, vision, transcription, embeddings and
+research) with Microsoft Foundry / Azure OpenAI, Anthropic and OpenAI-compatible providers as
+alternates · research sidecar (Bun; Gemini function calling, or the Claude Agent SDK) · Exa ·
+Firecrawl · SQLite (FTS5) · macOS Keychain.
 
 ## Requirements
 macOS 14+ (Apple Silicon or Intel). To build: Xcode Command Line Tools, Bun ≥ 1.2, Rust stable.

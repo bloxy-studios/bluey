@@ -10,6 +10,7 @@
 //! * [`budget`] — context token budgeting & trimming.
 //! * [`shortcuts`] — default bindings, accelerator parsing, conflict detection.
 //! * [`modes`]  — built-in mode definitions as data.
+//! * [`presets`] — provider presets (reserved ids, recommended models) + `.env` import planning.
 //! * [`session`] — session lifecycle rules.
 //! * [`context`] — native context snapshot assembly helpers (size limits, adapters).
 //! * [`text`]   — token estimation, chunking, dedupe utilities.
@@ -23,6 +24,7 @@ pub mod budget;
 pub mod context;
 pub mod events;
 pub mod modes;
+pub mod presets;
 pub mod router;
 pub mod session;
 pub mod shortcuts;

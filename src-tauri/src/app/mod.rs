@@ -9,6 +9,7 @@
 
 pub mod checks;
 pub mod dev;
+pub mod env_import;
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -123,6 +124,10 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         bus.clone(),
     )?);
     set_log_level(settings.get().advanced.log_level.as_str());
+    // `.env` → Keychain/settings (ADR 0007). Never fatal.
+    if let Err(error) = env_import::import_env(&secrets, &settings) {
+        tracing::warn!(error = %error, "env import failed");
+    }
 
     let hub = Arc::new(StateHub::new(
         settings.get().general.default_mode_id.clone(),
