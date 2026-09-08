@@ -2,13 +2,14 @@ import { AudioLines, Globe, Mic, SlidersHorizontal, UsersRound, Waves } from "lu
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { LevelMeter } from "@/components/ui/LevelMeter";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
 import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
 import { bluey } from "@/lib/tauri/api";
-import type { AudioDevice } from "@/lib/types";
+import { toBlueyError, type AudioDevice, type BlueyError } from "@/lib/types";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranscriptStore } from "@/stores/transcriptStore";
 
@@ -30,6 +31,8 @@ export default function AudioTab() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [testing, setTesting] = useState(false);
   const [peak, setPeak] = useState<number | null>(null);
+  const [error, setError] = useState<BlueyError | null>(null);
+  const [devicesTick, setDevicesTick] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -38,11 +41,13 @@ export default function AudioTab() {
       .then((list) => {
         if (alive) setDevices(list.filter((d) => d.kind === "input"));
       })
-      .catch(() => undefined);
+      .catch((err: unknown) => {
+        if (alive) setError(toBlueyError(err, "audio"));
+      });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [devicesTick]);
 
   if (!settings) return null;
   const { audio } = settings;
@@ -50,14 +55,15 @@ export default function AudioTab() {
   const testMicrophone = async () => {
     setTesting(true);
     setPeak(null);
+    setError(null);
     try {
       const result = await bluey.audio.testMicrophone({
         deviceId: audio.microphoneDeviceId,
         durationMs: 2000,
       });
       setPeak(result.peakLevel);
-    } catch (error) {
-      console.warn("[audio] test failed", error);
+    } catch (err) {
+      setError(toBlueyError(err, "audio"));
     } finally {
       setTesting(false);
     }
@@ -66,6 +72,18 @@ export default function AudioTab() {
   return (
     <>
       <SectionHeader title="Audio" description="Choose how Bluey listens during sessions" />
+
+      {error ? (
+        <ErrorBanner
+          error={error}
+          onRetry={() => {
+            setError(null);
+            setDevicesTick((n) => n + 1);
+          }}
+          compact
+          className="mb-3"
+        />
+      ) : null}
 
       <SettingRow
         icon={AudioLines}

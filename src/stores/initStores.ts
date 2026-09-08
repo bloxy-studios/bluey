@@ -8,9 +8,12 @@ import type { Unlisten } from "@/lib/tauri/transport";
 import { useAppStore } from "./appStore";
 import { useChatStore } from "./chatStore";
 import { useDevStore } from "./devStore";
+import { startErrorSurface } from "./errorSurface";
+import { resetHudUiForTest } from "./hudUiStore";
 import { useModesStore } from "./modesStore";
 import { usePanelStore } from "./panelStore";
 import { usePermissionsStore } from "./permissionsStore";
+import { resetProactiveForTest, startProactiveLoop } from "./proactive";
 import { useSessionStore } from "./sessionStore";
 import { useSettingsStore } from "./settingsStore";
 import { useTranscriptStore } from "./transcriptStore";
@@ -48,6 +51,10 @@ export async function initStores(): Promise<void> {
 
     eventBus.on("dev.metrics", (metrics) => useDevStore.getState().setMetrics(metrics)),
     eventBus.on("dev.log", (entry) => useDevStore.getState().pushLog(entry)),
+
+    // Cross-cutting loops: proactive preparation (HUD only) and global error toasts.
+    startProactiveLoop(),
+    startErrorSurface(),
   ];
 
   await Promise.all([
@@ -66,9 +73,16 @@ export function resetStoresForTest(): void {
   useSettingsStore.setState({ settings: null, lastError: null });
   useModesStore.setState({ modes: [], loaded: false });
   useSessionStore.setState({ active: null, events: [] });
-  useTranscriptStore.setState({ segments: [], partial: null, questions: [], levels: { microphone: 0, system: 0 } });
+  useTranscriptStore.setState({
+    segments: [],
+    partial: null,
+    questions: [],
+    levels: { microphone: 0, system: 0 },
+  });
   useChatStore.setState({ turns: [], generation: 0, phase: null, activeRequestId: null, prepared: null });
   usePanelStore.setState({ state: null });
   usePermissionsStore.setState({ permissions: null });
   useDevStore.setState({ metrics: null, logs: [] });
+  resetProactiveForTest();
+  resetHudUiForTest();
 }

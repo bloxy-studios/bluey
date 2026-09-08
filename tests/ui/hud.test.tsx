@@ -4,10 +4,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { HudPanel } from "@/features/hud/HudPanel";
+import { endSession, pauseSession, resumeSession } from "@/features/hud/session-actions";
+import { bluey } from "@/lib/tauri/api";
 import type { AppStatus } from "@/lib/types";
+import { useAppStore } from "@/stores/appStore";
 import { setEngine } from "@/stores/engine";
 import { useChatStore } from "@/stores/chatStore";
-import { FakeEngine, makeResponse, setupMockApp } from "./helpers";
+import { useSessionStore } from "@/stores/sessionStore";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { FakeEngine, ProactiveFakeEngine, makeResponse, makeSegment, setupMockApp } from "./helpers";
 
 function renderHud() {
   return render(
@@ -18,7 +23,13 @@ function renderHud() {
 }
 
 function status(partial: Partial<AppStatus>): AppStatus {
-  return { state: "ready", audioActive: false, modeId: "general", updatedAt: new Date().toISOString(), ...partial };
+  return {
+    state: "ready",
+    audioActive: false,
+    modeId: "general",
+    updatedAt: new Date().toISOString(),
+    ...partial,
+  };
 }
 
 describe("HudPanel", () => {
@@ -96,7 +107,12 @@ describe("HudPanel", () => {
   it("shows a prepared-response hint and takes it with ⌘⇧↵", async () => {
     const mock = await setupMockApp();
     setEngine(engine);
-    const prepared = makeResponse({ id: "prep-1", content: "Prepared answer", prompt: "Tell me about yourself", prepared: true });
+    const prepared = makeResponse({
+      id: "prep-1",
+      content: "Prepared answer",
+      prompt: "Tell me about yourself",
+      prepared: true,
+    });
     engine.preparedQueue.push(prepared);
     renderHud();
 
@@ -107,5 +123,110 @@ describe("HudPanel", () => {
     await user.keyboard("{Meta>}{Shift>}{Enter}{/Shift}{/Meta}");
     await waitFor(() => expect(screen.getByText("Prepared answer")).toBeInTheDocument());
     expect(engine.asks).toHaveLength(0); // took the prepared response, no new ask
+  });
+
+  it("prepares a response for a detected question and ⌘⇧↵ takes that exact one", async () => {
+    const mock = await setupMockApp();
+    const proactive = new ProactiveFakeEngine();
+    setEngine(proactive);
+    await useSettingsStore.getState().update({ ai: { proactivePreparation: true } });
+    renderHud();
+
+    mock.emit("transcript.final", makeSegment({ text: "Why do you want to work here?" }));
+    await waitFor(() => expect(screen.getByText(/Bluey has a suggestion/)).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.keyboard("{Meta>}{Shift>}{Enter}{/Shift}{/Meta}");
+    await waitFor(() => expect(screen.getByText("Prepared for det-1")).toBeInTheDocument());
+    expect(proactive.takeCalls[0]).toBe("det-1");
+    expect(proactive.asks).toHaveLength(0);
+  });
+
+  it("shows the live transcript strip while listening and collapses it to one line", async () => {
+    const mock = await setupMockApp();
+    setEngine(engine);
+    renderHud();
+    expect(screen.queryByLabelText("Live transcript")).not.toBeInTheDocument();
+
+    mock.emit("app.state", status({ state: "listening", audioActive: true }));
+    await waitFor(() => expect(screen.getByLabelText("Live transcript")).toBeInTheDocument());
+    expect(screen.getByText("Waiting for speech…")).toBeInTheDocument();
+
+    // A confident speaker label from the pipeline beats the mode heuristic ("Speaker" in General).
+    mock.emit(
+      "transcript.final",
+      makeSegment({ text: "Walk me through your background.", speakerConfidence: 0.8 }),
+    );
+    mock.emit("transcript.final", makeSegment({ text: "And what are you looking for next?" }));
+    mock.emit("transcript.partial", makeSegment({ text: "We are hiring for", finalized: false }));
+    await waitFor(() => expect(screen.getByText("And what are you looking for next?")).toBeInTheDocument());
+    expect(screen.getByText("Walk me through your background.")).toBeInTheDocument();
+    expect(screen.getByText("We are hiring for")).toBeInTheDocument();
+    expect(screen.getByText("Interviewer")).toBeInTheDocument();
+    expect(screen.getAllByText("Speaker")).toHaveLength(2);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Collapse transcript" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Walk me through your background.")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("We are hiring for")).toBeInTheDocument(); // the newest line survives
+    expect(screen.getByRole("button", { name: "Expand transcript" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    mock.emit("app.state", status({ state: "ready", audioActive: false }));
+    await waitFor(() => expect(screen.queryByLabelText("Live transcript")).not.toBeInTheDocument());
+  });
+
+  it("surfaces the backend error in the pill with its recovery and dismisses via recover", async () => {
+    const mock = await setupMockApp();
+    setEngine(engine);
+    renderHud();
+
+    mock.emit(
+      "app.state",
+      status({
+        state: "error",
+        error: {
+          kind: "configuration",
+          code: "config.missing_provider",
+          message: "No AI provider configured",
+          recoverable: true,
+          recovery: { type: "open_settings", tab: "ai" },
+        },
+      }),
+    );
+    await waitFor(() => expect(screen.getByText("Setup needed")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Open Settings" })).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Dismiss error" }));
+    await waitFor(() => expect(useAppStore.getState().status?.state).toBe("ready"));
+    expect(screen.queryByText("Setup needed")).not.toBeInTheDocument();
+  });
+
+  it("toolbar reflects the active session and its controls pause, resume and end it", async () => {
+    // (The Radix menu itself is not driven here: opening it takes seconds under jsdom.)
+    await bluey.audio.start();
+    await bluey.session.start({ title: "Panel interview" });
+    renderHud();
+    await screen.findByRole("button", { name: "Session: Panel interview" });
+
+    expect(await pauseSession()).toBe(true);
+    await waitFor(() => expect(useSessionStore.getState().active?.status).toBe("paused"));
+    expect((await bluey.audio.getStatus()).state).toBe("paused");
+
+    expect(await resumeSession()).toBe(true);
+    await waitFor(() => expect(useSessionStore.getState().active?.status).toBe("active"));
+    expect((await bluey.audio.getStatus()).state).toBe("running");
+
+    expect(await endSession()).toBe(true);
+    await waitFor(() => expect(useSessionStore.getState().active).toBeNull());
+    expect(await screen.findByRole("button", { name: "Session menu" })).toBeInTheDocument();
+
+    // Ending again has no session to end: the failure becomes a toast, not a rejection.
+    expect(await endSession()).toBe(false);
   });
 });

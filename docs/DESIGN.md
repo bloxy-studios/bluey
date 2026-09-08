@@ -42,9 +42,13 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   "Bluey Settings" in a 44px drag region (`data-tauri-drag-region`).
 * **Top tab bar**: horizontal icon-over-label tabs, centered, 12px gap. Each tab is 76×56,
   icon 18px, label 12px medium. Inactive: `fg-muted`; active: `fg` on `bg-tile` rounded 12px.
-  Tabs (in order): General, Modes, Keybinds, Audio, Screen, AI, Privacy, Permissions,
+  Tabs (in order): General, Modes, Context, Keybinds, Audio, Screen, AI, Privacy, Permissions,
   Sessions, Profile, Advanced, About (Calendar/Notifications/Billing from the reference are
   intentionally omitted — Bluey has no billing). Hairline below the bar.
+* **Context tab** ("My Context"): "Add as" kind picker (Résumé, CV, Job description, Company
+  notes…) above the same dashed dropzone as Modes → Files, then the list of global documents
+  as cards (title, kind badge, format · size · chunks · index status · Embedded, date) with
+  per-row Reindex / Remove (confirm dialog) and a "Reindex all" secondary button.
 * **Content**: 24px horizontal padding, scrollable, max-width 800px.
   * Section header: 15px semibold + 13px muted description, 24px above, 12px below.
   * **Setting row**: 48×48 tile (`bg-tile`, radius 12, 20px line icon, `fg-muted`), 12px gap,
@@ -93,8 +97,18 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   (image icon, tooltip "Uses Screen" / "Screen off"), *Visibility* (eye / eye-off, tooltip
   "Detectable" / "Content-protected"), *Mode* (grid 2×2, tooltip = mode name, opens the mode
   menu), thin vertical divider, *Audio* (waveform, tooltip "Start Audio Session" /
-  "Stop Audio Session", pulsing green dot when listening); right — "New Chat" label with
-  keycaps ⌘ R when a response exists, otherwise "History" label + 32×32 down-arrow button.
+  "Stop Audio Session", pulsing green dot when listening), *Session* (timer icon, blue dot
+  while a session runs, grey when paused; opens the session menu: title · duration, Pause /
+  Resume, End session, Open in History — or Start session when none is running); right —
+  "New Chat" label with keycaps ⌘ R when a response exists, otherwise "History" label +
+  32×32 down-arrow button.
+* **Live transcript strip** (only while listening, between the input/response and the
+  toolbar): hairline, 11px uppercase `fg-subtle` label "Live transcript" with a pulsing
+  green dot and a collapse chevron (32px ghost button). Up to 4 lines (1 when collapsed):
+  speaker label 12.5px medium (`fg-muted`, dimmed to `fg-subtle` when the heuristic label is
+  < 70% confident, hover title shows the confidence), text 12.5px truncated to one line, the
+  in-flight partial in italic `fg-subtle`, and a small "Question" pill on segments that
+  triggered a detection. Collapsed state persists across relaunches (localStorage).
 * **Tooltips**: `tooltip-bg`, white 13px, radius 8, 6px 10px padding, 6px above the button,
   fade/scale 120ms.
 * **Mode menu**: 200px dark menu (`#141414`, radius 12, border), items 15px with 10px 16px
@@ -109,9 +123,16 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   circular ↓ button appears bottom-right when not scrolled to the end. Bottom toolbar row
   stays as in idle with "New Chat ⌘ R".
 * **States** (label in the left pill): Idle `Bluey · General`, Listening `● Listening`
-  (green dot), Capturing `◌ Reading screen`, Thinking `◌ Thinking` (spinner glyph), Error
-  `! Something went wrong` + recovery button. Streaming text appears progressively; code
-  blocks are buffered until their closing fence.
+  (green dot), Capturing `◌ Reading screen`, Thinking `◌ Thinking` (spinner glyph),
+  Preparing `◌ Preparing a suggestion` (proactive loop running), Prepared (blue)
+  `Bluey has a suggestion · ⌘⇧↵`, Error `! <friendly title>` in `danger` + the error's single
+  recovery button (`hud-chip` pill: Open Settings / Open System Settings / Retry / Restart
+  helper / Sign in) + a 24px × dismiss that returns the state machine to ready. Streaming
+  text appears progressively; code blocks are buffered until their closing fence.
+* **Error toasts** (bottom-center, 360px, `tooltip-bg` with a `danger` hairline): friendly
+  title + one-line explanation + accent link for the recovery action + × dismiss. Used for
+  backend errors that belong to no control (`app.error`, `audio.error`, helper crashes);
+  repeated errors of the same code replace each other. Plain confirmations stay pills.
 * **Actions on a response**: Copy answer, Copy code, 👍 / 👎 (with "Why wasn't this
   useful?" chips: Wrong, Too long, Not relevant, Missed context, Wrong tone), Regenerate,
   Expand/Collapse solution. "Copied" confirmation for ~1s.
