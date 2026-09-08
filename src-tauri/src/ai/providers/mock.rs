@@ -14,8 +14,24 @@ use tokio_util::sync::CancellationToken;
 use bluey_core::types::ModelRole;
 
 use super::EmbedPurpose;
-use super::{channel_stream, AiProvider, ChunkStream, ProviderRequest, StreamItem};
+use super::{
+    channel_stream, AiProvider, AudioFile, ChunkStream, ProviderRequest, StreamItem,
+    TranscribeFileOptions, TranscribedWord, TranscriptTurn, Transcription,
+};
 use crate::state::DevState;
+
+/// Canned two-speaker recording for `transcribe_audio`.
+const MOCK_RECORDING: &[(&str, &str)] = &[
+    ("spk_1", "Thanks for joining, let's get started."),
+    ("spk_2", "Could you walk me through your recent project?"),
+    (
+        "spk_1",
+        "We rebuilt the ingestion pipeline around a queue so retries were free.",
+    ),
+    ("spk_2", "What trade-offs did you consider?"),
+];
+const MOCK_MS_PER_WORD: u64 = 320;
+const MOCK_TURN_PAUSE_MS: u64 = 1_200;
 
 pub struct MockProvider {
     dev: Arc<DevState>,
@@ -85,6 +101,46 @@ impl AiProvider for MockProvider {
             "mock-vision".into(),
             "mock-embedding".into(),
         ])
+    }
+
+    async fn transcribe_audio(
+        &self,
+        _model: &str,
+        _audio: AudioFile,
+        options: &TranscribeFileOptions,
+    ) -> BlueyResult<Transcription> {
+        if let Some(code) = self.dev.knobs().ai_failure_code.clone() {
+            return Err(BlueyError::ai(&code, "simulated failure (dev tools)"));
+        }
+        let mut clock = 0u64;
+        let turns = MOCK_RECORDING
+            .iter()
+            .map(|(speaker, text)| {
+                let words = text
+                    .split_whitespace()
+                    .map(|word| {
+                        let start = clock;
+                        clock += MOCK_MS_PER_WORD;
+                        TranscribedWord {
+                            word: word.to_string(),
+                            start_ms: options.word_timestamps.then_some(start),
+                            end_ms: options.word_timestamps.then_some(clock),
+                        }
+                    })
+                    .collect();
+                clock += MOCK_TURN_PAUSE_MS;
+                TranscriptTurn {
+                    speaker: options.diarization.then(|| speaker.to_string()),
+                    text: text.to_string(),
+                    words,
+                }
+            })
+            .collect();
+        Ok(Transcription {
+            turns,
+            finish: Some("STOP".into()),
+            ..Transcription::default()
+        })
     }
 }
 

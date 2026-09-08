@@ -66,6 +66,7 @@ import type {
   SnapshotOptions,
   AppStatus,
   PanelState,
+  TranscribeFileResult,
   TranscriptSegment,
   WindowContext,
 } from "../types";
@@ -164,6 +165,8 @@ export interface CommandMap {
     args: { deviceId?: string; durationMs?: number };
     result: { peakLevel: number; ok: boolean };
   };
+  /** Native open dialog limited to WAV/MP3/AIFF/AAC/OGG/FLAC; `null` when cancelled. */
+  audio_pick_recording: { args: void; result: string | null };
   transcript_list: {
     args: { sessionId?: string; sinceMs?: number; limit?: number };
     result: TranscriptSegment[];
@@ -186,6 +189,15 @@ export interface CommandMap {
   ai_list_models: { args: { providerId: string; role?: ModelRole }; result: string[] };
   /** Point roles at the provider's recommended models; `overwrite: false` fills only unassigned roles. */
   ai_apply_provider_presets: { args: { providerId: string; overwrite: boolean }; result: Settings };
+  /**
+   * Batch-transcribe a whole recording (`gemini-3.5-transcribe`) into finalized segments filed
+   * under `sessionId`, or a new completed "Imported · <file>" session. Diarization / word
+   * timestamps limit the recording to 30 minutes; `language` is a BCP-47 tag (omit = auto).
+   */
+  ai_transcribe_file: {
+    args: { path: string; diarization: boolean; wordTimestamps: boolean; language?: string; sessionId?: string };
+    result: TranscribeFileResult;
+  };
 
   // ── Research ───────────────────────────────────────────────────────────
   research_search: { args: { query: string; numResults?: number }; result: SearchResult[] };
@@ -354,6 +366,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "audio_resume",
   "audio_get_status",
   "audio_test_microphone",
+  "audio_pick_recording",
   "transcript_list",
   "transcript_recent",
   "transcript_clear",
@@ -365,6 +378,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "ai_test_connection",
   "ai_list_models",
   "ai_apply_provider_presets",
+  "ai_transcribe_file",
   "research_search",
   "research_scrape",
   "research_deep_start",

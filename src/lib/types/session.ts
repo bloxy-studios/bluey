@@ -34,7 +34,8 @@ export type SessionEventType =
   | "document_attached"
   | "mode_changed"
   | "note_added"
-  | "summary_generated";
+  | "summary_generated"
+  | "recording_imported";
 
 export interface SessionEvent {
   id: string;

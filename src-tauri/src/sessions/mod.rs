@@ -59,6 +59,30 @@ impl SessionManager {
         self.active.lock().clone()
     }
 
+    /// Any session by id (`storage.not_found` when missing).
+    pub async fn get(&self, id: String) -> BlueyResult<Session> {
+        self.storage
+            .run(move |db| SessionRepository::get(db, &id))
+            .await
+    }
+
+    /// A completed session for an imported recording, created without touching
+    /// the live session (no state transition, no `session.*` events).
+    pub async fn create_imported(&self, title: String) -> BlueyResult<Session> {
+        let mode_id = self.modes.active_id();
+        self.storage
+            .run(move |db| {
+                let session = SessionRepository::create(db, &mode_id, Some(title))?;
+                SessionRepository::set_status(
+                    db,
+                    &session.id,
+                    SessionStatus::Completed,
+                    Some(now_iso()),
+                )
+            })
+            .await
+    }
+
     /// Start a new session (ending any active one first).
     pub async fn start(
         &self,

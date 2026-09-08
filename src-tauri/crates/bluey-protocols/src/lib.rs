@@ -36,4 +36,5 @@ pub mod openai;
 pub mod panel;
 pub mod realtime;
 pub mod sse;
+pub mod transcript_import;
 pub mod voice_live;

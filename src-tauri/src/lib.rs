@@ -78,6 +78,7 @@ pub fn run() {
         commands::audio::transcript_list,
         commands::audio::transcript_recent,
         commands::audio::transcript_clear,
+        commands::audio::audio_pick_recording,
         // Context
         commands::context::context_build_snapshot,
         // AI
@@ -88,6 +89,7 @@ pub fn run() {
         commands::ai::ai_test_connection,
         commands::ai::ai_list_models,
         commands::ai::ai_apply_provider_presets,
+        commands::ai::ai_transcribe_file,
         // Research
         commands::research::research_search,
         commands::research::research_scrape,

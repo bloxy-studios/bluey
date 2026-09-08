@@ -12,6 +12,8 @@
 //! * [`cloud_realtime`] — Foundry Voice Live (MAI-Transcribe) over the shared
 //!   realtime event codec.
 //! * [`mock`] — deterministic finals for developer mode and tests.
+//! * [`batch`] — whole recordings through `gemini-3.5-transcribe`
+//!   (`ai_transcribe_file`): speaker turns → segments + a session event.
 //!
 //! Raw audio is never written anywhere: chunks are forwarded and dropped.
 
@@ -22,6 +24,7 @@ use bluey_core::types::{AudioSource, TranscriptionProviderKind};
 use bluey_core::{BlueyError, BlueyResult};
 use tokio::sync::mpsc;
 
+pub mod batch;
 pub mod cloud_realtime;
 pub mod gemini_live;
 pub mod mock;

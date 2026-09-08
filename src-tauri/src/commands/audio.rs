@@ -1,8 +1,10 @@
 //! `audio_*` and `transcript_*` commands.
 
 use bluey_core::types::{AudioDevice, AudioSessionConfigPatch, AudioStatus, TranscriptSegment};
-use bluey_core::BlueyResult;
-use tauri::State;
+use bluey_core::{BlueyError, BlueyResult};
+use bluey_protocols::gemini::SUPPORTED_AUDIO_EXTENSIONS;
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::audio::MicrophoneTest;
 use crate::state::AppCore;
@@ -73,4 +75,21 @@ pub async fn transcript_clear(
     session_id: Option<String>,
 ) -> BlueyResult<()> {
     core.audio.clear(session_id).await.map(|_| ())
+}
+
+/// Native open dialog limited to the formats batch transcription accepts
+/// (WAV, MP3, AIFF, AAC, OGG, FLAC); `None` when the user cancels.
+#[tauri::command]
+pub async fn audio_pick_recording(app: AppHandle) -> BlueyResult<Option<String>> {
+    let picked = tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter("Recordings", SUPPORTED_AUDIO_EXTENSIONS)
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| BlueyError::internal(format!("file dialog task failed: {e}")))?;
+    Ok(picked
+        .and_then(|file| file.into_path().ok())
+        .map(|path| path.to_string_lossy().into_owned()))
 }

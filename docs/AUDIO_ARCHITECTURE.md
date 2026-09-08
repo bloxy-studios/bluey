@@ -65,6 +65,16 @@ with the reason.
 `TranscriptSegment { speaker?, speakerConfidence?, source, text, startTime, endTime,
 confidence?, finalized }` — times are ms since the audio session started.
 
+### Importing recordings
+
+`ai_transcribe_file { path, diarization, wordTimestamps, language?, sessionId? }` (Settings → Sessions →
+*Import recording…*, or *Add recording* on a session) transcribes a whole file with
+`gemini-3.5-transcribe` — inline up to 14 MB, Files API resumable upload above that, deleted right after
+— and files the result as finalized segments (`source: system`, `speaker: spk_n`) plus a
+`recording_imported` timeline event. Diarization and word timestamps cap a recording at 30 minutes
+(one hour without them); unsupported containers (M4A/MP4) are refused before anything is uploaded.
+See `AI_ARCHITECTURE.md` › *Batch*.
+
 ## Speaker identification
 
 Labels come from the channel: `microphone → "You"` (0.95) and `system → "Interviewer" /

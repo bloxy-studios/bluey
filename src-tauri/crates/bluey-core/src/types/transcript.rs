@@ -33,6 +33,23 @@ pub struct TranscriptSegment {
     pub created_at: String,
 }
 
+/// Mirrors `TranscribeFileResult` — what importing a recording produced
+/// (`ai_transcribe_file`): the session it was filed under and its segments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscribeFileResult {
+    pub session: super::session::Session,
+    pub segments: Vec<TranscriptSegment>,
+    /// Distinct speaker labels (`spk_n`); 0 without diarization.
+    pub speakers: u32,
+    /// End of the last segment, milliseconds from the start of the recording.
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Whether the segments were written to the database (privacy → store transcripts).
+    pub stored: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioDevice {

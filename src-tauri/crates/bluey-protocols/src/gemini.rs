@@ -354,6 +354,31 @@ struct WirePart {
     thought: Option<bool>,
     #[serde(default)]
     function_call: Option<WireFunctionCall>,
+    /// `gemini-3.5-transcribe` with diarization / word timestamps.
+    #[serde(default)]
+    audio_transcription: Option<WireAudioTranscription>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAudioTranscription {
+    #[serde(default)]
+    speaker_label: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    words: Vec<WireWord>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireWord {
+    #[serde(default)]
+    word: String,
+    #[serde(default)]
+    start_offset: Option<String>,
+    #[serde(default)]
+    end_offset: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -932,6 +957,302 @@ pub fn parse_live_message(text: &str) -> LiveEvent {
         return LiveEvent::Error(status);
     }
     LiveEvent::Other
+}
+
+// ── Batch transcription (`gemini-3.5-transcribe`) & Files API ────────────────
+
+/// Largest recording sent inline as `inlineData`: base64 inflates by 4/3 and
+/// the whole request must stay under the 20 MB cap.
+pub const INLINE_AUDIO_MAX_BYTES: u64 = 14 * 1024 * 1024;
+/// Largest file the Files API accepts (2 GB per file, 48 h retention).
+pub const FILES_API_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Extensions of the audio formats the transcribe model accepts.
+pub const SUPPORTED_AUDIO_EXTENSIONS: &[&str] =
+    &["wav", "mp3", "aiff", "aif", "aac", "ogg", "flac"];
+/// Response header of the resumable-upload `start` call carrying the upload URL.
+pub const UPLOAD_URL_HEADER: &str = "x-goog-upload-url";
+/// The batch speech-to-text model (`generateContent`, not Live).
+pub const BATCH_TRANSCRIBE_MODEL: &str = "gemini-3.5-transcribe";
+
+/// The batch model to call for a transcription-role assignment: Live-only
+/// models (`…-transcribe-live`) map to their batch sibling, empty → default.
+pub fn batch_transcribe_model(assigned: &str) -> String {
+    let model = assigned.trim();
+    if model.is_empty() {
+        return BATCH_TRANSCRIBE_MODEL.to_string();
+    }
+    match model.strip_suffix("-live") {
+        Some(batch) if !batch.is_empty() => batch.to_string(),
+        _ => model.to_string(),
+    }
+}
+
+/// MIME type for an audio file extension the transcribe model accepts
+/// (WAV, MP3, AIFF, AAC, OGG, FLAC); `None` for anything else (M4A/MP4
+/// containers are not on the documented list).
+pub fn audio_mime_for_extension(ext: &str) -> Option<&'static str> {
+    match ext
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "wav" | "wave" => Some("audio/wav"),
+        "mp3" => Some("audio/mp3"),
+        "aiff" | "aif" => Some("audio/aiff"),
+        "aac" => Some("audio/aac"),
+        "ogg" | "oga" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
+        _ => None,
+    }
+}
+
+/// `…/upload/v1beta/files` — the resumable-upload entry point (the `upload`
+/// segment sits *before* the API version).
+pub fn files_upload_url(base_url: &str) -> String {
+    let api = base(base_url);
+    match api.rfind("/v1") {
+        Some(idx) => format!("{}/upload{}/files", &api[..idx], &api[idx..]),
+        None => format!("{api}/upload/files"),
+    }
+}
+
+/// `…/files/{id}` for a `File.name` such as `files/abc123`.
+pub fn file_url(base_url: &str, name: &str) -> String {
+    format!("{}/{}", base(base_url), name.trim_start_matches('/'))
+}
+
+/// Body of the resumable-upload `start` request.
+pub fn upload_start_body(display_name: &str) -> Value {
+    json!({ "file": { "display_name": display_name } })
+}
+
+/// A `File` resource (finalize response or `GET …/files/{id}`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UploadedFile {
+    pub name: String,
+    pub uri: String,
+    pub mime_type: Option<String>,
+    pub state: Option<String>,
+}
+
+impl UploadedFile {
+    /// Usable from `fileData` (`ACTIVE`, or no state reported at all).
+    pub fn is_active(&self) -> bool {
+        self.state
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("ACTIVE"))
+            .unwrap_or(true)
+    }
+
+    pub fn is_processing(&self) -> bool {
+        self.state
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("PROCESSING"))
+            .unwrap_or(false)
+    }
+
+    pub fn is_failed(&self) -> bool {
+        self.state
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("FAILED"))
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireFile {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    uri: String,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+/// Parse `{"file": {…}}` (upload finalize) or a bare `File` (`GET`).
+pub fn parse_uploaded_file(json: &str) -> Result<UploadedFile, serde_json::Error> {
+    let value: Value = serde_json::from_str(json)?;
+    let file = value.get("file").cloned().unwrap_or(value);
+    let wire: WireFile = serde_json::from_value(file)?;
+    Ok(UploadedFile {
+        name: wire.name,
+        uri: wire.uri,
+        mime_type: wire.mime_type,
+        state: wire.state,
+    })
+}
+
+/// The recording: inline base64 or a previously uploaded file.
+#[derive(Debug, Clone, Copy)]
+pub enum AudioInput<'a> {
+    Inline { mime_type: &'a str, base64: &'a str },
+    File { uri: &'a str, mime_type: &'a str },
+}
+
+/// `generationConfig.audioTranscriptionConfig` knobs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TranscribeOptions<'a> {
+    /// BCP-47 tag; `None` = auto-detect (`languageCodes: []`).
+    pub language: Option<&'a str>,
+    /// Speaker labels `spk_1`, `spk_2`, … (≤ 8 speakers, ≤ 30 min of audio).
+    pub diarization: bool,
+    /// Word-level `startOffset` / `endOffset` (≤ 30 min of audio).
+    pub word_timestamps: bool,
+}
+
+/// Body for `models/gemini-3.5-transcribe:generateContent`: one `user`
+/// content holding only the audio part, and `audioTranscriptionConfig` under
+/// `generationConfig`. No prompt text, no thinking or sampling parameters —
+/// the transcribe model has neither.
+pub fn build_transcribe_body(audio: &AudioInput<'_>, opts: &TranscribeOptions<'_>) -> Value {
+    let part = match audio {
+        AudioInput::Inline { mime_type, base64 } => {
+            json!({ "inlineData": { "mimeType": mime_type, "data": base64 } })
+        }
+        AudioInput::File { uri, mime_type } => {
+            json!({ "fileData": { "fileUri": uri, "mimeType": mime_type } })
+        }
+    };
+    let mut config = Map::new();
+    let languages: Vec<&str> = opts.language.map(|l| vec![l]).unwrap_or_default();
+    config.insert("languageCodes".into(), json!(languages));
+    if opts.diarization {
+        config.insert("diarization".into(), json!(true));
+    }
+    if opts.word_timestamps {
+        config.insert("wordTimestamp".into(), json!(true));
+    }
+    json!({
+        "contents": [ { "role": "user", "parts": [ part ] } ],
+        "generationConfig": { "audioTranscriptionConfig": Value::Object(config) }
+    })
+}
+
+/// One word with optional timing (`"0.450s"` offsets → milliseconds).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscribedWord {
+    pub word: String,
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
+}
+
+/// One `audioTranscription` part (a speaker turn) or a plain `text` part.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TranscriptTurn {
+    /// `spk_1`, `spk_2`, … with diarization; `None` otherwise.
+    pub speaker: Option<String>,
+    pub text: String,
+    /// Empty unless word timestamps were requested.
+    pub words: Vec<TranscribedWord>,
+}
+
+impl TranscriptTurn {
+    pub fn start_ms(&self) -> Option<u64> {
+        self.words.iter().find_map(|w| w.start_ms)
+    }
+
+    pub fn end_ms(&self) -> Option<u64> {
+        self.words.iter().rev().find_map(|w| w.end_ms)
+    }
+}
+
+/// A parsed `gemini-3.5-transcribe` response.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Transcription {
+    pub turns: Vec<TranscriptTurn>,
+    pub finish: Option<String>,
+    /// `promptFeedback.blockReason` — the audio itself was refused.
+    pub block_reason: Option<String>,
+    pub usage: Option<Usage>,
+}
+
+impl Transcription {
+    /// Turns joined line by line, speaker labels prefixed when present.
+    pub fn plain_text(&self) -> String {
+        self.turns
+            .iter()
+            .map(|turn| match &turn.speaker {
+                Some(speaker) => format!("{speaker}: {}", turn.text),
+                None => turn.text.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// `"0.450s"` → `450`.
+pub fn parse_offset_ms(text: &str) -> Option<u64> {
+    parse_proto_duration(text).map(|d| d.as_millis() as u64)
+}
+
+/// Parse a transcription response: `audioTranscription` parts become speaker
+/// turns (words joined with single spaces when the part carries only words),
+/// plain `text` parts become unlabelled turns; thought parts are skipped.
+pub fn parse_transcription(json: &str) -> Result<Transcription, serde_json::Error> {
+    let wire: WireResponse = serde_json::from_str(json)?;
+    let mut out = Transcription {
+        usage: wire.usage_metadata.map(|u| Usage {
+            prompt: u.prompt_token_count,
+            candidates: u.candidates_token_count,
+            thoughts: u.thoughts_token_count,
+        }),
+        block_reason: wire.prompt_feedback.and_then(|f| f.block_reason),
+        ..Transcription::default()
+    };
+    let Some(candidate) = wire.candidates.into_iter().next() else {
+        return Ok(out);
+    };
+    out.finish = candidate.finish_reason;
+    let Some(content) = candidate.content else {
+        return Ok(out);
+    };
+    for part in content.parts {
+        if part.thought.unwrap_or(false) {
+            continue;
+        }
+        if let Some(transcription) = part.audio_transcription {
+            let words: Vec<TranscribedWord> = transcription
+                .words
+                .into_iter()
+                .filter(|w| !w.word.trim().is_empty())
+                .map(|w| TranscribedWord {
+                    word: w.word.trim().to_string(),
+                    start_ms: w.start_offset.as_deref().and_then(parse_offset_ms),
+                    end_ms: w.end_offset.as_deref().and_then(parse_offset_ms),
+                })
+                .collect();
+            let text = match transcription.text.filter(|t| !t.trim().is_empty()) {
+                Some(text) => text.trim().to_string(),
+                None => words
+                    .iter()
+                    .map(|w| w.word.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            };
+            if text.is_empty() {
+                continue;
+            }
+            out.turns.push(TranscriptTurn {
+                speaker: transcription.speaker_label.filter(|s| !s.is_empty()),
+                text,
+                words,
+            });
+        } else if let Some(text) = part.text {
+            let text = text.trim();
+            if !text.is_empty() {
+                out.turns.push(TranscriptTurn {
+                    speaker: None,
+                    text: text.to_string(),
+                    words: Vec::new(),
+                });
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1575,5 +1896,217 @@ mod tests {
             LiveEvent::Other
         );
         assert_eq!(parse_live_message("garbage"), LiveEvent::Other);
+    }
+}
+
+#[cfg(test)]
+mod transcribe_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn batch_model_maps_live_models_and_fills_the_default() {
+        assert_eq!(
+            batch_transcribe_model("gemini-3.5-transcribe-live"),
+            "gemini-3.5-transcribe"
+        );
+        assert_eq!(
+            batch_transcribe_model("gemini-3.5-transcribe"),
+            "gemini-3.5-transcribe"
+        );
+        assert_eq!(batch_transcribe_model(""), BATCH_TRANSCRIBE_MODEL);
+        assert_eq!(batch_transcribe_model("  "), BATCH_TRANSCRIBE_MODEL);
+        assert_eq!(batch_transcribe_model("custom-stt"), "custom-stt");
+        assert_eq!(
+            batch_transcribe_model("-live"),
+            "-live",
+            "nothing left to call"
+        );
+    }
+
+    #[test]
+    fn audio_mime_covers_the_documented_formats_only() {
+        assert_eq!(audio_mime_for_extension("wav"), Some("audio/wav"));
+        assert_eq!(audio_mime_for_extension(".MP3"), Some("audio/mp3"));
+        assert_eq!(audio_mime_for_extension("aif"), Some("audio/aiff"));
+        assert_eq!(audio_mime_for_extension("FLAC"), Some("audio/flac"));
+        assert_eq!(audio_mime_for_extension("ogg"), Some("audio/ogg"));
+        assert_eq!(audio_mime_for_extension("aac"), Some("audio/aac"));
+        assert_eq!(audio_mime_for_extension("m4a"), None);
+        assert_eq!(audio_mime_for_extension("mp4"), None);
+        assert_eq!(audio_mime_for_extension(""), None);
+        for ext in SUPPORTED_AUDIO_EXTENSIONS {
+            assert!(audio_mime_for_extension(ext).is_some(), "{ext}");
+        }
+    }
+
+    #[test]
+    fn files_api_urls_put_upload_before_the_version() {
+        assert_eq!(
+            files_upload_url(""),
+            "https://generativelanguage.googleapis.com/upload/v1beta/files"
+        );
+        assert_eq!(
+            files_upload_url("https://proxy.example.com/gemini/v1beta/"),
+            "https://proxy.example.com/gemini/upload/v1beta/files"
+        );
+        assert_eq!(
+            file_url("", "files/abc123"),
+            "https://generativelanguage.googleapis.com/v1beta/files/abc123"
+        );
+        assert_eq!(
+            upload_start_body("standup.wav"),
+            json!({ "file": { "display_name": "standup.wav" } })
+        );
+    }
+
+    #[test]
+    fn inline_body_carries_only_the_audio_and_auto_detects_language() {
+        let body = build_transcribe_body(
+            &AudioInput::Inline {
+                mime_type: "audio/wav",
+                base64: "QUJD",
+            },
+            &TranscribeOptions::default(),
+        );
+        assert_eq!(body["contents"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["contents"][0]["role"], "user");
+        let parts = body["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1, "no prompt text part");
+        assert_eq!(parts[0]["inlineData"]["mimeType"], "audio/wav");
+        assert_eq!(parts[0]["inlineData"]["data"], "QUJD");
+        let config = &body["generationConfig"]["audioTranscriptionConfig"];
+        assert_eq!(config["languageCodes"], json!([]));
+        assert!(config.get("diarization").is_none());
+        assert!(config.get("wordTimestamp").is_none());
+        assert!(config.get("mode").is_none(), "VERBATIM is the default");
+        let generation = body["generationConfig"].as_object().unwrap();
+        for forbidden in [
+            "thinkingConfig",
+            "temperature",
+            "topP",
+            "topK",
+            "candidateCount",
+        ] {
+            assert!(!generation.contains_key(forbidden), "{forbidden}");
+        }
+        assert!(body.get("systemInstruction").is_none());
+    }
+
+    #[test]
+    fn file_body_sets_language_diarization_and_word_timestamps() {
+        let body = build_transcribe_body(
+            &AudioInput::File {
+                uri: "https://generativelanguage.googleapis.com/v1beta/files/abc",
+                mime_type: "audio/mp3",
+            },
+            &TranscribeOptions {
+                language: Some("en-US"),
+                diarization: true,
+                word_timestamps: true,
+            },
+        );
+        let part = &body["contents"][0]["parts"][0];
+        assert_eq!(
+            part["fileData"]["fileUri"],
+            "https://generativelanguage.googleapis.com/v1beta/files/abc"
+        );
+        assert_eq!(part["fileData"]["mimeType"], "audio/mp3");
+        let config = &body["generationConfig"]["audioTranscriptionConfig"];
+        assert_eq!(config["languageCodes"], json!(["en-US"]));
+        assert_eq!(config["diarization"], true);
+        assert_eq!(config["wordTimestamp"], true);
+    }
+
+    #[test]
+    fn uploaded_file_parses_wrapped_and_bare_shapes() {
+        let wrapped = parse_uploaded_file(
+            r#"{"file":{"name":"files/abc","uri":"https://generativelanguage.googleapis.com/v1beta/files/abc","mimeType":"audio/wav","state":"PROCESSING"}}"#,
+        )
+        .unwrap();
+        assert_eq!(wrapped.name, "files/abc");
+        assert!(wrapped.is_processing());
+        assert!(!wrapped.is_active());
+        let bare = parse_uploaded_file(
+            r#"{"name":"files/abc","uri":"https://generativelanguage.googleapis.com/v1beta/files/abc","state":"ACTIVE"}"#,
+        )
+        .unwrap();
+        assert!(bare.is_active());
+        assert!(!bare.is_failed());
+        let stateless = parse_uploaded_file(r#"{"file":{"name":"files/x","uri":"u"}}"#).unwrap();
+        assert!(stateless.is_active(), "no state reported → usable");
+        assert!(parse_uploaded_file(r#"{"file":{"state":"FAILED"}}"#)
+            .unwrap()
+            .is_failed());
+        assert!(parse_uploaded_file("not json").is_err());
+    }
+
+    #[test]
+    fn offsets_parse_to_milliseconds() {
+        assert_eq!(parse_offset_ms("0.450s"), Some(450));
+        assert_eq!(parse_offset_ms("12s"), Some(12_000));
+        assert_eq!(parse_offset_ms("1.5"), None);
+        assert_eq!(parse_offset_ms("-1s"), None);
+    }
+
+    #[test]
+    fn diarized_response_becomes_speaker_turns_with_timings() {
+        let json = r#"{
+          "candidates": [{
+            "content": {
+              "parts": [
+                { "audioTranscription": { "speakerLabel": "spk_1", "words": [
+                    { "word": "Hello", "startOffset": "0.100s", "endOffset": "0.450s" },
+                    { "word": "world", "startOffset": "0.500s", "endOffset": "0.850s" } ] } },
+                { "text": "ignored summary", "thought": true },
+                { "audioTranscription": { "speakerLabel": "spk_2", "words": [
+                    { "word": "Hi", "startOffset": "1.200s", "endOffset": "1.400s" } ] } }
+              ],
+              "role": "model"
+            },
+            "finishReason": "STOP"
+          }],
+          "usageMetadata": { "promptTokenCount": 40, "candidatesTokenCount": 3 }
+        }"#;
+        let parsed = parse_transcription(json).unwrap();
+        assert_eq!(parsed.finish.as_deref(), Some("STOP"));
+        assert_eq!(parsed.turns.len(), 2);
+        assert_eq!(parsed.turns[0].speaker.as_deref(), Some("spk_1"));
+        assert_eq!(parsed.turns[0].text, "Hello world");
+        assert_eq!(parsed.turns[0].start_ms(), Some(100));
+        assert_eq!(parsed.turns[0].end_ms(), Some(850));
+        assert_eq!(parsed.turns[0].words.len(), 2);
+        assert_eq!(parsed.turns[1].speaker.as_deref(), Some("spk_2"));
+        assert_eq!(parsed.turns[1].start_ms(), Some(1200));
+        assert_eq!(parsed.usage.unwrap().prompt, Some(40));
+        assert_eq!(parsed.plain_text(), "spk_1: Hello world\nspk_2: Hi");
+    }
+
+    #[test]
+    fn plain_text_response_becomes_an_unlabelled_turn() {
+        let json = r#"{"candidates":[{"content":{"parts":[{"text":"  Thanks for joining, let's get started.  "}],"role":"model"},"finishReason":"STOP"}]}"#;
+        let parsed = parse_transcription(json).unwrap();
+        assert_eq!(parsed.turns.len(), 1);
+        assert_eq!(parsed.turns[0].speaker, None);
+        assert_eq!(
+            parsed.turns[0].text,
+            "Thanks for joining, let's get started."
+        );
+        assert!(parsed.turns[0].words.is_empty());
+        assert_eq!(parsed.turns[0].start_ms(), None);
+    }
+
+    #[test]
+    fn blocked_and_empty_responses_are_reported_not_invented() {
+        let blocked = parse_transcription(
+            r#"{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"candidates":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(blocked.block_reason.as_deref(), Some("PROHIBITED_CONTENT"));
+        assert!(blocked.turns.is_empty());
+        let empty = parse_transcription(r#"{"candidates":[{"content":{"parts":[]}}]}"#).unwrap();
+        assert!(empty.turns.is_empty());
+        assert_eq!(empty.plain_text(), "");
+        assert!(parse_transcription("not json").is_err());
     }
 }

@@ -50,6 +50,8 @@ pub enum SessionEventType {
     ModeChanged,
     NoteAdded,
     SummaryGenerated,
+    /// A recording was transcribed into this session (`ai_transcribe_file`).
+    RecordingImported,
 }
 
 /// Mirrors `SessionEvent`.

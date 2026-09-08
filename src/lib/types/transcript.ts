@@ -1,6 +1,7 @@
 /** Transcript + audio pipeline types (mirrors `bluey_core::types::transcript`). */
 
 import type { BlueyError } from "./errors";
+import type { Session } from "./session";
 
 export type AudioSource = "microphone" | "system";
 
@@ -19,6 +20,20 @@ export interface TranscriptSegment {
   finalized: boolean;
   language?: string;
   createdAt: string;
+}
+
+/** What importing a recording produced (`ai_transcribe_file`). */
+export interface TranscribeFileResult {
+  /** The session the segments were filed under (given, or a new completed "Imported · <file>"). */
+  session: Session;
+  segments: TranscriptSegment[];
+  /** Distinct `spk_n` labels; 0 without diarization. */
+  speakers: number;
+  /** End of the last segment, ms from the start of the recording. */
+  durationMs: number;
+  language?: string;
+  /** False when privacy → store transcripts is off (segments returned, not persisted). */
+  stored: boolean;
 }
 
 export interface AudioDevice {

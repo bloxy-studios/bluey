@@ -1,13 +1,15 @@
 //! `ai_*` commands: streaming generations over a `Channel`, cancellation,
 //! embeddings, connection tests, model listing and provider presets.
 
-use bluey_core::types::{AiChunk, AiRequest, ConnectionTestResult, ModelRole, Settings};
+use bluey_core::types::{
+    AiChunk, AiRequest, ConnectionTestResult, ModelRole, Settings, TranscribeFileResult,
+};
 use bluey_core::BlueyResult;
 use serde::Deserialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use crate::ai::providers::EmbedPurpose;
+use crate::ai::providers::{EmbedPurpose, TranscribeFileOptions};
 use crate::state::AppCore;
 
 /// Validation and routing happen before this returns; chunks flow through
@@ -83,4 +85,27 @@ pub async fn ai_apply_provider_presets(
     core.ai
         .apply_provider_presets(&provider_id, overwrite)
         .await
+}
+
+/// Transcribe a whole recording with the transcription-role model (batch
+/// `gemini-3.5-transcribe`) and file its segments under `session_id` — or a
+/// new completed "Imported · <file>" session. `language` is a BCP-47 tag
+/// (`auto`/empty = detect). See `transcription::batch`.
+#[tauri::command]
+pub async fn ai_transcribe_file(
+    core: State<'_, AppCore>,
+    path: String,
+    diarization: bool,
+    word_timestamps: bool,
+    language: Option<String>,
+    session_id: Option<String>,
+) -> BlueyResult<TranscribeFileResult> {
+    let options = TranscribeFileOptions {
+        language: language
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.eq_ignore_ascii_case("auto")),
+        diarization,
+        word_timestamps,
+    };
+    crate::transcription::batch::import_recording(&core, path, options, session_id).await
 }

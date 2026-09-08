@@ -1,4 +1,4 @@
-import { ArrowLeft, ChevronRight, Download, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronRight, Download, FileAudio, Pencil, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
 
 import { Button } from "@/components/ui/Button";
@@ -15,6 +15,7 @@ import {
   type BlueyError,
   type SessionDetail as SessionDetailData,
   type SessionEvent,
+  type TranscriptSegment,
 } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { copyText } from "@/lib/utils/clipboard";
@@ -22,6 +23,10 @@ import { formatDateTime, formatDuration, formatTime } from "@/lib/utils/format";
 import { getEngine } from "@/stores/engine";
 import { modeById, useModesStore } from "@/stores/modesStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+
+import { formatOffset, importRecording, speakerLabel } from "./session-import";
+
+const MAX_TRANSCRIPT_LINES = 300;
 
 function TimelineEvent({ event }: { event: SessionEvent }) {
   const [open, setOpen] = useState(false);
@@ -87,11 +92,14 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
   const [summaryError, setSummaryError] = useState<BlueyError | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [transcript, setTranscript] = useState<TranscriptSegment[]>([]);
+  const [importing, setImporting] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setDetail(await bluey.session.get({ id: sessionId }));
       setLoadError(null);
+      setTranscript(await bluey.transcript.list({ sessionId }).catch(() => []));
     } catch (error) {
       setLoadError(toBlueyError(error, "storage"));
     }
@@ -155,6 +163,15 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
       await load();
     } catch (error) {
       showErrorToast(toBlueyError(error, "storage"));
+    }
+  };
+
+  const addRecording = async () => {
+    setImporting(true);
+    try {
+      if (await importRecording({ sessionId })) await load();
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -224,6 +241,9 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
             {session.status !== "completed" ? ` · ${session.status === "paused" ? "paused" : "live"}` : ""}
           </div>
         </div>
+        <Button variant="secondary" size="sm" disabled={importing} onClick={() => void addRecording()}>
+          <FileAudio className="size-3.5" aria-hidden /> {importing ? "Transcribing…" : "Add recording"}
+        </Button>
         <Button variant="secondary" size="sm" onClick={() => void exportMarkdown()}>
           <Download className="size-3.5" aria-hidden /> Export markdown
         </Button>
@@ -243,6 +263,30 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
             ))}
           </ul>
         </section>
+
+        {transcript.length > 0 ? (
+          <section className="mt-6">
+            <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-fg-subtle">
+              Transcript
+            </h3>
+            <ol className="flex flex-col gap-1.5" aria-label="Transcript">
+              {transcript.slice(0, MAX_TRANSCRIPT_LINES).map((segment) => (
+                <li key={segment.id} className="flex gap-3 text-[13px] leading-relaxed">
+                  <span className="w-[52px] shrink-0 font-mono text-[11px] text-fg-subtle">
+                    {formatOffset(segment.startTime)}
+                  </span>
+                  <span className="shrink-0 font-medium text-fg-muted">{speakerLabel(segment)}</span>
+                  <span className="text-fg">{segment.text}</span>
+                </li>
+              ))}
+            </ol>
+            {transcript.length > MAX_TRANSCRIPT_LINES ? (
+              <p className="mt-2 text-[12px] text-fg-subtle">
+                Showing the first {MAX_TRANSCRIPT_LINES} of {transcript.length} segments.
+              </p>
+            ) : null}
+          </section>
+        ) : null}
 
         {responses.length > 0 ? (
           <section className="mt-6">

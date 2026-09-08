@@ -67,3 +67,43 @@ describe("SessionDetail", () => {
     expect(alert).toHaveTextContent("Couldn't save data");
   });
 });
+
+describe("Importing recordings", () => {
+  beforeEach(async () => {
+    await setupMockApp();
+  });
+
+  it("transcribes a picked file into a new session and opens it", async () => {
+    const user = userEvent.setup();
+    withTooltips(<SessionsTab />);
+    await screen.findByText("Coding interview practice");
+
+    await user.click(screen.getByRole("button", { name: "Import recording…" }));
+
+    await screen.findByRole("heading", { name: "Imported · standup.wav" });
+    expect(await screen.findByText("Recording imported")).toBeInTheDocument();
+    const transcript = await screen.findByRole("list", { name: "Transcript" });
+    expect(transcript).toHaveTextContent("Speaker 1");
+    expect(transcript).toHaveTextContent("Thanks for joining, let's get started.");
+    expect(transcript).toHaveTextContent("Speaker 2");
+
+    const sessions = await bluey.session.search({ query: {} });
+    const imported = sessions.find((item) => item.session.title === "Imported · standup.wav");
+    expect(imported?.session.status).toBe("completed");
+    expect(await bluey.transcript.list({ sessionId: imported!.session.id })).toHaveLength(4);
+  });
+
+  it("adds a recording to an existing session from its detail view", async () => {
+    const user = userEvent.setup();
+    withTooltips(<SessionDetail sessionId="session-coding-1" onBack={() => {}} />);
+    await screen.findByRole("heading", { name: "Coding interview practice" });
+    expect(screen.queryByRole("list", { name: "Transcript" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add recording" }));
+
+    expect(await screen.findByText("Recording imported")).toBeInTheDocument();
+    expect(await screen.findByRole("list", { name: "Transcript" })).toHaveTextContent("What trade-offs did you consider?");
+    const events = await bluey.session.listEvents({ sessionId: "session-coding-1" });
+    expect(events.some((event) => event.type === "recording_imported")).toBe(true);
+  });
+});
