@@ -33,6 +33,7 @@ import type {
   Settings,
   SettingsPatch,
   ShortcutConflict,
+  TranscribeFileResult,
   TranscriptSegment,
   PanelState,
 } from "../../types";
@@ -56,6 +57,16 @@ import {
 } from "./fixtures";
 
 const now = () => new Date().toISOString();
+
+/** What the native picker "returns" in the mock. */
+const MOCK_RECORDING_PATH = "/Users/jordan/Recordings/standup.wav";
+/** Canned two-speaker recording for `ai_transcribe_file`. */
+const MOCK_RECORDING_LINES: ReadonlyArray<readonly [string, string]> = [
+  ["spk_1", "Thanks for joining, let's get started."],
+  ["spk_2", "Could you walk me through your recent project?"],
+  ["spk_1", "We rebuilt the ingestion pipeline around a queue so retries were free."],
+  ["spk_2", "What trade-offs did you consider?"],
+];
 
 function blueyError(
   partial: Partial<BlueyError> & Pick<BlueyError, "kind" | "code" | "message">,
@@ -785,6 +796,7 @@ export class MockTransport implements Transport {
       }
       return { peakLevel: Number(peak.toFixed(2)), ok: true };
     },
+    audio_pick_recording: () => MOCK_RECORDING_PATH,
     transcript_list: (args) => {
       let list = this.segments;
       if (args.sessionId) list = list.filter((s) => s.sessionId === args.sessionId);
@@ -857,6 +869,67 @@ export class MockTransport implements Transport {
         };
       }
       return { ok: true, providerId: provider.id, model: args.model ?? "gpt-5.6-terra", latencyMs: 132 };
+    },
+    ai_transcribe_file: async (args) => {
+      await this.delay(this.streamDelayMs * 4);
+      const fileName = args.path.split("/").pop() || "recording";
+      let session = args.sessionId ? this.sessions.find((s) => s.id === args.sessionId) : undefined;
+      if (args.sessionId && !session) {
+        throw blueyError({
+          kind: "storage",
+          code: "storage.not_found",
+          message: `Session ${args.sessionId} not found`,
+        });
+      }
+      if (!session) {
+        session = {
+          id: createId("session"),
+          modeId: this.status.modeId,
+          startedAt: now(),
+          endedAt: now(),
+          status: "completed",
+          title: `Imported · ${fileName}`,
+        };
+        this.sessions = [session, ...this.sessions];
+      }
+      const sessionId = session.id;
+      const segments: TranscriptSegment[] = MOCK_RECORDING_LINES.map(([speaker, text], index) => ({
+        id: createId("seg"),
+        sessionId,
+        speaker: args.diarization ? speaker : undefined,
+        source: "system",
+        text,
+        startTime: index * 4_000,
+        endTime: index * 4_000 + 3_500,
+        finalized: true,
+        language: args.language,
+        createdAt: now(),
+      }));
+      this.segments = [...this.segments, ...segments];
+      const speakers = args.diarization ? new Set(MOCK_RECORDING_LINES.map(([speaker]) => speaker)).size : 0;
+      const durationMs = segments[segments.length - 1]?.endTime ?? 0;
+      const event: SessionEvent = {
+        id: createId("ev"),
+        sessionId,
+        type: "recording_imported",
+        title: "Recording imported",
+        detail: `${fileName} · ${segments.length} segments · ${Math.round(durationMs / 1000)} s${
+          speakers ? ` · ${speakers} speakers` : ""
+        }`,
+        refs: { file: fileName, segments: String(segments.length) },
+        createdAt: now(),
+      };
+      this.events = [...this.events, event];
+      this.emit("session.event", event);
+      const result: TranscribeFileResult = {
+        session,
+        segments,
+        speakers,
+        durationMs,
+        language: args.language,
+        stored: this.settings.privacy.storeTranscripts,
+      };
+      return result;
     },
     ai_list_models: (args) => {
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);

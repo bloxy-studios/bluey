@@ -7,7 +7,11 @@
 //! * `POST …/models/{model}:batchEmbedContents` for embeddings
 //!   (`gemini-embedding-2`, MRL-truncated to the configured dimensions, with
 //!   the documented `title:`/`task:` prompt prefixes);
-//! * `GET …/models` (paged) for model listing, filtered per role.
+//! * `GET …/models` (paged) for model listing, filtered per role;
+//! * `POST …/models/gemini-3.5-transcribe:generateContent` for whole
+//!   recordings (`audioTranscriptionConfig`), inline up to 14 MB and through
+//!   the Files API resumable upload above that (the upload is deleted again
+//!   right after the transcription — raw audio is never kept around).
 //!
 //! The key travels only in the `x-goog-api-key` header. Failed calls are
 //! retried up to three times on 429/5xx — honouring the server's `retryDelay`
@@ -17,6 +21,8 @@
 
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use bluey_core::types::{FinishReason, ModelRole};
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_protocols::gemini as proto;
@@ -25,8 +31,8 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    channel_stream, map_transport_error, AiProvider, ChunkStream, EmbedPurpose, ProviderRequest,
-    StreamItem,
+    channel_stream, map_transport_error, AiProvider, AudioFile, ChunkStream, EmbedPurpose,
+    ProviderRequest, StreamItem, TranscribeFileOptions, Transcription,
 };
 
 const HINT: &str = "Gemini";
@@ -35,6 +41,9 @@ const BACKOFF_BASE: Duration = Duration::from_millis(600);
 const BACKOFF_CAP: Duration = Duration::from_secs(8);
 /// Safety cap on `GET /models` paging.
 const MAX_MODEL_PAGES: usize = 10;
+/// Files API: how often / how long to wait for an upload to leave `PROCESSING`.
+const UPLOAD_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const UPLOAD_POLL_ATTEMPTS: u32 = 30;
 
 pub struct GeminiProvider {
     http: reqwest::Client,
@@ -131,6 +140,145 @@ impl GeminiProvider {
             }
         }
     }
+
+    /// Map a non-2xx response onto the contract error (the body is read only
+    /// for its structured reason and never logged).
+    async fn check_status(response: reqwest::Response) -> BlueyResult<reqwest::Response> {
+        let status = response.status().as_u16();
+        if status < 400 {
+            return Ok(response);
+        }
+        let body = response.text().await.unwrap_or_default();
+        let parsed = proto::parse_error_body(&body);
+        Err(proto::map_gemini_error(status, parsed.as_ref()))
+    }
+
+    /// Resumable upload to the Files API for recordings above the inline cap:
+    /// `start` → upload URL → one `upload, finalize` chunk → poll until `ACTIVE`.
+    async fn upload_file(
+        &self,
+        bytes: Vec<u8>,
+        mime_type: &str,
+        display_name: &str,
+    ) -> BlueyResult<proto::UploadedFile> {
+        let len = bytes.len();
+        let start_url = proto::files_upload_url(&self.base_url);
+        let start_body = proto::upload_start_body(display_name);
+        let started = self
+            .send_with_retry(
+                || {
+                    self.post(&start_url, &start_body)
+                        .header("X-Goog-Upload-Protocol", "resumable")
+                        .header("X-Goog-Upload-Command", "start")
+                        .header("X-Goog-Upload-Header-Content-Length", len.to_string())
+                        .header("X-Goog-Upload-Header-Content-Type", mime_type)
+                },
+                None,
+            )
+            .await?;
+        let upload_url = started
+            .headers()
+            .get(proto::UPLOAD_URL_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                BlueyError::ai(
+                    "upload_url_missing",
+                    "the Files API did not return an upload URL",
+                )
+            })?;
+        let response = self
+            .http
+            .post(&upload_url)
+            .header("x-goog-api-key", &self.api_key)
+            .header("X-Goog-Upload-Offset", "0")
+            .header("X-Goog-Upload-Command", "upload, finalize")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|e| map_transport_error(&e, HINT))?;
+        let response = Self::check_status(response).await?;
+        let text = response
+            .text()
+            .await
+            .map_err(|e| map_transport_error(&e, HINT))?;
+        let parse = |text: &str| {
+            proto::parse_uploaded_file(text)
+                .map_err(|_| BlueyError::ai("upload_parse", "unexpected Files API response"))
+        };
+        let mut file = parse(&text)?;
+        let mut polls = 0u32;
+        while file.is_processing() {
+            polls += 1;
+            if polls > UPLOAD_POLL_ATTEMPTS {
+                return Err(BlueyError::network(
+                    "timeout",
+                    "the uploaded recording was still processing after 60 s",
+                ));
+            }
+            tokio::time::sleep(UPLOAD_POLL_INTERVAL).await;
+            let url = proto::file_url(&self.base_url, &file.name);
+            let response = self.send_with_retry(|| self.get(&url), None).await?;
+            let text = response
+                .text()
+                .await
+                .map_err(|e| map_transport_error(&e, HINT))?;
+            file = parse(&text)?;
+        }
+        if file.is_failed() || file.uri.is_empty() {
+            return Err(BlueyError::ai(
+                "upload_failed",
+                "the Files API could not process the recording",
+            ));
+        }
+        Ok(file)
+    }
+
+    /// Best-effort delete of an uploaded recording (Google would otherwise
+    /// keep it for 48 hours). Never fails the transcription.
+    async fn delete_file(&self, name: &str) {
+        let url = proto::file_url(&self.base_url, name);
+        match self
+            .http
+            .delete(&url)
+            .header("x-goog-api-key", &self.api_key)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                tracing::debug!("deleted the uploaded recording")
+            }
+            Ok(response) => tracing::warn!(
+                status = response.status().as_u16(),
+                "could not delete the uploaded recording"
+            ),
+            Err(e) => tracing::warn!(error = %e, "could not delete the uploaded recording"),
+        }
+    }
+
+    async fn transcribe_request(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> BlueyResult<Transcription> {
+        let response = self.send_with_retry(|| self.post(url, body), None).await?;
+        let text = response
+            .text()
+            .await
+            .map_err(|e| map_transport_error(&e, HINT))?;
+        let parsed = proto::parse_transcription(&text).map_err(|_| {
+            BlueyError::ai("transcription_parse", "unexpected transcription response")
+        })?;
+        if let Some(reason) = parsed.block_reason.as_deref() {
+            return Err(proto::blocked_error(reason));
+        }
+        if let Some(finish) = parsed.finish.as_deref() {
+            if proto::is_error_finish(finish) {
+                return Err(proto::blocked_error(finish));
+            }
+        }
+        Ok(parsed)
+    }
 }
 
 #[async_trait::async_trait]
@@ -223,6 +371,56 @@ impl AiProvider for GeminiProvider {
             .filter(|info| role.map(|r| proto::role_filter(r, info)).unwrap_or(true))
             .map(|info| info.id)
             .collect())
+    }
+
+    async fn transcribe_audio(
+        &self,
+        model: &str,
+        audio: AudioFile,
+        options: &TranscribeFileOptions,
+    ) -> BlueyResult<Transcription> {
+        let AudioFile {
+            bytes,
+            mime_type,
+            display_name,
+        } = audio;
+        let opts = proto::TranscribeOptions {
+            language: options.language.as_deref(),
+            diarization: options.diarization,
+            word_timestamps: options.word_timestamps,
+        };
+        let url = proto::generate_url(&self.base_url, model, false);
+        let inline = (bytes.len() as u64) <= proto::INLINE_AUDIO_MAX_BYTES;
+        tracing::info!(
+            model,
+            bytes = bytes.len(),
+            inline,
+            diarization = options.diarization,
+            word_timestamps = options.word_timestamps,
+            "transcribing recording"
+        );
+        if inline {
+            let encoded = BASE64.encode(&bytes);
+            let body = proto::build_transcribe_body(
+                &proto::AudioInput::Inline {
+                    mime_type,
+                    base64: &encoded,
+                },
+                &opts,
+            );
+            return self.transcribe_request(&url, &body).await;
+        }
+        let file = self.upload_file(bytes, mime_type, &display_name).await?;
+        let body = proto::build_transcribe_body(
+            &proto::AudioInput::File {
+                uri: &file.uri,
+                mime_type,
+            },
+            &opts,
+        );
+        let result = self.transcribe_request(&url, &body).await;
+        self.delete_file(&file.name).await;
+        result
     }
 }
 

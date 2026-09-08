@@ -74,6 +74,7 @@ export const bluey = {
     resume: callNoArgs("audio_resume"),
     getStatus: callNoArgs("audio_get_status"),
     testMicrophone: call("audio_test_microphone"),
+    pickRecording: callNoArgs("audio_pick_recording"),
   },
   transcript: {
     list: call("transcript_list"),
@@ -100,6 +101,7 @@ export const bluey = {
     testConnection: call("ai_test_connection"),
     listModels: call("ai_list_models"),
     applyProviderPresets: call("ai_apply_provider_presets"),
+    transcribeFile: call("ai_transcribe_file"),
   },
   research: {
     search: call("research_search"),

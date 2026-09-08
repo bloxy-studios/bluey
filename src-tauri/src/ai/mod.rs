@@ -15,6 +15,7 @@ use bluey_core::types::{
     FinishReason, LatencyBudget, ModelRole, ModelSelection, ReasoningLevel, Settings,
 };
 use bluey_core::{now_iso, BlueyError, BlueyResult};
+use bluey_protocols::gemini as gemini_proto;
 use bluey_storage::{AiRequestRecord, AiRequestRepository};
 use tauri::ipc::Channel;
 use tokio_util::sync::CancellationToken;
@@ -25,7 +26,10 @@ use crate::settings::SettingsManager;
 use crate::state::{DevState, MetricsRecorder, StateHub};
 use crate::storage::Storage;
 pub use providers::EmbedPurpose;
-use providers::{build_provider, AiProvider, ProviderRequest, StreamItem};
+use providers::{
+    build_provider, AiProvider, AudioFile, ProviderRequest, StreamItem, TranscribeFileOptions,
+    Transcription,
+};
 
 /// Implicit mock provider id (available in developer mode / `dev-tools`).
 pub const MOCK_PROVIDER_ID: &str = "mock";
@@ -439,6 +443,59 @@ impl AiManager {
         let config = self.find_provider(&assignment.provider_id)?;
         let adapter = self.adapter_for(&config).await?;
         adapter.embed(&assignment.model, texts, purpose).await
+    }
+
+    /// Transcribe a whole recording with the transcription-role model (batch
+    /// `gemini-3.5-transcribe`; a `*-live` assignment is mapped to its batch
+    /// sibling). The file is read here so adapters only ever see bytes; the
+    /// format is decided by extension (WAV, MP3, AIFF, AAC, OGG, FLAC).
+    pub async fn transcribe_file(
+        &self,
+        path: &std::path::Path,
+        options: &TranscribeFileOptions,
+    ) -> BlueyResult<Transcription> {
+        let settings = self.settings.get();
+        let assignment = settings.ai.models.transcription.clone().ok_or_else(|| {
+            BlueyError::configuration("no_model", "no transcription model is assigned")
+        })?;
+        let config = self.find_provider(&assignment.provider_id)?;
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let mime_type = gemini_proto::audio_mime_for_extension(extension).ok_or_else(|| {
+            BlueyError::invalid_params(format!(
+                "unsupported recording format \"{extension}\" — use WAV, MP3, AIFF, AAC, OGG or FLAC"
+            ))
+        })?;
+        let metadata = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| BlueyError::invalid_params(format!("cannot read the recording: {e}")))?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err(BlueyError::invalid_params("the recording is empty"));
+        }
+        if metadata.len() > gemini_proto::FILES_API_MAX_BYTES {
+            return Err(BlueyError::invalid_params(
+                "the recording is larger than 2 GB",
+            ));
+        }
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| BlueyError::invalid_params(format!("cannot read the recording: {e}")))?;
+        let display_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "recording".into());
+        let model = gemini_proto::batch_transcribe_model(&assignment.model);
+        let adapter = self.adapter_for(&config).await?;
+        adapter
+            .transcribe_audio(
+                &model,
+                AudioFile {
+                    bytes,
+                    mime_type,
+                    display_name,
+                },
+                options,
+            )
+            .await
     }
 
     /// Whether an embedding model is currently usable (for documents).

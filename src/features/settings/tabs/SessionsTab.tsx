@@ -1,6 +1,7 @@
-import { History, Search, Trash2 } from "lucide-react";
+import { FileAudio, History, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
@@ -17,6 +18,7 @@ import { formatDateTime } from "@/lib/utils/format";
 import { useModesStore } from "@/stores/modesStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { SessionDetail } from "../SessionDetail";
+import { importRecording } from "../session-import";
 
 type DateFilter = "all" | "today" | "week";
 
@@ -46,6 +48,7 @@ export default function SessionsTab() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<BlueyError | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<SessionListItem | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const search = useCallback(async (query: { text: string; modeId: string; dateFilter: DateFilter }) => {
     try {
@@ -94,6 +97,19 @@ export default function SessionsTab() {
     }
   };
 
+  const importNewRecording = async () => {
+    setImporting(true);
+    try {
+      const result = await importRecording();
+      if (result) {
+        await search({ text, modeId, dateFilter });
+        setSelectedId(result.session.id);
+      }
+    } finally {
+      setImporting(false);
+    }
+  };
+
   if (selectedId) {
     return (
       <SessionDetail
@@ -138,6 +154,9 @@ export default function SessionsTab() {
             { value: "week", label: "Past week" },
           ]}
         />
+        <Button variant="secondary" size="sm" disabled={importing} onClick={() => void importNewRecording()}>
+          <FileAudio className="size-3.5" aria-hidden /> {importing ? "Transcribing…" : "Import recording…"}
+        </Button>
       </div>
 
       {error ? (

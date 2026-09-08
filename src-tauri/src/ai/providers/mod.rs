@@ -18,6 +18,29 @@ use tokio_util::sync::CancellationToken;
 /// What a text is embedded for (documents get `title:` prefixes, queries
 /// `task:` prefixes on `gemini-embedding-2`; other providers ignore it).
 pub use bluey_protocols::gemini::EmbedPurpose;
+/// Batch-transcription results (`gemini-3.5-transcribe`), reused by the app.
+pub use bluey_protocols::gemini::{TranscribedWord, TranscriptTurn, Transcription};
+
+/// A whole recording handed to [`AiProvider::transcribe_audio`].
+#[derive(Debug, Clone)]
+pub struct AudioFile {
+    pub bytes: Vec<u8>,
+    /// One of the MIME types from `bluey_protocols::gemini::audio_mime_for_extension`.
+    pub mime_type: &'static str,
+    /// File name shown in the provider's file store (never a path).
+    pub display_name: String,
+}
+
+/// Knobs for [`AiProvider::transcribe_audio`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TranscribeFileOptions {
+    /// BCP-47 tag; `None` = auto-detect.
+    pub language: Option<String>,
+    /// Speaker labels (`spk_n`); limits the recording to 30 minutes.
+    pub diarization: bool,
+    /// Word-level timings; limits the recording to 30 minutes.
+    pub word_timestamps: bool,
+}
 
 /// A provider-agnostic generation request (already routed to a model).
 #[derive(Debug, Clone)]
@@ -69,6 +92,20 @@ pub trait AiProvider: Send + Sync {
 
     /// List the models this provider can serve, optionally only those fit for `role`.
     async fn list_models(&self, role: Option<ModelRole>) -> BlueyResult<Vec<String>>;
+
+    /// Transcribe a whole recording with `model` in one call (batch
+    /// speech-to-text). Providers without such a model return `not_supported`.
+    async fn transcribe_audio(
+        &self,
+        _model: &str,
+        _audio: AudioFile,
+        _options: &TranscribeFileOptions,
+    ) -> BlueyResult<Transcription> {
+        Err(BlueyError::not_supported(
+            "transcribe_file",
+            "this provider cannot transcribe recordings; assign the transcription role to Google Gemini",
+        ))
+    }
 }
 
 /// Build the adapter for a provider config. `api_key` is `None` only for mock.

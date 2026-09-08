@@ -132,6 +132,17 @@ segments; a provider that cannot run falls back to Apple with `audio.error{stt_f
   Speaker labels derive from the audio channel (`microphone` → "You", `system` → other party,
   labelled per mode) with explicit confidence; Bluey never claims certain diarization.
 
+**Batch (`ai_transcribe_file`)** — a whole recording (WAV, MP3, AIFF, AAC, OGG, FLAC) goes through
+the transcription-role provider in one `generateContent` call on `gemini-3.5-transcribe` with
+`audioTranscriptionConfig { languageCodes, diarization, wordTimestamp }` (`AiProvider::transcribe_audio`;
+other providers answer `not_supported`). Files up to 14 MB travel inline as `inlineData`; larger ones
+use the Files API resumable upload (`upload/v1beta/files`, polled until `ACTIVE`) and are deleted right
+after the call. `transcription::batch` turns the `audioTranscription` speaker turns into finalized
+`TranscriptSegment`s (`speaker = spk_n`, cut on speaker change / 1.5 s pauses / 40 words, estimated
+timings when the model returns none), stores them when privacy → store transcripts is on, and adds a
+`recording_imported` event to the session — the one given, or a new completed
+"Imported · <file>" session. Settings → Sessions → *Import recording…* / *Add recording*.
+
 ### Research
 
 Research Router → `none | search | search_scrape | deep_agent` (ADR 0004). `search`/`scrape`
