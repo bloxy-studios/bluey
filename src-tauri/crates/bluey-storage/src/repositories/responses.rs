@@ -298,7 +298,10 @@ mod tests {
         let s = SessionRepository::create(&db, "general", None).unwrap();
         let mut r1 = testutil::response(Some(&s.id), "Binary search runs in O(log n)");
         r1.title = Some("Complexity".into());
-        let r2 = testutil::response(Some(&s.id), "Second answer");
+        // Distinct timestamps: ordering ties on created_at would fall back to random ids.
+        r1.created_at = "2026-09-08T09:00:00.000Z".into();
+        let mut r2 = testutil::response(Some(&s.id), "Second answer");
+        r2.created_at = "2026-09-08T09:00:01.000Z".into();
         ResponseRepository::save(&db, &r1).unwrap();
         ResponseRepository::save(&db, &r2).unwrap();
         assert_eq!(fts_count(&db), 2);

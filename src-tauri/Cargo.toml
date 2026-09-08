@@ -47,6 +47,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 bluey-core = { workspace = true }
 bluey-storage = { workspace = true }
+bluey-protocols = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

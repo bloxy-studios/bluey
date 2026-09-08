@@ -139,7 +139,11 @@ impl AiManager {
     /// Start a streaming generation. Validation and routing happen before this
     /// returns; the stream itself runs on a task and reports through the
     /// channel and the `ai.*` events.
-    pub fn stream(self: &Arc<Self>, request: AiRequest, channel: Channel<AiChunk>) -> BlueyResult<()> {
+    pub fn stream(
+        self: &Arc<Self>,
+        request: AiRequest,
+        channel: Channel<AiChunk>,
+    ) -> BlueyResult<()> {
         self.bus.publish(BlueyEvent::AiRequested {
             request_id: request.request_id.clone(),
             task: request.task,

@@ -156,7 +156,11 @@ fn spawn_anthropic_sse(response: reqwest::Response, token: CancellationToken) ->
                     return;
                 }
             };
-            let event_name = frame.event.as_deref().unwrap_or("message");
+            let event_name = if frame.event.is_empty() {
+                "message"
+            } else {
+                frame.event.as_str()
+            };
             let event = match proto::parse_event(event_name, &frame.data) {
                 Ok(event) => event,
                 Err(_) => continue,

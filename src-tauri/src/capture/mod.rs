@@ -109,7 +109,10 @@ impl CaptureManager {
     pub async fn capture(&self, options: Option<CaptureOptions>) -> BlueyResult<ScreenFrame> {
         let screen_settings = self.settings.get().screen;
         let options = options.unwrap_or_default();
-        let target = options.target.clone().unwrap_or_else(|| self.default_target());
+        let target = options
+            .target
+            .clone()
+            .unwrap_or_else(|| self.default_target());
 
         let mut params = serde_json::Map::new();
         params.insert(
@@ -318,7 +321,12 @@ impl CaptureManager {
         CaptureProtection {
             supported: cfg!(target_os = "macos"),
             enabled,
-            note: if enabled { PROTECTED_NOTE } else { UNPROTECTED_NOTE }.to_string(),
+            note: if enabled {
+                PROTECTED_NOTE
+            } else {
+                UNPROTECTED_NOTE
+            }
+            .to_string(),
         }
     }
 

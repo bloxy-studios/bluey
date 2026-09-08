@@ -5,10 +5,11 @@ pub mod azure;
 pub mod mock;
 pub mod openai;
 
+use bluey_core::error::RecoveryAction;
 use bluey_core::types::{
     AiMessage, AiProviderConfig, AiProviderKind, AiTask, FinishReason, JsonSchemaSpec,
 };
-use bluey_core::{BlueyError, BlueyErrorKind, BlueyResult, RecoveryAction};
+use bluey_core::{BlueyError, BlueyErrorKind, BlueyResult};
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 

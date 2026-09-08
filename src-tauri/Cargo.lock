@@ -389,6 +389,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bluey-core",
+ "bluey-protocols",
  "bluey-storage",
  "bytes",
  "chrono",
