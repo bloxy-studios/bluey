@@ -55,6 +55,7 @@ import { buildNativeSnapshot, enrichSnapshot } from "@/context/snapshot";
 import { outputSchemaFor, parseJsonLoose, parseStructuredOutput } from "@/modes/schemas";
 import { effectiveStyle } from "@/modes/registry";
 import { classifySegment } from "@/transcript/classifier";
+import { assertCloudAiAllowed, cloudAiAllowed } from "./cloud-gate";
 import { GenerationGate } from "./generations";
 import { assembleMetrics, emitDevMetrics } from "./metrics";
 import { PromptBuilder, type VisionAttachment } from "./prompt-builder";
@@ -195,10 +196,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
 
   // ── Research (best-effort, never fails the ask) ───────────────────────────
 
-  async function maybeResearch(
-    input: AskInput,
-    snapshot: ContextSnapshot,
-  ): Promise<ResearchOutcome | null> {
+  async function maybeResearch(input: AskInput, snapshot: ContextSnapshot): Promise<ResearchOutcome | null> {
     const instruction = input.instruction?.trim();
     if (!instruction || !input.settings.ai.researchEnabled) return null;
     const policyDepth = decideResearch({
@@ -259,6 +257,8 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
   // ── The core pipeline ─────────────────────────────────────────────────────
 
   async function runPipeline(input: AskInput, opts: PipelineOptions): Promise<BlueyResponse> {
+    // Privacy master switch: nothing is captured or sent while Cloud AI is off.
+    assertCloudAiAllowed(input.settings);
     const startedAt = now().getTime();
 
     // Phase: capturing ──────────────────────────────────────────────────────
@@ -414,12 +414,14 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     checkAlive(opts);
     if (outcome.finishReason === "cancelled") throw new CancelledError();
     if (outcome.finishReason === "error") {
-      throw outcome.error ?? {
-        kind: "ai" as const,
-        code: "ai.stream_failed",
-        message: "The model stream failed",
-        recoverable: true,
-      };
+      throw (
+        outcome.error ?? {
+          kind: "ai" as const,
+          code: "ai.stream_failed",
+          message: "The model stream failed",
+          recoverable: true,
+        }
+      );
     }
 
     // Phase: done ───────────────────────────────────────────────────────────
@@ -663,8 +665,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       ...event,
       type,
       confidence: refined.data.confidence ?? event.confidence,
-      requiresResponse:
-        (refined.data.requiresResponse ?? event.requiresResponse) && event.speaker !== "You",
+      requiresResponse: (refined.data.requiresResponse ?? event.requiresResponse) && event.speaker !== "You",
     };
   }
 
@@ -679,7 +680,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     if (!heuristic) return null;
 
     let event: DetectedEvent | null = heuristic;
-    const fastModelConfigured = input.settings.ai.models.fast != null;
+    const fastModelConfigured = input.settings.ai.models.fast != null && cloudAiAllowed(input.settings);
     if (fastModelConfigured && heuristic.confidence >= 0.4 && heuristic.confidence <= 0.7) {
       try {
         event = await refineWithFastModel(input, heuristic);
@@ -694,6 +695,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
   // ── summarizeSession ──────────────────────────────────────────────────────
 
   async function summarizeSession(input: SummarizeInput): Promise<SessionSummary> {
+    assertCloudAiAllowed(input.settings);
     const summary = await generateSessionSummary(input, { api, now, idGen });
     try {
       const { id: _id, createdAt: _createdAt, ...rest } = summary;

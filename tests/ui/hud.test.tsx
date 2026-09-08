@@ -207,6 +207,41 @@ describe("HudPanel", () => {
     expect(screen.queryByText("Setup needed")).not.toBeInTheDocument();
   });
 
+  it("shows deep-research progress while thinking and lets the user skip it", async () => {
+    const mock = await setupMockApp();
+    setEngine(engine);
+    const user = userEvent.setup();
+    renderHud();
+    await user.type(
+      screen.getByPlaceholderText("Ask anything about your screen"),
+      "Compare Rust web frameworks{Enter}",
+    );
+    engine.emitPhase("thinking");
+    await screen.findByText("Thinking…");
+
+    mock.emit("research.event", { type: "started", jobId: "job-1" });
+    await screen.findByText("Researching");
+    mock.emit("research.event", {
+      type: "tool_call",
+      jobId: "job-1",
+      tool: "exa_search",
+      input: { query: "rust" },
+    });
+    await screen.findByText(/Researching · Searching the web… \(1 lookup\)/);
+
+    await user.click(screen.getByRole("button", { name: "Skip research" }));
+    await screen.findByText(/Skipping research…/);
+    expect(screen.getByRole("button", { name: "Skip research" })).toBeDisabled();
+
+    mock.emit("research.event", {
+      type: "failed",
+      jobId: "job-1",
+      error: { kind: "cancelled", code: "cancelled", message: "cancelled", recoverable: false },
+    });
+    await screen.findByText("Thinking…");
+    expect(screen.queryByText("Researching")).not.toBeInTheDocument();
+  });
+
   it("toolbar reflects the active session and its controls pause, resume and end it", async () => {
     // (The Radix menu itself is not driven here: opening it takes seconds under jsdom.)
     await bluey.audio.start();

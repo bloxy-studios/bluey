@@ -30,6 +30,7 @@ function applyAppearance(settings: Settings | null): void {
   root.dataset.theme = theme === "system" ? (prefersDark ? "dark" : "light") : theme;
 
   root.dataset.fontSize = appearance?.fontSize ?? "medium";
+  root.dataset.density = appearance?.density ?? "comfortable";
 
   const reduced = appearance?.reducedMotion ?? "system";
   const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;

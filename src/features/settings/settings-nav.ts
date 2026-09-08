@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 
 export const SETTINGS_TABS = [
   "general",
+  "appearance",
   "modes",
   "context",
   "keybinds",

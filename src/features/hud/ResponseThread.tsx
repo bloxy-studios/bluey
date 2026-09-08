@@ -5,8 +5,44 @@ import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { Spinner } from "@/components/ui/Spinner";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { useChatStore, type ChatTurn } from "@/stores/chatStore";
+import { useResearchStore } from "@/stores/researchStore";
 import { ResponseActions } from "./ResponseActions";
 import { ResponseView } from "./ResponseView";
+
+/** Streaming placeholder: what the pipeline is doing right now, incl. deep research. */
+function StreamingStatus() {
+  const phase = useChatStore((s) => s.phase);
+  const research = useResearchStore((s) => s.active);
+  const skip = useResearchStore((s) => s.skip);
+
+  if (research) {
+    return (
+      <div className="flex items-center gap-2 py-1 text-[13px] text-fg-muted motion-safe:animate-fade-in">
+        <Spinner size={12} />
+        <span className="min-w-0 flex-1 truncate">
+          Researching · {research.message}
+          {research.toolCalls > 0
+            ? ` (${research.toolCalls} ${research.toolCalls === 1 ? "lookup" : "lookups"})`
+            : ""}
+        </span>
+        <button
+          type="button"
+          onClick={() => void skip()}
+          disabled={research.cancelling}
+          className="shrink-0 text-[12.5px] font-medium text-accent hover:text-accent-hover disabled:opacity-50"
+        >
+          Skip research
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 py-1 text-[13px] text-fg-muted motion-safe:animate-fade-in">
+      <Spinner size={12} />
+      {phase === "capturing" || phase === "analyzing" ? "Reading screen…" : "Thinking…"}
+    </div>
+  );
+}
 
 function PromptPill({ label }: { label: string }) {
   return (
@@ -19,7 +55,6 @@ function PromptPill({ label }: { label: string }) {
 }
 
 function Turn({ turn, isLast, onRegenerate }: { turn: ChatTurn; isLast: boolean; onRegenerate: () => void }) {
-  const phase = useChatStore((s) => s.phase);
   const streaming = turn.status === "streaming";
 
   return (
@@ -30,13 +65,12 @@ function Turn({ turn, isLast, onRegenerate }: { turn: ChatTurn; isLast: boolean;
       ) : turn.response ? (
         <>
           <ResponseView response={turn.response} streaming={streaming} />
-          {turn.status === "done" && isLast ? <ResponseActions response={turn.response} onRegenerate={onRegenerate} /> : null}
+          {turn.status === "done" && isLast ? (
+            <ResponseActions response={turn.response} onRegenerate={onRegenerate} />
+          ) : null}
         </>
       ) : streaming ? (
-        <div className="flex items-center gap-2 py-1 text-[13px] text-fg-muted motion-safe:animate-fade-in">
-          <Spinner size={12} />
-          {phase === "capturing" || phase === "analyzing" ? "Reading screen…" : "Thinking…"}
-        </div>
+        <StreamingStatus />
       ) : turn.status === "cancelled" ? (
         <div className="text-[13px] text-fg-subtle">Stopped.</div>
       ) : null}

@@ -14,6 +14,7 @@ import { useModesStore } from "./modesStore";
 import { usePanelStore } from "./panelStore";
 import { usePermissionsStore } from "./permissionsStore";
 import { resetProactiveForTest, startProactiveLoop } from "./proactive";
+import { useResearchStore } from "./researchStore";
 import { useSessionStore } from "./sessionStore";
 import { useSettingsStore } from "./settingsStore";
 import { useTranscriptStore } from "./transcriptStore";
@@ -48,6 +49,7 @@ export async function initStores(): Promise<void> {
     eventBus.on("audio.level", (levels) => useTranscriptStore.getState().setLevels(levels)),
 
     eventBus.on("response.prepared", (response) => useChatStore.getState().setPrepared(response)),
+    eventBus.on("research.event", (event) => useResearchStore.getState().apply(event)),
 
     eventBus.on("dev.metrics", (metrics) => useDevStore.getState().setMetrics(metrics)),
     eventBus.on("dev.log", (entry) => useDevStore.getState().pushLog(entry)),
@@ -83,6 +85,7 @@ export function resetStoresForTest(): void {
   usePanelStore.setState({ state: null });
   usePermissionsStore.setState({ permissions: null });
   useDevStore.setState({ metrics: null, logs: [] });
+  useResearchStore.setState({ active: null });
   resetProactiveForTest();
   resetHudUiForTest();
 }

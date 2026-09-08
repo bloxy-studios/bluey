@@ -12,6 +12,7 @@ import {
   History,
   UserRound,
   Lock,
+  Palette,
   type LucideIcon,
 } from "lucide-react";
 import { lazy, Suspense, useMemo, useState } from "react";
@@ -22,6 +23,7 @@ import { isSettingsTab, SettingsNavContext, type SettingsTab } from "./settings-
 
 const PAGES: Record<SettingsTab, ReturnType<typeof lazy>> = {
   general: lazy(() => import("./tabs/GeneralTab")),
+  appearance: lazy(() => import("./tabs/AppearanceTab")),
   modes: lazy(() => import("./tabs/ModesTab")),
   context: lazy(() => import("./tabs/ContextTab")),
   keybinds: lazy(() => import("./tabs/KeybindsTab")),
@@ -38,6 +40,7 @@ const PAGES: Record<SettingsTab, ReturnType<typeof lazy>> = {
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: LucideIcon }> = [
   { id: "general", label: "General", icon: Settings },
+  { id: "appearance", label: "Appearance", icon: Palette },
   { id: "modes", label: "Modes", icon: LayoutGrid },
   { id: "context", label: "Context", icon: FolderOpen },
   { id: "keybinds", label: "Keybinds", icon: Keyboard },
