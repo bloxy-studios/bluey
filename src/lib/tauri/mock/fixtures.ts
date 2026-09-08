@@ -10,6 +10,7 @@ import type {
   BlueyMode,
   BlueyResponse,
   DisplayInfo,
+  ModelRoleAssignments,
   Session,
   SessionEvent,
   SessionNote,
@@ -17,6 +18,7 @@ import type {
   Settings,
   ShortcutBinding,
 } from "../../types";
+import { applyPresets, GEMINI_PRESET } from "../../ai/provider-presets";
 
 const NOW = () => new Date().toISOString();
 const daysAgo = (days: number, offsetMinutes = 0) =>
@@ -308,6 +310,16 @@ export function createBuiltInModes(): BlueyMode[] {
 
 /* ── Settings ──────────────────────────────────────────────────────────── */
 
+const NO_ASSIGNMENTS: ModelRoleAssignments = {
+  default: null,
+  fast: null,
+  reasoning: null,
+  vision: null,
+  research: null,
+  transcription: null,
+  embedding: null,
+};
+
 export function createDefaultSettings(): Settings {
   return {
     version: 1,
@@ -317,7 +329,7 @@ export function createDefaultSettings(): Settings {
       defaultModeId: "general",
       onboardingCompleted: true,
       developerMode: true,
-      outputLanguage: "English",
+      outputLanguage: "en", // Rust default (`GeneralSettings::default`)
     },
     appearance: {
       theme: "system",
@@ -376,15 +388,9 @@ export function createDefaultSettings(): Settings {
           hasApiKey: false,
         },
       ],
-      models: {
-        default: { providerId: "azure-foundry", model: "gpt-5.6-terra" },
-        fast: { providerId: "azure-foundry", model: "gpt-5.6-luna" },
-        reasoning: { providerId: "azure-foundry", model: "gpt-6-astra" },
-        vision: { providerId: "azure-foundry", model: "gpt-6-astra" },
-        research: { providerId: "anthropic", model: "claude-opus-5" },
-        transcription: { providerId: "azure-foundry", model: "MAI-Transcribe-1.5" },
-        embedding: { providerId: "azure-foundry", model: "text-embedding-3-small" },
-      },
+      // Gemini is the default provider (ADR 0007): every role runs its recommended model, exactly as
+      // `ai_apply_provider_presets` would leave it. Foundry stays a keyed alternate to switch to.
+      models: applyPresets(NO_ASSIGNMENTS, GEMINI_PRESET, true).models,
       responseLength: "balanced",
       responseTone: "natural",
       researchEnabled: false,

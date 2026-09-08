@@ -7,9 +7,11 @@ import type {
   EngineHandle,
   ResponseEngine,
 } from "@/lib/engine-contract";
+import type { CommandArgs, CommandName, CommandResult } from "@/lib/tauri/commands";
 import { eventBus } from "@/lib/tauri/event-bus";
+import type { EventName, EventPayload } from "@/lib/tauri/events";
 import { MockTransport } from "@/lib/tauri/mock";
-import { setTransport } from "@/lib/tauri/transport";
+import { setTransport, type StreamChannel, type Transport, type Unlisten } from "@/lib/tauri/transport";
 import type { BlueyError, BlueyResponse, DetectedEvent, TranscriptSegment } from "@/lib/types";
 import { setEngine } from "@/stores/engine";
 import { initStores, resetStoresForTest } from "@/stores/initStores";
@@ -41,6 +43,58 @@ export async function setupMockApp(): Promise<MockTransport> {
   setTransport(mock);
   await initStores();
   return mock;
+}
+
+type CommandOverride = (args: unknown) => Promise<unknown>;
+
+/**
+ * Wraps the MockTransport so individual commands can be scripted (fail, stall, count calls)
+ * while every other command — and the event stream — still comes from the mock.
+ */
+export class InterceptingTransport implements Transport {
+  readonly kind = "mock" as const;
+  private readonly overrides = new Map<CommandName, CommandOverride>();
+
+  constructor(private readonly inner: MockTransport) {}
+
+  /** Script `command`; `next()` forwards the call to the mock. */
+  intercept<K extends CommandName>(
+    command: K,
+    handler: (args: CommandArgs<K>, next: () => Promise<CommandResult<K>>) => Promise<CommandResult<K>>,
+  ): this {
+    this.overrides.set(command, (args) =>
+      handler(args as CommandArgs<K>, () => this.inner.invoke(command, args as CommandArgs<K>)),
+    );
+    return this;
+  }
+
+  invoke<K extends CommandName>(command: K, args: CommandArgs<K>): Promise<CommandResult<K>> {
+    const override = this.overrides.get(command);
+    return override ? (override(args) as Promise<CommandResult<K>>) : this.inner.invoke(command, args);
+  }
+
+  listen<K extends EventName>(event: K, handler: (payload: EventPayload<K>) => void): Promise<Unlisten> {
+    return this.inner.listen(event, handler);
+  }
+
+  createChannel<T>(): StreamChannel<T> {
+    return this.inner.createChannel<T>();
+  }
+
+  currentWindowLabel(): string {
+    return this.inner.currentWindowLabel();
+  }
+}
+
+/** `setupMockApp()` with an interceptor installed as the active transport. */
+export async function setupInterceptedApp(): Promise<{
+  mock: MockTransport;
+  transport: InterceptingTransport;
+}> {
+  const mock = await setupMockApp();
+  const transport = new InterceptingTransport(mock);
+  setTransport(transport);
+  return { mock, transport };
 }
 
 export function makeResponse(partial: Partial<BlueyResponse> = {}): BlueyResponse {

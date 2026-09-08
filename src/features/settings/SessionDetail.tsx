@@ -1,5 +1,5 @@
 import { ArrowLeft, ChevronRight, Download, FileAudio, Pencil, Plus, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/Dialog";
@@ -24,9 +24,33 @@ import { getEngine } from "@/stores/engine";
 import { modeById, useModesStore } from "@/stores/modesStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 
-import { formatOffset, importRecording, speakerLabel } from "./session-import";
+import {
+  canTranscribeFiles,
+  formatOffset,
+  IMPORT_DISABLED_HINT,
+  importRecording,
+  speakerLabel,
+} from "./session-import";
 
+/** Segments shown per session (the most recent ones; the footer says how many exist). */
 const MAX_TRANSCRIPT_LINES = 300;
+
+interface TranscriptLoad {
+  segments: TranscriptSegment[];
+  /** The lookup failed — the session still renders, with a "Transcript unavailable" line. */
+  failed: boolean;
+}
+
+async function fetchTranscript(sessionId: string): Promise<TranscriptLoad> {
+  try {
+    return {
+      segments: await bluey.transcript.list({ sessionId, limit: MAX_TRANSCRIPT_LINES }),
+      failed: false,
+    };
+  } catch {
+    return { segments: [], failed: true };
+  }
+}
 
 function TimelineEvent({ event }: { event: SessionEvent }) {
   const [open, setOpen] = useState(false);
@@ -93,19 +117,41 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([]);
+  const [transcriptUnavailable, setTranscriptUnavailable] = useState(false);
   const [importing, setImporting] = useState(false);
+  const canImport = canTranscribeFiles(settings);
+  /** Segment count from the last loaded detail; `null` until the first load. */
+  const knownSegmentCount = useRef<number | null>(null);
+  /** Set by Enter / Escape in the rename input so the blur that follows doesn't commit again. */
+  const skipBlurCommit = useRef(false);
 
   const load = useCallback(async () => {
     try {
-      setDetail(await bluey.session.get({ id: sessionId }));
+      // Detail and transcript load in parallel. The transcript round-trip is skipped when the last
+      // detail reported no segments — unless the fresh detail says some arrived since (an import).
+      const skipTranscript = knownSegmentCount.current === 0;
+      const [nextDetail, parallelTranscript] = await Promise.all([
+        bluey.session.get({ id: sessionId }),
+        skipTranscript ? Promise.resolve(null) : fetchTranscript(sessionId),
+      ]);
+      const loaded =
+        parallelTranscript ??
+        (nextDetail.transcriptSegmentCount > 0
+          ? await fetchTranscript(sessionId)
+          : { segments: [], failed: false });
+      knownSegmentCount.current = nextDetail.transcriptSegmentCount;
+      setDetail(nextDetail);
       setLoadError(null);
-      setTranscript(await bluey.transcript.list({ sessionId }).catch(() => []));
+      setTranscript(loaded.segments);
+      // Only worth saying when there is a transcript we failed to fetch.
+      setTranscriptUnavailable(loaded.failed && nextDetail.transcriptSegmentCount > 0);
     } catch (error) {
       setLoadError(toBlueyError(error, "storage"));
     }
   }, [sessionId]);
 
   useEffect(() => {
+    knownSegmentCount.current = null;
     void load();
   }, [load]);
 
@@ -133,6 +179,7 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
   const title = session.title ?? "Untitled session";
 
   const startRename = () => {
+    skipBlurCommit.current = false;
     setTitleDraft(session.title ?? "");
     setEditingTitle(true);
   };
@@ -150,8 +197,19 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
   };
 
   const onTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") void commitRename();
-    if (event.key === "Escape") setEditingTitle(false);
+    if (event.key === "Enter") {
+      skipBlurCommit.current = true;
+      void commitRename();
+    }
+    if (event.key === "Escape") {
+      skipBlurCommit.current = true; // cancel: the unmount blur must not commit the draft
+      setEditingTitle(false);
+    }
+  };
+
+  const onTitleBlur = () => {
+    if (skipBlurCommit.current) return;
+    void commitRename();
   };
 
   const addNote = async () => {
@@ -222,7 +280,7 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
               onKeyDown={onTitleKeyDown}
-              onBlur={() => void commitRename()}
+              onBlur={onTitleBlur}
               aria-label="Session title"
               placeholder="Session title"
               className="w-full max-w-[420px]"
@@ -241,7 +299,13 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
             {session.status !== "completed" ? ` · ${session.status === "paused" ? "paused" : "live"}` : ""}
           </div>
         </div>
-        <Button variant="secondary" size="sm" disabled={importing} onClick={() => void addRecording()}>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={importing || !canImport}
+          title={canImport ? undefined : IMPORT_DISABLED_HINT}
+          onClick={() => void addRecording()}
+        >
           <FileAudio className="size-3.5" aria-hidden /> {importing ? "Transcribing…" : "Add recording"}
         </Button>
         <Button variant="secondary" size="sm" onClick={() => void exportMarkdown()}>
@@ -264,27 +328,34 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
           </ul>
         </section>
 
-        {transcript.length > 0 ? (
+        {transcript.length > 0 || transcriptUnavailable ? (
           <section className="mt-6">
             <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-fg-subtle">
               Transcript
             </h3>
-            <ol className="flex flex-col gap-1.5" aria-label="Transcript">
-              {transcript.slice(0, MAX_TRANSCRIPT_LINES).map((segment) => (
-                <li key={segment.id} className="flex gap-3 text-[13px] leading-relaxed">
-                  <span className="w-[52px] shrink-0 font-mono text-[11px] text-fg-subtle">
-                    {formatOffset(segment.startTime)}
-                  </span>
-                  <span className="shrink-0 font-medium text-fg-muted">{speakerLabel(segment)}</span>
-                  <span className="text-fg">{segment.text}</span>
-                </li>
-              ))}
-            </ol>
-            {transcript.length > MAX_TRANSCRIPT_LINES ? (
-              <p className="mt-2 text-[12px] text-fg-subtle">
-                Showing the first {MAX_TRANSCRIPT_LINES} of {transcript.length} segments.
-              </p>
-            ) : null}
+            {transcriptUnavailable ? (
+              <p className="text-[12.5px] text-fg-subtle">Transcript unavailable</p>
+            ) : (
+              <>
+                <ol className="flex flex-col gap-1.5" aria-label="Transcript">
+                  {transcript.slice(0, MAX_TRANSCRIPT_LINES).map((segment) => (
+                    <li key={segment.id} className="flex gap-3 text-[13px] leading-relaxed">
+                      <span className="w-[52px] shrink-0 font-mono text-[11px] text-fg-subtle">
+                        {formatOffset(segment.startTime)}
+                      </span>
+                      <span className="shrink-0 font-medium text-fg-muted">{speakerLabel(segment)}</span>
+                      <span className="text-fg">{segment.text}</span>
+                    </li>
+                  ))}
+                </ol>
+                {detail.transcriptSegmentCount > transcript.length ? (
+                  <p className="mt-2 text-[12px] text-fg-subtle">
+                    Showing {Math.min(transcript.length, MAX_TRANSCRIPT_LINES)} of{" "}
+                    {detail.transcriptSegmentCount} segments.
+                  </p>
+                ) : null}
+              </>
+            )}
           </section>
         ) : null}
 

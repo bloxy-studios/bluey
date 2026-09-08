@@ -11,7 +11,7 @@
 import { createInterface } from "node:readline";
 
 import { startResearchJob, type AgentRunDeps, type ResearchJobHandle } from "./agent";
-import { loadConfig } from "./config";
+import { loadConfig, type BuildVariant } from "./config";
 import { createMockExaClient, createMockFirecrawlClient } from "./mock";
 import {
   deepResearchRequestSchema,
@@ -31,8 +31,10 @@ export interface StartSidecarOptions {
   env?: Record<string, string | undefined>;
   /** Test injection: queryFn / tool clients. */
   deps?: AgentRunDeps;
-  /** Set by the compiled per-target entrypoints. */
+  /** Set by the compiled per-target entrypoints (full build: embedded CLI). */
   embeddedClaudePath?: string;
+  /** Set by the compiled per-target entrypoints (`lite` = no embedded Claude CLI). */
+  buildVariant?: BuildVariant;
   /** Default: only when reading from the real process stdin. */
   installSignalHandlers?: boolean;
 }
@@ -48,6 +50,7 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
   const baseDeps: AgentRunDeps = {
     ...options.deps,
     embeddedClaudePath: options.deps?.embeddedClaudePath ?? options.embeddedClaudePath,
+    buildVariant: options.deps?.buildVariant ?? options.buildVariant,
     env: options.deps?.env ?? env,
   };
   // Mock mode: no network — fake search/scrape clients unless a test injected its own.

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use bluey_core::events::BlueyEvent;
 use bluey_core::types::{
-    AddDocumentInput, BlueyDocument, DocumentIndexStatus, DocumentScope, RetrievalQuery,
-    RetrievalStrategy, RetrievedChunk,
+    AddDocumentInput, AiProviderKind, BlueyDocument, DocumentIndexStatus, DocumentScope,
+    RetrievalQuery, RetrievalStrategy, RetrievedChunk,
 };
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_storage::{DocumentRepository, ModeRepository, MAX_DOCUMENT_BYTES};
@@ -251,7 +251,18 @@ impl DocumentsManager {
         let Some(tag) = self.embedding_tag() else {
             return Ok(0);
         };
-        let dimensions = self.settings.get().ai.embedding_dimensions;
+        // Only Gemini embeddings are MRL-truncated to the configured size; other
+        // providers return their native size, which must not count as stale.
+        let settings = self.settings.get();
+        let gemini = settings
+            .ai
+            .models
+            .embedding
+            .as_ref()
+            .and_then(|a| settings.ai.providers.iter().find(|p| p.id == a.provider_id))
+            .map(|p| p.kind == AiProviderKind::GoogleGemini)
+            .unwrap_or(false);
+        let dimensions = gemini.then_some(settings.ai.embedding_dimensions);
         let stale = self
             .storage
             .run(move |db| DocumentRepository::stale_embeddings(db, &tag, dimensions))

@@ -18,7 +18,14 @@
 | Provider API keys (Gemini, Foundry/Azure, Anthropic, OpenAI-compatible) | Keychain `provider:<id>:api_key` | Injected into HTTPS headers by Rust provider adapters (`x-goog-api-key`, `api-key`, `x-api-key`, `Authorization`) — never in URL queries, except the Gemini Live WebSocket URL, which is redacted from logs |
 | Gemini key for the research sidecar | Keychain `provider:gemini:api_key` (same entry) | `GEMINI_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=gemini` |
 | Exa / Firecrawl keys | Keychain | Rust research clients; env-injected into the agent sidecar per job |
-| Anthropic key for the agent | Keychain | `ANTHROPIC_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=claude` |
+| Anthropic key for the agent | Keychain (or `ANTHROPIC_API_KEY` in Bluey's `.env`) | `ANTHROPIC_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=claude` |
+
+Sidecars are spawned with a **cleared environment**: the helper and the research agent receive
+only `PATH`/`HOME`/`TMPDIR`/`USER`/`LANG` plus the variables Rust passes explicitly
+(`AgentManager::job_env` — exactly one research backend's credentials, the Exa/Firecrawl keys and
+documented `BLUEY_*` knobs). Keys that `.env` loads into Bluey's own process therefore never reach
+a child process that has no business with them. Log lines are redacted for `sk-…`, `fc-…`,
+`AIza…`, `Bearer …`, `api-key` values and `key=` URL queries.
 | Clerk client JWT | Keychain `auth:clerk:client_token` | Replayed by clerk-js at load (native mode) |
 | Clerk publishable key | `VITE_CLERK_PUBLISHABLE_KEY` (public by design) | Frontend |
 
@@ -36,7 +43,7 @@ patterns (`sk-…`, `fc-…`, bearer tokens) defensively.
 * CSP restricts scripts to the bundle (Clerk UI is bundled) and connections to Clerk's
   Frontend API + Tauri IPC. Provider endpoints are contacted from Rust, not from the WebView.
 
-## Agent security (Claude Agent SDK)
+## Agent security (research sidecar: Gemini function calling or Claude Agent SDK)
 * `tools: []` removes all built-in tools (no Bash/Read/Write/WebFetch); the only tools are the
   in-process MCP tools `exa_search`, `firecrawl_scrape`, `document_read`, allow-listed by name.
 * `permissionMode` never prompts; anything not allow-listed is denied.

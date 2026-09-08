@@ -9,6 +9,7 @@
 
 import type {
   AIChunk,
+  AIProviderConfig,
   AIRequest,
   AppStatus,
   AudioStatus,
@@ -37,7 +38,7 @@ import type {
   TranscriptSegment,
   PanelState,
 } from "../../types";
-import { applyPresets } from "../../ai/provider-presets";
+import { applyPresets, MODEL_ROLES, presetForKind } from "../../ai/provider-presets";
 import { createId } from "../../utils/id";
 import type { CommandArgs, CommandName, CommandResult } from "../commands";
 import type { EventName, EventPayload } from "../events";
@@ -108,6 +109,11 @@ export class MockTransport implements Transport {
   readonly kind = "mock" as const;
 
   streamDelayMs: number;
+  /**
+   * What the next `audio_pick_recording` "returns": `undefined` → the fixture path,
+   * `null` → the user cancelled the picker. One-shot; resets to `undefined` once consumed.
+   */
+  nextPickedRecording: string | null | undefined = undefined;
   private readonly levelTicks: boolean;
   private readonly listeners = new Map<EventName, Set<(payload: never) => void>>();
 
@@ -286,6 +292,30 @@ export class MockTransport implements Transport {
       target: { type: "display", displayId: "display-1" },
       durationMs: 84,
     };
+  }
+
+  /**
+   * Mirror of `AiCore::default_model_for`: the first role assignment on this provider, else the
+   * kind's recommended default (the mock kind answers as `mock-default`).
+   */
+  private defaultModelFor(provider: AIProviderConfig): string | null {
+    for (const role of MODEL_ROLES) {
+      const assignment = this.settings.ai.models[role];
+      if (assignment?.providerId === provider.id) return assignment.model;
+    }
+    if (provider.kind === "mock") return "mock-default";
+    return presetForKind(provider.kind)?.models.default ?? null;
+  }
+
+  /**
+   * Rust refreshes `hasApiKey` from the keychain on every settings write, so a provider created
+   * after its key was stored (onboarding race) picks the flag up. The seeded flags are kept.
+   */
+  private withKeyFlags(settings: Settings): Settings {
+    const providers = settings.ai.providers.map((p) =>
+      !p.hasApiKey && this.secrets.has(`provider:${p.id}:api_key`) ? { ...p, hasApiKey: true } : p,
+    );
+    return { ...settings, ai: { ...settings.ai, providers } };
   }
 
   private sessionListItem(session: Session, snippet?: string): SessionListItem {
@@ -796,7 +826,11 @@ export class MockTransport implements Transport {
       }
       return { peakLevel: Number(peak.toFixed(2)), ok: true };
     },
-    audio_pick_recording: () => MOCK_RECORDING_PATH,
+    audio_pick_recording: () => {
+      const next = this.nextPickedRecording;
+      this.nextPickedRecording = undefined;
+      return next === undefined ? MOCK_RECORDING_PATH : next;
+    },
     transcript_list: (args) => {
       let list = this.segments;
       if (args.sessionId) list = list.filter((s) => s.sessionId === args.sessionId);
@@ -838,37 +872,62 @@ export class MockTransport implements Transport {
     },
     ai_embed: (args) =>
       args.texts.map((text) => Array.from({ length: 8 }, (_, i) => ((text.length * (i + 3)) % 97) / 97)),
+    // Same contract as `AiCore::test_connection`: unknown provider / no model THROW; a provider
+    // without a key answers `ok: false` with `config.missing_key`.
     ai_test_connection: async (args) => {
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
       await this.delay(this.streamDelayMs * 8);
       if (!provider) {
-        return {
-          ok: false,
-          providerId: args.providerId,
-          error: blueyError({
-            kind: "configuration",
-            code: "ai.unknown_provider",
-            message: "Provider is not configured.",
-            recoverable: true,
-            recovery: { type: "configure_provider" },
-          }),
-        };
+        throw blueyError({
+          kind: "configuration",
+          code: "config.unknown_provider",
+          message: "the provider is not configured",
+          recoverable: true,
+          recovery: { type: "configure_provider" },
+        });
+      }
+      const model = args.model ?? this.defaultModelFor(provider);
+      if (!model) {
+        throw blueyError({
+          kind: "configuration",
+          code: "config.no_model",
+          message: "pass a model or assign one to this provider first",
+          recoverable: true,
+          recovery: { type: "configure_provider" },
+        });
       }
       if (!provider.hasApiKey) {
         return {
           ok: false,
           providerId: provider.id,
-          model: args.model,
+          model,
           error: blueyError({
             kind: "configuration",
-            code: "ai.missing_key",
-            message: "No API key stored for this provider.",
+            code: "config.missing_key",
+            message: "the provider has no API key configured",
             recoverable: true,
             recovery: { type: "configure_provider" },
           }),
         };
       }
-      return { ok: true, providerId: provider.id, model: args.model ?? "gpt-5.6-terra", latencyMs: 132 };
+      if (this.nextAiFailure) {
+        // `dev_simulate { type: "ai_failure" }` fails the next model request — this one included.
+        const code = this.nextAiFailure;
+        this.nextAiFailure = null;
+        return {
+          ok: false,
+          providerId: provider.id,
+          model,
+          error: blueyError({
+            kind: "ai",
+            code,
+            message: "The model request failed (simulated).",
+            recoverable: true,
+            recovery: { type: "retry" },
+          }),
+        };
+      }
+      return { ok: true, providerId: provider.id, model, latencyMs: 132 };
     },
     ai_transcribe_file: async (args) => {
       await this.delay(this.streamDelayMs * 4);
@@ -905,7 +964,9 @@ export class MockTransport implements Transport {
         language: args.language,
         createdAt: now(),
       }));
-      this.segments = [...this.segments, ...segments];
+      // Privacy → store transcripts off: the segments are returned to the caller but never persisted.
+      const stored = this.settings.privacy.storeTranscripts;
+      if (stored) this.segments = [...this.segments, ...segments];
       const speakers = args.diarization ? new Set(MOCK_RECORDING_LINES.map(([speaker]) => speaker)).size : 0;
       const durationMs = segments[segments.length - 1]?.endTime ?? 0;
       const event: SessionEvent = {
@@ -927,7 +988,7 @@ export class MockTransport implements Transport {
         speakers,
         durationMs,
         language: args.language,
-        stored: this.settings.privacy.storeTranscripts,
+        stored,
       };
       return result;
     },
@@ -1180,6 +1241,7 @@ export class MockTransport implements Transport {
       this.notes = this.notes.filter((n) => n.sessionId !== args.id);
       this.summaries = this.summaries.filter((s) => s.sessionId !== args.id);
       this.responses = this.responses.filter((r) => r.sessionId !== args.id);
+      this.segments = this.segments.filter((s) => s.sessionId !== args.id);
     },
     sessions_delete_all: () => {
       const count = this.sessions.length;
@@ -1188,6 +1250,7 @@ export class MockTransport implements Transport {
       this.notes = [];
       this.summaries = [];
       this.responses = this.responses.filter((r) => !r.sessionId);
+      this.segments = this.segments.filter((s) => !s.sessionId);
       return count;
     },
     sessions_rename: (args) => {
@@ -1369,7 +1432,7 @@ export class MockTransport implements Transport {
     // Settings & secrets
     settings_get: () => this.settings,
     settings_update: (args) => {
-      this.settings = mergeSettings(this.settings, args.patch);
+      this.settings = this.withKeyFlags(mergeSettings(this.settings, args.patch));
       return this.emitSettings();
     },
     settings_reset: () => {

@@ -5,4 +5,4 @@
 
 import { runSidecarProcess } from "./main";
 
-void runSidecarProcess();
+void runSidecarProcess({ buildVariant: "lite" });

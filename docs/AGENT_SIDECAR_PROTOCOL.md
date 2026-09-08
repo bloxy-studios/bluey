@@ -79,9 +79,10 @@ Rust maps these onto `DeepResearchEvent` and emits `research.event` to the front
 - `research.failed.error.kind` is one of `research`, `cancelled`, `configuration` (missing
   or rejected keys — the message names the env var, never its value). Codes: `cancelled`,
   `missing_api_key`, `invalid_api_key`, `invalid_configuration`, `max_turns_exceeded`,
-  `rate_limited` (Gemini HTTP 429), `blocked` (Gemini refusal), `budget_exceeded`,
-  `structured_output_failed`, `agent_execution_failed`, `agent_empty_report`,
-  `agent_no_result`.
+  `rate_limited` (Gemini HTTP 429), `blocked` (Gemini refusal), `gemini_empty_turn` (the
+  model returned no parts — a function-call id/name mismatch), `budget_exceeded`,
+  `structured_output_failed`, `agent_execution_failed` (message sanitized and truncated),
+  `agent_empty_report`, `agent_no_result`.
 - Citations returned by the model are validated against URLs actually observed through the
   tools; invented URLs are dropped and remaining observed sources are appended (deduped).
 - Environment: `RESEARCH_BACKEND` (`gemini` default \| `claude`), `GEMINI_API_KEY` (alias

@@ -14,4 +14,4 @@ import embeddedClaude from "@anthropic-ai/claude-agent-sdk-darwin-arm64/claude" 
 
 import { runSidecarProcess } from "./main";
 
-void runSidecarProcess({ embeddedClaudePath: embeddedClaude });
+void runSidecarProcess({ embeddedClaudePath: embeddedClaude, buildVariant: "full" });

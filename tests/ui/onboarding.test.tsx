@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { OnboardingFlow } from "@/features/onboarding/OnboardingFlow";
+import { ConnectAIStep } from "@/features/onboarding/steps/connect";
+import type { MockTransport } from "@/lib/tauri/mock";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { setupMockApp } from "./helpers";
 
@@ -93,5 +95,58 @@ describe("OnboardingFlow (MockTransport)", () => {
     expect(screen.getByText(/is ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open Bluey" }));
     await waitFor(() => expect(useSettingsStore.getState().settings?.general.onboardingCompleted).toBe(true));
+  });
+});
+
+describe("ConnectAIStep", () => {
+  let mock: MockTransport;
+
+  beforeEach(async () => {
+    mock = await setupMockApp();
+    // Start without a Gemini key so the step has to wait for one.
+    const current = useSettingsStore.getState().settings;
+    if (!current) throw new Error("settings not loaded");
+    await useSettingsStore.getState().update({
+      ai: {
+        providers: current.ai.providers.map((p) => (p.id === "gemini" ? { ...p, hasApiKey: false } : p)),
+      },
+    });
+  });
+
+  it("verifies a freshly saved key and shows an error banner instead of 'connected' when it fails", async () => {
+    const user = userEvent.setup();
+    await mock.invoke("dev_simulate", { simulation: { type: "ai_failure", code: "config.api_key_invalid" } });
+    render(
+      <TooltipProvider>
+        <ConnectAIStep onReady={() => {}} />
+      </TooltipProvider>,
+    );
+    expect(screen.queryByText("Gemini is connected")).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Google AI Studio API key"), "AIza-not-a-real-key{Enter}");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("API key rejected");
+    expect(screen.queryByText("Gemini is connected")).not.toBeInTheDocument();
+    expect(useSettingsStore.getState().settings?.ai.providers.find((p) => p.id === "gemini")?.hasApiKey).toBe(
+      true,
+    );
+
+    // Retry runs the connection test again — the simulated failure was one-shot.
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("Gemini is connected");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows 'connected' only after the saved key passes the connection test", async () => {
+    const user = userEvent.setup();
+    render(
+      <TooltipProvider>
+        <ConnectAIStep onReady={() => {}} />
+      </TooltipProvider>,
+    );
+    await user.type(screen.getByLabelText("Google AI Studio API key"), "AIza-fine{Enter}");
+    await screen.findByText("Gemini is connected");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

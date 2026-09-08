@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { SectionHeader } from "@/components/ui/SectionHeader";
@@ -14,6 +14,7 @@ import {
   toBlueyError,
   type AIProviderConfig,
   type ModelRole,
+  type ModelRoleAssignments,
   type ResearchBackend,
   type ResponseLength,
   type ResponseTone,
@@ -22,6 +23,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { ProviderCard, ProviderDialog } from "../ProviderCard";
 import {
   draftToDeployments,
+  isPresetProviderId,
   newProviderFromDraft,
   providerToDraft,
   sortProviders,
@@ -59,8 +61,19 @@ function ModelRoleRow({
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const assignment = settings?.ai.models[role] ?? null;
+  const assignedProviderId = assignment?.providerId ?? "";
   const [models, setModels] = useState<string[]>([]);
-  const providerId = assignment?.providerId ?? providers[0]?.id ?? "";
+  // The provider chosen in this row. An unassigned role holds it here until a model is typed —
+  // nothing is saved without both halves. When the assignment changes underneath the row
+  // (presets applied, default provider switched) the row follows the assignment.
+  const [pendingProviderId, setPendingProviderId] = useState(assignedProviderId);
+  const [syncedProviderId, setSyncedProviderId] = useState(assignedProviderId);
+  if (assignedProviderId !== syncedProviderId) {
+    setSyncedProviderId(assignedProviderId);
+    setPendingProviderId(assignedProviderId);
+  }
+  const modelInputRef = useRef<HTMLInputElement>(null);
+  const providerId = pendingProviderId;
   const provider = providers.find((p) => p.id === providerId);
   const recommended = provider ? (presetForKind(provider.kind)?.models[role] ?? null) : null;
 
@@ -81,9 +94,21 @@ function ModelRoleRow({
   }, [providerId, role]);
 
   const save = (nextProviderId: string, model: string) => {
-    const models_ = { ...settings?.ai.models } as NonNullable<typeof settings>["ai"]["models"];
-    models_[role] = model.trim() ? { providerId: nextProviderId, model: model.trim() } : null;
+    const trimmed = model.trim();
+    if (!trimmed && !assignment) return; // nothing to clear
+    if (trimmed && !nextProviderId) return; // a model needs a provider — the select saves once picked
+    if (assignment && assignment.providerId === nextProviderId && assignment.model === trimmed) return;
+    const models_ = { ...settings?.ai.models } as ModelRoleAssignments;
+    models_[role] = trimmed ? { providerId: nextProviderId, model: trimmed } : null;
     void update({ ai: { models: models_ } });
+  };
+
+  const onProviderChange = (nextProviderId: string) => {
+    setPendingProviderId(nextProviderId);
+    // Re-point an assigned role right away; an unassigned one saves as soon as a model exists
+    // (typed earlier and still sitting in the input, or typed next and committed with blur/Enter).
+    const model = assignment?.model ?? modelInputRef.current?.value ?? "";
+    if (model.trim()) save(nextProviderId, model);
   };
 
   const datalistId = `models-${role}`;
@@ -96,16 +121,27 @@ function ModelRoleRow({
       <Select
         aria-label={`${label} provider`}
         value={providerId}
-        onChange={(e) => save(e.target.value, assignment?.model ?? "")}
-        options={providers.map((p) => ({ value: p.id, label: p.name }))}
+        onChange={(e) => onProviderChange(e.target.value)}
+        options={[
+          ...(providerId ? [] : [{ value: "", label: "Choose provider" }]),
+          ...providers.map((p) => ({
+            value: p.id,
+            label: p.enabled ? p.name : `${p.name} (disabled)`,
+            disabled: !p.enabled,
+          })),
+        ]}
         className="w-[180px] [&>select]:min-w-0 [&>select]:w-full"
       />
       <input
+        ref={modelInputRef}
         aria-label={`${label} model`}
         list={datalistId}
         defaultValue={assignment?.model ?? ""}
-        key={`${providerId}:${assignment?.model ?? ""}`}
+        key={assignment?.model ?? ""}
         onBlur={(e) => save(providerId, e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save(providerId, e.currentTarget.value);
+        }}
         placeholder={recommended ?? "model name"}
         className="h-9 flex-1 rounded-control border border-border bg-bg-elevated px-3 text-[13px] text-fg outline-none placeholder:text-fg-subtle focus-visible:border-border-strong"
       />
@@ -168,23 +204,21 @@ export default function AITab() {
     } else {
       next = [...ai.providers, newProviderFromDraft(values, ai.providers)];
     }
-    void update({ ai: { providers: next } }).catch((error: unknown) =>
-      showErrorToast(toBlueyError(error, "storage")),
-    );
+    void update({ ai: { providers: next } }); // failures toast from the store
     setDialog(null);
   };
 
   const switchDefaultProvider = async (providerId: string) => {
     if (!providerId || providerId === defaultProviderId) return;
     const provider = providers.find((p) => p.id === providerId);
-    if (!provider) return;
+    if (!provider || !provider.hasApiKey) return; // keyless options are disabled; stay defensive
     setSwitching(true);
     try {
       if (presetForKind(provider.kind)) {
         applyRemote(await bluey.ai.applyProviderPresets({ providerId, overwrite: true }));
       }
-      await update({ ai: { bootstrapProvider: providerId } });
-      showToast(`${provider.name} is now the default provider`, 2000);
+      const saved = await update({ ai: { bootstrapProvider: providerId } });
+      if (saved) showToast(`${provider.name} is now the default provider`, 2000);
     } catch (error) {
       showErrorToast(toBlueyError(error, "configuration"));
     } finally {
@@ -206,13 +240,20 @@ export default function AITab() {
           onChange={(e) => void switchDefaultProvider(e.target.value)}
           options={[
             ...(defaultProviderId ? [] : [{ value: "", label: "Choose a provider" }]),
-            ...enabledProviders.map((p) => ({ value: p.id, label: p.name })),
+            // Enabled providers, plus the current default whatever its state so the select never goes blank.
+            ...providers
+              .filter((p) => p.enabled || p.id === defaultProviderId)
+              .map((p) => ({
+                value: p.id,
+                label: p.hasApiKey ? p.name : `${p.name} (no key)`,
+                disabled: !p.hasApiKey || !p.enabled,
+              })),
           ]}
           className="w-[260px] [&>select]:w-full"
         />
-        {ai.bootstrapProvider ? (
-          <span className="text-[12.5px] text-fg-subtle">Configured from your environment / onboarding.</span>
-        ) : null}
+        <span className="text-[12.5px] text-fg-subtle">
+          Switching applies the provider's recommended models to every role.
+        </span>
       </div>
 
       <div className="mt-6 flex items-end justify-between">
@@ -390,6 +431,7 @@ export default function AITab() {
           }}
           title={dialog.mode === "edit" ? `Edit ${dialog.provider.name}` : "Add provider"}
           initial={providerToDraft(dialog.mode === "edit" ? dialog.provider : undefined)}
+          lockKind={dialog.mode === "edit" && isPresetProviderId(dialog.provider.id)}
           onSave={saveProvider}
         />
       ) : null}

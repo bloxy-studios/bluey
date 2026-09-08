@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bluey_core::events::BlueyEvent;
+use bluey_core::presets;
 use bluey_core::router::{self, RoutingInput};
 use bluey_core::types::{
     AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent, ConnectionTestResult,
@@ -52,7 +53,18 @@ pub struct AiManager {
     dev: Arc<DevState>,
     modes: Arc<crate::modes::ModeManager>,
     active: parking_lot::Mutex<HashMap<String, ActiveRequest>>,
+    /// `list_models` results per (provider, role) — the Settings → AI tab asks
+    /// once per role row, which would otherwise be seven catalogue fetches.
+    model_cache: parking_lot::Mutex<ModelCache>,
 }
+
+/// `(fetched at, model ids)` per `(provider id, role)`.
+type ModelCache = HashMap<(String, Option<ModelRole>), (Instant, Vec<String>)>;
+
+/// How long a provider's model catalogue is served from memory.
+const MODEL_CACHE_TTL: Duration = Duration::from_secs(120);
+/// Largest recording read into memory for batch transcription.
+const MAX_RECORDING_BYTES: u64 = 512 * 1024 * 1024;
 
 impl AiManager {
     #[allow(clippy::too_many_arguments)]
@@ -78,6 +90,7 @@ impl AiManager {
             dev,
             modes,
             active: parking_lot::Mutex::new(HashMap::new()),
+            model_cache: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -341,6 +354,9 @@ impl AiManager {
         };
         let mut stream = match adapter.stream(&provider_request, token.clone()).await {
             Ok(stream) => stream,
+            Err(error) if error.is_cancelled() => {
+                return StreamOutcome::Cancelled { ttft_ms: None }
+            }
             Err(error) => return StreamOutcome::Failed { error },
         };
 
@@ -353,6 +369,12 @@ impl AiManager {
                 item = stream.next() => item,
             };
             let Some(item) = item else {
+                // The adapter closed the stream without a terminal item: only a
+                // cancellation does that legitimately (adapters report a cut-off
+                // stream as an error).
+                if token.is_cancelled() {
+                    return StreamOutcome::Cancelled { ttft_ms };
+                }
                 return StreamOutcome::Completed {
                     finish: FinishReason::Stop,
                     ttft_ms,
@@ -391,6 +413,7 @@ impl AiManager {
                         output_tokens,
                     };
                 }
+                Err(error) if error.is_cancelled() => return StreamOutcome::Cancelled { ttft_ms },
                 Err(error) => return StreamOutcome::Failed { error },
             }
         }
@@ -459,6 +482,15 @@ impl AiManager {
             BlueyError::configuration("no_model", "no transcription model is assigned")
         })?;
         let config = self.find_provider(&assignment.provider_id)?;
+        if !matches!(
+            config.kind,
+            AiProviderKind::GoogleGemini | AiProviderKind::Mock
+        ) {
+            return Err(BlueyError::not_supported(
+                "transcribe_file",
+                "this provider cannot transcribe recordings; assign the transcription role to Google Gemini",
+            ));
+        }
         let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let mime_type = gemini_proto::audio_mime_for_extension(extension).ok_or_else(|| {
             BlueyError::invalid_params(format!(
@@ -471,18 +503,17 @@ impl AiManager {
         if !metadata.is_file() || metadata.len() == 0 {
             return Err(BlueyError::invalid_params("the recording is empty"));
         }
-        if metadata.len() > gemini_proto::FILES_API_MAX_BYTES {
+        if metadata.len() > gemini_proto::FILES_API_MAX_BYTES.min(MAX_RECORDING_BYTES) {
             return Err(BlueyError::invalid_params(
-                "the recording is larger than 2 GB",
+                "the recording is larger than 512 MB — convert it to MP3 or FLAC first",
             ));
         }
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| BlueyError::invalid_params(format!("cannot read the recording: {e}")))?;
-        let display_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "recording".into());
+        // The name is only shown in Google's file store and file names can be
+        // personal ("Interview with J. Doe.wav"); the real name stays local.
+        let display_name = "recording".to_string();
         let model = gemini_proto::batch_transcribe_model(&assignment.model);
         let adapter = self.adapter_for(&config).await?;
         adapter
@@ -545,7 +576,8 @@ impl AiManager {
                 bluey_core::types::AiRole::User,
                 "Reply with the single word: ok",
             )],
-            max_output_tokens: Some(8),
+            // Thinking tokens count as output on Gemini 3.x; leave room for them.
+            max_output_tokens: Some(64),
             temperature: Some(0.0),
             output_schema: None,
             task: AiTask::Answer,
@@ -586,10 +618,19 @@ impl AiManager {
         Ok(outcome)
     }
 
-    /// The model assigned to this provider closest to the default role.
+    /// The text model assigned to this provider closest to the default role
+    /// (transcription/embedding models cannot answer a prompt), else the
+    /// kind's preset default.
     fn default_model_for(&self, config: &AiProviderConfig) -> Option<String> {
+        const TEXT_ROLES: [ModelRole; 5] = [
+            ModelRole::Default,
+            ModelRole::Fast,
+            ModelRole::Reasoning,
+            ModelRole::Vision,
+            ModelRole::Research,
+        ];
         let models = self.settings.get().ai.models;
-        for role in ModelRole::ALL {
+        for role in TEXT_ROLES {
             if let Some(assignment) = models.get(role) {
                 if assignment.provider_id == config.id {
                     return Some(assignment.model.clone());
@@ -599,7 +640,9 @@ impl AiManager {
         if config.kind == AiProviderKind::Mock {
             return Some("mock-default".into());
         }
-        None
+        presets::by_kind(config.kind)
+            .and_then(|preset| preset.model_for(ModelRole::Default))
+            .map(str::to_string)
     }
 
     /// List models for one provider, optionally only those fit for `role`.
@@ -609,8 +652,18 @@ impl AiManager {
         role: Option<ModelRole>,
     ) -> BlueyResult<Vec<String>> {
         let config = self.find_provider(provider_id)?;
+        let key = (provider_id.to_string(), role);
+        if let Some((fetched, models)) = self.model_cache.lock().get(&key) {
+            if fetched.elapsed() < MODEL_CACHE_TTL {
+                return Ok(models.clone());
+            }
+        }
         let adapter = self.adapter_for(&config).await?;
-        adapter.list_models(role).await
+        let models = adapter.list_models(role).await?;
+        self.model_cache
+            .lock()
+            .insert(key, (Instant::now(), models.clone()));
+        Ok(models)
     }
 
     /// Point roles at the provider's recommended models (`bluey_core::presets`).

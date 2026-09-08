@@ -13,6 +13,8 @@ export type ToolErrorCode =
   | "timeout"
   | "network_error"
   | "invalid_response"
+  /** The model's tool arguments failed the tool's schema (or an unsupported URL scheme). */
+  | "invalid_arguments"
   | "document_not_allowed"
   | "document_timeout"
   | "document_error"

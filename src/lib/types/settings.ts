@@ -70,7 +70,10 @@ export interface AISettings {
   proactivePreparation: boolean;
   /** Max input tokens per request (token budget). */
   contextTokenBudget: number;
-  /** Provider id the `.env` import nominated at boot (`BLUEY_AI_PROVIDER`). */
+  /**
+   * Provider whose presets were last applied to the roles — by the `.env` import
+   * (`BLUEY_AI_PROVIDER`), onboarding (Connect Gemini) or Settings → AI → Default provider.
+   */
   bootstrapProvider?: string;
   /** MRL-truncated embedding size for gemini-embedding-2 (768 · 1536 · 3072). */
   embeddingDimensions: number;

@@ -8,6 +8,11 @@
 //! Gemini-related knobs (`embeddingDimensions`, `researchBackend`,
 //! `audio.transcriptionProvider`, `bootstrapProvider`).
 //!
+//! Settings edits survive reboots: an existing provider keeps its enabled
+//! state and base URL (unless the base URL is set in the environment), an
+//! unchanged nomination only fills unassigned roles, and nothing is written
+//! when the plan changes nothing.
+//!
 //! Logging names the provider only: never values, never lengths.
 
 use std::sync::Arc;
@@ -31,16 +36,27 @@ fn apply(
     secrets: &SecretsStore,
     settings: &SettingsManager,
 ) -> BlueyResult<()> {
+    for warning in &plan.warnings {
+        tracing::warn!("{warning}");
+    }
     if plan.is_empty() {
         return Ok(());
     }
 
-    // 1. API keys → Keychain.
+    // 1. API keys → Keychain (Keychain-first; a Keychain failure never leads to
+    //    an overwrite).
     for (provider_id, var) in &plan.keys {
         let key = provider_key(provider_id);
-        if secrets.has_sync(&key) && !plan.override_keychain {
-            tracing::debug!(provider = %provider_id, "keychain already holds a key; env value ignored");
-            continue;
+        match secrets.get_sync(&key) {
+            Ok(Some(_)) if !plan.override_keychain => {
+                tracing::debug!(provider = %provider_id, "keychain already holds a key; env value ignored");
+                continue;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(provider = %provider_id, error = %error, "keychain unavailable; env key not imported");
+                continue;
+            }
         }
         let Ok(value) = std::env::var(var) else {
             continue;
@@ -57,16 +73,17 @@ fn apply(
         }
     }
 
-    // 2. Providers, model assignments and knobs → one settings patch.
+    // 2. Providers: new ones are added; existing ones keep the user's kind,
+    //    enabled state and base URL unless the base URL came from the environment.
     let current = settings.get();
     let mut providers = current.ai.providers.clone();
     for imported in &plan.providers {
         match providers.iter_mut().find(|p| p.id == imported.id) {
             Some(existing) => {
-                existing.kind = imported.kind;
-                existing.base_url = imported.base_url.clone();
-                existing.api_version = imported.api_version.clone();
-                existing.enabled = true;
+                if plan.explicit_base_urls.iter().any(|id| id == &imported.id) {
+                    existing.base_url = imported.base_url.clone();
+                    existing.api_version = imported.api_version.clone();
+                }
                 if existing.name.trim().is_empty() {
                     existing.name = imported.name.clone();
                 }
@@ -74,9 +91,28 @@ fn apply(
             None => providers.push(imported.clone()),
         }
     }
-    let mut ai = json!({ "providers": providers, "models": plan.models });
-    if let Some(id) = &plan.bootstrap_provider {
-        ai["bootstrapProvider"] = json!(id);
+
+    // 3. One settings patch, only for what actually changed.
+    let providers_changed = providers != current.ai.providers;
+    let models_changed = plan.models != current.ai.models;
+    let bootstrap_changed = plan.bootstrap_provider.is_some()
+        && plan.bootstrap_provider != current.ai.bootstrap_provider;
+    let knobs_changed = plan.embedding_dimensions.is_some()
+        || plan.research_backend.is_some()
+        || plan.transcription_provider.is_some();
+    if !(providers_changed || models_changed || bootstrap_changed || knobs_changed) {
+        tracing::debug!("env import: settings already match the environment");
+        return Ok(());
+    }
+    let mut ai = json!({});
+    if providers_changed {
+        ai["providers"] = json!(providers);
+    }
+    if models_changed {
+        ai["models"] = json!(plan.models);
+    }
+    if bootstrap_changed {
+        ai["bootstrapProvider"] = json!(plan.bootstrap_provider);
     }
     if let Some(dims) = plan.embedding_dimensions {
         ai["embeddingDimensions"] = json!(dims);
@@ -92,6 +128,7 @@ fn apply(
     tracing::info!(
         providers = plan.providers.len(),
         roles = plan.changed_roles.len(),
+        reapplied = plan.reapplied,
         bootstrap = plan.bootstrap_provider.as_deref().unwrap_or("-"),
         "applied .env import"
     );

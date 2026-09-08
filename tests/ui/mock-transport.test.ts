@@ -111,19 +111,30 @@ describe("MockTransport", () => {
     expect(settings.ai.embeddingDimensions).toBe(768);
     expect(settings.ai.researchBackend).toBe("gemini");
 
-    // Fill-only leaves the seeded Foundry assignments alone; overwrite moves them to Gemini.
-    const filled = await mock.invoke("ai_apply_provider_presets", { providerId: "gemini", overwrite: false });
-    expect(filled.ai.models.default?.providerId).toBe("azure-foundry");
-    const overwritten = await mock.invoke("ai_apply_provider_presets", {
-      providerId: "gemini",
-      overwrite: true,
-    });
-    expect(overwritten.ai.models.default).toEqual({ providerId: "gemini", model: "gemini-3.8-flash" });
-    expect(overwritten.ai.models.fast).toEqual({ providerId: "gemini", model: "gemini-3.5-flash-lite" });
-    expect(overwritten.ai.models.embedding).toEqual({ providerId: "gemini", model: "gemini-embedding-2" });
-    expect(overwritten.ai.models.transcription).toEqual({
+    // Every role is seeded with Gemini's recommended model (as `ai_apply_provider_presets` leaves it).
+    expect(settings.ai.models.default).toEqual({ providerId: "gemini", model: "gemini-3.8-flash" });
+    expect(settings.ai.models.fast).toEqual({ providerId: "gemini", model: "gemini-3.5-flash-lite" });
+    expect(settings.ai.models.embedding).toEqual({ providerId: "gemini", model: "gemini-embedding-2" });
+    expect(settings.ai.models.transcription).toEqual({
       providerId: "gemini",
       model: "gemini-3.5-transcribe",
+    });
+    expect(settings.general.outputLanguage).toBe("en");
+
+    // Fill-only leaves the seeded Gemini assignments alone; overwrite moves them to Foundry.
+    const filled = await mock.invoke("ai_apply_provider_presets", {
+      providerId: "azure-foundry",
+      overwrite: false,
+    });
+    expect(filled.ai.models.default?.providerId).toBe("gemini");
+    const overwritten = await mock.invoke("ai_apply_provider_presets", {
+      providerId: "azure-foundry",
+      overwrite: true,
+    });
+    expect(overwritten.ai.models.default).toEqual({ providerId: "azure-foundry", model: "gpt-5.6-terra" });
+    expect(overwritten.ai.models.transcription).toEqual({
+      providerId: "azure-foundry",
+      model: "MAI-Transcribe-1.5",
     });
     await expect(
       mock.invoke("ai_apply_provider_presets", { providerId: "nope", overwrite: false }),
@@ -146,6 +157,66 @@ describe("MockTransport", () => {
     ]);
     const text = await mock.invoke("ai_list_models", { providerId: "gemini", role: "default" });
     expect(text).toEqual(["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash"]);
+  });
+
+  it("ai_test_connection follows the Rust contract: throws for unknown providers, picks the provider's model", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    await expect(mock.invoke("ai_test_connection", { providerId: "nope" })).rejects.toMatchObject({
+      kind: "configuration",
+      code: "config.unknown_provider",
+    });
+
+    // The role assignment's model when one points at the provider …
+    expect(await mock.invoke("ai_test_connection", { providerId: "gemini" })).toMatchObject({
+      ok: true,
+      model: "gemini-3.8-flash",
+    });
+    // … the preset default otherwise; a missing key is a result, not an exception.
+    const keyless = await mock.invoke("ai_test_connection", { providerId: "anthropic" });
+    expect(keyless.ok).toBe(false);
+    expect(keyless.model).toBe("claude-sonnet-5");
+    expect(keyless.error).toMatchObject({ kind: "configuration", code: "config.missing_key" });
+
+    // `dev_simulate ai_failure` fails the next test too (one-shot).
+    await mock.invoke("dev_simulate", { simulation: { type: "ai_failure", code: "config.api_key_invalid" } });
+    expect((await mock.invoke("ai_test_connection", { providerId: "gemini" })).error?.code).toBe(
+      "config.api_key_invalid",
+    );
+    expect((await mock.invoke("ai_test_connection", { providerId: "gemini" })).ok).toBe(true);
+  });
+
+  it("ai_transcribe_file honours transcript storage and sessions_delete purges the segments", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    const imported = await mock.invoke("ai_transcribe_file", {
+      path: "/tmp/standup.wav",
+      diarization: true,
+      wordTimestamps: true,
+    });
+    expect(imported.stored).toBe(true);
+    expect(await mock.invoke("transcript_list", { sessionId: imported.session.id })).toHaveLength(4);
+    expect((await mock.invoke("sessions_get", { id: imported.session.id })).transcriptSegmentCount).toBe(4);
+
+    await mock.invoke("sessions_delete", { id: imported.session.id });
+    expect(await mock.invoke("transcript_list", { sessionId: imported.session.id })).toHaveLength(0);
+
+    await mock.invoke("settings_update", { patch: { privacy: { storeTranscripts: false } } });
+    const unsaved = await mock.invoke("ai_transcribe_file", {
+      path: "/tmp/retro.mp3",
+      diarization: false,
+      wordTimestamps: false,
+    });
+    expect(unsaved.stored).toBe(false);
+    expect(unsaved.segments).toHaveLength(4); // returned to the caller …
+    expect(await mock.invoke("transcript_list", { sessionId: unsaved.session.id })).toHaveLength(0); // … not kept
+  });
+
+  it("audio_pick_recording can be scripted to cancel, one pick at a time", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    mock.nextPickedRecording = null;
+    expect(await mock.invoke("audio_pick_recording", undefined)).toBeNull();
+    expect(await mock.invoke("audio_pick_recording", undefined)).toBe("/Users/jordan/Recordings/standup.wav");
+    mock.nextPickedRecording = "/tmp/other.flac";
+    expect(await mock.invoke("audio_pick_recording", undefined)).toBe("/tmp/other.flac");
   });
 
   it("shortcuts_check_conflict flags bluey and system conflicts", async () => {

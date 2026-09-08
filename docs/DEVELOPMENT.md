@@ -48,7 +48,8 @@ planned by `bluey_core::presets::plan_env_import`, ADR 0007):
   one click, and *Use recommended models* re-applies a provider's presets.
 - `BLUEY_EMBEDDING_DIMENSIONS` (768 / 1536 / 3072), `BLUEY_TRANSCRIPTION_PROVIDER`
   (`gemini_live` default | `apple` | `cloud_realtime`) and `RESEARCH_BACKEND` (`gemini` default |
-  `claude`) set the matching settings.
+  `claude`) set the matching settings on the first launch or when `BLUEY_AI_PROVIDER` changes;
+  after that, Settings wins (the import never reverts your edits).
 - The research sidecar ships as the **lite** binary (Gemini) unless `RESEARCH_BACKEND=claude`
   (or `BLUEY_AGENT_VARIANT=full`) at build time, which embeds the Claude CLI.
 

@@ -17,6 +17,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import {
   draftDefaultsFor,
   PROVIDER_KIND_OPTIONS,
+  providerBaseUrlPlaceholder,
   providerKeyHelp,
   providerKindLabel,
   providerNeedsBaseUrl,
@@ -30,12 +31,15 @@ export function ProviderDialog({
   title,
   initial,
   onSave,
+  lockKind = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   initial: ProviderDraftValues;
   onSave: (values: ProviderDraftValues) => void;
+  /** Reserved provider ids (`gemini`, `azure-foundry`, …) keep their kind — presets and `.env` import address them by it. */
+  lockKind?: boolean;
 }) {
   const [values, setValues] = useState(initial);
   const set = (patch: Partial<ProviderDraftValues>) => setValues((v) => ({ ...v, ...patch }));
@@ -65,10 +69,14 @@ export function ProviderDialog({
           <Select
             aria-label="Provider kind"
             value={values.kind}
+            disabled={lockKind}
             onChange={(e) => set({ kind: e.target.value as AIProviderConfig["kind"] })}
             options={PROVIDER_KIND_OPTIONS}
             className="w-full [&>select]:w-full"
           />
+          {lockKind ? (
+            <span className="text-[12px] text-fg-subtle">Reserved provider — its kind can't change.</span>
+          ) : null}
         </label>
         <label className="flex flex-col gap-1 text-[12.5px] text-fg-muted">
           Name
@@ -83,13 +91,7 @@ export function ProviderDialog({
           <Input
             value={values.baseUrl}
             onChange={(e) => set({ baseUrl: e.target.value })}
-            placeholder={
-              values.kind === "google_gemini"
-                ? "https://generativelanguage.googleapis.com/v1beta"
-                : values.kind === "anthropic"
-                  ? "https://api.anthropic.com"
-                  : "https://my-resource.openai.azure.com"
-            }
+            placeholder={providerBaseUrlPlaceholder(values.kind)}
           />
         </label>
         {values.kind === "azure_foundry" ? (
@@ -196,6 +198,7 @@ export function ProviderCard({ provider, isDefault = false, onEdit, onToggleEnab
           aria-label={`${provider.name} API key`}
           placeholder={provider.kind === "google_gemini" ? "AIza… (Google AI Studio key)" : "API key"}
           help={providerKeyHelp(provider.kind)}
+          onSaved={() => setResult(null)} // a stale "Test connection" verdict no longer applies
         />
         <div className="flex items-center gap-2">
           {preset ? (

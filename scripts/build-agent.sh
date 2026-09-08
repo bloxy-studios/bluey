@@ -11,7 +11,8 @@
 #                    backend still works when BLUEY_CLAUDE_CLI points at a CLI.
 #   full           — embeds the platform Claude Code CLI (~250 MB per arch) so
 #                    RESEARCH_BACKEND=claude works with no external binary.
-#   The default flips to `full` when RESEARCH_BACKEND=claude is exported.
+#   The default flips to `full` when RESEARCH_BACKEND=claude (or `anthropic`,
+#   the same spellings scripts/release.sh accepts) is exported.
 #
 # Notes on the Claude CLI binary (full variant only):
 #   The Claude Agent SDK ships its CLI as a NATIVE binary inside per-platform
@@ -46,7 +47,11 @@ fi
 
 VARIANT="${BLUEY_AGENT_VARIANT:-}"
 if [ -z "$VARIANT" ]; then
-  if [ "${RESEARCH_BACKEND:-gemini}" = "claude" ]; then VARIANT=full; else VARIANT=lite; fi
+  # Same spelling set as scripts/release.sh and the sidecar's parseBackend().
+  case "${RESEARCH_BACKEND:-gemini}" in
+    claude|anthropic) VARIANT=full ;;
+    *) VARIANT=lite ;;
+  esac
 fi
 case "$VARIANT" in
   lite|full) ;;
@@ -77,8 +82,13 @@ if [ "$VARIANT" = "full" ]; then
   done
   ENTRY_SUFFIX=""
 else
-  echo "→ installing sidecar dependencies"
-  bun install
+  echo "→ installing sidecar dependencies (lite: without the optional Claude CLI packages)"
+  # The lite entry embeds no CLI and the Agent SDK resolves its platform package
+  # only at runtime (never at bundle time), so the ~250 MB optional
+  # @anthropic-ai/claude-agent-sdk-<platform> downloads are dead weight here.
+  # --omit=optional leaves bun.lock untouched; a plain `bun install` (dev) or the
+  # full build above re-adds the packages.
+  bun install --omit=optional
   ENTRY_SUFFIX="-lite"
 fi
 

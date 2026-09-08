@@ -32,7 +32,7 @@ pub fn segments_from_turns(
 ) -> Vec<TranscriptSegment> {
     let mut segments = Vec::new();
     let mut clock: u64 = 0;
-    for turn in turns {
+    for (index, turn) in turns.iter().enumerate() {
         let speaker = turn.speaker.as_deref();
         let timed = turn
             .words
@@ -44,7 +44,8 @@ pub fn segments_from_turns(
             let mut last_end = clock;
             for word in &turn.words {
                 let start = word.start_ms.unwrap_or(last_end);
-                let end = word.end_ms.unwrap_or(start).max(start);
+                // Out-of-order offsets never move the segment end backwards.
+                let end = word.end_ms.unwrap_or(start).max(start).max(last_end);
                 let gap = start.saturating_sub(last_end);
                 if !chunk.is_empty() && (gap > SEGMENT_GAP_MS || chunk.len() >= MAX_SEGMENT_WORDS) {
                     segments.push(segment(
@@ -79,10 +80,15 @@ pub fn segments_from_turns(
             }
             clock = last_end.max(clock);
         } else {
+            // Estimates must not run into the next turn that carries real offsets.
+            let cap = next_timed_start(turns, index + 1).filter(|next| *next > clock);
             for piece in split_sentences(&turn.text, MAX_SEGMENT_WORDS) {
                 let words = piece.split_whitespace().count().max(1) as u64;
                 let start = clock;
-                let end = start + words * ESTIMATED_MS_PER_WORD;
+                let mut end = start + words * ESTIMATED_MS_PER_WORD;
+                if let Some(cap) = cap {
+                    end = end.min(cap.max(start));
+                }
                 segments.push(segment(
                     next_id(),
                     session_id,
@@ -98,6 +104,14 @@ pub fn segments_from_turns(
         }
     }
     segments
+}
+
+/// First real word offset at or after turn `from`.
+fn next_timed_start(turns: &[TranscriptTurn], from: usize) -> Option<u64> {
+    turns
+        .get(from..)?
+        .iter()
+        .find_map(|turn| turn.words.iter().find_map(|w| w.start_ms))
 }
 
 fn join_words(words: &[&TranscribedWord]) -> String {
@@ -337,6 +351,51 @@ mod tests {
             segments[1].start_time, 9_000,
             "real timings win once available"
         );
+    }
+
+    #[test]
+    fn unsorted_offsets_never_move_the_end_backwards() {
+        let turn = TranscriptTurn {
+            speaker: Some("spk_1".into()),
+            text: "a b c".into(),
+            words: vec![
+                TranscribedWord {
+                    word: "a".into(),
+                    start_ms: Some(0),
+                    end_ms: Some(900),
+                },
+                TranscribedWord {
+                    word: "b".into(),
+                    start_ms: Some(300),
+                    end_ms: Some(500),
+                },
+                TranscribedWord {
+                    word: "c".into(),
+                    start_ms: Some(950),
+                    end_ms: Some(1_200),
+                },
+            ],
+        };
+        let segments = segments_from_turns(&[turn], None, None, "now", ids());
+        assert_eq!(segments.len(), 1);
+        assert_eq!((segments[0].start_time, segments[0].end_time), (0, 1_200));
+    }
+
+    #[test]
+    fn estimates_stop_at_the_next_timed_turn() {
+        let turns = vec![
+            TranscriptTurn {
+                speaker: None,
+                text: "one two three four five six seven eight nine ten".into(),
+                words: Vec::new(),
+            },
+            timed("spk_1", &[("later", 1_000, 1_300)]),
+        ];
+        let segments = segments_from_turns(&turns, None, None, "now", ids());
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].start_time, 0);
+        assert_eq!(segments[0].end_time, 1_000, "capped at the next real start");
+        assert_eq!(segments[1].start_time, 1_000);
     }
 
     #[test]

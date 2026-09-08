@@ -44,11 +44,25 @@ export const TOOL_SPECS = {
 } satisfies Record<ResearchToolName, ToolSpec>;
 
 /**
+ * Object schemas of the tool inputs. The Claude SDK's `tool()` validates
+ * against the shapes itself; the shared handlers in agent.ts validate every
+ * call with these (Gemini function-call arguments arrive unchecked).
+ */
+export const TOOL_INPUT_SCHEMAS = {
+  exa_search: z.object(TOOL_SPECS.exa_search.shape),
+  firecrawl_scrape: z.object(TOOL_SPECS.firecrawl_scrape.shape),
+  document_read: z.object(TOOL_SPECS.document_read.shape),
+} satisfies Record<ResearchToolName, z.ZodType>;
+
+/** Validated input of one tool (what its handler works with). */
+export type ToolInput<Name extends ResearchToolName> = z.infer<(typeof TOOL_INPUT_SCHEMAS)[Name]>;
+
+/**
  * JSON Schema for a tool's parameters (zod v4 `toJSONSchema`, without the
  * `$schema` keyword the Gemini API rejects).
  */
 export function toolParametersJsonSchema(name: ResearchToolName): Record<string, unknown> {
-  const schema = z.toJSONSchema(z.object(TOOL_SPECS[name].shape)) as Record<string, unknown>;
+  const schema = z.toJSONSchema(TOOL_INPUT_SCHEMAS[name]) as Record<string, unknown>;
   const { $schema: _ignored, ...rest } = schema;
   return rest;
 }

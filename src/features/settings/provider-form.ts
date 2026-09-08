@@ -28,6 +28,30 @@ export function providerNeedsBaseUrl(kind: AIProviderKind): boolean {
   return presetForKind(kind)?.requiresBaseUrl ?? kind !== "mock";
 }
 
+/** Example endpoint shown in the dialog's base URL field. */
+export function providerBaseUrlPlaceholder(kind: AIProviderKind): string {
+  switch (kind) {
+    case "google_gemini":
+      return "https://generativelanguage.googleapis.com/v1beta";
+    case "anthropic":
+      return "https://api.anthropic.com";
+    case "azure_foundry":
+      return "https://my-resource.openai.azure.com";
+    case "openai_compatible":
+      return "https://api.openai.com/v1";
+    default:
+      return "";
+  }
+}
+
+/**
+ * Reserved ids (`gemini`, `azure-foundry`, …) are what the `.env` import and the
+ * presets address by kind, so a provider that carries one keeps its kind.
+ */
+export function isPresetProviderId(id: string): boolean {
+  return PROVIDER_PRESETS.some((preset) => preset.id === id);
+}
+
 /** Where to get a key for this kind (shown next to the key field). */
 export function providerKeyHelp(kind: AIProviderKind): { label: string; url: string } | null {
   switch (kind) {

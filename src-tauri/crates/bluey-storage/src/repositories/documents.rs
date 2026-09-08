@@ -388,7 +388,7 @@ impl DocumentRepository {
     pub fn stale_embeddings(
         db: &Database,
         model_tag: &str,
-        dimensions: u32,
+        dimensions: Option<u32>,
     ) -> Result<Vec<String>, BlueyError> {
         db.with_conn(|conn| {
             let mut stmt = conn
@@ -398,13 +398,14 @@ impl DocumentRepository {
                         AND (has_embeddings = 0
                              OR embedding_model IS NULL
                              OR embedding_model <> ?1
-                             OR embedding_dimensions IS NULL
-                             OR embedding_dimensions <> ?2)
+                             OR (?2 IS NOT NULL
+                                 AND (embedding_dimensions IS NULL
+                                      OR embedding_dimensions <> ?2)))
                       ORDER BY created_at, id",
                 )
                 .sql()?;
             let rows = stmt
-                .query_map(params![model_tag, dimensions as i64], |r| {
+                .query_map(params![model_tag, dimensions.map(i64::from)], |r| {
                     r.get::<_, String>(0)
                 })
                 .sql()?;
@@ -596,7 +597,7 @@ mod tests {
 
         // Never embedded → stale for any model.
         assert_eq!(
-            DocumentRepository::stale_embeddings(&db, tag, 768).unwrap(),
+            DocumentRepository::stale_embeddings(&db, tag, Some(768)).unwrap(),
             vec![doc.id.clone()]
         );
 
@@ -609,17 +610,25 @@ mod tests {
         assert_eq!(stored.embedding_model.as_deref(), Some(tag));
         assert_eq!(stored.embedding_dimensions, Some(768));
 
-        // Same model and size → fresh; another size or model → stale.
-        assert!(DocumentRepository::stale_embeddings(&db, tag, 768)
+        // Same model and size → fresh; another size or model → stale; without a
+        // configured size (non-MRL providers) only the model counts.
+        assert!(DocumentRepository::stale_embeddings(&db, tag, Some(768))
+            .unwrap()
+            .is_empty());
+        assert!(DocumentRepository::stale_embeddings(&db, tag, None)
             .unwrap()
             .is_empty());
         assert_eq!(
-            DocumentRepository::stale_embeddings(&db, tag, 1536).unwrap(),
+            DocumentRepository::stale_embeddings(&db, tag, Some(1536)).unwrap(),
             vec![doc.id.clone()]
         );
         assert_eq!(
-            DocumentRepository::stale_embeddings(&db, "azure-foundry/text-embedding-3-small", 768)
-                .unwrap(),
+            DocumentRepository::stale_embeddings(
+                &db,
+                "azure-foundry/text-embedding-3-small",
+                Some(768)
+            )
+            .unwrap(),
             vec![doc.id.clone()]
         );
 
@@ -630,7 +639,7 @@ mod tests {
         assert_eq!(reindexed.embedding_model, None);
         assert_eq!(reindexed.embedding_dimensions, None);
         assert_eq!(
-            DocumentRepository::stale_embeddings(&db, tag, 768).unwrap(),
+            DocumentRepository::stale_embeddings(&db, tag, Some(768)).unwrap(),
             vec![doc.id.clone()]
         );
 

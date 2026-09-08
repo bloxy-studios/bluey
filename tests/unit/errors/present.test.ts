@@ -41,10 +41,47 @@ describe("describeError", () => {
     expect(describeError(error({ kind: "ai", code: "ai.http_418" })).message).toBe(
       "The model didn't answer. This is usually temporary.",
     );
-    expect(describeError(error({ kind: "storage", code: "storage.locked", message: "database is locked" })).message).toBe(
-      "database is locked",
-    );
+    const locked = describeError(error({ kind: "storage", code: "storage.locked", message: "database is locked" }));
+    expect(locked).toEqual({ title: "Storage problem", message: "database is locked" });
     expect(describeError(error({ kind: "configuration", code: "privacy.cloud_ai_disabled" })).title).toBe("Cloud AI is off");
+  });
+
+  it("explains import failures and points at the transcription role", () => {
+    const unsupported = describeError(error({ kind: "not_supported", code: "not_supported.transcribe_file" }));
+    expect(unsupported.title).toBe("Can't transcribe files with this provider");
+    expect(unsupported.message).toContain("Settings → AI → Models → Transcription");
+    expect(unsupported.message).toContain("Google Gemini");
+
+    expect(describeError(error({ kind: "transcription", code: "transcription.no_speech" })).title).toBe("No speech found");
+    expect(describeError(error({ kind: "ai", code: "ai.transcription_parse" })).title).toBe("Couldn't read the transcript");
+
+    // Rust writes the specific reason for invalid parameters; the recording checks get the import title.
+    expect(
+      describeError(error({ kind: "internal", code: "internal.invalid_params", message: "the recording is empty" })),
+    ).toEqual({ title: "Can't import this file", message: "the recording is empty" });
+    expect(
+      describeError(
+        error({
+          kind: "internal",
+          code: "internal.invalid_params",
+          message: 'unsupported recording format "m4a" — use WAV, MP3, AIFF, AAC, OGG or FLAC',
+        }),
+      ).title,
+    ).toBe("Can't import this file");
+    const shortcut = describeError(
+      error({ kind: "internal", code: "internal.invalid_params", message: "`Q` is not a valid shortcut" }),
+    );
+    expect(shortcut.title).not.toBe("Can't import this file");
+    expect(shortcut.message).toBe("`Q` is not a valid shortcut");
+  });
+
+  it("covers the remaining provider codes and the informational STT fallback", () => {
+    expect(describeError(error({ kind: "configuration", code: "config.unknown_provider" })).title).toBe("Provider not found");
+    expect(describeError(error({ kind: "configuration", code: "config.no_preset" })).title).toBe("No recommended models");
+    expect(describeError(error({ kind: "audio", code: "audio.stt_fallback" }))).toEqual({
+      title: "Using Apple Speech",
+      message: "Cloud transcription isn't available right now, so Bluey is transcribing on-device.",
+    });
   });
 });
 

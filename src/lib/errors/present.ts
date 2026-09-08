@@ -31,7 +31,7 @@ const KIND_TITLES: Record<BlueyError["kind"], string> = {
   audio: "Audio problem",
   transcription: "Transcription problem",
   ai: "The AI request failed",
-  storage: "Couldn't save data",
+  storage: "Storage problem",
   authentication: "You're signed out",
   configuration: "Setup needed",
   sidecar: "Helper not responding",
@@ -69,6 +69,32 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
   "config.no_model": {
     title: "No model assigned",
     message: "Assign a model to this role in Settings → AI → Models, or use the provider's recommended models.",
+  },
+  "config.unknown_provider": {
+    title: "Provider not found",
+    message: "This role points at a provider that no longer exists. Pick another provider in Settings → AI.",
+  },
+  "config.no_preset": {
+    title: "No recommended models",
+    message: "Bluey has no recommended models for this provider kind. Assign models per role in Settings → AI → Models.",
+  },
+  "ai.transcription_parse": {
+    title: "Couldn't read the transcript",
+    message: "The model returned a transcript Bluey couldn't parse. Try the import again.",
+  },
+  "transcription.no_speech": {
+    title: "No speech found",
+    message: "Bluey couldn't find any speech in this recording.",
+  },
+  "not_supported.transcribe_file": {
+    title: "Can't transcribe files with this provider",
+    message:
+      "Only Google Gemini can transcribe recordings. Point Settings → AI → Models → Transcription at Google Gemini and import again.",
+  },
+  // Informational: cloud speech-to-text fell back to on-device Apple Speech.
+  "audio.stt_fallback": {
+    title: "Using Apple Speech",
+    message: "Cloud transcription isn't available right now, so Bluey is transcribing on-device.",
   },
   "config.http_401": { title: "Credentials rejected", message: "The provider rejected the API key (HTTP 401)." },
   "config.http_403": {
@@ -117,6 +143,15 @@ export function describeError(error: BlueyError): { title: string; message: stri
     return {
       title: "Answer refused",
       message: `The model declined to answer this request (${reason}). Rephrase and try again.`,
+    };
+  }
+  if (error.code === "internal.invalid_params") {
+    // Rust writes a specific, user-readable message for these ("unsupported recording format …",
+    // "the recording is empty", "… larger than 2 GB", "`X` is not a valid shortcut"); keep it. The
+    // import title is reserved for the recording checks so other invalid-parameter errors stay honest.
+    return {
+      title: /recording/i.test(error.message) ? "Can't import this file" : "Bluey couldn't do that",
+      message: error.message,
     };
   }
   const specific = CODE_COPY[error.code];

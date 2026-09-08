@@ -38,7 +38,7 @@ Rust (Tauri v2) ── spawn per job, env-injected keys ──▶ bluey-agent (t
 | `src/tools/documents.ts`               | `document.request`/`document.response` round-trip broker (allow-list, 10 s timeout)           |
 | `src/citations.ts`                     | URL-normalised citation dedupe + model-citation validation                                    |
 | `src/cli-path.ts`                      | Claude CLI resolution (`BLUEY_CLAUDE_CLI` → embedded `$bunfs` extract → SDK auto-detect)      |
-| `src/config.ts`                        | env config (`RESEARCH_BACKEND`, keys, model, turns)                                           |
+| `src/config.ts`                        | env config (`RESEARCH_BACKEND`, keys, model, turns) + pre-flight checks (credentials, lite-build CLI) |
 | `src/mock.ts`                          | `BLUEY_AGENT_MOCK=1` fake Gemini/Claude models + fake search/scrape clients                   |
 | `src/entry-darwin-{arm64,x64}-lite.ts` | compiled entrypoints of the default **lite** build (no embedded Claude CLI)                   |
 | `src/entry-darwin-{arm64,x64}.ts`      | compiled entrypoints of the **full** build (embed the per-arch Claude CLI binary)             |
@@ -68,6 +68,16 @@ Rust (Tauri v2) ── spawn per job, env-injected keys ──▶ bluey-agent (t
 - **`document_read` never touches SQLite.** It emits a `document.request` event
   and waits (10 s) for Rust's `document.response`. Ids outside the job's
   `allowedDocumentIds` are refused _without_ emitting a request.
+- **Tool arguments are validated on both backends.** Every call is checked
+  against the shared zod shapes (`src/tool-specs.ts`) before a handler runs —
+  the Claude SDK does it inside `tool()`, the handlers do it themselves for
+  Gemini function calls — and invalid input goes back to the model as a tool
+  error (`invalid_arguments`) instead of running the tool with defaults.
+  `firecrawl_scrape` only accepts `http:`/`https:` URLs (`file:`, `javascript:`,
+  `data:` … are refused before anything touches them).
+- **Raw error text never reaches Rust verbatim.** Known failures map onto the
+  codes below; anything else (`agent_execution_failed`) is capped at 200 chars
+  with JSON bodies, `AIza…`/`sk-ant-…` keys and `key=`/`token=` values stripped.
 - **Citations can't be invented.** Every exa/firecrawl result observed during
   the run is recorded; the final citation list contains only URLs the tools
   actually returned. Model-chosen citations are kept (first, with their titles
@@ -155,10 +165,14 @@ Behaviour notes:
   `"cancelled"` for cancellation, `"configuration"` for `missing_api_key` /
   `invalid_api_key` / `invalid_configuration` (all valid `BlueyErrorKind`s).
 - Failure codes: `cancelled`, `missing_api_key`, `invalid_api_key` (Gemini: key
-  rejected, HTTP 400/401/403), `invalid_configuration`, `max_turns_exceeded`,
-  `rate_limited` (Gemini HTTP 429), `blocked` (Gemini refused the prompt or
-  answer), `budget_exceeded`, `structured_output_failed`,
-  `agent_execution_failed`, `agent_empty_report`, `agent_no_result`.
+  rejected, HTTP 400/401/403), `invalid_configuration` (Foundry without an
+  endpoint; a lite build asked for Claude without `BLUEY_CLAUDE_CLI`),
+  `max_turns_exceeded`, `rate_limited` (Gemini HTTP 429), `blocked` (Gemini
+  refused the prompt or answer), `gemini_empty_turn` (Gemini returned a model
+  turn without parts — usually mismatched function-call ids/names; the job
+  stops instead of resending the empty turn into a 400), `budget_exceeded`,
+  `structured_output_failed`, `agent_execution_failed` (sanitized message, see
+  above), `agent_empty_report`, `agent_no_result`.
 - Envelope errors (`{id,error}`) use kind `"sidecar"`: `invalid_request`,
   `invalid_params`, `unknown_method`, `unknown_job`, `job_already_running`.
 - Malformed lines get `{"id":null,"error":{code:"invalid_request",…}}`.
@@ -172,10 +186,10 @@ Behaviour notes:
 | `ANTHROPIC_API_KEY`                                       | Claude API key — Anthropic direct (Claude backend, unless Foundry or mock)               | –                                                   |
 | `EXA_API_KEY`                                             | required when `exa_search` is requested                                                  | –                                                   |
 | `FIRECRAWL_API_KEY`                                       | required when `firecrawl_scrape` is requested                                            | –                                                   |
-| `BLUEY_RESEARCH_MODEL` (or legacy `BLUEY_MODEL_RESEARCH`) | research model (a Foundry _deployment name_ when Foundry is on)                          | `gemini-3.8-flash` (Gemini) / `claude-sonnet-5` (Claude) |
+| `BLUEY_RESEARCH_MODEL`                                    | research model, forwarded by Rust from the research-role assignment (a Foundry _deployment name_ when Foundry is on). Users set `BLUEY_MODEL_RESEARCH` in Bluey's `.env`; that alias is a per-role override of the _active Rust provider_ and is deliberately **not** read by the sidecar | `gemini-3.8-flash` (Gemini) / `claude-sonnet-5` (Claude) |
 | `BLUEY_AGENT_MAX_TURNS`                                   | default max agent turns (request `maxTurns` overrides)                                   | `12`                                                |
 | `BLUEY_AGENT_MOCK`                                        | `1`/`true` → mock mode (no network/model/CLI) for either backend                         | off                                                 |
-| `BLUEY_CLAUDE_CLI`                                        | explicit path to the claude CLI binary (dev override; needed by the lite build for Claude) | auto                                              |
+| `BLUEY_CLAUDE_CLI`                                        | explicit path to the claude CLI binary (dev override; **required** by the lite build for the Claude backend — without it the job fails with `invalid_configuration`) | auto (full build: embedded CLI)                  |
 
 ### Claude through Microsoft Foundry
 
@@ -215,11 +229,15 @@ bun run test               # vitest, tests live in tests/sidecar/ (network-free)
 ```
 
 Variants (`scripts/build-agent.sh`, `BLUEY_AGENT_VARIANT=lite|full`; the default
-becomes `full` when `RESEARCH_BACKEND=claude` is exported):
+becomes `full` when `RESEARCH_BACKEND=claude` — or `anthropic` — is exported):
 
 - **lite** compiles `src/entry-darwin-*-lite.ts`: only `@google/genai` and the
-  tool clients are bundled. The Claude backend still runs from a lite binary
-  when `BLUEY_CLAUDE_CLI` points at an installed Claude Code CLI.
+  tool clients are bundled, and dependencies are installed with
+  `bun install --omit=optional` (the ~250 MB platform CLI packages are never
+  downloaded; `bun.lock` is unaffected). The Claude backend still runs from a
+  lite binary when `BLUEY_CLAUDE_CLI` points at an installed Claude Code CLI;
+  without it a `RESEARCH_BACKEND=claude` job fails fast with
+  `invalid_configuration` naming `BLUEY_CLAUDE_CLI` and the full build.
 - **full** compiles `src/entry-darwin-*.ts`, which embed the platform's native
   `claude` CLI (`@anthropic-ai/claude-agent-sdk-darwin-{arm64,x64}/claude`) via
   `import … with { type: "file" }`; at startup it is extracted from Bun's

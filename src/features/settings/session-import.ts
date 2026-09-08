@@ -7,7 +7,34 @@
 
 import { showErrorToast, showToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
-import { toBlueyError, type TranscribeFileResult, type TranscriptSegment } from "@/lib/types";
+import {
+  toBlueyError,
+  type AIProviderKind,
+  type Settings,
+  type TranscribeFileResult,
+  type TranscriptSegment,
+} from "@/lib/types";
+
+/** Import summaries carry counts and a title — give them longer than a "Copied" pill. */
+const IMPORT_TOAST_MS = 6000;
+
+/** Provider kinds whose adapter implements batch file transcription (mirror of the Rust gate). */
+const FILE_TRANSCRIBING_KINDS: ReadonlySet<AIProviderKind> = new Set<AIProviderKind>(["google_gemini", "mock"]);
+
+/** Title of the disabled import buttons. */
+export const IMPORT_DISABLED_HINT =
+  "Assign the transcription role to Google Gemini in Settings → AI to import recordings";
+
+/**
+ * True when the transcription role points at a provider that can transcribe whole
+ * files (`ai_transcribe_file` returns `not_supported.transcribe_file` otherwise).
+ */
+export function canTranscribeFiles(settings: Pick<Settings, "ai"> | null | undefined): boolean {
+  if (!settings) return false;
+  const providerId = settings.ai.models.transcription?.providerId;
+  const provider = settings.ai.providers.find((p) => p.id === providerId);
+  return provider !== undefined && FILE_TRANSCRIBING_KINDS.has(provider.kind);
+}
 
 export interface ImportRecordingOptions {
   /** Append to this session; omitted → a new completed "Imported · <file>" session. */
@@ -41,7 +68,7 @@ export async function importRecording(options: ImportRecordingOptions = {}): Pro
       language: options.language,
       sessionId: options.sessionId,
     });
-    showToast(describeImport(result));
+    showToast(describeImport(result), IMPORT_TOAST_MS);
     return result;
   } catch (error) {
     showErrorToast(toBlueyError(error, "ai"));

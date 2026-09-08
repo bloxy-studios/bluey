@@ -42,6 +42,7 @@ export function SecretKeyField({
     let alive = true;
     setSaved(null);
     setEditing(false);
+    setValue(""); // never carry a typed key over to another secret
     void bluey.secrets
       .has({ key: secretKey })
       .then((has) => {
@@ -59,7 +60,7 @@ export function SecretKeyField({
 
   const save = async () => {
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed || busy) return;
     setBusy(true);
     try {
       await bluey.secrets.set({ key: secretKey, value: trimmed });
@@ -99,7 +100,7 @@ export function SecretKeyField({
           placeholder={placeholder}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") void save();
+            if (e.key === "Enter" && !busy) void save();
           }}
           className="w-[240px]"
           {...aria}
@@ -113,7 +114,14 @@ export function SecretKeyField({
           Save
         </Button>
         {saved && editing ? (
-          <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setEditing(false);
+              setValue(""); // drop the plaintext draft with the edit
+            }}
+          >
             Cancel
           </Button>
         ) : null}

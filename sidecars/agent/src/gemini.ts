@@ -80,6 +80,7 @@ export class GeminiRunError extends Error {
       | "rate_limited"
       | "invalid_api_key"
       | "agent_empty_report"
+      | "gemini_empty_turn"
       | "agent_execution_failed",
     message: string,
     public readonly kind: "research" | "configuration" = "research",
@@ -281,6 +282,15 @@ export async function runGemini(options: GeminiRunOptions): Promise<GeminiRunRes
       },
       true,
     );
+    if (turn.parts.length === 0) {
+      // Resending an empty model turn makes the next request fail with a 400;
+      // Gemini answers with no parts when the previous functionResponse ids /
+      // names did not match its calls. Fail fast with a clear code instead.
+      throw new GeminiRunError(
+        "gemini_empty_turn",
+        "Gemini returned an empty turn (check function-call ids/names)",
+      );
+    }
     const calls = turn.parts.filter((part) => part.functionCall);
     // The model turn goes back verbatim (thought signatures included).
     contents.push({ role: "model", parts: turn.parts });
@@ -292,7 +302,11 @@ export async function runGemini(options: GeminiRunOptions): Promise<GeminiRunRes
       const name = call.name ?? "";
       const args = call.args ?? {};
       options.onToolCall(name, args);
-      const handler = (handlers as Record<string, ToolHandlers[ResearchToolName]>)[name];
+      // Own-property lookup only: a model-chosen name such as "constructor"
+      // must not resolve to something on Object.prototype.
+      const handler = Object.hasOwn(handlers, name)
+        ? (handlers as Record<string, ToolHandlers[ResearchToolName]>)[name]
+        : undefined;
       let response: Record<string, unknown>;
       if (!handler) {
         response = { error: `unknown tool "${name}"` };

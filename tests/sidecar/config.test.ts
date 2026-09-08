@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildSubprocessEnv } from "../../sidecars/agent/src/agent";
 import {
+  checkClaudeCliAvailable,
   checkModelCredentials,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_RESEARCH_MODEL,
@@ -67,11 +68,26 @@ describe("loadConfig", () => {
     expect(config.model).toBe(DEFAULT_RESEARCH_MODEL);
   });
 
-  it("lets BLUEY_RESEARCH_MODEL override the backend default", () => {
+  it("lets BLUEY_RESEARCH_MODEL (forwarded by Rust) override the backend default", () => {
     expect(loadConfig({ BLUEY_RESEARCH_MODEL: "gemini-3.5-flash-lite" }).model).toBe("gemini-3.5-flash-lite");
-    expect(loadConfig({ RESEARCH_BACKEND: "claude", BLUEY_MODEL_RESEARCH: "claude-opus-5" }).model).toBe(
+    expect(loadConfig({ RESEARCH_BACKEND: "claude", BLUEY_RESEARCH_MODEL: "claude-opus-5" }).model).toBe(
       "claude-opus-5",
     );
+    expect(loadConfig({ BLUEY_RESEARCH_MODEL: "   " }).model).toBe(DEFAULT_GEMINI_MODEL);
+  });
+
+  it("ignores the Bluey-side BLUEY_MODEL_RESEARCH alias (per-role override of the ACTIVE Rust provider)", () => {
+    // Users set BLUEY_MODEL_RESEARCH in Bluey's .env; with RESEARCH_BACKEND=claude it may
+    // name a Gemini model. Rust resolves the role for the selected backend and forwards
+    // the result as BLUEY_RESEARCH_MODEL — the sidecar must never read the alias itself.
+    expect(loadConfig({ RESEARCH_BACKEND: "claude", BLUEY_MODEL_RESEARCH: "gemini-3.8-flash" }).model).toBe(
+      DEFAULT_RESEARCH_MODEL,
+    );
+    expect(loadConfig({ BLUEY_MODEL_RESEARCH: "claude-opus-5" }).model).toBe(DEFAULT_GEMINI_MODEL);
+    expect(
+      loadConfig({ BLUEY_RESEARCH_MODEL: "gemini-3.5-flash-lite", BLUEY_MODEL_RESEARCH: "claude-opus-5" })
+        .model,
+    ).toBe("gemini-3.5-flash-lite");
   });
 
   it("ignores Foundry variables unless CLAUDE_CODE_USE_FOUNDRY is truthy", () => {
@@ -205,6 +221,36 @@ describe("checkModelCredentials", () => {
     });
     expect(config.anthropicApiKey).toBeUndefined();
     expect(checkModelCredentials(config)).toBeUndefined();
+  });
+});
+
+describe("checkClaudeCliAvailable (lite build pre-flight)", () => {
+  const claude = loadConfig({ RESEARCH_BACKEND: "claude", ANTHROPIC_API_KEY: "sk-secret" });
+
+  it("fails a lite build's Claude job with invalid_configuration naming BLUEY_CLAUDE_CLI and the full build", () => {
+    const problem = checkClaudeCliAvailable(claude, { variant: "lite" });
+    expect(problem).toMatchObject({ code: "invalid_configuration", variable: "BLUEY_CLAUDE_CLI" });
+    expect(problem?.message).toContain("BLUEY_CLAUDE_CLI");
+    expect(problem?.message).toContain("BLUEY_AGENT_VARIANT=full");
+    expect(problem?.message).not.toContain("sk-secret");
+  });
+
+  it("passes when a CLI is reachable: BLUEY_CLAUDE_CLI override, embedded binary (full build) or an un-bundled dev run", () => {
+    const withOverride = loadConfig({
+      RESEARCH_BACKEND: "claude",
+      ANTHROPIC_API_KEY: "k",
+      BLUEY_CLAUDE_CLI: "/opt/claude/claude",
+    });
+    expect(checkClaudeCliAvailable(withOverride, { variant: "lite" })).toBeUndefined();
+    expect(
+      checkClaudeCliAvailable(claude, { variant: "full", embeddedClaudePath: "/$bunfs/root/claude" }),
+    ).toBeUndefined();
+    // No variant → `bun src/main.ts` in dev, where the SDK finds the CLI in node_modules.
+    expect(checkClaudeCliAvailable(claude, {})).toBeUndefined();
+  });
+
+  it("never applies to the Gemini backend", () => {
+    expect(checkClaudeCliAvailable(loadConfig({ GEMINI_API_KEY: "k" }), { variant: "lite" })).toBeUndefined();
   });
 });
 

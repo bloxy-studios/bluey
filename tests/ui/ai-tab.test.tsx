@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -16,6 +16,17 @@ function renderTab() {
 }
 
 const models = () => useSettingsStore.getState().settings?.ai.models;
+
+/** Patch the loaded settings through the store (arrays / role maps replace wholesale). */
+async function patchAi(
+  patch: (
+    current: NonNullable<ReturnType<typeof useSettingsStore.getState>["settings"]>["ai"],
+  ) => Partial<NonNullable<ReturnType<typeof useSettingsStore.getState>["settings"]>["ai"]>,
+) {
+  const current = useSettingsStore.getState().settings;
+  if (!current) throw new Error("settings not loaded");
+  await useSettingsStore.getState().update({ ai: patch(current.ai) });
+}
 
 describe("AITab", () => {
   beforeEach(async () => {
@@ -44,7 +55,7 @@ describe("AITab", () => {
     await waitFor(() =>
       expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBe("azure-foundry"),
     );
-    expect(models()?.research).toEqual({ providerId: "azure-foundry", model: "gpt-6-astra" }); // was Anthropic
+    expect(models()?.research).toEqual({ providerId: "azure-foundry", model: "gpt-6-astra" }); // was Gemini
     expect(models()?.default).toEqual({ providerId: "azure-foundry", model: "gpt-5.6-terra" });
 
     await user.selectOptions(screen.getByLabelText("Default AI provider"), "gemini");
@@ -53,12 +64,105 @@ describe("AITab", () => {
     expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBe("gemini");
   });
 
-  it("'Use recommended models' on a card applies that provider's presets and reveals the embedding size", async () => {
+  it("keeps providers without a key out of reach as the default", async () => {
+    renderTab();
+    const select = await screen.findByLabelText("Default AI provider");
+    expect(within(select).getByRole("option", { name: "Claude (Foundry) (no key)" })).toBeDisabled();
+    expect(within(select).getByRole("option", { name: "Azure Foundry" })).toBeEnabled();
+    expect(
+      screen.getByText("Switching applies the provider's recommended models to every role."),
+    ).toBeInTheDocument();
+
+    // Even a programmatic change to the keyless provider is refused: nothing is re-pointed.
+    fireEvent.change(select, { target: { value: "anthropic" } });
+    await waitFor(() => expect(select).toHaveValue("gemini"));
+    expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBe("gemini");
+    expect(models()?.default?.providerId).toBe("gemini");
+  });
+
+  it("always lists the current default, even once it is keyless and disabled", async () => {
+    await patchAi((ai) => ({
+      providers: ai.providers.map((p) =>
+        p.id === "gemini" ? { ...p, hasApiKey: false, enabled: false } : p,
+      ),
+    }));
+    renderTab();
+    const select = await screen.findByLabelText("Default AI provider");
+    expect(select).toHaveValue("gemini");
+    expect(within(select).getByRole("option", { name: "Google Gemini (no key)" })).toBeDisabled();
+  });
+
+  it("an unassigned role remembers the picked provider and saves once a model is committed with Enter", async () => {
+    const user = userEvent.setup();
+    await patchAi((ai) => ({
+      models: { ...ai.models, research: null },
+      providers: ai.providers.map((p) => (p.id === "anthropic" ? { ...p, enabled: false } : p)),
+    }));
+    renderTab();
+    const providerSelect = await screen.findByLabelText("Research provider");
+    expect(providerSelect).toHaveValue("");
+    expect(within(providerSelect).getByRole("option", { name: "Choose provider" })).toBeInTheDocument();
+    expect(
+      within(providerSelect).getByRole("option", { name: "Claude (Foundry) (disabled)" }),
+    ).toBeDisabled();
+    // Assigned rows don't carry the placeholder.
+    expect(
+      within(screen.getByLabelText("Fast provider")).queryByRole("option", { name: "Choose provider" }),
+    ).toBeNull();
+
+    await user.selectOptions(providerSelect, "azure-foundry");
+    expect(providerSelect).toHaveValue("azure-foundry");
+    expect(models()?.research).toBeNull(); // a provider alone assigns nothing (and nothing wrong)
+
+    await user.type(screen.getByLabelText("Research model"), "gpt-5.6-sol{Enter}");
+    await waitFor(() =>
+      expect(models()?.research).toEqual({ providerId: "azure-foundry", model: "gpt-5.6-sol" }),
+    );
+    expect(screen.getByLabelText("Research provider")).toHaveValue("azure-foundry");
+  });
+
+  it("a model typed before the provider is picked is saved with that provider", async () => {
+    const user = userEvent.setup();
+    await patchAi((ai) => ({ models: { ...ai.models, research: null } }));
+    renderTab();
+    await screen.findByLabelText("Research provider");
+
+    await user.type(screen.getByLabelText("Research model"), "gpt-5.6-sol");
+    await user.tab(); // blur without a provider saves nothing …
+    expect(models()?.research).toBeNull();
+    expect(screen.getByLabelText("Research model")).toHaveValue("gpt-5.6-sol");
+
+    await user.selectOptions(screen.getByLabelText("Research provider"), "azure-foundry"); // … the pick does
+    await waitFor(() =>
+      expect(models()?.research).toEqual({ providerId: "azure-foundry", model: "gpt-5.6-sol" }),
+    );
+  });
+
+  it("offers the picked provider's recommended model to an unassigned role", async () => {
+    const user = userEvent.setup();
+    await patchAi((ai) => ({ models: { ...ai.models, research: null } }));
+    renderTab();
+    await user.selectOptions(await screen.findByLabelText("Research provider"), "gemini");
+    await user.click(await screen.findByRole("button", { name: "Use gemini-3.8-flash" }));
+    await waitFor(() =>
+      expect(models()?.research).toEqual({ providerId: "gemini", model: "gemini-3.8-flash" }),
+    );
+    expect(screen.queryByRole("button", { name: "Use gemini-3.8-flash" })).not.toBeInTheDocument();
+  });
+
+  it("'Use recommended models' on a card applies that provider's presets and toggles the embedding size", async () => {
     const user = userEvent.setup();
     renderTab();
     const buttons = await screen.findAllByRole("button", { name: /Use recommended models/ });
-    expect(screen.queryByLabelText("Embedding dimensions")).not.toBeInTheDocument();
+    // Seeded on Gemini → the MRL size select is there; Foundry embeddings hide it …
+    expect(screen.getByLabelText("Embedding dimensions")).toBeInTheDocument();
+    await user.click(buttons[1]!); // Foundry card comes second
+    await waitFor(() =>
+      expect(models()?.embedding).toEqual({ providerId: "azure-foundry", model: "text-embedding-3-small" }),
+    );
+    await waitFor(() => expect(screen.queryByLabelText("Embedding dimensions")).not.toBeInTheDocument());
 
+    // … and Gemini's recommended models bring it back.
     await user.click(buttons[0]!); // Gemini card comes first
     await waitFor(() =>
       expect(models()?.default).toEqual({ providerId: "gemini", model: "gemini-3.8-flash" }),

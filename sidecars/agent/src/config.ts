@@ -144,11 +144,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     foundry: loadFoundryConfig(env),
     exaApiKey: nonEmpty(env["EXA_API_KEY"]),
     firecrawlApiKey: nonEmpty(env["FIRECRAWL_API_KEY"]),
-    // Accept both spellings: the task contract says BLUEY_RESEARCH_MODEL, the
-    // repo-wide .env.example ships BLUEY_MODEL_RESEARCH. First one wins.
+    // Only the variable Rust forwards. Users set `BLUEY_MODEL_RESEARCH` in
+    // Bluey's `.env`, but that is a per-role override for the ACTIVE Rust
+    // provider (it may name a Gemini model while RESEARCH_BACKEND=claude, or
+    // vice versa); Rust resolves it for the selected backend and passes the
+    // result as BLUEY_RESEARCH_MODEL. The sidecar must never read the alias.
     model:
       nonEmpty(env["BLUEY_RESEARCH_MODEL"]) ??
-      nonEmpty(env["BLUEY_MODEL_RESEARCH"]) ??
       (backend === "gemini" ? DEFAULT_GEMINI_MODEL : DEFAULT_RESEARCH_MODEL),
     maxTurns,
     mockMode: truthy(env["BLUEY_AGENT_MOCK"]),
@@ -205,4 +207,35 @@ export function checkModelCredentials(config: AgentConfig): ConfigProblem | unde
     };
   }
   return undefined;
+}
+
+/**
+ * How the running sidecar was built. Set by the compiled per-target
+ * entrypoints (`src/entry-darwin-*.ts`); undefined when running un-bundled
+ * (`bun src/main.ts`), where the SDK may still find the CLI in node_modules.
+ */
+export type BuildVariant = "lite" | "full";
+
+/**
+ * The Claude backend needs the Claude Code CLI. The full build embeds it and a
+ * `BLUEY_CLAUDE_CLI` override always wins; a lite build without either would
+ * only fail deep inside the SDK's `query()` with a raw "Native CLI binary …
+ * not found" error. Turn that into a configuration problem before any model
+ * call. `checkModelCredentials` runs first, so credentials are reported first.
+ */
+export function checkClaudeCliAvailable(
+  config: AgentConfig,
+  build: { variant?: BuildVariant; embeddedClaudePath?: string },
+): ConfigProblem | undefined {
+  if (config.backend !== "claude") return undefined;
+  if (config.claudeCliOverride || build.embeddedClaudePath) return undefined;
+  if (build.variant !== "lite") return undefined;
+  return {
+    code: "invalid_configuration",
+    variable: "BLUEY_CLAUDE_CLI",
+    message:
+      "RESEARCH_BACKEND=claude needs the Claude Code CLI, but this bluey-agent is the lite build " +
+      "(no embedded CLI) — set BLUEY_CLAUDE_CLI to an installed claude binary or build the full " +
+      "variant (BLUEY_AGENT_VARIANT=full bun run build:agent)",
+  };
 }
