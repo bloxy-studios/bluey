@@ -336,7 +336,7 @@ export function createDefaultSettings(): Settings {
       microphoneDeviceId: "mic-builtin",
       transcriptionLanguage: "auto",
       speakerIdentification: true,
-      transcriptionProvider: "apple",
+      transcriptionProvider: "gemini_live",
       vadSensitivity: "medium",
     },
     screen: {

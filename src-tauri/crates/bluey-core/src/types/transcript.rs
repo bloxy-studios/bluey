@@ -52,8 +52,13 @@ pub enum AudioDeviceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptionProviderKind {
-    #[default]
+    /// On-device Apple Speech inside the helper (works offline, no key).
     Apple,
+    /// Gemini Live API (`gemini-3.5-transcribe-live`) — the default when a
+    /// Google AI Studio key is present; falls back to Apple otherwise.
+    #[default]
+    GeminiLive,
+    /// Foundry Voice Live (MAI-Transcribe) / OpenAI realtime over WebSocket.
     CloudRealtime,
     Mock,
 }
@@ -126,7 +131,7 @@ impl Default for AudioSessionConfig {
             },
             system_audio: SystemAudioConfig { enabled: true },
             transcription: TranscriptionConfig {
-                provider: TranscriptionProviderKind::Apple,
+                provider: TranscriptionProviderKind::GeminiLive,
                 language: "auto".into(),
                 speaker_identification: true,
             },

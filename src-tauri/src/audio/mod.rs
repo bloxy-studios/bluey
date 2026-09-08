@@ -4,20 +4,24 @@
 //! recent finals for the context snapshot, persists finals when the privacy
 //! settings allow and mirrors everything onto the bus.
 //!
-//! This first version serves the on-device Apple Speech path. The cloud
-//! transcription providers (`gemini_live`, `cloud_realtime`) plug into
-//! [`TranscriptionRoute`] in a later change; until then they fall back to Apple
-//! with a non-fatal `audio.error{code: stt_fallback}`.
+//! Two routes: **Apple** (the helper transcribes on device and emits
+//! `transcript.*`) and **PCM** (the helper emits `audio.chunk { pcm16 }` and a
+//! [`crate::transcription::TranscriptionProvider`] — Gemini Live by default,
+//! Foundry Voice Live, or the mock — transcribes it, one session per source).
+//! A cloud provider without a usable key falls back to Apple with a non-fatal
+//! `audio.error{code: stt_fallback}` so listening never silently fails.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bluey_core::events::BlueyEvent;
+use bluey_core::presets;
 use bluey_core::types::{
-    AppEvent, AudioDevice, AudioLevels, AudioSessionConfig, AudioSessionConfigPatch,
-    AudioSessionState, AudioSource, AudioSourcePreference, AudioStatus, TranscriptSegment,
-    TranscriptionProviderKind,
+    AiProviderKind, AppEvent, AudioDevice, AudioLevels, AudioSessionConfig,
+    AudioSessionConfigPatch, AudioSessionState, AudioSource, AudioSourcePreference, AudioStatus,
+    TranscriptSegment, TranscriptionProviderKind,
 };
 use bluey_core::{new_id, now_iso, BlueyError, BlueyResult};
 use bluey_protocols::helper::{DevicesResult, HelperEvent, TranscriptAssembler, WireTranscript};
@@ -27,11 +31,18 @@ use serde_json::{json, Value};
 
 use crate::events::EventBus;
 use crate::modes::ModeManager;
+use crate::secrets::{provider_key, SecretsStore};
 use crate::sessions::SessionManager;
 use crate::settings::SettingsManager;
 use crate::sidecar::HelperClient;
 use crate::state::StateHub;
 use crate::storage::Storage;
+use crate::transcription::cloud_realtime::CloudRealtimeProvider;
+use crate::transcription::gemini_live::GeminiLiveProvider;
+use crate::transcription::mock::MockTranscriptionProvider;
+use crate::transcription::{
+    self, PcmChunk, SessionOptions, TranscriptionEvent, TranscriptionProvider, TranscriptionSession,
+};
 
 /// Helper capture sample rate (mono PCM16).
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -53,18 +64,52 @@ pub struct MicrophoneTest {
 pub enum TranscriptionRoute {
     /// Apple Speech inside the helper (events arrive as `transcript.*`).
     Apple,
-    /// The helper emits PCM; a Rust provider transcribes it (not wired yet).
+    /// The helper emits PCM; a [`TranscriptionProvider`] transcribes it.
     Pcm,
 }
 
-/// Decide how a configured provider is served today. Cloud providers are not
-/// wired yet → Apple with a fallback notice.
-pub fn route_for(provider: TranscriptionProviderKind) -> (TranscriptionRoute, bool) {
+/// Decide how a configured provider is served. `cloud_ready` says whether a
+/// provider session can actually be opened (key + model present); when it
+/// cannot, the route falls back to Apple with a human-readable reason.
+pub fn route_for(
+    provider: TranscriptionProviderKind,
+    cloud_ready: bool,
+) -> (TranscriptionRoute, Option<&'static str>) {
     match provider {
-        TranscriptionProviderKind::Apple => (TranscriptionRoute::Apple, false),
-        TranscriptionProviderKind::Mock => (TranscriptionRoute::Apple, false),
-        TranscriptionProviderKind::CloudRealtime => (TranscriptionRoute::Apple, true),
+        TranscriptionProviderKind::Apple => (TranscriptionRoute::Apple, None),
+        _ if cloud_ready => (TranscriptionRoute::Pcm, None),
+        TranscriptionProviderKind::GeminiLive => (
+            TranscriptionRoute::Apple,
+            Some("no Google AI Studio key is stored for live transcription"),
+        ),
+        TranscriptionProviderKind::CloudRealtime => (
+            TranscriptionRoute::Apple,
+            Some("no cloud transcription model with a stored key is configured"),
+        ),
+        TranscriptionProviderKind::Mock => (
+            TranscriptionRoute::Apple,
+            Some("mock transcription is only available in developer mode"),
+        ),
     }
+}
+
+/// Live cloud transcription state for the running session.
+struct ActiveStt {
+    provider: Arc<dyn TranscriptionProvider>,
+    model: String,
+    language: Option<String>,
+    sessions: HashMap<AudioSource, Box<dyn TranscriptionSession>>,
+    failed: HashSet<AudioSource>,
+    sink: transcription::EventSink,
+    pump: tauri::async_runtime::JoinHandle<()>,
+}
+
+/// Chunk timing per source, used to stamp cloud transcripts.
+#[derive(Debug, Clone, Copy, Default)]
+struct ChunkTiming {
+    utterance_start_ms: Option<u64>,
+    last_start_ms: u64,
+    last_end_ms: u64,
 }
 
 /// Build the helper `audio.start` params from a session config.
@@ -104,6 +149,9 @@ pub struct AudioManager {
     storage: Arc<Storage>,
     sessions: Arc<SessionManager>,
     modes: Arc<ModeManager>,
+    secrets: Arc<SecretsStore>,
+    stt: tokio::sync::Mutex<Option<ActiveStt>>,
+    chunk_times: parking_lot::Mutex<HashMap<AudioSource, ChunkTiming>>,
     status: parking_lot::Mutex<AudioStatus>,
     config: parking_lot::Mutex<Option<AudioSessionConfig>>,
     ring: parking_lot::Mutex<VecDeque<TranscriptSegment>>,
@@ -124,6 +172,7 @@ impl AudioManager {
         storage: Arc<Storage>,
         sessions: Arc<SessionManager>,
         modes: Arc<ModeManager>,
+        secrets: Arc<SecretsStore>,
     ) -> Self {
         Self {
             helper,
@@ -133,6 +182,9 @@ impl AudioManager {
             storage,
             sessions,
             modes,
+            secrets,
+            stt: tokio::sync::Mutex::new(None),
+            chunk_times: parking_lot::Mutex::new(HashMap::new()),
             status: parking_lot::Mutex::new(AudioStatus::default()),
             config: parking_lot::Mutex::new(None),
             ring: parking_lot::Mutex::new(VecDeque::with_capacity(RING_CAPACITY)),
@@ -182,7 +234,10 @@ impl AudioManager {
     }
 
     /// Start listening. Starts a session when none is active.
-    pub async fn start(&self, patch: Option<AudioSessionConfigPatch>) -> BlueyResult<AudioStatus> {
+    pub async fn start(
+        self: &Arc<Self>,
+        patch: Option<AudioSessionConfigPatch>,
+    ) -> BlueyResult<AudioStatus> {
         if self.is_running() {
             return Ok(self.status());
         }
@@ -193,7 +248,8 @@ impl AudioManager {
                 "enable the microphone or system audio first",
             ));
         }
-        let (route, fallback) = route_for(config.transcription.provider);
+        let cloud = self.cloud_provider(&config).await;
+        let (route, fallback) = route_for(config.transcription.provider, cloud.is_some());
         {
             let mut status = self.status.lock();
             status.state = AudioSessionState::Starting;
@@ -228,13 +284,37 @@ impl AudioManager {
         }
         self.assembler.lock().reset();
         self.partials.lock().clear();
+        self.chunk_times.lock().clear();
         *self.config.lock() = Some(config.clone());
+        if route == TranscriptionRoute::Pcm {
+            if let Some((provider, model)) = cloud {
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<TranscriptionEvent>(512);
+                let this = self.clone();
+                let pump = tauri::async_runtime::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        this.on_stt_event(event).await;
+                    }
+                });
+                let language = Some(config.transcription.language.clone())
+                    .filter(|l| !l.is_empty() && l != "auto");
+                tracing::info!(provider = ?provider.kind(), model = %model, "cloud transcription active");
+                *self.stt.lock().await = Some(ActiveStt {
+                    provider,
+                    model,
+                    language,
+                    sessions: HashMap::new(),
+                    failed: HashSet::new(),
+                    sink: tx,
+                    pump,
+                });
+            }
+        }
         let status = {
             let mut status = self.status.lock();
             status.state = AudioSessionState::Running;
             status.microphone_active = microphone;
             status.system_audio_active = system_audio;
-            status.provider = Some(if fallback {
+            status.provider = Some(if fallback.is_some() {
                 TranscriptionProviderKind::Apple
             } else {
                 config.transcription.provider
@@ -246,13 +326,195 @@ impl AudioManager {
         };
         self.hub.transition_soft(AppEvent::AudioStarted);
         self.bus.publish(BlueyEvent::AudioStarted(status.clone()));
-        if fallback {
+        if let Some(reason) = fallback {
             self.bus.publish(BlueyEvent::AudioError(BlueyError::audio(
                 "stt_fallback",
-                "cloud transcription is not available yet; using on-device Apple Speech",
+                format!("{reason}; using on-device Apple Speech"),
             )));
         }
         Ok(status)
+    }
+
+    /// Build the cloud transcription provider for the configured kind, or
+    /// `None` when it cannot run (no key / model / developer mode). Returns the
+    /// provider and the model id to open sessions with.
+    async fn cloud_provider(
+        &self,
+        config: &AudioSessionConfig,
+    ) -> Option<(Arc<dyn TranscriptionProvider>, String)> {
+        let settings = self.settings.get();
+        let assignment = settings.ai.models.transcription.clone();
+        match config.transcription.provider {
+            TranscriptionProviderKind::Apple => None,
+            TranscriptionProviderKind::Mock => {
+                let allowed = cfg!(feature = "dev-tools")
+                    || cfg!(debug_assertions)
+                    || settings.general.developer_mode;
+                allowed.then(|| {
+                    (
+                        Arc::new(MockTranscriptionProvider) as Arc<dyn TranscriptionProvider>,
+                        "mock".to_string(),
+                    )
+                })
+            }
+            TranscriptionProviderKind::GeminiLive => {
+                let mut candidates: Vec<_> = settings
+                    .ai
+                    .providers
+                    .iter()
+                    .filter(|p| p.kind == AiProviderKind::GoogleGemini && p.enabled)
+                    .collect();
+                candidates.sort_by_key(|p| p.id != presets::GEMINI_ID);
+                let provider = candidates.first()?;
+                let key = self
+                    .secrets
+                    .get(&provider_key(&provider.id))
+                    .await
+                    .ok()
+                    .flatten()?;
+                let assigned = assignment
+                    .as_ref()
+                    .filter(|a| a.provider_id == provider.id)
+                    .map(|a| a.model.as_str());
+                let model = transcription::gemini_live_model(assigned);
+                Some((Arc::new(GeminiLiveProvider::new(key)), model))
+            }
+            TranscriptionProviderKind::CloudRealtime => {
+                let assignment = assignment?;
+                let provider = settings
+                    .ai
+                    .providers
+                    .iter()
+                    .find(|p| p.id == assignment.provider_id && p.enabled)?;
+                if !matches!(
+                    provider.kind,
+                    AiProviderKind::AzureFoundry | AiProviderKind::OpenaiCompatible
+                ) {
+                    return None;
+                }
+                let key = self
+                    .secrets
+                    .get(&provider_key(&provider.id))
+                    .await
+                    .ok()
+                    .flatten()?;
+                let companion = std::env::var("BLUEY_MODEL_VOICE_LIVE").ok();
+                Some((
+                    Arc::new(CloudRealtimeProvider::new(
+                        provider.base_url.clone(),
+                        key,
+                        companion,
+                    )),
+                    assignment.model,
+                ))
+            }
+        }
+    }
+
+    /// Forward one PCM chunk to the provider session for its source (opening
+    /// the session on first use). Audio bytes are never retained.
+    async fn forward_pcm(&self, chunk: PcmChunk) {
+        {
+            let mut times = self.chunk_times.lock();
+            let timing = times.entry(chunk.source).or_default();
+            if chunk.is_speech && timing.utterance_start_ms.is_none() {
+                timing.utterance_start_ms = Some(chunk.start_ms);
+            }
+            timing.last_start_ms = chunk.start_ms;
+            timing.last_end_ms = chunk.end_ms;
+        }
+        let mut guard = self.stt.lock().await;
+        let Some(stt) = guard.as_mut() else { return };
+        if stt.failed.contains(&chunk.source) {
+            return;
+        }
+        if !stt.sessions.contains_key(&chunk.source) {
+            let options = SessionOptions {
+                source: chunk.source,
+                model: stt.model.clone(),
+                language: stt.language.clone(),
+                vocabulary: Vec::new(),
+            };
+            match stt.provider.open(options, stt.sink.clone()).await {
+                Ok(session) => {
+                    stt.sessions.insert(chunk.source, session);
+                }
+                Err(error) => {
+                    stt.failed.insert(chunk.source);
+                    self.bus.publish(BlueyEvent::AudioError(error));
+                    return;
+                }
+            }
+        }
+        if let Some(session) = stt.sessions.get(&chunk.source) {
+            if let Err(error) = session.push_audio(chunk).await {
+                tracing::debug!(error = %error, "dropping a pcm chunk");
+            }
+        }
+    }
+
+    /// Provider events → transcript segments (same assembler as the Apple path).
+    async fn on_stt_event(&self, event: TranscriptionEvent) {
+        match event {
+            TranscriptionEvent::Interim { source, text } => {
+                self.on_cloud_text(source, text, None, false).await
+            }
+            TranscriptionEvent::Final {
+                source,
+                text,
+                language,
+            } => self.on_cloud_text(source, text, language, true).await,
+            TranscriptionEvent::Failed { source, error } => {
+                tracing::warn!(?source, error = %error, "cloud transcription failed");
+                if let Some(stt) = self.stt.lock().await.as_mut() {
+                    stt.failed.insert(source);
+                    stt.sessions.remove(&source);
+                }
+                self.status.lock().error = Some(error.clone());
+                self.bus.publish(BlueyEvent::AudioError(error));
+            }
+        }
+    }
+
+    async fn on_cloud_text(
+        &self,
+        source: AudioSource,
+        text: String,
+        language: Option<String>,
+        finalized: bool,
+    ) {
+        let (start_ms, end_ms) = {
+            let mut times = self.chunk_times.lock();
+            let timing = times.entry(source).or_default();
+            let start = timing.utterance_start_ms.unwrap_or(timing.last_start_ms);
+            let end = timing.last_end_ms.max(start);
+            if finalized {
+                timing.utterance_start_ms = None;
+            }
+            (start, end)
+        };
+        let wire = WireTranscript {
+            source,
+            text,
+            start_ms,
+            end_ms,
+            confidence: None,
+            locale: language,
+        };
+        self.on_transcript(wire, finalized).await;
+    }
+
+    /// Close every provider session and stop the event pump.
+    async fn close_stt(&self) {
+        let active = self.stt.lock().await.take();
+        if let Some(stt) = active {
+            for (_, session) in stt.sessions {
+                session.close().await;
+            }
+            drop(stt.sink);
+            let _ = tokio::time::timeout(Duration::from_secs(3), stt.pump).await;
+        }
+        self.chunk_times.lock().clear();
     }
 
     /// Stop listening (and end the auto-started session).
@@ -262,6 +524,7 @@ impl AudioManager {
                 tracing::debug!(error = %e, "audio.stop failed (helper may be gone)");
             }
         }
+        self.close_stt().await;
         let status = self.mark_stopped(None);
         if self.auto_session.swap(false, Ordering::SeqCst) {
             if let Err(e) = self.sessions.end().await {
@@ -500,6 +763,7 @@ impl AudioManager {
                 if let Some(error) = &error {
                     self.bus.publish(BlueyEvent::AudioError(error.clone()));
                 }
+                self.close_stt().await;
                 self.mark_stopped(error);
             }
             HelperEvent::AudioLevel { microphone, system } => {
@@ -511,8 +775,19 @@ impl AudioManager {
                     .publish(BlueyEvent::AudioLevel { microphone, system });
             }
             HelperEvent::AudioChunk(chunk) => {
-                // PCM (when requested) is consumed by the cloud transcription
-                // providers; the contract event never carries audio bytes.
+                // PCM (when requested) goes to the cloud transcription provider;
+                // the contract event never carries audio bytes.
+                if let Some(pcm16) = chunk.pcm16.clone() {
+                    self.forward_pcm(PcmChunk {
+                        source: chunk.source,
+                        base64: pcm16,
+                        sample_rate: chunk.sample_rate.unwrap_or(SAMPLE_RATE_HZ),
+                        start_ms: chunk.start_ms,
+                        end_ms: chunk.end_ms,
+                        is_speech: chunk.is_speech,
+                    })
+                    .await;
+                }
                 self.bus.publish(BlueyEvent::AudioChunk {
                     source: chunk.source,
                     start_ms: chunk.start_ms,
@@ -638,14 +913,36 @@ mod tests {
     }
 
     #[test]
-    fn cloud_providers_fall_back_to_apple_for_now() {
+    fn cloud_providers_route_to_pcm_when_ready_and_fall_back_to_apple_otherwise() {
         assert_eq!(
-            route_for(TranscriptionProviderKind::Apple),
-            (TranscriptionRoute::Apple, false)
+            route_for(TranscriptionProviderKind::Apple, true),
+            (TranscriptionRoute::Apple, None)
         );
         assert_eq!(
-            route_for(TranscriptionProviderKind::CloudRealtime),
-            (TranscriptionRoute::Apple, true)
+            route_for(TranscriptionProviderKind::GeminiLive, true),
+            (TranscriptionRoute::Pcm, None)
+        );
+        assert_eq!(
+            route_for(TranscriptionProviderKind::CloudRealtime, true),
+            (TranscriptionRoute::Pcm, None)
+        );
+        let (route, reason) = route_for(TranscriptionProviderKind::GeminiLive, false);
+        assert_eq!(route, TranscriptionRoute::Apple);
+        assert!(reason.unwrap().contains("Google AI Studio key"));
+        let (route, reason) = route_for(TranscriptionProviderKind::CloudRealtime, false);
+        assert_eq!(route, TranscriptionRoute::Apple);
+        assert!(reason.is_some());
+        assert_eq!(
+            route_for(TranscriptionProviderKind::Mock, false).0,
+            TranscriptionRoute::Apple
+        );
+    }
+
+    #[test]
+    fn gemini_live_is_the_default_provider() {
+        assert_eq!(
+            AudioSessionConfig::default().transcription.provider,
+            TranscriptionProviderKind::GeminiLive
         );
     }
 }
