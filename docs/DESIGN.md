@@ -42,9 +42,14 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   "Bluey Settings" in a 44px drag region (`data-tauri-drag-region`).
 * **Top tab bar**: horizontal icon-over-label tabs, centered, 12px gap. Each tab is 76×56,
   icon 18px, label 12px medium. Inactive: `fg-muted`; active: `fg` on `bg-tile` rounded 12px.
-  Tabs (in order): General, Modes, Context, Keybinds, Audio, Screen, AI, Privacy, Permissions,
-  Sessions, Profile, Advanced, About (Calendar/Notifications/Billing from the reference are
-  intentionally omitted — Bluey has no billing). Hairline below the bar.
+  Tabs (in order): General, Appearance, Modes, Context, Keybinds, Audio, Screen, AI, Privacy,
+  Permissions, Sessions, Profile, Advanced, About (Calendar/Notifications/Billing from the
+  reference are intentionally omitted — Bluey has no billing). Hairline below the bar.
+* **Appearance tab**: Theme (System / Dark / Light), Text size, Density (segmented Compact /
+  Comfortable); HUD panel section with Opacity slider (40–100%, live percentage in the row
+  description), Width slider (520–960 px), Background blur, Always on top, Position, Follow
+  active display; Motion section with Reduced motion (System / On / Off). Sliders update the
+  description while dragging and persist on release.
 * **Context tab** ("My Context"): "Add as" kind picker (Résumé, CV, Job description, Company
   notes…) above the same dashed dropzone as Modes → Files, then the list of global documents
   as cards (title, kind badge, format · size · chunks · index status · Embedded, date) with
@@ -73,12 +78,18 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   stacked-documents illustration, "Adding files gives more context to Bluey" (15px medium)
   and "Drag & drop files here to add them, or browse files" (13px muted, link accent). Sticky
   bottom bar with hairline and right-aligned primary button "Set Active" / disabled "Active".
+  Between context and files: "Response style" (length / tone / latency / preferred model
+  selects, available on built-in modes too) and "Context sources" — a row of 32px pill
+  toggles (Screen, Accessibility tree, Transcript, Résumé / CV, Job description, Documents,
+  Session memory; on = `accent-soft` fill with accent text). Custom modes additionally get
+  Description, Sidebar group and Response format above the meeting context.
 * **Keybinds tab**: header "Keyboard shortcuts" + description "Bluey works with these easy to
   remember commands. Click any of the keybinds to edit." Groups General / Window / Scroll
   (15px semibold). Rows: 20px line icon, label 14px, right-aligned **keycaps**: 24×24 (wider
   for glyph pairs) `bg-tile` radius 6, 12px `fg-muted` glyphs (⌘ ⇧ ⌃ ⌥ ↵ ↑ ↓ ← → \ , R). Clicking
   a row enters recording mode (caps highlighted accent, "Press shortcut…", Esc cancels);
-  conflicts show an inline warning.
+  conflicts show an inline warning. A small switch at the right of each row turns the
+  shortcut off (row dims to 60%) without forgetting its accelerator.
 * **Profile / Security**: Clerk `<UserProfile />` bundled with dark theme variables matching the
   tokens (card background `bg-elevated`).
 * **About**: card with release note (title + date, bullet list), rows Help Center (Open ↗),
@@ -124,6 +135,9 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   stays as in idle with "New Chat ⌘ R".
 * **States** (label in the left pill): Idle `Bluey · General`, Listening `● Listening`
   (green dot), Capturing `◌ Reading screen`, Thinking `◌ Thinking` (spinner glyph),
+  Researching `◌ Researching` while a deep-research job runs inside the ask (the response
+  body shows "Researching · Searching the web… (2 lookups)" with an accent "Skip research"
+  link that cancels the job and lets the answer continue without it),
   Preparing `◌ Preparing a suggestion` (proactive loop running), Prepared (blue)
   `Bluey has a suggestion · ⌘⇧↵`, Error `! <friendly title>` in `danger` + the error's single
   recovery button (`hud-chip` pill: Open Settings / Open System Settings / Retry / Restart

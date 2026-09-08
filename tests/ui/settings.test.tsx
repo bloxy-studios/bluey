@@ -61,6 +61,59 @@ describe("ModeEditor", () => {
     );
   });
 
+  it("toggles context sources and exposes the response style for built-in modes", async () => {
+    const user = userEvent.setup();
+    const mode = useModesStore.getState().modes.find((m) => m.id === "coding-interview");
+    if (!mode) throw new Error("coding-interview mode missing");
+
+    render(
+      <TooltipProvider>
+        <ModeEditor mode={mode} isActive={false} onDeleted={() => {}} />
+      </TooltipProvider>,
+    );
+
+    // Built-in modes can override length/tone/latency/model too.
+    expect(screen.getByLabelText("Response length")).toBeInTheDocument();
+    expect(screen.getByLabelText("Preferred model")).toBeInTheDocument();
+    // Custom-only fields stay hidden for built-ins.
+    expect(screen.queryByLabelText("Response format")).not.toBeInTheDocument();
+
+    const wasOn = mode.contextRequirements.includes("session_memory");
+    const chip = screen.getByRole("checkbox", { name: "Session memory" });
+    expect(chip).toHaveAttribute("aria-checked", String(wasOn));
+
+    await user.click(chip);
+    await waitFor(async () => {
+      const updated = await bluey.modes.get({ id: "coding-interview" });
+      expect(updated.contextRequirements.includes("session_memory")).toBe(!wasOn);
+    });
+    // Untouched sources survive the patch.
+    const updated = await bluey.modes.get({ id: "coding-interview" });
+    for (const source of mode.contextRequirements.filter((s) => s !== "session_memory")) {
+      expect(updated.contextRequirements).toContain(source);
+    }
+  });
+
+  it("shows description, group and response format for custom modes", async () => {
+    const user = userEvent.setup();
+    const created = await bluey.modes.create({ draft: { name: "Board prep" } });
+    render(
+      <TooltipProvider>
+        <ModeEditor mode={created} isActive={false} onDeleted={() => {}} />
+      </TooltipProvider>,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Response format"), "meeting");
+    await waitFor(async () =>
+      expect((await bluey.modes.get({ id: created.id })).responseSchema).toBe("meeting"),
+    );
+
+    await user.type(screen.getByLabelText("Sidebar group"), "Work");
+    await waitFor(async () => expect((await bluey.modes.get({ id: created.id })).group).toBe("Work"), {
+      timeout: 2500,
+    });
+  });
+
   it("Set Active activates the mode", async () => {
     const user = userEvent.setup();
     const mode = useModesStore.getState().modes.find((m) => m.id === "sales");

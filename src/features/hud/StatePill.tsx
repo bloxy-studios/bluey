@@ -10,6 +10,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useChatStore } from "@/stores/chatStore";
 import { modeById, useModesStore } from "@/stores/modesStore";
 import { useProactiveStore } from "@/stores/proactive";
+import { useResearchStore } from "@/stores/researchStore";
 import { derivePill } from "./state-pill";
 
 export interface StatePillProps {
@@ -32,12 +33,19 @@ export function StatePill({ onRetry }: StatePillProps = {}) {
   const phase = useChatStore((s) => s.phase);
   const prepared = useChatStore((s) => s.prepared);
   const preparing = useProactiveStore((s) => s.preparingEventId !== null);
+  const researching = useResearchStore((s) => s.active?.message ?? null);
   const modes = useModesStore((s) => s.modes);
   const modeName = modeById(modes, status?.modeId)?.name ?? "General";
 
-  const pill = derivePill(status, phase, prepared !== null, modeName, preparing);
+  const pill = derivePill(status, phase, prepared !== null, modeName, { preparing, researching });
 
   switch (pill.kind) {
+    case "researching":
+      return (
+        <Pill variant="hud" title={pill.message}>
+          <Spinner size={11} /> Researching
+        </Pill>
+      );
     case "error": {
       const presented = pill.error ? presentError(pill.error, { onRetry }) : null;
       return (

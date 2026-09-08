@@ -11,13 +11,22 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 import { IconButton } from "@/components/ui/IconButton";
+import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
-import { showToast } from "@/components/ui/toast-store";
+import { showErrorToast, showToast } from "@/components/ui/toast-store";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { bluey } from "@/lib/tauri/api";
-import type { BlueyDocument, BlueyMode } from "@/lib/types";
+import {
+  toBlueyError,
+  type BlueyDocument,
+  type BlueyMode,
+  type ContextRequirement,
+  type ResponseSchemaId,
+} from "@/lib/types";
+import { cn } from "@/lib/utils/cn";
 import { formatBytes } from "@/lib/utils/format";
+import { CONTEXT_SOURCE_LABELS, CONTEXT_SOURCES, RESPONSE_FORMAT_OPTIONS } from "./mode-options";
 import { ModeFilesDropzone } from "./ModeFilesDropzone";
 
 const LATENCY_OPTIONS = [
@@ -58,25 +67,61 @@ export interface ModeEditorProps {
   onDeleted: () => void;
 }
 
-/** Right pane of Settings → Modes: title, meeting context, files, actions. */
+function FieldLabel({ htmlFor, children, hint }: { htmlFor?: string; children: string; hint?: string }) {
+  return (
+    <div className="mt-6 mb-2 flex items-baseline gap-2">
+      <label htmlFor={htmlFor} className="block text-[14px] font-semibold text-fg">
+        {children}
+      </label>
+      {hint ? <span className="text-[12.5px] text-fg-subtle">{hint}</span> : null}
+    </div>
+  );
+}
+
+/**
+ * Right pane of Settings → Modes: title, meeting context, response style,
+ * context sources, format (custom modes), files, actions.
+ */
 export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
   const [name, setName] = useState(mode.name);
+  const [description, setDescription] = useState(mode.description);
+  const [group, setGroup] = useState(mode.group ?? "");
   const [instructions, setInstructions] = useState(mode.systemInstructions);
   const [documents, setDocuments] = useState<BlueyDocument[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  const patch = useCallback(
+    async (value: Parameters<typeof bluey.modes.update>[0]["patch"]) => {
+      try {
+        await bluey.modes.update({ id: mode.id, patch: value });
+      } catch (error) {
+        showErrorToast(toBlueyError(error, "storage"));
+      }
+    },
+    [mode.id],
+  );
+
   const saveName = useDebouncedCallback((value: string) => {
-    if (value.trim().length > 0) void bluey.modes.update({ id: mode.id, patch: { name: value.trim() } });
+    if (value.trim().length > 0) void patch({ name: value.trim() });
   }, 500);
-  const saveInstructions = useDebouncedCallback((value: string) => {
-    void bluey.modes.update({ id: mode.id, patch: { systemInstructions: value } });
-  }, 600);
+  const saveDescription = useDebouncedCallback(
+    (value: string) => void patch({ description: value.trim() }),
+    600,
+  );
+  const saveGroup = useDebouncedCallback(
+    (value: string) => void patch({ group: value.trim() || undefined }),
+    600,
+  );
+  const saveInstructions = useDebouncedCallback(
+    (value: string) => void patch({ systemInstructions: value }),
+    600,
+  );
 
   const refreshDocuments = useCallback(async () => {
     try {
       setDocuments(await bluey.documents.list({ scope: "mode", scopeId: mode.id }));
     } catch (error) {
-      console.warn("[modes] documents.list failed", error);
+      showErrorToast(toBlueyError(error, "storage"));
     }
   }, [mode.id]);
 
@@ -88,7 +133,23 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
     const responseStyle = { ...mode.responseStyle };
     if (value === "") delete responseStyle[key];
     else responseStyle[key] = value as never;
-    void bluey.modes.update({ id: mode.id, patch: { responseStyle } });
+    void patch({ responseStyle });
+  };
+
+  const toggleContextSource = (source: ContextRequirement) => {
+    const current = new Set(mode.contextRequirements);
+    if (current.has(source)) current.delete(source);
+    else current.add(source);
+    void patch({ contextRequirements: CONTEXT_SOURCES.filter((s) => current.has(s)) });
+  };
+
+  const removeDocument = async (doc: BlueyDocument) => {
+    try {
+      await bluey.documents.delete({ id: doc.id });
+      await refreshDocuments();
+    } catch (error) {
+      showErrorToast(toBlueyError(error, "storage"));
+    }
   };
 
   return (
@@ -116,7 +177,9 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
               </IconButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => void bluey.modes.duplicate({ id: mode.id })}>Duplicate</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void bluey.modes.duplicate({ id: mode.id })}>
+                Duplicate
+              </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={() => {
                   void bluey.modes.setDefault({ id: mode.id }).then(() => showToast("Default mode set"));
@@ -144,9 +207,52 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
           <p className="mt-4 max-w-[560px] text-[15px] leading-relaxed text-fg-muted">{mode.description}</p>
         ) : (
           <>
-            <label htmlFor="meeting-context" className="mt-6 mb-2 block text-[14px] font-semibold text-fg">
-              Meeting context
-            </label>
+            {!mode.builtIn ? (
+              <>
+                <FieldLabel htmlFor="mode-description">Description</FieldLabel>
+                <Input
+                  id="mode-description"
+                  value={description}
+                  onChange={(e) => {
+                    setDescription(e.target.value);
+                    saveDescription(e.target.value);
+                  }}
+                  placeholder="One line about when to use this mode"
+                  className="w-full"
+                />
+                <div className="mt-4 flex flex-wrap items-end gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="mode-group" className="text-[12.5px] font-medium text-fg-muted">
+                      Sidebar group
+                    </label>
+                    <Input
+                      id="mode-group"
+                      value={group}
+                      onChange={(e) => {
+                        setGroup(e.target.value);
+                        saveGroup(e.target.value);
+                      }}
+                      placeholder="e.g. Looking for work"
+                      className="w-[220px]"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="mode-format" className="text-[12.5px] font-medium text-fg-muted">
+                      Response format
+                    </label>
+                    <Select
+                      id="mode-format"
+                      aria-label="Response format"
+                      value={mode.responseSchema}
+                      onChange={(e) => void patch({ responseSchema: e.target.value as ResponseSchemaId })}
+                      options={RESPONSE_FORMAT_OPTIONS}
+                    />
+                  </div>
+                </div>
+              </>
+            ) : null}
+
+            <FieldLabel htmlFor="meeting-context">Meeting context</FieldLabel>
             <Textarea
               id="meeting-context"
               value={instructions}
@@ -158,53 +264,80 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
               className="min-h-[180px]"
             />
 
-            {!mode.builtIn ? (
-              <div className="mt-5 flex flex-wrap items-center gap-2.5">
-                <Select
-                  aria-label="Response length"
-                  value={mode.responseStyle?.length ?? ""}
-                  onChange={(e) => patchStyle("length", e.target.value)}
-                  options={LENGTH_OPTIONS}
-                />
-                <Select
-                  aria-label="Response tone"
-                  value={mode.responseStyle?.tone ?? ""}
-                  onChange={(e) => patchStyle("tone", e.target.value)}
-                  options={TONE_OPTIONS}
-                />
-                <Select
-                  aria-label="Latency preference"
-                  value={mode.preferredLatency}
-                  onChange={(e) => void bluey.modes.update({ id: mode.id, patch: { preferredLatency: e.target.value as BlueyMode["preferredLatency"] } })}
-                  options={LATENCY_OPTIONS}
-                />
-                <Select
-                  aria-label="Preferred model"
-                  value={mode.preferredModelRole ?? ""}
-                  onChange={(e) =>
-                    void bluey.modes.update({
-                      id: mode.id,
-                      patch: { preferredModelRole: (e.target.value || undefined) as BlueyMode["preferredModelRole"] },
-                    })
-                  }
-                  options={MODEL_ROLE_OPTIONS}
-                />
-              </div>
-            ) : null}
+            <FieldLabel hint="Overrides the global response style for this mode">Response style</FieldLabel>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <Select
+                aria-label="Response length"
+                value={mode.responseStyle?.length ?? ""}
+                onChange={(e) => patchStyle("length", e.target.value)}
+                options={LENGTH_OPTIONS}
+              />
+              <Select
+                aria-label="Response tone"
+                value={mode.responseStyle?.tone ?? ""}
+                onChange={(e) => patchStyle("tone", e.target.value)}
+                options={TONE_OPTIONS}
+              />
+              <Select
+                aria-label="Latency preference"
+                value={mode.preferredLatency}
+                onChange={(e) =>
+                  void patch({ preferredLatency: e.target.value as BlueyMode["preferredLatency"] })
+                }
+                options={LATENCY_OPTIONS}
+              />
+              <Select
+                aria-label="Preferred model"
+                value={mode.preferredModelRole ?? ""}
+                onChange={(e) =>
+                  void patch({
+                    preferredModelRole: (e.target.value || undefined) as BlueyMode["preferredModelRole"],
+                  })
+                }
+                options={MODEL_ROLE_OPTIONS}
+              />
+            </div>
 
-            <div className="mt-6 mb-2 text-[14px] font-semibold text-fg">Files</div>
+            <FieldLabel hint="What Bluey gathers before answering in this mode">Context sources</FieldLabel>
+            <div role="group" aria-label="Context sources" className="flex flex-wrap gap-2">
+              {CONTEXT_SOURCES.map((source) => {
+                const enabled = mode.contextRequirements.includes(source);
+                return (
+                  <button
+                    key={source}
+                    type="button"
+                    role="checkbox"
+                    aria-checked={enabled}
+                    onClick={() => toggleContextSource(source)}
+                    className={cn(
+                      "h-8 rounded-full border px-3 text-[12.5px] font-medium transition-colors",
+                      enabled
+                        ? "border-accent/40 bg-accent-soft text-accent"
+                        : "border-border bg-bg-elevated text-fg-muted hover:text-fg",
+                    )}
+                  >
+                    {CONTEXT_SOURCE_LABELS[source]}
+                  </button>
+                );
+              })}
+            </div>
+
+            <FieldLabel>Files</FieldLabel>
             <ModeFilesDropzone modeId={mode.id} onAdded={() => void refreshDocuments()} />
             {documents.length > 0 ? (
               <ul className="mt-3 flex flex-col gap-1.5">
                 {documents.map((doc) => (
-                  <li key={doc.id} className="flex items-center gap-3 rounded-[10px] border border-border bg-bg-elevated px-3 py-2">
+                  <li
+                    key={doc.id}
+                    className="flex items-center gap-3 rounded-[10px] border border-border bg-bg-elevated px-3 py-2"
+                  >
                     <span className="min-w-0 flex-1 truncate text-[13.5px] text-fg">{doc.title}</span>
                     <span className="shrink-0 text-[12px] text-fg-subtle">{formatBytes(doc.sizeBytes)}</span>
                     <IconButton
                       aria-label={`Remove ${doc.title}`}
                       variant="plain"
                       size="sm"
-                      onClick={() => void bluey.documents.delete({ id: doc.id }).then(() => refreshDocuments())}
+                      onClick={() => void removeDocument(doc)}
                     >
                       <X className="size-3.5" aria-hidden />
                     </IconButton>
@@ -234,8 +367,12 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
         description="This removes the mode and its attached files. This cannot be undone."
         confirmLabel="Delete mode"
         onConfirm={async () => {
-          await bluey.modes.delete({ id: mode.id });
-          onDeleted();
+          try {
+            await bluey.modes.delete({ id: mode.id });
+            onDeleted();
+          } catch (error) {
+            showErrorToast(toBlueyError(error, "storage"));
+          }
         }}
       />
     </div>

@@ -3,17 +3,25 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/Dialog";
+import { Input } from "@/components/ui/Input";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
 import { SegmentedTabs } from "@/components/ui/Tabs";
 import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
-import { showToast } from "@/components/ui/toast-store";
+import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { bluey } from "@/lib/tauri/api";
 import type { DataUsageStats } from "@/lib/tauri/commands";
-import type { CaptureProtection, DisplayMode } from "@/lib/types";
+import { toBlueyError, type CaptureProtection, type DisplayMode } from "@/lib/types";
 import { formatBytes } from "@/lib/utils/format";
 import { useSettingsStore } from "@/stores/settingsStore";
+import {
+  clampRetentionMinutes,
+  RAW_AUDIO_RETENTION_DEFAULT_MINUTES,
+  RAW_AUDIO_RETENTION_MAX_MINUTES,
+  RAW_AUDIO_RETENTION_MIN_MINUTES,
+} from "../privacy-retention";
 
 interface DangerAction {
   id: string;
@@ -29,18 +37,36 @@ export default function PrivacyTab() {
   const [protection, setProtection] = useState<CaptureProtection | null>(null);
   const [stats, setStats] = useState<DataUsageStats | null>(null);
   const [confirm, setConfirm] = useState<DangerAction | null>(null);
+  const [retentionMinutes, setRetentionMinutes] = useState(
+    String(settings?.privacy.rawAudioRetentionMinutes ?? RAW_AUDIO_RETENTION_DEFAULT_MINUTES),
+  );
+
+  useEffect(() => {
+    if (settings?.privacy.rawAudioRetentionMinutes !== undefined) {
+      setRetentionMinutes(String(settings.privacy.rawAudioRetentionMinutes));
+    }
+  }, [settings?.privacy.rawAudioRetentionMinutes]);
+
+  const saveRetention = useDebouncedCallback((value: string) => {
+    const minutes = clampRetentionMinutes(Number(value));
+    setRetentionMinutes(String(minutes));
+    void update({ privacy: { rawAudioRetentionMinutes: minutes } });
+  }, 500);
 
   const refreshStats = async () => {
     try {
       setStats(await bluey.data.usageStats());
     } catch (error) {
-      console.warn("[privacy] usage stats failed", error);
+      showErrorToast(toBlueyError(error, "storage"));
     }
   };
 
   useEffect(() => {
     void refreshStats();
-    void bluey.capture.getProtection().then(setProtection).catch(() => undefined);
+    void bluey.capture
+      .getProtection()
+      .then(setProtection)
+      .catch(() => undefined);
   }, []);
 
   if (!settings) return null;
@@ -51,8 +77,16 @@ export default function PrivacyTab() {
     try {
       setProtection(await bluey.capture.setProtection({ enabled: mode === "privacy" }));
     } catch (error) {
-      console.warn("[privacy] setProtection failed", error);
+      showErrorToast(toBlueyError(error, "capture"));
     }
+  };
+
+  const setRawAudio = async (value: typeof privacy.storeRawAudio) => {
+    const patch: Partial<typeof privacy> = { storeRawAudio: value };
+    if (value === "custom" && privacy.rawAudioRetentionMinutes === undefined) {
+      patch.rawAudioRetentionMinutes = RAW_AUDIO_RETENTION_DEFAULT_MINUTES;
+    }
+    await update({ privacy: patch });
   };
 
   const disableAllCapture = async () => {
@@ -62,7 +96,7 @@ export default function PrivacyTab() {
       await update({ screen: { observation: "manual" } });
       showToast("All capture disabled");
     } catch (error) {
-      console.warn("[privacy] disable capture failed", error);
+      showErrorToast(toBlueyError(error, "capture"));
     }
   };
 
@@ -136,7 +170,9 @@ export default function PrivacyTab() {
       <SettingRow
         icon={Eye}
         title="Display mode"
-        description={protection?.note ?? "Privacy mode hides Bluey from screen sharing where macOS supports it."}
+        description={
+          protection?.note ?? "Privacy mode hides Bluey from screen sharing where macOS supports it."
+        }
       >
         <SegmentedTabs
           aria-label="Display mode"
@@ -149,23 +185,47 @@ export default function PrivacyTab() {
         />
       </SettingRow>
 
-      <SettingRow icon={History} title="Keep session history" description="Store sessions and their timelines on this Mac.">
-        <Switch aria-label="Keep session history" checked={privacy.storeSessionHistory} onCheckedChange={(v) => void update({ privacy: { storeSessionHistory: v } })} />
+      <SettingRow
+        icon={History}
+        title="Keep session history"
+        description="Store sessions and their timelines on this Mac."
+      >
+        <Switch
+          aria-label="Keep session history"
+          checked={privacy.storeSessionHistory}
+          onCheckedChange={(v) => void update({ privacy: { storeSessionHistory: v } })}
+        />
       </SettingRow>
 
-      <SettingRow icon={ImageIcon} title="Keep screenshots" description="Store captured frames with sessions.">
-        <Switch aria-label="Keep screenshots" checked={privacy.storeScreenshots} onCheckedChange={(v) => void update({ privacy: { storeScreenshots: v } })} />
+      <SettingRow
+        icon={ImageIcon}
+        title="Keep screenshots"
+        description="Store captured frames with sessions."
+      >
+        <Switch
+          aria-label="Keep screenshots"
+          checked={privacy.storeScreenshots}
+          onCheckedChange={(v) => void update({ privacy: { storeScreenshots: v } })}
+        />
       </SettingRow>
 
       <SettingRow icon={FileText} title="Keep transcripts" description="Store what was said during sessions.">
-        <Switch aria-label="Keep transcripts" checked={privacy.storeTranscripts} onCheckedChange={(v) => void update({ privacy: { storeTranscripts: v } })} />
+        <Switch
+          aria-label="Keep transcripts"
+          checked={privacy.storeTranscripts}
+          onCheckedChange={(v) => void update({ privacy: { storeTranscripts: v } })}
+        />
       </SettingRow>
 
-      <SettingRow icon={Mic} title="Raw audio" description="Recordings are never kept unless you choose otherwise.">
+      <SettingRow
+        icon={Mic}
+        title="Raw audio"
+        description="Recordings are never kept unless you choose otherwise."
+      >
         <Select
           aria-label="Raw audio retention"
           value={privacy.storeRawAudio}
-          onChange={(e) => void update({ privacy: { storeRawAudio: e.target.value as typeof privacy.storeRawAudio } })}
+          onChange={(e) => void setRawAudio(e.target.value as typeof privacy.storeRawAudio)}
           options={[
             { value: "never", label: "Never keep" },
             { value: "until_session_end", label: "Until session ends" },
@@ -174,11 +234,48 @@ export default function PrivacyTab() {
         />
       </SettingRow>
 
-      <SettingRow icon={Cloud} title="Cloud AI" description="Allow sending context to your configured cloud providers.">
-        <Switch aria-label="Cloud AI" checked={privacy.cloudAiEnabled} onCheckedChange={(v) => void update({ privacy: { cloudAiEnabled: v } })} />
+      {privacy.storeRawAudio === "custom" ? (
+        <SettingRow
+          icon={Mic}
+          title="Retention window"
+          description={`Raw audio is discarded after ${privacy.rawAudioRetentionMinutes ?? RAW_AUDIO_RETENTION_DEFAULT_MINUTES} minutes (${RAW_AUDIO_RETENTION_MIN_MINUTES}–${RAW_AUDIO_RETENTION_MAX_MINUTES}).`}
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={RAW_AUDIO_RETENTION_MIN_MINUTES}
+              max={RAW_AUDIO_RETENTION_MAX_MINUTES}
+              aria-label="Raw audio retention minutes"
+              value={retentionMinutes}
+              onChange={(e) => {
+                setRetentionMinutes(e.target.value);
+                saveRetention(e.target.value);
+              }}
+              className="w-[88px]"
+            />
+            <span className="text-[13px] text-fg-muted">min</span>
+          </div>
+        </SettingRow>
+      ) : null}
+
+      <SettingRow
+        icon={Cloud}
+        title="Cloud AI"
+        description="Allow sending context to your configured cloud providers."
+      >
+        <Switch
+          aria-label="Cloud AI"
+          checked={privacy.cloudAiEnabled}
+          onCheckedChange={(v) => void update({ privacy: { cloudAiEnabled: v } })}
+        />
       </SettingRow>
 
-      <SettingRow icon={Ban} title="Disable all capture" description="One click: stop screen observation and the audio session.">
+      <SettingRow
+        icon={Ban}
+        title="Disable all capture"
+        description="One click: stop screen observation and the audio session."
+      >
         <Button variant="secondary" onClick={() => void disableAllCapture()}>
           Disable all capture
         </Button>
@@ -207,7 +304,11 @@ export default function PrivacyTab() {
       <div className="flex flex-col">
         {dangers.map((action) => (
           <SettingRow key={action.id} icon={HardDrive} title={action.label} description={action.description}>
-            <Button variant={action.id === "reset" ? "danger" : "secondary"} size="sm" onClick={() => setConfirm(action)}>
+            <Button
+              variant={action.id === "reset" ? "danger" : "secondary"}
+              size="sm"
+              onClick={() => setConfirm(action)}
+            >
               {action.label}
             </Button>
           </SettingRow>
