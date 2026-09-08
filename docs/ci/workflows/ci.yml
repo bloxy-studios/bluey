@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (Bun)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run test
+      - run: bun run build
+
+  rust:
+    name: Rust (host crates + macOS type-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Placeholder sidecars (tauri-build checks that externalBin files exist)
+        run: |
+          mkdir -p src-tauri/binaries
+          for bin in bluey-helper bluey-agent; do
+            : > "src-tauri/binaries/${bin}-aarch64-apple-darwin"
+            chmod +x "src-tauri/binaries/${bin}-aarch64-apple-darwin"
+          done
+      - name: fmt + tests + clippy (bluey-core, bluey-storage, bluey-protocols) and macOS cargo check
+        run: bash scripts/check-rust.sh --darwin
+      - name: clippy for the app crate on the macOS target (incl. unit tests)
+        run: |
+          cd src-tauri
+          export CC_aarch64_apple_darwin="$GITHUB_WORKSPACE/scripts/fake-darwin-cc.sh"
+          export CXX_aarch64_apple_darwin="$GITHUB_WORKSPACE/scripts/fake-darwin-cc.sh"
+          export AR_aarch64_apple_darwin=ar
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/src-tauri/target-darwin"
+          cargo clippy --target aarch64-apple-darwin --no-default-features --features dev-tools --all-targets -- -D warnings
+
+  macos:
+    name: macOS (sidecars + app crate tests)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - name: Native helper (Swift)
+        run: bash scripts/build-helper.sh host
+      - name: Research agent sidecar (lite = Gemini backend, no embedded Claude CLI)
+        run: BLUEY_AGENT_VARIANT=lite bash scripts/build-agent.sh host
+      - name: App crate unit tests
+        run: cd src-tauri && cargo test --features dev-tools
+      - name: App crate clippy
+        run: cd src-tauri && cargo clippy --features dev-tools --all-targets -- -D warnings

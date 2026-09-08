@@ -7,13 +7,15 @@
   `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 - A Clerk application (publishable key) with **Native applications** enabled and
   `tauri://localhost` + `http://localhost:1420` in allowed origins.
-- Optional: Foundry/Azure OpenAI or Anthropic API key, Exa / Firecrawl keys.
+- A Google AI Studio key (`GEMINI_API_KEY`, free tier is fine) — the default provider for chat,
+  vision, transcription, embeddings and research. Optional alternates: Microsoft Foundry / Azure
+  OpenAI, Anthropic or an OpenAI-compatible endpoint; Exa / Firecrawl keys for research tools.
 
 ## Setup
 
 ```bash
 bun install
-cp .env.example .env            # fill in VITE_CLERK_PUBLISHABLE_KEY at minimum
+cp .env.example .env            # VITE_CLERK_PUBLISHABLE_KEY + GEMINI_API_KEY (the rest is optional)
 bun run tauri:dev               # builds missing sidecars on first run, then Vite + Rust + the app
 ```
 
@@ -29,6 +31,26 @@ Other commands:
 | `bun run check:rust`                   | fmt + tests + clippy; add `--darwin` to type-check the app crate for macOS                                                                                                                            |
 | `bun run build:helper` / `build:agent` | native helper / research agent sidecars                                                                                                                                                               |
 | `bun run tauri:build`                  | production `.app` + `.dmg` (see `scripts/release.sh` for signing)                                                                                                                                     |
+
+## Providers and the `.env` import
+
+On boot the Rust backend imports provider settings from the environment (`app::env_import`,
+planned by `bluey_core::presets::plan_env_import`, ADR 0007):
+
+- Keys (`GEMINI_API_KEY` / `GOOGLE_API_KEY`, `AZURE_FOUNDRY_API_KEY`, `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`) are copied into the macOS Keychain **only when it has no entry for that
+  provider**; `BLUEY_ENV_OVERRIDES_KEYCHAIN=1` replaces existing entries. The log says
+  `imported api key for provider gemini` and nothing else — delete the key from `.env` afterwards
+  if you like.
+- `BLUEY_AI_PROVIDER` (`gemini` default | `azure-foundry` | `anthropic` | `openai`) nominates the
+  default provider; its recommended models fill every role that is still unassigned and
+  `BLUEY_MODEL_*` override single roles. Settings → AI → *Default AI provider* does the same with
+  one click, and *Use recommended models* re-applies a provider's presets.
+- `BLUEY_EMBEDDING_DIMENSIONS` (768 / 1536 / 3072), `BLUEY_TRANSCRIPTION_PROVIDER`
+  (`gemini_live` default | `apple` | `cloud_realtime`) and `RESEARCH_BACKEND` (`gemini` default |
+  `claude`) set the matching settings.
+- The research sidecar ships as the **lite** binary (Gemini) unless `RESEARCH_BACKEND=claude`
+  (or `BLUEY_AGENT_VARIANT=full`) at build time, which embeds the Claude CLI.
 
 ## Working without macOS
 
@@ -70,6 +92,8 @@ Settings → General → _Developer mode_ (or `?dev=1` in the browser) enables:
 
 ## Release
 
-`scripts/release.sh` — installs, checks, builds both sidecars for the target, runs
-`tauri build`, signs and notarizes when `APPLE_SIGNING_IDENTITY`/`APPLE_ID`/`APPLE_PASSWORD`/
-`APPLE_TEAM_ID` are present, and prints the `.app`/`.dmg` paths.
+`scripts/release.sh` — installs, checks, builds both sidecars for the target (the research
+sidecar as the lite Gemini binary unless `RESEARCH_BACKEND=claude`), runs `tauri build`, signs
+and notarizes when `APPLE_SIGNING_IDENTITY`/`APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` are
+present, and prints the `.app`/`.dmg` paths. GitHub Actions definitions for CI and tagged
+releases live in `docs/ci/` (install with `scripts/install-workflows.sh`).
