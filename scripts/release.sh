@@ -7,6 +7,10 @@
 # Steps: install deps → typecheck/lint/test → build Swift helper + Bun agent sidecars for the
 # target → tauri build (frontend + Rust + bundle) → sign/notarize when credentials exist.
 #
+# Research sidecar variant: the default build is the **lite** bluey-agent (Gemini function
+# calling over @google/genai — the default RESEARCH_BACKEND). Set RESEARCH_BACKEND=claude (or
+# BLUEY_AGENT_VARIANT=full) to embed the Claude CLI for the Claude Agent SDK backend.
+#
 # Signing/notarization env (all optional — skipped when absent):
 #   APPLE_SIGNING_IDENTITY   e.g. "Developer ID Application: Name (TEAMID)"
 #   APPLE_ID, APPLE_PASSWORD (app-specific), APPLE_TEAM_ID   → notarization via tauri
@@ -35,8 +39,15 @@ bash scripts/check-rust.sh
 echo "▶ native helper ($TARGET)"
 TARGET="$TARGET" bash scripts/build-helper.sh
 
-echo "▶ agent sidecar ($TARGET)"
-TARGET="$TARGET" bash scripts/build-agent.sh
+AGENT_VARIANT="${BLUEY_AGENT_VARIANT:-}"
+if [[ -z "$AGENT_VARIANT" ]]; then
+  case "${RESEARCH_BACKEND:-gemini}" in
+    claude|anthropic) AGENT_VARIANT=full ;;
+    *) AGENT_VARIANT=lite ;;
+  esac
+fi
+echo "▶ agent sidecar ($TARGET, $AGENT_VARIANT variant)"
+BLUEY_AGENT_VARIANT="$AGENT_VARIANT" TARGET="$TARGET" bash scripts/build-agent.sh
 
 for bin in bluey-helper bluey-agent; do
   if [[ ! -x "src-tauri/binaries/${bin}-${TARGET}" ]]; then
