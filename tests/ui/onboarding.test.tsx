@@ -33,6 +33,13 @@ describe("OnboardingFlow (MockTransport)", () => {
     expect(screen.getByLabelText("Bluey name")).toHaveValue("Bluey");
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
+    // 3b — Connect Gemini (the fixture already holds a key → connected, Continue enabled)
+    expect(screen.getByText("Connect Gemini")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Gemini is connected")).toBeInTheDocument());
+    expect(screen.getByText(/aistudio.google.com\/apikey/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
     // 4 — Permissions: four sub-screens with the three explanations
     expect(screen.getByText("Screen Recording")).toBeInTheDocument();
     expect(screen.getByText("What Bluey needs")).toBeInTheDocument();
@@ -54,7 +61,9 @@ describe("OnboardingFlow (MockTransport)", () => {
     // 5 — Default mode
     expect(screen.getByText("Choose your default mode")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Coding Interview/ }));
-    await waitFor(() => expect(useSettingsStore.getState().settings?.general.defaultModeId).toBe("coding-interview"));
+    await waitFor(() =>
+      expect(useSettingsStore.getState().settings?.general.defaultModeId).toBe("coding-interview"),
+    );
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     // 6 — Shortcuts

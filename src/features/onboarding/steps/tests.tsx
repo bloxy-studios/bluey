@@ -1,12 +1,14 @@
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 import { useState } from "react";
 
 import { BlueyMark } from "@/components/BlueyMark";
 import { Button } from "@/components/ui/Button";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { LevelMeter } from "@/components/ui/LevelMeter";
 import { Spinner } from "@/components/ui/Spinner";
+import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
-import type { ConnectionTestResult, ScreenFrame } from "@/lib/types";
+import { toBlueyError, type ConnectionTestResult, type ScreenFrame } from "@/lib/types";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranscriptStore } from "@/stores/transcriptStore";
 import type { StepProps } from "../OnboardingFlow";
@@ -21,7 +23,7 @@ export function TestScreenStep(_props: StepProps) {
     try {
       setFrame(await bluey.capture.screen({ inline: true }));
     } catch (error) {
-      console.warn("[onboarding] capture failed", error);
+      showErrorToast(toBlueyError(error, "capture"));
     } finally {
       setBusy(false);
     }
@@ -67,7 +69,7 @@ export function TestMicStep(_props: StepProps) {
       const result = await bluey.audio.testMicrophone({ durationMs: 2500 });
       setPeak(result.peakLevel);
     } catch (error) {
-      console.warn("[onboarding] mic test failed", error);
+      showErrorToast(toBlueyError(error, "audio"));
     } finally {
       setTesting(false);
     }
@@ -76,7 +78,12 @@ export function TestMicStep(_props: StepProps) {
   return (
     <StepShell title="Test your microphone" body="Say something — the meter should move.">
       <div className="flex flex-col items-center gap-4">
-        <LevelMeter level={testing ? levels.microphone : (peak ?? 0)} segments={24} aria-label="Microphone level" className="h-5" />
+        <LevelMeter
+          level={testing ? levels.microphone : (peak ?? 0)}
+          segments={24}
+          aria-label="Microphone level"
+          className="h-5"
+        />
         {peak !== null ? (
           <p className="flex items-center gap-1.5 text-[13px] text-success">
             <CheckCircle2 className="size-4" aria-hidden /> Heard you — peak {(peak * 100).toFixed(0)}%
@@ -104,9 +111,11 @@ export function TestAIStep(_props: StepProps) {
     setBusy(true);
     setResult(null);
     try {
-      setResult(await bluey.ai.testConnection({ providerId: provider.id, model: settings?.ai.models.default?.model }));
+      setResult(
+        await bluey.ai.testConnection({ providerId: provider.id, model: settings?.ai.models.default?.model }),
+      );
     } catch (error) {
-      console.warn("[onboarding] ai test failed", error);
+      showErrorToast(toBlueyError(error, "ai"));
     } finally {
       setBusy(false);
     }
@@ -116,9 +125,12 @@ export function TestAIStep(_props: StepProps) {
     return (
       <StepShell
         title="Connect an AI provider"
-        body="No provider is configured yet. Add one in Settings → AI (Azure Foundry, Anthropic or any OpenAI-compatible endpoint) and store its API key — it stays in the macOS Keychain."
+        body="No provider is configured yet. Paste a Google AI Studio key in the previous step, or add Microsoft Foundry, Anthropic or an OpenAI-compatible endpoint in Settings → AI — keys stay in the macOS Keychain."
       >
-        <Button variant="secondary" onClick={() => void bluey.window.open({ label: "settings", route: "ai" })}>
+        <Button
+          variant="secondary"
+          onClick={() => void bluey.window.open({ label: "settings", route: "ai" })}
+        >
           Open AI settings
         </Button>
       </StepShell>
@@ -126,18 +138,25 @@ export function TestAIStep(_props: StepProps) {
   }
 
   return (
-    <StepShell title="Test your AI provider" body={`Bluey will send a tiny request to ${provider.name} to verify the connection.`}>
+    <StepShell
+      title="Test your AI provider"
+      body={`Bluey will send a tiny request to ${provider.name} to verify the connection.`}
+    >
       <div className="flex flex-col items-center gap-4">
         {result ? (
           result.ok ? (
             <p className="flex items-center gap-1.5 text-[13px] text-success">
-              <CheckCircle2 className="size-4" aria-hidden /> Connected · {result.model} · {result.latencyMs}ms
+              <CheckCircle2 className="size-4" aria-hidden /> Connected · {result.model} · {result.latencyMs}
+              ms
             </p>
-          ) : (
-            <p className="flex items-center gap-1.5 text-[13px] text-danger">
-              <XCircle className="size-4" aria-hidden /> {result.error?.message ?? "Connection failed"}
-            </p>
-          )
+          ) : result.error ? (
+            <ErrorBanner
+              error={result.error}
+              onRetry={() => void test()}
+              compact
+              className="w-full text-left"
+            />
+          ) : null
         ) : null}
         <Button variant="secondary" onClick={() => void test()} disabled={busy}>
           {busy ? "Testing…" : "Test connection"}
