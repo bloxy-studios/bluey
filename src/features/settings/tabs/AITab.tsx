@@ -21,11 +21,21 @@ const ROLES: Array<{ role: ModelRole; label: string; hint: string }> = [
   { role: "reasoning", label: "Reasoning", hint: "Hard problems" },
   { role: "vision", label: "Vision", hint: "Screenshots" },
   { role: "research", label: "Research", hint: "Deep research agent" },
-  { role: "transcription", label: "Transcription", hint: "Cloud speech-to-text" },
+  { role: "transcription", label: "Transcription", hint: "MAI-Transcribe-1.5 (Voice Live)" },
   { role: "embedding", label: "Embedding", hint: "Document retrieval" },
 ];
 
-function ModelRoleRow({ role, label, hint, providers }: { role: ModelRole; label: string; hint: string; providers: AIProviderConfig[] }) {
+function ModelRoleRow({
+  role,
+  label,
+  hint,
+  providers,
+}: {
+  role: ModelRole;
+  label: string;
+  hint: string;
+  providers: AIProviderConfig[];
+}) {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const assignment = settings?.ai.models[role] ?? null;
@@ -86,7 +96,9 @@ function ModelRoleRow({ role, label, hint, providers }: { role: ModelRole; label
 export default function AITab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
-  const [dialog, setDialog] = useState<{ mode: "add" } | { mode: "edit"; provider: AIProviderConfig } | null>(null);
+  const [dialog, setDialog] = useState<{ mode: "add" } | { mode: "edit"; provider: AIProviderConfig } | null>(
+    null,
+  );
   const [budget, setBudget] = useState<number | null>(null);
 
   if (!settings) return null;
@@ -98,7 +110,14 @@ export default function AITab() {
     if (dialog?.mode === "edit") {
       providers = ai.providers.map((p) =>
         p.id === dialog.provider.id
-          ? { ...p, name: values.name.trim(), kind: values.kind, baseUrl: values.baseUrl.trim(), apiVersion: values.apiVersion.trim() || undefined, deployments }
+          ? {
+              ...p,
+              name: values.name.trim(),
+              kind: values.kind,
+              baseUrl: values.baseUrl.trim(),
+              apiVersion: values.apiVersion.trim() || undefined,
+              deployments,
+            }
           : p,
       );
     } else {
@@ -123,7 +142,11 @@ export default function AITab() {
   return (
     <>
       <div className="flex items-end justify-between">
-        <SectionHeader title="Providers" description="Bluey keeps API keys in the macOS Keychain — never in its database" className="mb-0" />
+        <SectionHeader
+          title="Providers"
+          description="Bluey keeps API keys in the macOS Keychain — never in its database"
+          className="mb-0"
+        />
         <Button variant="secondary" size="sm" onClick={() => setDialog({ mode: "add" })}>
           <Plus className="size-3.5" aria-hidden /> Add provider
         </Button>
@@ -136,7 +159,9 @@ export default function AITab() {
             provider={provider}
             onEdit={() => setDialog({ mode: "edit", provider })}
             onToggleEnabled={(enabled) =>
-              void update({ ai: { providers: ai.providers.map((p) => (p.id === provider.id ? { ...p, enabled } : p)) } })
+              void update({
+                ai: { providers: ai.providers.map((p) => (p.id === provider.id ? { ...p, enabled } : p)) },
+              })
             }
           />
         ))}
@@ -180,16 +205,28 @@ export default function AITab() {
         <div className="flex items-center justify-between py-1">
           <div>
             <div className="text-[14px] font-medium text-fg">Web search</div>
-            <div className="text-[13px] text-fg-muted">Search the web when a question needs fresh facts (Exa).</div>
+            <div className="text-[13px] text-fg-muted">
+              Search the web when a question needs fresh facts (Exa).
+            </div>
           </div>
-          <Switch aria-label="Web search" checked={ai.researchEnabled} onCheckedChange={(v) => void update({ ai: { researchEnabled: v } })} />
+          <Switch
+            aria-label="Web search"
+            checked={ai.researchEnabled}
+            onCheckedChange={(v) => void update({ ai: { researchEnabled: v } })}
+          />
         </div>
         <div className="flex items-center justify-between py-1">
           <div>
             <div className="text-[14px] font-medium text-fg">Deep research agent</div>
-            <div className="text-[13px] text-fg-muted">Multi-step research with the Claude agent (public queries only).</div>
+            <div className="text-[13px] text-fg-muted">
+              Multi-step research with the Claude agent (public queries only).
+            </div>
           </div>
-          <Switch aria-label="Deep research" checked={ai.deepResearchEnabled} onCheckedChange={(v) => void update({ ai: { deepResearchEnabled: v } })} />
+          <Switch
+            aria-label="Deep research"
+            checked={ai.deepResearchEnabled}
+            onCheckedChange={(v) => void update({ ai: { deepResearchEnabled: v } })}
+          />
         </div>
         <div className="flex flex-col gap-2.5 rounded-card border border-border bg-bg-elevated p-4">
           <div className="flex items-center justify-between gap-3">
@@ -202,7 +239,10 @@ export default function AITab() {
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="text-[13px] text-fg-muted">Anthropic (agent)</span>
-            <SecretKeyField secretKey={SECRET_KEYS.anthropicAgentApiKey} aria-label="Anthropic agent API key" />
+            <SecretKeyField
+              secretKey={SECRET_KEYS.anthropicAgentApiKey}
+              aria-label="Anthropic agent API key"
+            />
           </div>
         </div>
       </div>
@@ -222,7 +262,9 @@ export default function AITab() {
           }}
           className="w-[240px]"
         />
-        <span className="font-mono text-[13px] text-fg-muted">{((budget ?? ai.contextTokenBudget) / 1000).toFixed(0)}k tokens</span>
+        <span className="font-mono text-[13px] text-fg-muted">
+          {((budget ?? ai.contextTokenBudget) / 1000).toFixed(0)}k tokens
+        </span>
       </div>
 
       {dialog ? (

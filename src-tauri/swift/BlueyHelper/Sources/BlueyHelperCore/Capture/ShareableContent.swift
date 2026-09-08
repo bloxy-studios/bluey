@@ -6,11 +6,8 @@ import ScreenCaptureKit
 public enum ShareableContent {
     public static let blueyBundleId = "com.codewithabdul.bluey"
 
-    /// Completion-handler variant of
-    /// SCShareableContent.excludingDesktopWindows(_:onScreenWindowsOnly:)
-    /// (imported from +[SCShareableContent getShareableContentExcludingDesktopWindows:
-    /// onScreenWindowsOnly:completionHandler:]).
-    /// https://developer.apple.com/documentation/screencapturekit/scshareablecontent/excludingdesktopwindows(_:onscreenwindowsonly:completionhandler:)
+    /// Async `SCShareableContent.excludingDesktopWindows(_:onScreenWindowsOnly:)`
+    /// (the completion-handler overload was removed from current SDKs).
     public static func fetch(
         onScreenWindowsOnly: Bool = true,
         completion: @escaping (Result<SCShareableContent, HelperError>) -> Void
@@ -19,13 +16,15 @@ public enum ShareableContent {
             completion(.failure(.permissionDenied("screenRecording", message: "Screen Recording not granted")))
             return
         }
-        SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: onScreenWindowsOnly) {
-            content, error in
-            if let content {
+        Task {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    true,
+                    onScreenWindowsOnly: onScreenWindowsOnly
+                )
                 completion(.success(content))
-            } else {
-                let message = error?.localizedDescription ?? "SCShareableContent unavailable"
-                completion(.failure(.capture("shareable_content_failed", message)))
+            } catch {
+                completion(.failure(.capture("shareable_content_failed", error.localizedDescription)))
             }
         }
     }

@@ -11,6 +11,7 @@
 //! * [`exa`]       — Exa search request/response models.
 //! * [`firecrawl`] — Firecrawl v2 scrape request/response models.
 //! * [`realtime`]  — OpenAI/Azure realtime transcription WebSocket messages.
+//! * [`voice_live`] — Foundry Voice Live (MAI-Transcribe) session codec + routing.
 //! * [`jsonl`]     — helper/agent JSON-Lines envelope (`Request`/`Response`/`Event`).
 //! * [`helper`]    — native-helper wire types → `bluey_core` type mappers (frames, OCR,
 //!   AX snapshots, transcript events incl. speaker labelling).
@@ -32,3 +33,4 @@ pub mod openai;
 pub mod panel;
 pub mod realtime;
 pub mod sse;
+pub mod voice_live;

@@ -2,6 +2,11 @@
 //! `anthropic-version: 2023-06-01`). Structured output goes through
 //! `output_config`; a 400 rejection falls back to instructing the schema in
 //! the prompt.
+//!
+//! Works unchanged against Claude in Microsoft Foundry: set the provider's
+//! base URL to `https://{resource}.services.ai.azure.com/anthropic` and use
+//! the Foundry resource key (Foundry accepts `x-api-key`); `model` is then the
+//! Foundry deployment name (defaults to the model id, e.g. `claude-opus-5`).
 
 use bluey_core::types::FinishReason;
 use bluey_core::{BlueyError, BlueyResult};

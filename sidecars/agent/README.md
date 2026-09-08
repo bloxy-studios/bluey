@@ -18,26 +18,31 @@ Rust (Tauri v2) ── spawn per job, env-injected keys ──▶ bluey-agent (t
 
 ## Layout
 
-| file | role |
-|---|---|
-| `src/main.ts` | stdin JSON-Lines loop, one job per process, SIGTERM/SIGINT handling, exit after the job |
-| `src/protocol.ts` | wire types (copied from `src/lib/types/*`, never imported), line parser, `ProtocolWriter` |
-| `src/agent.ts` | builds the MCP server, runs `query()`, maps SDK messages → protocol events |
-| `src/system-prompt.ts` | research-analyst persona (citations, fact vs. inference, privacy rule) |
-| `src/tools/exa.ts` | `POST https://api.exa.ai/search` client (timeouts, typed errors) |
-| `src/tools/firecrawl.ts` | `POST https://api.firecrawl.dev/v2/scrape` client (markdown, truncation) |
-| `src/tools/documents.ts` | `document.request`/`document.response` round-trip broker (allow-list, 10 s timeout) |
-| `src/citations.ts` | URL-normalised citation dedupe + model-citation validation |
-| `src/cli-path.ts` | Claude CLI resolution (`BLUEY_CLAUDE_CLI` → embedded `$bunfs` extract → SDK auto-detect) |
-| `src/config.ts` | env config |
-| `src/mock.ts` | `BLUEY_AGENT_MOCK=1` fake `query()` + fake search/scrape clients |
-| `src/entry-darwin-{arm64,x64}.ts` | compiled entrypoints that embed the per-arch Claude CLI binary |
+| file                              | role                                                                                      |
+| --------------------------------- | ----------------------------------------------------------------------------------------- |
+| `src/main.ts`                     | stdin JSON-Lines loop, one job per process, SIGTERM/SIGINT handling, exit after the job   |
+| `src/protocol.ts`                 | wire types (copied from `src/lib/types/*`, never imported), line parser, `ProtocolWriter` |
+| `src/agent.ts`                    | builds the MCP server, runs `query()`, maps SDK messages → protocol events                |
+| `src/system-prompt.ts`            | research-analyst persona (citations, fact vs. inference, privacy rule)                    |
+| `src/tools/exa.ts`                | `POST https://api.exa.ai/search` client (timeouts, typed errors)                          |
+| `src/tools/firecrawl.ts`          | `POST https://api.firecrawl.dev/v2/scrape` client (markdown, truncation)                  |
+| `src/tools/documents.ts`          | `document.request`/`document.response` round-trip broker (allow-list, 10 s timeout)       |
+| `src/citations.ts`                | URL-normalised citation dedupe + model-citation validation                                |
+| `src/cli-path.ts`                 | Claude CLI resolution (`BLUEY_CLAUDE_CLI` → embedded `$bunfs` extract → SDK auto-detect)  |
+| `src/config.ts`                   | env config                                                                                |
+| `src/mock.ts`                     | `BLUEY_AGENT_MOCK=1` fake `query()` + fake search/scrape clients                          |
+| `src/entry-darwin-{arm64,x64}.ts` | compiled entrypoints that embed the per-arch Claude CLI binary                            |
 
 ## Security model
 
-- **Credentials** (`ANTHROPIC_API_KEY`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`) are
-  injected by Rust as environment variables from the OS keychain. They are never
-  written to the protocol; error messages name the missing *variable*, never a value.
+- **Credentials** (`ANTHROPIC_API_KEY` or the `ANTHROPIC_FOUNDRY_*` set,
+  `EXA_API_KEY`, `FIRECRAWL_API_KEY`) are injected by Rust as environment
+  variables from the OS keychain. They are never written to the protocol; error
+  messages name the missing _variable_, never a value.
+- **The Claude Code subprocess only sees the routing we decided.** `buildSubprocessEnv`
+  clears every `ANTHROPIC_*` / `CLAUDE_CODE_USE_FOUNDRY` provider variable from the
+  inherited environment and re-adds exactly one configuration (Anthropic direct _or_
+  Microsoft Foundry), so a stray `ANTHROPIC_BASE_URL` can never redirect the agent.
 - **No filesystem / shell / built-in tools for the model.** The SDK is run with
   `tools: []` (removes every built-in tool), `allowedTools` limited to the
   requested `mcp__bluey__*` tools, `disallowedTools` re-banning Bash/Read/Write/
@@ -47,7 +52,7 @@ Rust (Tauri v2) ── spawn per job, env-injected keys ──▶ bluey-agent (t
   project settings are loaded), `persistSession: false` (no transcript on disk).
 - **`document_read` never touches SQLite.** It emits a `document.request` event
   and waits (10 s) for Rust's `document.response`. Ids outside the job's
-  `allowedDocumentIds` are refused *without* emitting a request.
+  `allowedDocumentIds` are refused _without_ emitting a request.
 - **Citations can't be invented.** Every exa/firecrawl result observed during
   the run is recorded; the final citation list contains only URLs the tools
   actually returned. Model-chosen citations are kept (first, with their titles
@@ -61,10 +66,19 @@ Rust (Tauri v2) ── spawn per job, env-injected keys ──▶ bluey-agent (t
 Run (Rust → agent), one JSON object per line:
 
 ```jsonc
-{"id":1,"method":"research.run","params":{
-  "jobId":"job-1","query":"public search query","goal":"what the report must answer",
-  "maxTurns":12,"tools":["exa_search","firecrawl_scrape","document_read"],
-  "allowedDocumentIds":["doc-1"],"model":"claude-sonnet-5"}}
+{
+  "id": 1,
+  "method": "research.run",
+  "params": {
+    "jobId": "job-1",
+    "query": "public search query",
+    "goal": "what the report must answer",
+    "maxTurns": 12,
+    "tools": ["exa_search", "firecrawl_scrape", "document_read"],
+    "allowedDocumentIds": ["doc-1"],
+    "model": "claude-sonnet-5",
+  },
+}
 ```
 
 Agent → Rust:
@@ -96,26 +110,49 @@ Behaviour notes:
 - **stdin EOF ≠ cancel.** A running job continues to completion; cancellation is
   `research.cancel` or SIGTERM/SIGINT. (Shell pipes close stdin immediately.)
 - `research.failed.error.kind`: `"research"` for agent failures,
-  `"cancelled"` for cancellation, `"configuration"` for `missing_api_key`
-  (all valid `BlueyErrorKind`s).
-- Failure codes: `cancelled`, `missing_api_key`, `max_turns_exceeded`,
-  `budget_exceeded`, `structured_output_failed`, `agent_execution_failed`,
-  `agent_empty_report`, `agent_no_result`.
+  `"cancelled"` for cancellation, `"configuration"` for `missing_api_key` /
+  `invalid_configuration` (all valid `BlueyErrorKind`s).
+- Failure codes: `cancelled`, `missing_api_key`, `invalid_configuration`,
+  `max_turns_exceeded`, `budget_exceeded`, `structured_output_failed`,
+  `agent_execution_failed`, `agent_empty_report`, `agent_no_result`.
 - Envelope errors (`{id,error}`) use kind `"sidecar"`: `invalid_request`,
   `invalid_params`, `unknown_method`, `unknown_job`, `job_already_running`.
 - Malformed lines get `{"id":null,"error":{code:"invalid_request",…}}`.
 
 ## Environment
 
-| var | meaning | default |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Claude API key (required unless mock) | – |
-| `EXA_API_KEY` | required when `exa_search` is requested | – |
-| `FIRECRAWL_API_KEY` | required when `firecrawl_scrape` is requested | – |
-| `BLUEY_RESEARCH_MODEL` (or legacy `BLUEY_MODEL_RESEARCH`) | research model | `claude-sonnet-5` |
-| `BLUEY_AGENT_MAX_TURNS` | default max agent turns (request `maxTurns` overrides) | `12` |
-| `BLUEY_AGENT_MOCK` | `1`/`true` → mock mode (no network/model/CLI) | off |
-| `BLUEY_CLAUDE_CLI` | explicit path to the claude CLI binary (dev override) | auto |
+| var                                                       | meaning                                                             | default           |
+| --------------------------------------------------------- | ------------------------------------------------------------------- | ----------------- |
+| `ANTHROPIC_API_KEY`                                       | Claude API key — Anthropic direct (required unless Foundry or mock) | –                 |
+| `EXA_API_KEY`                                             | required when `exa_search` is requested                             | –                 |
+| `FIRECRAWL_API_KEY`                                       | required when `firecrawl_scrape` is requested                       | –                 |
+| `BLUEY_RESEARCH_MODEL` (or legacy `BLUEY_MODEL_RESEARCH`) | research model (a Foundry _deployment name_ when Foundry is on)     | `claude-sonnet-5` |
+| `BLUEY_AGENT_MAX_TURNS`                                   | default max agent turns (request `maxTurns` overrides)              | `12`              |
+| `BLUEY_AGENT_MOCK`                                        | `1`/`true` → mock mode (no network/model/CLI)                       | off               |
+| `BLUEY_CLAUDE_CLI`                                        | explicit path to the claude CLI binary (dev override)               | auto              |
+
+### Claude through Microsoft Foundry
+
+The Agent SDK drives Claude Code, which supports Foundry natively through
+environment variables (`src/config.ts` → `buildSubprocessEnv` in `src/agent.ts`).
+Everything below is handed to the Claude Code subprocess; the endpoint becomes
+`https://{resource}.services.ai.azure.com/anthropic` and every `model` is a Foundry
+**deployment name** (defaults to the model id, e.g. `claude-opus-5`).
+
+| var                                                                 | meaning                                                                                                             | default                                        |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `CLAUDE_CODE_USE_FOUNDRY`                                           | `1`/`true` → route through Microsoft Foundry                                                                        | off                                            |
+| `ANTHROPIC_FOUNDRY_RESOURCE`                                        | Foundry resource name                                                                                               | derived from `AZURE_FOUNDRY_ENDPOINT` hostname |
+| `ANTHROPIC_FOUNDRY_BASE_URL`                                        | full base URL (only used when no resource name is available; Claude Code rejects both)                              | –                                              |
+| `ANTHROPIC_FOUNDRY_API_KEY`                                         | Foundry resource key                                                                                                | `AZURE_FOUNDRY_API_KEY`                        |
+| `ANTHROPIC_FOUNDRY_AUTH_TOKEN`                                      | Entra ID bearer token (takes precedence over the key)                                                               | –                                              |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` / `…_SONNET_MODEL` / `…_HAIKU_MODEL` | pinned deployment names for the `opus` / `sonnet` / `haiku` aliases (Foundry has no startup model check — pin them) | Claude Code built-ins                          |
+
+Failure modes before the CLI is spawned: `invalid_configuration` (Foundry on but no
+resource / base URL) and `missing_api_key` naming `ANTHROPIC_FOUNDRY_API_KEY`.
+Current Claude ids on Foundry: `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`
+(Hosted on Azure or on Anthropic infrastructure); `claude-fable-5` / `-5-1` are preview,
+Anthropic-hosted only.
 
 ## Build & test
 
@@ -169,7 +206,11 @@ tool observed, and unobserved URLs are always dropped (by design).
   platform optional deps present (host-filtered by default — the build script
   uses `bun install --os darwin --cpu '*'`).
 - **Model availability.** The default `claude-sonnet-5` must be available to
-  the key; override per-request (`model`) or via `BLUEY_RESEARCH_MODEL`.
+  the key (on Foundry: deployed in the resource under that name); override
+  per-request (`model`) or via `BLUEY_RESEARCH_MODEL`.
+- **Claude only.** The Agent SDK talks the Anthropic Messages API (direct,
+  Bedrock, Vertex or Foundry); it cannot drive GPT models. GPT/embeddings/realtime
+  STT go through the Rust `azure_foundry` provider on the same Foundry resource.
 - The SDK spawns the CLI as a subprocess; first token latency includes that
   startup (~1 s). `usage.inputTokens` sums fresh + cache-created + cache-read
   input tokens of the main agent loop.

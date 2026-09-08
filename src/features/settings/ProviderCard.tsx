@@ -45,7 +45,11 @@ export function ProviderDialog({
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={!values.name.trim() || !values.baseUrl.trim()} onClick={() => onSave(values)}>
+          <Button
+            variant="primary"
+            disabled={!values.name.trim() || !values.baseUrl.trim()}
+            onClick={() => onSave(values)}
+          >
             Save
           </Button>
         </>
@@ -54,7 +58,11 @@ export function ProviderDialog({
       <div className="flex flex-col gap-3">
         <label className="flex flex-col gap-1 text-[12.5px] text-fg-muted">
           Name
-          <Input value={values.name} onChange={(e) => set({ name: e.target.value })} placeholder="My provider" />
+          <Input
+            value={values.name}
+            onChange={(e) => set({ name: e.target.value })}
+            placeholder="My provider"
+          />
         </label>
         <label className="flex flex-col gap-1 text-[12.5px] text-fg-muted">
           Kind
@@ -67,11 +75,20 @@ export function ProviderDialog({
         </label>
         <label className="flex flex-col gap-1 text-[12.5px] text-fg-muted">
           Base URL
-          <Input value={values.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} placeholder="https://my-resource.openai.azure.com" />
+          <Input
+            value={values.baseUrl}
+            onChange={(e) => set({ baseUrl: e.target.value })}
+            placeholder="https://my-resource.openai.azure.com"
+          />
         </label>
         <label className="flex flex-col gap-1 text-[12.5px] text-fg-muted">
-          API version (Azure legacy endpoint)
-          <Input value={values.apiVersion} onChange={(e) => set({ apiVersion: e.target.value })} placeholder="2024-10-21" />
+          API version — leave empty for the Foundry v1 endpoint; “preview” for v1 preview features; a date
+          (e.g. 2024-10-21) for the legacy endpoint
+          <Input
+            value={values.apiVersion}
+            onChange={(e) => set({ apiVersion: e.target.value })}
+            placeholder="(empty = v1)"
+          />
         </label>
         <label className="flex flex-col gap-1 text-[12.5px] text-fg-muted">
           Deployments — one `model=deployment` per line
@@ -80,7 +97,7 @@ export function ProviderDialog({
             onChange={(e) => set({ deployments: e.target.value })}
             rows={3}
             className="w-full rounded-control border border-border bg-bg-tile px-3 py-2 font-mono text-[12px] text-fg outline-none focus-visible:border-border-strong"
-            placeholder={"gpt-4.1=gpt-41-prod"}
+            placeholder={"gpt-6-astra=astra-prod"}
           />
         </label>
       </div>
@@ -125,11 +142,18 @@ export function ProviderCard({ provider, onEdit, onToggleEnabled }: ProviderCard
         <Button variant="ghost" size="sm" onClick={onEdit}>
           Edit
         </Button>
-        <Switch aria-label={`Enable ${provider.name}`} checked={provider.enabled} onCheckedChange={onToggleEnabled} />
+        <Switch
+          aria-label={`Enable ${provider.name}`}
+          checked={provider.enabled}
+          onCheckedChange={onToggleEnabled}
+        />
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
-        <SecretKeyField secretKey={SECRET_KEYS.providerApiKey(provider.id)} aria-label={`${provider.name} API key`} />
+        <SecretKeyField
+          secretKey={SECRET_KEYS.providerApiKey(provider.id)}
+          aria-label={`${provider.name} API key`}
+        />
         <div className="flex items-center gap-2">
           {result ? (
             result.ok ? (

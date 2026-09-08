@@ -51,7 +51,10 @@ export default function AudioTab() {
     setTesting(true);
     setPeak(null);
     try {
-      const result = await bluey.audio.testMicrophone({ deviceId: audio.microphoneDeviceId, durationMs: 2000 });
+      const result = await bluey.audio.testMicrophone({
+        deviceId: audio.microphoneDeviceId,
+        durationMs: 2000,
+      });
       setPeak(result.peakLevel);
     } catch (error) {
       console.warn("[audio] test failed", error);
@@ -64,7 +67,11 @@ export default function AudioTab() {
     <>
       <SectionHeader title="Audio" description="Choose how Bluey listens during sessions" />
 
-      <SettingRow icon={AudioLines} title="Audio source" description="What Bluey transcribes during a session.">
+      <SettingRow
+        icon={AudioLines}
+        title="Audio source"
+        description="What Bluey transcribes during a session."
+      >
         <Select
           aria-label="Audio source"
           value={audio.source}
@@ -86,7 +93,11 @@ export default function AudioTab() {
         />
       </SettingRow>
 
-      <SettingRow icon={Globe} title="Transcription language" description="Select the language you speak in meetings.">
+      <SettingRow
+        icon={Globe}
+        title="Transcription language"
+        description="Select the language you speak in meetings."
+      >
         <Select
           aria-label="Transcription language"
           value={audio.transcriptionLanguage}
@@ -95,7 +106,11 @@ export default function AudioTab() {
         />
       </SettingRow>
 
-      <SettingRow icon={UsersRound} title="Speaker identification" description="Label who is speaking (never fully certain).">
+      <SettingRow
+        icon={UsersRound}
+        title="Speaker identification"
+        description="Label who is speaking (never fully certain)."
+      >
         <Switch
           aria-label="Speaker identification"
           checked={audio.speakerIdentification}
@@ -103,11 +118,19 @@ export default function AudioTab() {
         />
       </SettingRow>
 
-      <SettingRow icon={Waves} title="Transcription provider" description="On-device Apple transcription or the cloud realtime model.">
+      <SettingRow
+        icon={Waves}
+        title="Transcription provider"
+        description="On-device Apple Speech, or cloud (MAI-Transcribe-1.5 over Voice Live)."
+      >
         <Select
           aria-label="Transcription provider"
           value={audio.transcriptionProvider}
-          onChange={(e) => void update({ audio: { transcriptionProvider: e.target.value as typeof audio.transcriptionProvider } })}
+          onChange={(e) =>
+            void update({
+              audio: { transcriptionProvider: e.target.value as typeof audio.transcriptionProvider },
+            })
+          }
           options={[
             { value: "apple", label: "Apple (on-device)" },
             { value: "cloud_realtime", label: "Cloud realtime" },
@@ -115,11 +138,17 @@ export default function AudioTab() {
         />
       </SettingRow>
 
-      <SettingRow icon={SlidersHorizontal} title="Voice activity sensitivity" description="Higher picks up quieter speech; lower ignores noise.">
+      <SettingRow
+        icon={SlidersHorizontal}
+        title="Voice activity sensitivity"
+        description="Higher picks up quieter speech; lower ignores noise."
+      >
         <Select
           aria-label="VAD sensitivity"
           value={audio.vadSensitivity}
-          onChange={(e) => void update({ audio: { vadSensitivity: e.target.value as typeof audio.vadSensitivity } })}
+          onChange={(e) =>
+            void update({ audio: { vadSensitivity: e.target.value as typeof audio.vadSensitivity } })
+          }
           options={[
             { value: "low", label: "Low" },
             { value: "medium", label: "Medium" },
@@ -130,7 +159,11 @@ export default function AudioTab() {
 
       <SectionHeader title="Audio check" description="Test your audio input before you hop into a call" />
 
-      <SettingRow icon={Mic} title="Microphone test" description={peak !== null ? `Peak level ${(peak * 100).toFixed(0)}%` : "Speak while the meter runs."}>
+      <SettingRow
+        icon={Mic}
+        title="Microphone test"
+        description={peak !== null ? `Peak level ${(peak * 100).toFixed(0)}%` : "Speak while the meter runs."}
+      >
         {testing ? <LevelMeter level={levels.microphone} aria-label="Microphone level" /> : null}
         <Button variant="secondary" onClick={() => void testMicrophone()} disabled={testing}>
           {testing ? "Listening…" : "Test Microphone"}

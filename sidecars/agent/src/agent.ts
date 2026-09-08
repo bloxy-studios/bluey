@@ -10,7 +10,9 @@
  *  - `permissionMode: "dontAsk"` denies anything not pre-approved, never prompts;
  *  - `cwd` is a fresh empty temp dir; `settingSources: []`, `persistSession: false`;
  *  - `env` REPLACES the subprocess environment (SDK semantics), so we pass a
- *    controlled copy with ANTHROPIC_API_KEY injected.
+ *    controlled copy with the model credentials injected (see
+ *    `buildSubprocessEnv`): ANTHROPIC_API_KEY for Anthropic direct, or the
+ *    CLAUDE_CODE_USE_FOUNDRY / ANTHROPIC_FOUNDRY_* set for Microsoft Foundry.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -22,7 +24,7 @@ import { z } from "zod";
 
 import { CitationStore } from "./citations";
 import { resolveClaudeCliPath } from "./cli-path";
-import type { AgentConfig } from "./config";
+import { checkModelCredentials, type AgentConfig } from "./config";
 import { createMockQueryFn } from "./mock";
 import {
   type DeepResearchRequest,
@@ -178,6 +180,59 @@ function toolFailure(err: unknown, label: string): TextToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
+// ── Subprocess environment ───────────────────────────────────────────────────
+
+/** Variables that select the Claude endpoint/credentials inside Claude Code. */
+const PROVIDER_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+] as const;
+
+/**
+ * Build the environment handed to the Claude Code subprocess. The SDK's `env`
+ * option REPLACES the child environment, so `baseEnv` (PATH, HOME, …) is kept
+ * and only the provider selection is rewritten from `config` — stray values
+ * (for example an `ANTHROPIC_BASE_URL` pointing somewhere else while Foundry is
+ * on, or both Foundry resource *and* base URL, which Claude Code rejects) are
+ * cleared first so the effective routing is exactly what `loadConfig` decided.
+ */
+export function buildSubprocessEnv(
+  baseEnv: Record<string, string | undefined>,
+  config: AgentConfig,
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
+    ...baseEnv,
+    CLAUDE_AGENT_SDK_CLIENT_APP: "bluey-agent/0.1.0",
+  };
+  for (const name of PROVIDER_ENV_VARS) delete env[name];
+
+  const foundry = config.foundry;
+  if (foundry) {
+    env["CLAUDE_CODE_USE_FOUNDRY"] = "1";
+    if (foundry.resource) env["ANTHROPIC_FOUNDRY_RESOURCE"] = foundry.resource;
+    else if (foundry.baseUrl) env["ANTHROPIC_FOUNDRY_BASE_URL"] = foundry.baseUrl;
+    if (foundry.authToken) env["ANTHROPIC_FOUNDRY_AUTH_TOKEN"] = foundry.authToken;
+    if (foundry.apiKey) env["ANTHROPIC_FOUNDRY_API_KEY"] = foundry.apiKey;
+    // Pin the alias → deployment mapping; without it Claude Code falls back to
+    // its built-in Foundry defaults, which may not be deployed in the resource.
+    if (foundry.opusModel) env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = foundry.opusModel;
+    if (foundry.sonnetModel) env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = foundry.sonnetModel;
+    if (foundry.haikuModel) env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = foundry.haikuModel;
+  } else if (config.anthropicApiKey) {
+    env["ANTHROPIC_API_KEY"] = config.anthropicApiKey;
+  }
+  return env;
+}
+
 // ── Job runner ───────────────────────────────────────────────────────────────
 
 export function startResearchJob(
@@ -243,7 +298,8 @@ export function startResearchJob(
       }
       const exa = client;
       handlers.exa_search = async (input) => {
-        if (!exa) return toolFailure(new ToolError("missing_api_key", "EXA_API_KEY is not set"), "exa_search");
+        if (!exa)
+          return toolFailure(new ToolError("missing_api_key", "EXA_API_KEY is not set"), "exa_search");
         const queryText = str(input["query"]) ?? "";
         try {
           const results = await exa.search({
@@ -290,7 +346,10 @@ export function startResearchJob(
         try {
           new URL(url); // validate before hitting the API
         } catch {
-          return toolFailure(new ToolError("invalid_response", `"${url}" is not a valid URL`), "firecrawl_scrape");
+          return toolFailure(
+            new ToolError("invalid_response", `"${url}" is not a valid URL`),
+            "firecrawl_scrape",
+          );
         }
         try {
           const page = await firecrawl.scrape(url);
@@ -383,12 +442,8 @@ export function startResearchJob(
       const structured = structuredOutputSchema.safeParse(m["structured_output"]);
       const fallbackText = str(m["result"]) ?? "";
       const parsedFallback = !structured.success ? tryParseReportJson(fallbackText) : undefined;
-      const report = structured.success
-        ? structured.data.report
-        : (parsedFallback?.report ?? fallbackText);
-      const modelCitations = structured.success
-        ? structured.data.citations
-        : parsedFallback?.citations;
+      const report = structured.success ? structured.data.report : (parsedFallback?.report ?? fallbackText);
+      const modelCitations = structured.success ? structured.data.citations : parsedFallback?.citations;
       if (!report.trim()) {
         emitFailed("agent_empty_report", "the agent finished without producing a report", "research");
         return;
@@ -442,9 +497,12 @@ export function startResearchJob(
     writer.event("research.started", { jobId, model });
 
     const usingInjectedQuery = Boolean(deps.queryFn) || config.mockMode;
-    if (!usingInjectedQuery && !config.anthropicApiKey) {
-      emitFailed("missing_api_key", "ANTHROPIC_API_KEY is not set — cannot run deep research", "configuration");
-      return;
+    if (!usingInjectedQuery) {
+      const problem = checkModelCredentials(config);
+      if (problem) {
+        emitFailed(problem.code, problem.message, "configuration");
+        return;
+      }
     }
 
     const handlersOrMissing = buildHandlers();
@@ -509,11 +567,7 @@ export function startResearchJob(
     tmpDir = mkdtempSync(join(tmpdir(), "bluey-agent-"));
 
     const baseEnv = deps.env ?? process.env;
-    const subprocessEnv: Record<string, string | undefined> = {
-      ...baseEnv,
-      CLAUDE_AGENT_SDK_CLIENT_APP: "bluey-agent/0.1.0",
-    };
-    if (config.anthropicApiKey) subprocessEnv["ANTHROPIC_API_KEY"] = config.anthropicApiKey;
+    const subprocessEnv = buildSubprocessEnv(baseEnv, config);
 
     const cliPath = resolveClaudeCliPath({
       embeddedClaudePath: deps.embeddedClaudePath,
@@ -549,9 +603,7 @@ export function startResearchJob(
 
     const queryFn: QueryFn =
       deps.queryFn ??
-      (config.mockMode
-        ? createMockQueryFn({ request, handlers })
-        : (params) => query(params));
+      (config.mockMode ? createMockQueryFn({ request, handlers }) : (params) => query(params));
 
     const prompt =
       `Research query: ${request.query}\n\n` +
@@ -567,7 +619,9 @@ export function startResearchJob(
         case "system":
           if (m["subtype"] === "init") {
             const initModel = str(m["model"]) ?? model;
-            const toolCount = Array.isArray(m["tools"]) ? (m["tools"] as unknown[]).length : activeToolNames.length;
+            const toolCount = Array.isArray(m["tools"])
+              ? (m["tools"] as unknown[]).length
+              : activeToolNames.length;
             progress(`agent session started (model ${initModel}, ${toolCount} tool(s))`);
           }
           break;

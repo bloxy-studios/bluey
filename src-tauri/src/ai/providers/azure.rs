@@ -1,7 +1,9 @@
-//! Azure OpenAI / Microsoft Foundry provider: v1 surface
-//! (`{base}/openai/v1/chat/completions`, `api-key` header) with the legacy
-//! dated form when `api_version` is configured; the wire protocol itself is
-//! OpenAI-compatible.
+//! Azure OpenAI / Microsoft Foundry provider: v1 GA surface
+//! (`{base}/openai/v1/chat/completions`, `api-key` header, no `api-version`).
+//! `api_version = "preview"` opts into v1 preview features; a *dated*
+//! `api_version` selects the legacy deployment-scoped form (see
+//! `bluey_protocols::azure`). The wire protocol itself is OpenAI-compatible and
+//! `model` is always the Foundry *deployment name*.
 
 use std::collections::BTreeMap;
 
@@ -12,14 +14,22 @@ use tokio_util::sync::CancellationToken;
 use super::openai::spawn_openai_sse;
 use super::{map_http_status, map_transport_error, AiProvider, ChunkStream, ProviderRequest};
 
-/// Common Azure OpenAI model names offered alongside the deployments map in
+/// Common Foundry model names offered alongside the deployments map in
 /// `ai_list_models` (deployments cannot be enumerated with a data-plane key).
+/// Deployment names default to the model id, so these work out of the box for
+/// standard deployments. Current OpenAI line-up on Foundry (Sep 2026):
+/// GPT‑6 Astra (frontier), GPT‑5.6 Sol / Terra / Luna (reasoning / balanced /
+/// fast), GPT‑5.5, GPT‑4.1 family, MAI-Transcribe-1.5 (Voice Live STT), and the
+/// text-embedding-3 models.
 const COMMON_MODELS: &[&str] = &[
-    "gpt-4o",
-    "gpt-4o-mini",
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
     "gpt-4.1",
     "gpt-4.1-mini",
-    "o3-mini",
+    "MAI-Transcribe-1.5",
     "text-embedding-3-small",
     "text-embedding-3-large",
 ];

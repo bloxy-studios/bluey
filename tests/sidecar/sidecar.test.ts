@@ -56,9 +56,7 @@ function makeHarness(options: Omit<StartSidecarOptions, "input" | "output"> = {}
       if (existing) return Promise.resolve(existing);
       return new Promise<Frame>((resolve, reject) => {
         const timer = setTimeout(() => {
-          reject(
-            new Error(`timed out waiting for ${label}; saw: ${JSON.stringify(frames, null, 2)}`),
-          );
+          reject(new Error(`timed out waiting for ${label}; saw: ${JSON.stringify(frames, null, 2)}`));
         }, 5_000);
         waiters.push({
           pred,
@@ -134,9 +132,7 @@ describe("sidecar end-to-end (mock mode)", () => {
     expect(started["jobId"]).toBe("job-1");
     expect(typeof started["model"]).toBe("string");
 
-    const toolCalls = harness
-      .eventsNamed("research.toolCall")
-      .map((f) => (f["data"] as Frame)["tool"]);
+    const toolCalls = harness.eventsNamed("research.toolCall").map((f) => (f["data"] as Frame)["tool"]);
     expect(toolCalls).toEqual(["exa_search", "firecrawl_scrape"]);
 
     // Deltas stream the same text as the final report
@@ -253,6 +249,85 @@ describe("sidecar configuration failures", () => {
     expect(error["code"]).toBe("missing_api_key");
     expect(error["message"]).toContain("EXA_API_KEY");
     expect(JSON.stringify(harness.frames)).not.toContain("sk-test-secret");
+    expect(await harness.done).toBe(0);
+  });
+
+  it("on Microsoft Foundry, fails with missing_api_key naming ANTHROPIC_FOUNDRY_API_KEY", async () => {
+    // stubKeys carries ANTHROPIC_API_KEY — an Anthropic-direct key is not a Foundry credential.
+    const harness = makeHarness({
+      env: { ...stubKeys, CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_RESOURCE: "my-res" },
+    });
+    harness.send(baseRun);
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    const error = (failed["data"] as Frame)["error"] as Frame;
+    expect(error["code"]).toBe("missing_api_key");
+    expect(error["kind"]).toBe("configuration");
+    expect(error["message"]).toContain("ANTHROPIC_FOUNDRY_API_KEY");
+    expect(error["message"]).not.toContain("ANTHROPIC_API_KEY is not set");
+    expect(JSON.stringify(harness.frames)).not.toContain("test-anthropic");
+    expect(await harness.done).toBe(0);
+  });
+
+  it("on Microsoft Foundry, fails with invalid_configuration when no resource/base URL is set", async () => {
+    const harness = makeHarness({
+      env: { CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_API_KEY: "foundry-secret", ...stubKeys },
+    });
+    harness.send(baseRun);
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    const error = (failed["data"] as Frame)["error"] as Frame;
+    expect(error["code"]).toBe("invalid_configuration");
+    expect(error["kind"]).toBe("configuration");
+    expect(error["message"]).toContain("ANTHROPIC_FOUNDRY_RESOURCE");
+    expect(JSON.stringify(harness.frames)).not.toContain("foundry-secret");
+    expect(await harness.done).toBe(0);
+  });
+});
+
+describe("sidecar Microsoft Foundry routing", () => {
+  it("hands Claude Code the Foundry variables and strips Anthropic-direct routing", async () => {
+    let seenEnv: Record<string, string | undefined> | undefined;
+    const capturingQueryFn: QueryFn = ({ options }) => {
+      seenEnv = options.env;
+      return hangingQueryFn({ prompt: "", options });
+    };
+    const harness = makeHarness({
+      env: {
+        ...stubKeys,
+        ANTHROPIC_BASE_URL: "https://my-res.services.ai.azure.com/api/projects/proj-default",
+        AZURE_FOUNDRY_ENDPOINT: "https://my-res.openai.azure.com",
+        AZURE_FOUNDRY_API_KEY: "shared-foundry-secret",
+        CLAUDE_CODE_USE_FOUNDRY: "1",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5",
+        BLUEY_RESEARCH_MODEL: "claude-opus-5",
+      },
+      deps: { queryFn: capturingQueryFn },
+    });
+    harness.send(baseRun);
+
+    const started = await harness.waitFor(isEvent("research.started"), "started");
+    expect((started["data"] as Frame)["model"]).toBe("claude-opus-5");
+    await harness.waitFor(isEvent("research.progress"), "agent session init");
+
+    expect(seenEnv).toBeDefined();
+    const env = seenEnv!;
+    expect(env["CLAUDE_CODE_USE_FOUNDRY"]).toBe("1");
+    // Derived from AZURE_FOUNDRY_ENDPOINT / AZURE_FOUNDRY_API_KEY (same Foundry resource).
+    expect(env["ANTHROPIC_FOUNDRY_RESOURCE"]).toBe("my-res");
+    expect(env["ANTHROPIC_FOUNDRY_API_KEY"]).toBe("shared-foundry-secret");
+    expect(env["ANTHROPIC_FOUNDRY_BASE_URL"]).toBeUndefined();
+    expect(env["ANTHROPIC_DEFAULT_OPUS_MODEL"]).toBe("claude-opus-5");
+    expect(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"]).toBe("claude-haiku-4-5");
+    // The stray project URL and the Anthropic-direct key never reach Claude Code.
+    expect(env["ANTHROPIC_BASE_URL"]).toBeUndefined();
+    expect(env["ANTHROPIC_API_KEY"]).toBeUndefined();
+    // Nothing secret on the wire.
+    expect(JSON.stringify(harness.frames)).not.toContain("shared-foundry-secret");
+
+    harness.send({ id: 2, method: "research.cancel", params: { jobId: "job-1" } });
+    await harness.waitFor(isEvent("research.failed"), "cancelled");
     expect(await harness.done).toBe(0);
   });
 });

@@ -1,5 +1,12 @@
-//! Realtime transcription WebSocket messages (OpenAI Realtime API shape, also
-//! served by Azure at `/openai/v1/realtime?intent=transcription`).
+//! OpenAI Realtime transcription WebSocket messages, also served by Azure at
+//! `/openai/v1/realtime?intent=transcription`.
+//!
+//! The `model` in `session.update` must be a *realtime-capable OpenAI STT
+//! model* (`gpt-realtime-whisper`, `gpt-4o-transcribe`,
+//! `gpt-4o-mini-transcribe`, `gpt-4o-transcribe-diarize`). Those deployments
+//! are often missing on Foundry. Microsoft's MAI-Transcribe models stream
+//! through Voice Live instead — see [`crate::voice_live`]. Incoming event
+//! names are shared, so [`parse_event`] and [`append_audio`] work on both.
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -35,7 +42,7 @@ pub fn session_update(model: &str, language: Option<&str>) -> Value {
 }
 
 /// Realtime `language` wants a primary tag (`en`), not a full BCP-47 (`en-US`).
-fn primary_language_tag(tag: &str) -> String {
+pub(crate) fn primary_language_tag(tag: &str) -> String {
     tag.split(['-', '_']).next().unwrap_or(tag).to_lowercase()
 }
 

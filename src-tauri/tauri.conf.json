@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.codewithabdul.bluey",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "bash scripts/ensure-sidecars.sh && bun run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"

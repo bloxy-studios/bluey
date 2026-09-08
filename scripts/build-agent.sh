@@ -81,7 +81,22 @@ build_target() {
   echo "  built $(du -h "$outfile" | cut -f1 | tr -d ' ') → $outfile"
 }
 
-build_target ./src/entry-darwin-arm64.ts bun-darwin-arm64 "$OUT_DIR/bluey-agent-aarch64-apple-darwin"
-build_target ./src/entry-darwin-x64.ts bun-darwin-x64 "$OUT_DIR/bluey-agent-x86_64-apple-darwin"
+if [[ "${1:-}" == "host" ]]; then
+    case "$(uname -m)" in
+        arm64)
+            build_target ./src/entry-darwin-arm64.ts bun-darwin-arm64 "$OUT_DIR/bluey-agent-aarch64-apple-darwin"
+            ;;
+        x86_64)
+            build_target ./src/entry-darwin-x64.ts bun-darwin-x64 "$OUT_DIR/bluey-agent-x86_64-apple-darwin"
+            ;;
+        *)
+            echo "error: unsupported host arch $(uname -m)" >&2
+            exit 1
+            ;;
+    esac
+else
+    build_target ./src/entry-darwin-arm64.ts bun-darwin-arm64 "$OUT_DIR/bluey-agent-aarch64-apple-darwin"
+    build_target ./src/entry-darwin-x64.ts bun-darwin-x64 "$OUT_DIR/bluey-agent-x86_64-apple-darwin"
+fi
 
 echo "✓ bluey-agent sidecar binaries built"

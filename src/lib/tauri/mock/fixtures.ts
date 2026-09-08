@@ -27,8 +27,26 @@ export const FIXTURE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
 export const FIXTURE_DISPLAYS: DisplayInfo[] = [
-  { id: "display-1", name: "Built-in Retina Display", width: 1512, height: 982, x: 0, y: 0, scaleFactor: 2, isMain: true },
-  { id: "display-2", name: "Studio Display", width: 2560, height: 1440, x: 1512, y: 0, scaleFactor: 2, isMain: false },
+  {
+    id: "display-1",
+    name: "Built-in Retina Display",
+    width: 1512,
+    height: 982,
+    x: 0,
+    y: 0,
+    scaleFactor: 2,
+    isMain: true,
+  },
+  {
+    id: "display-2",
+    name: "Studio Display",
+    width: 2560,
+    height: 1440,
+    x: 1512,
+    y: 0,
+    scaleFactor: 2,
+    isMain: false,
+  },
 ];
 
 export const FIXTURE_AUDIO_DEVICES: AudioDevice[] = [
@@ -156,7 +174,8 @@ const MODE_SEEDS: ModeSeed[] = [
   {
     id: "interview",
     name: "Interview",
-    description: "General job-interview support across behavioral, technical, product and role-fit questions.",
+    description:
+      "General job-interview support across behavioral, technical, product and role-fit questions.",
     icon: "graduation-cap",
     group: "Looking for work",
     schema: "suggested-response",
@@ -336,27 +355,26 @@ export function createDefaultSettings(): Settings {
           kind: "azure_foundry",
           name: "Azure Foundry",
           baseUrl: "https://bluey-dev.openai.azure.com",
-          apiVersion: "2024-10-21",
-          deployments: { "gpt-4.1": "gpt-41-prod", "gpt-4.1-mini": "gpt-41-mini-prod" },
+          deployments: { "gpt-6-astra": "astra-prod", "gpt-5.6-luna": "luna-prod" },
           enabled: true,
           hasApiKey: true,
         },
         {
           id: "anthropic",
           kind: "anthropic",
-          name: "Anthropic",
-          baseUrl: "https://api.anthropic.com",
+          name: "Claude (Foundry)",
+          baseUrl: "https://bluey-dev.services.ai.azure.com/anthropic",
           enabled: true,
           hasApiKey: false,
         },
       ],
       models: {
-        default: { providerId: "azure-foundry", model: "gpt-4.1" },
-        fast: { providerId: "azure-foundry", model: "gpt-4.1-mini" },
-        reasoning: { providerId: "azure-foundry", model: "o4-mini" },
-        vision: { providerId: "azure-foundry", model: "gpt-4.1" },
-        research: { providerId: "anthropic", model: "claude-sonnet-5" },
-        transcription: { providerId: "azure-foundry", model: "gpt-4o-mini-transcribe" },
+        default: { providerId: "azure-foundry", model: "gpt-5.6-terra" },
+        fast: { providerId: "azure-foundry", model: "gpt-5.6-luna" },
+        reasoning: { providerId: "azure-foundry", model: "gpt-6-astra" },
+        vision: { providerId: "azure-foundry", model: "gpt-6-astra" },
+        research: { providerId: "anthropic", model: "claude-opus-5" },
+        transcription: { providerId: "azure-foundry", model: "MAI-Transcribe-1.5" },
         embedding: { providerId: "azure-foundry", model: "text-embedding-3-small" },
       },
       responseLength: "balanced",
@@ -434,7 +452,13 @@ export function createSeedData(): SeedData {
     content: CANNED_ANSWER_MARKDOWN,
     prompt: "Solve the problem on my screen",
     confidence: 0.93,
-    metrics: { provider: "azure-foundry", model: "gpt-4.1", timeToFirstTokenMs: 412, totalMs: 3480, outputTokens: 236 },
+    metrics: {
+      provider: "azure-foundry",
+      model: "gpt-5.6-terra",
+      timeToFirstTokenMs: 412,
+      totalMs: 3480,
+      outputTokens: 236,
+    },
     createdAt: daysAgo(1, 12),
   };
 
@@ -442,13 +466,50 @@ export function createSeedData(): SeedData {
     sessions: [s1, s2],
     events: [
       ev("ev-1", s1.id, "session_started", "Session started", s1.startedAt),
-      ev("ev-2", s1.id, "coding_problem_detected", "Coding problem detected", daysAgo(1, 10), "Two Sum — return indices of two numbers adding to target", { snapshotId: "frame-fixture" }),
-      ev("ev-3", s1.id, "response_generated", "Response generated", daysAgo(1, 12), "Two Sum — hash map in one pass", { responseId: response1.id }),
-      ev("ev-4", s1.id, "note_added", "Note added", daysAgo(1, 20), "Remember to talk through complexity before coding."),
+      ev(
+        "ev-2",
+        s1.id,
+        "coding_problem_detected",
+        "Coding problem detected",
+        daysAgo(1, 10),
+        "Two Sum — return indices of two numbers adding to target",
+        { snapshotId: "frame-fixture" },
+      ),
+      ev(
+        "ev-3",
+        s1.id,
+        "response_generated",
+        "Response generated",
+        daysAgo(1, 12),
+        "Two Sum — hash map in one pass",
+        { responseId: response1.id },
+      ),
+      ev(
+        "ev-4",
+        s1.id,
+        "note_added",
+        "Note added",
+        daysAgo(1, 20),
+        "Remember to talk through complexity before coding.",
+      ),
       ev("ev-5", s1.id, "session_ended", "Session ended", s1.endedAt ?? s1.startedAt),
       ev("ev-6", s2.id, "session_started", "Session started", s2.startedAt),
-      ev("ev-7", s2.id, "decision_detected", "Decision", daysAgo(3, 18), "Ship the beta behind a feature flag on Thursday."),
-      ev("ev-8", s2.id, "action_item_detected", "Action item", daysAgo(3, 31), "Dana drafts the rollout announcement by Wednesday."),
+      ev(
+        "ev-7",
+        s2.id,
+        "decision_detected",
+        "Decision",
+        daysAgo(3, 18),
+        "Ship the beta behind a feature flag on Thursday.",
+      ),
+      ev(
+        "ev-8",
+        s2.id,
+        "action_item_detected",
+        "Action item",
+        daysAgo(3, 31),
+        "Dana drafts the rollout announcement by Wednesday.",
+      ),
       ev("ev-9", s2.id, "session_ended", "Session ended", s2.endedAt ?? s2.startedAt),
     ],
     notes: [
@@ -465,7 +526,8 @@ export function createSeedData(): SeedData {
         id: "summary-1",
         sessionId: s1.id,
         modeId: "coding-interview",
-        overview: "45-minute mock coding interview covering the Two Sum problem and a sorted-input follow-up.",
+        overview:
+          "45-minute mock coding interview covering the Two Sum problem and a sorted-input follow-up.",
         topics: ["Hash maps", "Two-pointer technique", "Complexity analysis"],
         questions: ["Solve Two Sum", "Optimize for a sorted array"],
         answers: ["One-pass hash map, O(n) time / O(n) space", "Two pointers, O(n) time / O(1) space"],
@@ -511,8 +573,16 @@ export function createSeedData(): SeedData {
 }
 
 export const FIXTURE_MODELS_BY_KIND: Record<string, string[]> = {
-  azure_foundry: ["gpt-4.1", "gpt-4.1-mini", "o4-mini", "gpt-4o-mini-transcribe", "text-embedding-3-small"],
-  anthropic: ["claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-6"],
+  azure_foundry: [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-4.1-mini",
+    "MAI-Transcribe-1.5",
+    "text-embedding-3-small",
+  ],
+  anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
   openai_compatible: ["llama-3.3-70b-instruct", "qwen2.5-coder-32b"],
   mock: ["mock-fast", "mock-smart"],
 };

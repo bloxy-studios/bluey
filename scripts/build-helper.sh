@@ -2,8 +2,8 @@
 # Build the Bluey native helper (Swift sidecar) for both macOS architectures
 # and install the binaries where Tauri's externalBin/sidecar lookup expects them:
 #
-#   src-tauri/binaries/bluey-helper-aarch64-apple-darwin
-#   src-tauri/binaries/bluey-helper-x86_64-apple-darwin
+#   ./scripts/build-helper.sh        # both macOS architectures (release / CI)
+#   ./scripts/build-helper.sh host   # this machine only (`tauri dev`)
 #
 # End users never need Swift — these binaries ship inside the .app bundle.
 # Developers building Bluey from source need Xcode (or the Command Line Tools)
@@ -81,8 +81,16 @@ build_one() {
     echo "==> installed $dest"
 }
 
-build_one "arm64" "aarch64-apple-darwin"
-build_one "x86_64" "x86_64-apple-darwin"
+if [[ "${1:-}" == "host" ]]; then
+    case "$(uname -m)" in
+        arm64)  build_one "arm64"  "aarch64-apple-darwin" ;;
+        x86_64) build_one "x86_64" "x86_64-apple-darwin" ;;
+        *) echo "error: unsupported host arch $(uname -m)" >&2; exit 1 ;;
+    esac
+else
+    build_one "arm64" "aarch64-apple-darwin"
+    build_one "x86_64" "x86_64-apple-darwin"
+fi
 
 echo "Done. Binaries:"
 ls -la "$OUT_DIR" | grep "$PRODUCT" || true

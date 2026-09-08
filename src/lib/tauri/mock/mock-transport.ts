@@ -56,7 +56,9 @@ import {
 
 const now = () => new Date().toISOString();
 
-function blueyError(partial: Partial<BlueyError> & Pick<BlueyError, "kind" | "code" | "message">): BlueyError {
+function blueyError(
+  partial: Partial<BlueyError> & Pick<BlueyError, "kind" | "code" | "message">,
+): BlueyError {
   return { recoverable: false, ...partial };
 }
 
@@ -178,11 +180,16 @@ export class MockTransport implements Transport {
   /* ── Transport interface ─────────────────────────────────────────────── */
 
   async invoke<K extends CommandName>(command: K, args: CommandArgs<K>): Promise<CommandResult<K>> {
-    const handler = this.handlers[command] as (a: CommandArgs<K>) => CommandResult<K> | Promise<CommandResult<K>>;
+    const handler = this.handlers[command] as (
+      a: CommandArgs<K>,
+    ) => CommandResult<K> | Promise<CommandResult<K>>;
     return await handler(args);
   }
 
-  async listen<K extends EventName>(event: K, handler: (payload: EventPayload<K>) => void): Promise<Unlisten> {
+  async listen<K extends EventName>(
+    event: K,
+    handler: (payload: EventPayload<K>) => void,
+  ): Promise<Unlisten> {
     let set = this.listeners.get(event);
     if (!set) {
       set = new Set();
@@ -245,7 +252,8 @@ export class MockTransport implements Transport {
 
   private mode(id: string): BlueyMode {
     const mode = this.modes.find((m) => m.id === id);
-    if (!mode) throw blueyError({ kind: "storage", code: "modes.not_found", message: `Mode ${id} not found` });
+    if (!mode)
+      throw blueyError({ kind: "storage", code: "modes.not_found", message: `Mode ${id} not found` });
     return mode;
   }
 
@@ -280,7 +288,11 @@ export class MockTransport implements Transport {
     };
   }
 
-  private pushSegment(text: string, speaker: string | undefined, source: "microphone" | "system"): TranscriptSegment {
+  private pushSegment(
+    text: string,
+    speaker: string | undefined,
+    source: "microphone" | "system",
+  ): TranscriptSegment {
     const startTime = this.segments.length * 4000;
     const segment: TranscriptSegment = {
       id: createId("seg"),
@@ -305,7 +317,11 @@ export class MockTransport implements Transport {
     const snapshot: ContextSnapshot = {
       timestamp: now(),
       activeApplication: { name: "Google Chrome", bundleId: "com.google.Chrome", pid: 4021 },
-      activeWindow: { title: "Two Sum — LeetCode", adapter: "chrome", hints: { url: "https://leetcode.com/problems/two-sum" } },
+      activeWindow: {
+        title: "Two Sum — LeetCode",
+        adapter: "chrome",
+        hints: { url: "https://leetcode.com/problems/two-sum" },
+      },
       timings: { capture: 84, ocr: 128, accessibility: 22, assembly: 41 },
     };
     if (opts.includeScreen) {
@@ -320,7 +336,13 @@ export class MockTransport implements Transport {
     }
     if (opts.includeOcr) {
       snapshot.ocr = {
-        blocks: [{ text: CODING_PROBLEM_OCR, confidence: 0.97, boundingBox: { x: 220, y: 140, width: 1050, height: 680 } }],
+        blocks: [
+          {
+            text: CODING_PROBLEM_OCR,
+            confidence: 0.97,
+            boundingBox: { x: 220, y: 140, width: 1050, height: 680 },
+          },
+        ],
         text: CODING_PROBLEM_OCR,
         level: opts.ocrLevel ?? "accurate",
         languages: ["en-US"],
@@ -349,7 +371,11 @@ export class MockTransport implements Transport {
     const channel = args.onChunk as MockStreamChannel<AIChunk>;
     const startedAt = Date.now();
 
-    this.emit("ai.requested", { requestId: request.requestId, task: request.task, sessionId: request.sessionId });
+    this.emit("ai.requested", {
+      requestId: request.requestId,
+      task: request.task,
+      sessionId: request.sessionId,
+    });
 
     if (this.nextAiFailure) {
       const code = this.nextAiFailure;
@@ -369,7 +395,7 @@ export class MockTransport implements Transport {
     const selection = {
       providerId: "azure-foundry",
       providerKind: "azure_foundry" as const,
-      model: request.task === "coding" ? "gpt-4.1" : "gpt-4.1-mini",
+      model: request.task === "coding" ? "gpt-5.6-terra" : "gpt-5.6-luna",
       role: "default" as const,
       reason: "mock router",
     };
@@ -377,7 +403,11 @@ export class MockTransport implements Transport {
     this.setAppState({ state: "thinking" });
     await this.delay(this.streamDelayMs * 6);
     channel.push({ type: "started", requestId: request.requestId, selection });
-    this.emit("ai.started", { requestId: request.requestId, provider: selection.providerId, model: selection.model });
+    this.emit("ai.started", {
+      requestId: request.requestId,
+      provider: selection.providerId,
+      model: selection.model,
+    });
 
     const hasHistory = request.messages.some((m) => m.role === "assistant");
     const body = hasHistory ? CANNED_FOLLOW_UP_MARKDOWN : CANNED_ANSWER_MARKDOWN;
@@ -403,7 +433,12 @@ export class MockTransport implements Transport {
       if (!/^\s+$/.test(word)) await this.delay(this.streamDelayMs);
     }
 
-    channel.push({ type: "usage", requestId: request.requestId, inputTokens: 2130, outputTokens: words.length });
+    channel.push({
+      type: "usage",
+      requestId: request.requestId,
+      inputTokens: 2130,
+      outputTokens: words.length,
+    });
     const totalMs = Date.now() - startedAt;
     channel.push({
       type: "completed",
@@ -413,7 +448,14 @@ export class MockTransport implements Transport {
       timeToFirstTokenMs: firstToken,
     });
     this.emit("ai.completed", { requestId: request.requestId, totalMs, timeToFirstTokenMs: firstToken });
-    this.metrics = { ...this.metrics, modelMs: totalMs, totalResponseMs: totalMs + 220, timeToFirstTokenMs: firstToken, outputTokens: words.length, updatedAt: now() };
+    this.metrics = {
+      ...this.metrics,
+      modelMs: totalMs,
+      totalResponseMs: totalMs + 220,
+      timeToFirstTokenMs: firstToken,
+      outputTokens: words.length,
+      updatedAt: now(),
+    };
     this.emit("dev.metrics", this.metrics);
     this.setAppState({ state: "response_ready" });
   }
@@ -505,9 +547,9 @@ export class MockTransport implements Transport {
     app_get_status: () => this.status,
     app_pause: () => this.setAppState({ state: "paused", resumeState: this.status.state }),
     app_resume: () => this.setAppState({ state: this.status.resumeState ?? "ready", resumeState: undefined }),
-    app_recover: () => this.setAppState({ state: this.status.audioActive ? "listening" : "ready", error: undefined }),
-    app_dismiss_response: () =>
-      this.setAppState({ state: this.status.audioActive ? "listening" : "ready" }),
+    app_recover: () =>
+      this.setAppState({ state: this.status.audioActive ? "listening" : "ready", error: undefined }),
+    app_dismiss_response: () => this.setAppState({ state: this.status.audioActive ? "listening" : "ready" }),
     app_get_dev_info: () => ({
       version: "0.1.0-dev",
       buildProfile: "debug" as const,
@@ -523,7 +565,10 @@ export class MockTransport implements Transport {
         id: "screen" as const,
         label: "Screen recording",
         ok: this.permissions.screenRecording === "granted",
-        detail: this.permissions.screenRecording === "granted" ? "Bluey can capture your screen." : "Screen Recording permission is not granted.",
+        detail:
+          this.permissions.screenRecording === "granted"
+            ? "Bluey can capture your screen."
+            : "Screen Recording permission is not granted.",
         fix: "Grant Screen Recording in System Settings → Privacy & Security.",
         recovery: { type: "open_system_settings" as const, pane: "screenRecording" as const },
       },
@@ -531,25 +576,38 @@ export class MockTransport implements Transport {
         id: "microphone" as const,
         label: "Microphone",
         ok: this.permissions.microphone === "granted",
-        detail: this.permissions.microphone === "granted" ? "Microphone access is granted." : "Microphone permission is not granted.",
+        detail:
+          this.permissions.microphone === "granted"
+            ? "Microphone access is granted."
+            : "Microphone permission is not granted.",
         recovery: { type: "open_system_settings" as const, pane: "microphone" as const },
       },
       {
         id: "accessibility" as const,
         label: "Accessibility",
         ok: this.permissions.accessibility === "granted",
-        detail: this.permissions.accessibility === "granted" ? "Bluey can read on-screen structure." : "Accessibility permission is not granted.",
+        detail:
+          this.permissions.accessibility === "granted"
+            ? "Bluey can read on-screen structure."
+            : "Accessibility permission is not granted.",
         recovery: { type: "open_system_settings" as const, pane: "accessibility" as const },
       },
       {
         id: "ai" as const,
         label: "AI provider",
         ok: this.settings.ai.providers.some((p) => p.enabled && p.hasApiKey),
-        detail: this.settings.ai.providers.some((p) => p.enabled && p.hasApiKey) ? "A provider with a stored key is configured." : "No enabled provider has an API key.",
+        detail: this.settings.ai.providers.some((p) => p.enabled && p.hasApiKey)
+          ? "A provider with a stored key is configured."
+          : "No enabled provider has an API key.",
         recovery: { type: "open_settings" as const, tab: "ai" },
       },
       { id: "helper" as const, label: "Native helper", ok: true, detail: "Helper is running (mock)." },
-      { id: "systemAudio" as const, label: "System audio", ok: true, detail: "System audio tap available (mock)." },
+      {
+        id: "systemAudio" as const,
+        label: "System audio",
+        ok: true,
+        detail: "System audio tap available (mock).",
+      },
     ],
     app_quit: () => {
       this.log("info", "app", "quit requested (ignored in mock)");
@@ -609,7 +667,12 @@ export class MockTransport implements Transport {
     },
     capture_read_frame: (args) => {
       const data = this.frames.get(args.frameId);
-      if (!data) throw blueyError({ kind: "capture", code: "capture.frame_not_found", message: `Frame ${args.frameId} not found` });
+      if (!data)
+        throw blueyError({
+          kind: "capture",
+          code: "capture.frame_not_found",
+          message: `Frame ${args.frameId} not found`,
+        });
       return data;
     },
     capture_discard_frame: (args) => {
@@ -629,7 +692,13 @@ export class MockTransport implements Transport {
 
     // OCR / accessibility
     ocr_recognize: (args) => ({
-      blocks: [{ text: CODING_PROBLEM_OCR, confidence: 0.97, boundingBox: { x: 220, y: 140, width: 1050, height: 680 } }],
+      blocks: [
+        {
+          text: CODING_PROBLEM_OCR,
+          confidence: 0.97,
+          boundingBox: { x: 220, y: 140, width: 1050, height: 680 },
+        },
+      ],
       text: CODING_PROBLEM_OCR,
       level: args.level ?? "accurate",
       languages: args.languages ?? ["en-US"],
@@ -652,7 +721,10 @@ export class MockTransport implements Transport {
     // Audio / transcript
     audio_list_devices: () => FIXTURE_AUDIO_DEVICES,
     audio_start: (args) => {
-      const device = FIXTURE_AUDIO_DEVICES.find((d) => d.id === (args?.config?.microphone?.deviceId ?? this.settings.audio.microphoneDeviceId)) ?? FIXTURE_AUDIO_DEVICES[0];
+      const device =
+        FIXTURE_AUDIO_DEVICES.find(
+          (d) => d.id === (args?.config?.microphone?.deviceId ?? this.settings.audio.microphoneDeviceId),
+        ) ?? FIXTURE_AUDIO_DEVICES[0];
       this.audio = {
         state: "running",
         microphoneActive: true,
@@ -663,7 +735,10 @@ export class MockTransport implements Transport {
         levels: { microphone: 0.1, system: 0.05 },
       };
       this.emit("audio.started", this.audio);
-      this.setAppState({ audioActive: true, state: this.status.state === "ready" ? "listening" : this.status.state });
+      this.setAppState({
+        audioActive: true,
+        state: this.status.state === "ready" ? "listening" : this.status.state,
+      });
       if (this.levelTicks && this.streamDelayMs > 0 && !this.levelTimer) {
         this.levelTimer = setInterval(() => {
           const mic = Math.max(0, Math.min(1, 0.25 + Math.random() * 0.5));
@@ -680,7 +755,10 @@ export class MockTransport implements Transport {
       }
       this.audio = { state: "stopped", microphoneActive: false, systemAudioActive: false };
       this.emit("audio.stopped", this.audio);
-      this.setAppState({ audioActive: false, state: this.status.state === "listening" ? "ready" : this.status.state });
+      this.setAppState({
+        audioActive: false,
+        state: this.status.state === "listening" ? "ready" : this.status.state,
+      });
       return this.audio;
     },
     audio_pause: () => {
@@ -714,7 +792,10 @@ export class MockTransport implements Transport {
       return list;
     },
     transcript_recent: (args) => {
-      const cutoff = this.segments.length > 0 ? (this.segments[this.segments.length - 1]?.endTime ?? 0) - args.windowSeconds * 1000 : 0;
+      const cutoff =
+        this.segments.length > 0
+          ? (this.segments[this.segments.length - 1]?.endTime ?? 0) - args.windowSeconds * 1000
+          : 0;
       return this.segments.filter((s) => s.endTime >= cutoff);
     },
     transcript_clear: (args) => {
@@ -742,7 +823,8 @@ export class MockTransport implements Transport {
       const count = this.cancelled.size;
       return count;
     },
-    ai_embed: (args) => args.texts.map((text) => Array.from({ length: 8 }, (_, i) => ((text.length * (i + 3)) % 97) / 97)),
+    ai_embed: (args) =>
+      args.texts.map((text) => Array.from({ length: 8 }, (_, i) => ((text.length * (i + 3)) % 97) / 97)),
     ai_test_connection: async (args) => {
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
       await this.delay(this.streamDelayMs * 8);
@@ -750,7 +832,13 @@ export class MockTransport implements Transport {
         return {
           ok: false,
           providerId: args.providerId,
-          error: blueyError({ kind: "configuration", code: "ai.unknown_provider", message: "Provider is not configured.", recoverable: true, recovery: { type: "configure_provider" } }),
+          error: blueyError({
+            kind: "configuration",
+            code: "ai.unknown_provider",
+            message: "Provider is not configured.",
+            recoverable: true,
+            recovery: { type: "configure_provider" },
+          }),
         };
       }
       if (!provider.hasApiKey) {
@@ -758,10 +846,16 @@ export class MockTransport implements Transport {
           ok: false,
           providerId: provider.id,
           model: args.model,
-          error: blueyError({ kind: "configuration", code: "ai.missing_key", message: "No API key stored for this provider.", recoverable: true, recovery: { type: "configure_provider" } }),
+          error: blueyError({
+            kind: "configuration",
+            code: "ai.missing_key",
+            message: "No API key stored for this provider.",
+            recoverable: true,
+            recovery: { type: "configure_provider" },
+          }),
         };
       }
-      return { ok: true, providerId: provider.id, model: args.model ?? "gpt-4.1", latencyMs: 132 };
+      return { ok: true, providerId: provider.id, model: args.model ?? "gpt-5.6-terra", latencyMs: 132 };
     },
     ai_list_models: (args) => {
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
@@ -770,10 +864,27 @@ export class MockTransport implements Transport {
 
     // Research
     research_search: (args) => [
-      { id: "sr-1", title: `Result for "${args.query}"`, url: "https://example.com/1", snippet: "Fixture search result.", source: "mock" as const },
-      { id: "sr-2", title: "Second fixture result", url: "https://example.com/2", snippet: "More fixture context.", source: "mock" as const },
+      {
+        id: "sr-1",
+        title: `Result for "${args.query}"`,
+        url: "https://example.com/1",
+        snippet: "Fixture search result.",
+        source: "mock" as const,
+      },
+      {
+        id: "sr-2",
+        title: "Second fixture result",
+        url: "https://example.com/2",
+        snippet: "More fixture context.",
+        source: "mock" as const,
+      },
     ],
-    research_scrape: (args) => ({ url: args.url, title: "Fixture page", markdown: "# Fixture page\n\nScraped content (mock).", source: "mock" as const }),
+    research_scrape: (args) => ({
+      url: args.url,
+      title: "Fixture page",
+      markdown: "# Fixture page\n\nScraped content (mock).",
+      source: "mock" as const,
+    }),
     research_deep_start: async (args) => {
       const jobId = args.request.jobId;
       this.emit("research.event", { type: "started", jobId });
@@ -826,7 +937,12 @@ export class MockTransport implements Transport {
     },
     modes_delete: (args) => {
       const mode = this.mode(args.id);
-      if (mode.builtIn) throw blueyError({ kind: "configuration", code: "modes.built_in", message: "Built-in modes cannot be deleted." });
+      if (mode.builtIn)
+        throw blueyError({
+          kind: "configuration",
+          code: "modes.built_in",
+          message: "Built-in modes cannot be deleted.",
+        });
       this.modes = this.modes.filter((m) => m.id !== args.id);
       if (this.status.modeId === args.id) this.setAppState({ modeId: this.settings.general.defaultModeId });
       this.emit("modes.changed", this.modes);
@@ -858,7 +974,12 @@ export class MockTransport implements Transport {
     },
     modes_reset_built_in: (args) => {
       const original = createBuiltInModes().find((m) => m.id === args.id);
-      if (!original) throw blueyError({ kind: "configuration", code: "modes.not_built_in", message: "Not a built-in mode." });
+      if (!original)
+        throw blueyError({
+          kind: "configuration",
+          code: "modes.not_built_in",
+          message: "Not a built-in mode.",
+        });
       const reset: BlueyMode = { ...original, updatedAt: now() };
       this.modes = this.modes.map((m) => (m.id === args.id ? reset : m));
       this.emit("modes.changed", this.modes);
@@ -911,10 +1032,17 @@ export class MockTransport implements Transport {
     },
     sessions_get: (args) => {
       const session = this.sessions.find((s) => s.id === args.id);
-      if (!session) throw blueyError({ kind: "storage", code: "sessions.not_found", message: `Session ${args.id} not found` });
+      if (!session)
+        throw blueyError({
+          kind: "storage",
+          code: "sessions.not_found",
+          message: `Session ${args.id} not found`,
+        });
       return {
         session,
-        events: this.events.filter((e) => e.sessionId === session.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+        events: this.events
+          .filter((e) => e.sessionId === session.id)
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
         notes: this.notes.filter((n) => n.sessionId === session.id),
         summary: this.summaries.find((s) => s.sessionId === session.id),
         responses: this.responses.filter((r) => r.sessionId === session.id),
@@ -930,7 +1058,9 @@ export class MockTransport implements Transport {
           if (args.query.to && s.startedAt > args.query.to) return false;
           if (!text) return true;
           const inTitle = (s.title ?? "").toLowerCase().includes(text);
-          const inEvents = this.events.some((e) => e.sessionId === s.id && `${e.title} ${e.detail ?? ""}`.toLowerCase().includes(text));
+          const inEvents = this.events.some(
+            (e) => e.sessionId === s.id && `${e.title} ${e.detail ?? ""}`.toLowerCase().includes(text),
+          );
           return inTitle || inEvents;
         })
         .map((s) => this.sessionListItem(s, text ? `…${text}…` : undefined));
@@ -953,7 +1083,12 @@ export class MockTransport implements Transport {
     },
     sessions_rename: (args) => {
       const session = this.sessions.find((s) => s.id === args.id);
-      if (!session) throw blueyError({ kind: "storage", code: "sessions.not_found", message: `Session ${args.id} not found` });
+      if (!session)
+        throw blueyError({
+          kind: "storage",
+          code: "sessions.not_found",
+          message: `Session ${args.id} not found`,
+        });
       const updated = { ...session, title: args.title };
       this.replaceSession(updated);
       return updated;
@@ -975,7 +1110,13 @@ export class MockTransport implements Transport {
     },
     sessions_list_events: (args) => this.events.filter((e) => e.sessionId === args.sessionId),
     sessions_add_note: (args) => {
-      const note: SessionNote = { id: createId("note"), sessionId: args.sessionId, content: args.content, createdAt: now(), updatedAt: now() };
+      const note: SessionNote = {
+        id: createId("note"),
+        sessionId: args.sessionId,
+        content: args.content,
+        createdAt: now(),
+        updatedAt: now(),
+      };
       this.notes = [...this.notes, note];
       return note;
     },
@@ -1001,7 +1142,12 @@ export class MockTransport implements Transport {
     },
     responses_get: (args) => {
       const response = this.responses.find((r) => r.id === args.id);
-      if (!response) throw blueyError({ kind: "storage", code: "responses.not_found", message: `Response ${args.id} not found` });
+      if (!response)
+        throw blueyError({
+          kind: "storage",
+          code: "responses.not_found",
+          message: `Response ${args.id} not found`,
+        });
       return response;
     },
     responses_feedback: (args) => {
@@ -1019,7 +1165,13 @@ export class MockTransport implements Transport {
       }
       const updated: BlueyResponse = {
         ...response,
-        feedback: { responseId: args.responseId, rating: args.rating, categories: args.categories, comment: args.comment, createdAt: now() },
+        feedback: {
+          responseId: args.responseId,
+          rating: args.rating,
+          categories: args.categories,
+          comment: args.comment,
+          createdAt: now(),
+        },
       };
       this.responses = this.responses.map((r) => (r.id === args.responseId ? updated : r));
       return updated;
@@ -1032,7 +1184,8 @@ export class MockTransport implements Transport {
     documents_add: (args) => {
       const input = args.input;
       const fromPath = input.path?.split("/").pop();
-      const format = input.format ?? (fromPath?.split(".").pop() as BlueyDocument["format"] | undefined) ?? "text";
+      const format =
+        input.format ?? (fromPath?.split(".").pop() as BlueyDocument["format"] | undefined) ?? "text";
       const doc: BlueyDocument = {
         id: createId("doc"),
         title: input.title ?? fromPath ?? "Untitled document",
@@ -1050,7 +1203,9 @@ export class MockTransport implements Transport {
       };
       this.documents = [...this.documents, doc];
       if (input.scope === "mode" && input.scopeId) {
-        this.modes = this.modes.map((m) => (m.id === input.scopeId ? { ...m, attachedDocumentIds: [...m.attachedDocumentIds, doc.id] } : m));
+        this.modes = this.modes.map((m) =>
+          m.id === input.scopeId ? { ...m, attachedDocumentIds: [...m.attachedDocumentIds, doc.id] } : m,
+        );
         this.emit("modes.changed", this.modes);
       }
       return doc;
@@ -1063,14 +1218,21 @@ export class MockTransport implements Transport {
     },
     documents_get: (args) => {
       const doc = this.documents.find((d) => d.id === args.id);
-      if (!doc) throw blueyError({ kind: "storage", code: "documents.not_found", message: `Document ${args.id} not found` });
+      if (!doc)
+        throw blueyError({
+          kind: "storage",
+          code: "documents.not_found",
+          message: `Document ${args.id} not found`,
+        });
       return doc;
     },
     documents_get_text: () => "Fixture document text (mock).",
     documents_delete: (args) => {
       this.documents = this.documents.filter((d) => d.id !== args.id);
       this.modes = this.modes.map((m) =>
-        m.attachedDocumentIds.includes(args.id) ? { ...m, attachedDocumentIds: m.attachedDocumentIds.filter((id) => id !== args.id) } : m,
+        m.attachedDocumentIds.includes(args.id)
+          ? { ...m, attachedDocumentIds: m.attachedDocumentIds.filter((id) => id !== args.id) }
+          : m,
       );
       this.emit("modes.changed", this.modes);
     },
@@ -1090,7 +1252,10 @@ export class MockTransport implements Transport {
         scope: doc.scope,
       })),
     documents_reindex: () => this.documents.length,
-    documents_pick_files: () => ["/Users/jordan/Documents/Portfolio.pdf", "/Users/jordan/Documents/Project notes.md"],
+    documents_pick_files: () => [
+      "/Users/jordan/Documents/Portfolio.pdf",
+      "/Users/jordan/Documents/Project notes.md",
+    ],
 
     // Settings & secrets
     settings_get: () => this.settings,
@@ -1110,7 +1275,9 @@ export class MockTransport implements Transport {
           ...this.settings,
           ai: {
             ...this.settings.ai,
-            providers: this.settings.ai.providers.map((p) => (p.id === match[1] ? { ...p, hasApiKey: true } : p)),
+            providers: this.settings.ai.providers.map((p) =>
+              p.id === match[1] ? { ...p, hasApiKey: true } : p,
+            ),
           },
         };
         this.emitSettings();
@@ -1143,9 +1310,15 @@ export class MockTransport implements Transport {
       if (system.includes(args.accelerator)) {
         return { accelerator: args.accelerator, conflictsWith: "system", detail: "Reserved by macOS." };
       }
-      const clash = this.settings.shortcuts.find((s) => s.accelerator === args.accelerator && s.id !== args.ignoreId);
+      const clash = this.settings.shortcuts.find(
+        (s) => s.accelerator === args.accelerator && s.id !== args.ignoreId,
+      );
       if (clash) {
-        return { accelerator: args.accelerator, conflictsWith: "bluey", detail: `Already used by “${clash.label}”.` };
+        return {
+          accelerator: args.accelerator,
+          conflictsWith: "bluey",
+          detail: `Already used by “${clash.label}”.`,
+        };
       }
       return null;
     },
@@ -1166,7 +1339,8 @@ export class MockTransport implements Transport {
     },
     panel_set_position: (args) => this.setPanel({ x: args.x, y: args.y }),
     panel_resize: (args) => this.setPanel({ width: args.width, height: args.height }),
-    panel_set_expanded: (args) => this.setPanel({ expanded: args.expanded, height: args.height ?? (args.expanded ? 480 : 108) }),
+    panel_set_expanded: (args) =>
+      this.setPanel({ expanded: args.expanded, height: args.height ?? (args.expanded ? 480 : 108) }),
     panel_set_opacity: (args) => this.setPanel({ opacity: args.opacity }),
     panel_set_pinned: (args) => this.setPanel({ pinned: args.pinned }),
     panel_get_state: () => this.panel,
@@ -1228,9 +1402,18 @@ export class MockTransport implements Transport {
     },
     data_export_session: (args) => {
       const detail = this.sessions.find((s) => s.id === args.sessionId);
-      if (!detail) throw blueyError({ kind: "storage", code: "sessions.not_found", message: `Session ${args.sessionId} not found` });
+      if (!detail)
+        throw blueyError({
+          kind: "storage",
+          code: "sessions.not_found",
+          message: `Session ${args.sessionId} not found`,
+        });
       if (args.format === "json") {
-        return JSON.stringify({ session: detail, events: this.events.filter((e) => e.sessionId === detail.id) }, null, 2);
+        return JSON.stringify(
+          { session: detail, events: this.events.filter((e) => e.sessionId === detail.id) },
+          null,
+          2,
+        );
       }
       const lines = [
         `# ${detail.title ?? "Bluey session"}`,
@@ -1239,10 +1422,14 @@ export class MockTransport implements Transport {
         `Started: ${detail.startedAt}`,
         "",
         "## Timeline",
-        ...this.events.filter((e) => e.sessionId === detail.id).map((e) => `- **${e.title}**${e.detail ? ` — ${e.detail}` : ""}`),
+        ...this.events
+          .filter((e) => e.sessionId === detail.id)
+          .map((e) => `- **${e.title}**${e.detail ? ` — ${e.detail}` : ""}`),
         "",
         "## Responses",
-        ...this.responses.filter((r) => r.sessionId === detail.id).flatMap((r) => [`### ${r.title ?? "Response"}`, "", r.content, ""]),
+        ...this.responses
+          .filter((r) => r.sessionId === detail.id)
+          .flatMap((r) => [`### ${r.title ?? "Response"}`, "", r.content, ""]),
       ];
       return lines.join("\n");
     },
@@ -1259,7 +1446,8 @@ export class MockTransport implements Transport {
 
   private requireActiveSession(): Session {
     const session = this.sessions.find((s) => s.id === this.status.sessionId);
-    if (!session) throw blueyError({ kind: "storage", code: "sessions.no_active", message: "No active session" });
+    if (!session)
+      throw blueyError({ kind: "storage", code: "sessions.no_active", message: "No active session" });
     return session;
   }
 
