@@ -121,7 +121,7 @@ export default function AudioTab() {
       <SettingRow
         icon={Waves}
         title="Transcription provider"
-        description="On-device Apple Speech, or cloud (MAI-Transcribe-1.5 over Voice Live)."
+        description="Gemini Live (your Google AI Studio key, falls back to Apple without one), on-device Apple Speech, or Foundry Voice Live (MAI-Transcribe)."
       >
         <Select
           aria-label="Transcription provider"
@@ -132,8 +132,9 @@ export default function AudioTab() {
             })
           }
           options={[
+            { value: "gemini_live", label: "Gemini Live (cloud)" },
             { value: "apple", label: "Apple (on-device)" },
-            { value: "cloud_realtime", label: "Cloud realtime" },
+            { value: "cloud_realtime", label: "Foundry Voice Live (cloud)" },
           ]}
         />
       </SettingRow>

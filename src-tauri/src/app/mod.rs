@@ -187,6 +187,7 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         storage.clone(),
         sessions.clone(),
         modes.clone(),
+        secrets.clone(),
     ));
     audio.start_listener();
 

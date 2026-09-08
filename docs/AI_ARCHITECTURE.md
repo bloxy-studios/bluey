@@ -94,7 +94,16 @@ visionRequired, preferredRole)` over the user's role assignments
 
 ### Transcription providers (`TranscriptionProvider` trait)
 
-- `apple` (default) — on-device `SFSpeechRecognizer` inside the helper; partial/final events.
+`src-tauri/src/transcription/`: `TranscriptionProvider::open(options, sink) → TranscriptionSession`
+(`push_audio(PcmChunk)`, `close()`), one session per audio source. The audio manager forwards the
+helper's PCM16 16 kHz chunks and maps `Interim` / `Final` / `Failed` events back onto transcript
+segments; a provider that cannot run falls back to Apple with `audio.error{stt_fallback}`.
+
+- `gemini_live` (**default**) — Gemini Live API, `gemini-3.5-transcribe-live`, with the Google AI
+  Studio key from `provider:gemini:api_key`. Session rotation at 9 min 30 s / `goAway` with a
+  2 s drain and final dedupe; `audioStreamEnd` after 500 ms of silence; configuration errors
+  map to `config.api_key_invalid` / `config.model_not_found`. See `AUDIO_ARCHITECTURE.md`.
+- `apple` — on-device `SFSpeechRecognizer` inside the helper; partial/final events.
 - `cloud_realtime` — live cloud STT over WebSocket. The transport is chosen from
   the transcription-role model id (`bluey_protocols::voice_live::transport_for_model`):
   - **MAI-Transcribe-1.5** (`MAI-Transcribe-1.5`, `mai-transcribe`, or the Foundry
@@ -116,7 +125,9 @@ visionRequired, preferredRole)` over the user's role assignments
     resources; Bluey's default is MAI-Transcribe-1.5.
     File-based Azure Speech Fast Transcription is the Foundry playground path (WAV/MP3/FLAC),
     not live meetings. Codec: `bluey_protocols::voice_live` + shared `realtime::parse_event` /
-    `append_audio`. The WebSocket manager is not wired yet.
+    `append_audio`; manager: `src-tauri/src/transcription/cloud_realtime.rs` (Voice Live over
+    `api-key`; the OpenAI realtime transport is rejected as `not_supported` because it expects
+    24 kHz audio while the helper captures 16 kHz).
 - `mock` — fixture-driven for tests.
   Speaker labels derive from the audio channel (`microphone` → "You", `system` → other party,
   labelled per mode) with explicit confidence; Bluey never claims certain diarization.

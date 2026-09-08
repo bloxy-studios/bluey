@@ -28,7 +28,8 @@ export interface AudioDevice {
   kind: "input" | "output";
 }
 
-export type TranscriptionProviderKind = "apple" | "cloud_realtime" | "mock";
+/** `gemini_live` is the default (Gemini Live API); it falls back to `apple` without a Google key. */
+export type TranscriptionProviderKind = "apple" | "gemini_live" | "cloud_realtime" | "mock";
 
 export interface AudioSessionConfig {
   microphone: { enabled: boolean; deviceId?: string };
