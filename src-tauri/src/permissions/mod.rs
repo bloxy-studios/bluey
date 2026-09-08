@@ -222,6 +222,7 @@ fn accessibility_status() -> PermissionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bluey_protocols::helper::WireStatus;
 
     #[test]
     fn same_statuses_ignores_timestamp() {
