@@ -40,8 +40,7 @@
   --radius-keycap: 6px;
 
   /* Type */
-  --font-sans:
-    -apple-system, "SF Pro Text", Inter, system-ui, "Segoe UI", sans-serif;
+  --font-sans: -apple-system, "SF Pro Text", Inter, system-ui, "Segoe UI", sans-serif;
   --font-mono: "SF Mono", ui-monospace, Menlo, SFMono-Regular, monospace;
 
   /* Motion */
@@ -235,6 +234,48 @@ input.hud-input:focus-visible {
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* A compact HUD is a utility, not a toolbar with overlapping click targets.
+ * Use the actual surface width (not the wider transparent native frame). */
+.hud-toolbar-container {
+  container: hud-toolbar / inline-size;
+}
+.hud-new-chat-icon {
+  display: none;
+}
+@container hud-toolbar (max-width: 600px) {
+  .hud-trailing {
+    flex: 0 0 auto;
+  }
+  .hud-trailing-label,
+  .hud-new-chat-label {
+    display: none;
+  }
+  .hud-new-chat-icon {
+    display: block;
+  }
+  .hud-new-chat-button {
+    width: 32px;
+    height: 32px;
+    justify-content: center;
+    padding: 0;
+  }
+  /* Error recovery stays reachable in a dedicated row instead of covering
+   * Screen/Mode/Audio. ResizeObserver measures the extra row automatically. */
+  .hud-toolbar--error {
+    height: auto;
+    min-height: 52px;
+    flex-wrap: wrap;
+    padding-block: 8px;
+    row-gap: 8px;
+  }
+  .hud-toolbar--error > .hud-status {
+    flex: 1 0 100%;
+  }
+  .hud-toolbar--error > .hud-trailing {
+    margin-left: auto;
+  }
 }
 
 /* HUD panel height animates via transition on max-height/height. */
