@@ -222,3 +222,17 @@ bottom-right, "Back" ghost bottom-left.
 Short (120–180ms), subtle, interruptible. Animate: panel appearance (fade + 4px rise),
 response arrival (fade), mode switch (pill crossfade), listening state (pulse), copy
 confirmation. Nothing else.
+
+## Brand assets
+
+* **App icon** — `app-icon.png` (1024×1024, transparent, the rounded square on Apple's 824-px
+  grid, no drop shadow: macOS adds its own) is the master. `bun run tauri icon` regenerates
+  `src-tauri/icons/` from it (`icon.icns`, `icon.ico`, the PNG sizes and the Windows tiles);
+  `tauri.conf.json > bundle.icon` lists the files the bundle ships.
+* **Menu-bar icon** — `src-tauri/icons/tray/bluey-menubar.png` (22×22) and `bluey-menubar@2x.png`
+  (44×44): the "b" of the app icon as a black-on-transparent silhouette, 18 pt tall on a 22 pt
+  canvas. It is loaded with `tauri::include_image!` and set as a *template* image, so macOS
+  tints it for light and dark menu bars and the pressed state. Never use the colour icon in the
+  menu bar — as a template it collapses into a solid blob.
+* **In-app mark** — `BlueyMark` (`public/bluey-mark.svg`) is the monochrome UI mark used on the
+  sign-in and setup screens.
