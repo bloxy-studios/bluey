@@ -1,3 +1,5 @@
+import type { HudMenuIcon } from "./hud-menu-types";
+
 /** Platform-neutral menu data. No native resources or action/error ownership here. */
 export type MenuEntry<Action> =
   | {
@@ -8,6 +10,7 @@ export type MenuEntry<Action> =
       checked?: boolean;
       disabled?: boolean;
       destructive?: boolean;
+      nativeIcon?: HudMenuIcon;
     }
   | { kind: "label"; id: string; label: string }
   | { kind: "separator"; id: string };

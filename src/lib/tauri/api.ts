@@ -189,6 +189,9 @@ export const bluey = {
     getState: callNoArgs("panel_get_state"),
     startDrag: callNoArgs("panel_start_drag"),
   },
+  hudMenu: {
+    popup: call("hud_menu_popup"),
+  },
   window: {
     open: call("window_open"),
     close: call("window_close"),

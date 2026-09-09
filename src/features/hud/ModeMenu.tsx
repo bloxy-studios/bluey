@@ -34,6 +34,7 @@ export function ModeMenu({ children, tooltip }: ModeMenuProps) {
       label: "Manage",
       action: { type: "manage" },
       icon: <LayoutGrid className="size-4" aria-hidden />,
+      nativeIcon: "manage",
     },
   ];
 

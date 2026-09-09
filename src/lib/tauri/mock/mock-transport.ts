@@ -1586,6 +1586,8 @@ export class MockTransport implements Transport {
     panel_start_drag: () => {
       this.log("debug", "panel", "drag started");
     },
+    // Browser HudMenu uses Radix. A direct mock invocation behaves like cancellation.
+    hud_menu_popup: () => null,
     window_open: (args) => {
       if (typeof window !== "undefined" && typeof window.open === "function") {
         const url = new URL(window.location.href);

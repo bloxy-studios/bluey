@@ -1,0 +1,26 @@
+{
+  "items": [
+    { "kind": "label", "id": "hud-0", "label": "Current session" },
+    {
+      "kind": "item",
+      "id": "hud-1",
+      "label": "Selected mode",
+      "enabled": true,
+      "checked": true,
+      "icon": null,
+      "destructive": false
+    },
+    { "kind": "separator", "id": "hud-2" },
+    {
+      "kind": "item",
+      "id": "hud-3",
+      "label": "End session",
+      "enabled": false,
+      "checked": null,
+      "icon": "stop",
+      "destructive": true
+    }
+  ],
+  "position": { "x": 470.5, "y": 88.25 },
+  "align": "end"
+}

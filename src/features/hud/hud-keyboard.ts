@@ -16,7 +16,7 @@ export function preventRepeatedActivation(
  */
 export function hasActiveHudOverlay(): boolean {
   const overlays = document.querySelectorAll(
-    '[role="menu"], [role="listbox"], [role="dialog"][data-state], ' +
+    '[data-native-hud-menu="open"], [role="menu"], [role="listbox"], [role="dialog"][data-state], ' +
       '[role="alertdialog"][data-state], [aria-modal="true"], dialog[open]',
   );
   return Array.from(overlays).some(

@@ -1,4 +1,5 @@
-import { type ReactElement, type ReactNode } from "react";
+import { Slot } from "@radix-ui/react-slot";
+import { type ReactElement, type ReactNode, useRef, useState } from "react";
 
 import {
   DropdownMenu,
@@ -9,13 +10,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { showErrorToast } from "@/components/ui/toast-store";
 import { menuLabel, type MenuEntry } from "@/lib/tauri/menu-model";
-import { preventRepeatedActivation } from "./hud-keyboard";
+import { openNativeHudMenu } from "@/lib/tauri/native-hud-menu";
+import { hasTauriRuntime } from "@/lib/tauri/transport";
+import { toBlueyError } from "@/lib/types";
+import { isComposingKey, preventRepeatedActivation } from "./hud-keyboard";
 
 export type HudMenuEntry<Action> = MenuEntry<Action> & { icon?: ReactNode };
 
 export interface HudMenuProps<Action> {
-  /** A single button; no wrapping span between the Radix trigger and button. */
+  /** A single ref-forwarding button; neither backend inserts a wrapping span. */
   children: ReactElement;
   entries: readonly HudMenuEntry<Action>[];
   onSelect: (action: Action) => void;
@@ -23,17 +28,78 @@ export interface HudMenuProps<Action> {
   tooltip?: string;
 }
 
-/**
- * Accessible web menu. Native popup is deliberately NOT enabled on the locked
- * Tauri version: it leaks action channels even after close (docs/NATIVE_HUD_MENUS.md).
- */
-export function HudMenu<Action>({
+/** Native tracking in the desktop runtime; unchanged Radix menus in browser previews. */
+export function HudMenu<Action>(props: HudMenuProps<Action>) {
+  return hasTauriRuntime() ? <NativeHudMenu {...props} /> : <WebHudMenu {...props} />;
+}
+
+function NativeHudMenu<Action>({
   children,
   entries,
   onSelect,
   align = "start",
   tooltip,
 }: HudMenuProps<Action>) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+
+  const activate = () => {
+    const button = triggerRef.current;
+    if (!button) return;
+    const popup = openNativeHudMenu(entries, button, align);
+    if (!popup) return;
+    setOpen(true);
+    void popup
+      .then((selection) => {
+        // Unmount does not dispose a tracking native menu. Rust finishes cleanup; a stale
+        // UI instance must neither run actions nor refocus a newly mounted toolbar.
+        if (triggerRef.current !== button || !button.isConnected) return;
+        if (selection) onSelect(selection.action);
+      })
+      .catch((error: unknown) => {
+        if (triggerRef.current === button && button.isConnected) showErrorToast(toBlueyError(error));
+      })
+      .finally(() => {
+        if (triggerRef.current === button && button.isConnected) setOpen(false);
+      });
+  };
+
+  // Slot composes the child's ref and event handlers onto the actual IconButton, just
+  // like Radix Trigger asChild. No additional button/span, tabindex or native focus API.
+  const trigger = (
+    <Slot
+      ref={triggerRef}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      data-state={open ? "open" : "closed"}
+      data-native-hud-menu={open ? "open" : "closed"}
+      onClick={(event) => {
+        if (!event.defaultPrevented) activate();
+      }}
+      onKeyDown={(event) => {
+        if (event.defaultPrevented) return;
+        if (["Enter", " ", "ArrowDown"].includes(event.key)) {
+          event.preventDefault(); // no additional browser-synthesized click or page scroll
+          event.stopPropagation();
+          if (
+            !isComposingKey(event.nativeEvent) &&
+            !event.repeat &&
+            !event.altKey &&
+            !event.ctrlKey &&
+            !event.metaKey
+          ) {
+            activate();
+          }
+        }
+      }}
+    >
+      {children}
+    </Slot>
+  );
+  return tooltip ? <Tooltip label={tooltip}>{trigger}</Tooltip> : trigger;
+}
+
+function WebHudMenu<Action>({ children, entries, onSelect, align = "start", tooltip }: HudMenuProps<Action>) {
   const trigger = (
     <DropdownMenuTrigger asChild onKeyDown={preventRepeatedActivation}>
       {children}

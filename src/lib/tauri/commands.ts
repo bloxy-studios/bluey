@@ -71,6 +71,8 @@ import type {
   WindowContext,
 } from "../types";
 
+import type { HudMenuRequest } from "./hud-menu-types";
+
 /** A window listed by the native helper (for window-capture selection). */
 export interface CapturableWindow {
   windowId: number;
@@ -295,6 +297,8 @@ export interface CommandMap {
   panel_set_pinned: { args: { pinned: boolean }; result: PanelState };
   panel_get_state: { args: void; result: PanelState };
   panel_start_drag: { args: void; result: void };
+  /** macOS main-HUD-only display popup; resolves after tracking closes, null on cancellation/busy. */
+  hud_menu_popup: { args: { request: HudMenuRequest }; result: string | null };
   /**
    * Show + focus a window. `route` is a settings tab id (see
    * `src/features/settings/settings-nav.ts`); Rust delivers it to the window as the
@@ -437,6 +441,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "panel_set_pinned",
   "panel_get_state",
   "panel_start_drag",
+  "hud_menu_popup",
   "window_open",
   "window_close",
   "data_usage_stats",
