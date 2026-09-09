@@ -35,7 +35,7 @@ export function TranscriptStrip() {
   );
 
   return (
-    <section aria-label="Live transcript" className="border-t border-hud-border px-4 pb-2 pt-1.5">
+    <section aria-label="Live transcript" className="shrink-0 border-t border-hud-border px-4 pb-2 pt-1.5">
       <div className="flex h-6 items-center gap-2">
         <span className="size-[6px] rounded-full bg-success motion-safe:animate-pulse-dot" aria-hidden />
         <span className="text-[11px] font-medium uppercase tracking-wide text-fg-subtle">

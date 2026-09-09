@@ -439,7 +439,8 @@ pub fn merge_json(base: &mut serde_json::Value, patch: &serde_json::Value) {
     }
 }
 
-/// Mirrors `PanelState`.
+/// Mirrors `PanelState`: logical native-frame dimensions, including the
+/// transparent shadow insets (not the appearance surface width).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PanelState {
@@ -463,8 +464,10 @@ impl Default for PanelState {
             expanded: false,
             x: 0.0,
             y: 0.0,
-            width: 690.0,
-            height: 108.0,
+            // Keep launch defaults in sync with bluey-protocols::panel and
+            // tauri.conf.json (the protocols crate tests this contract).
+            width: 754.0,
+            height: 175.0,
             display_id: None,
             opacity: 0.92,
         }
