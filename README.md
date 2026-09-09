@@ -48,7 +48,7 @@ macOS 14+ (Apple Silicon or Intel). To build: Xcode Command Line Tools, Bun ≥ 
 ## Quick start
 ```bash
 bun install
-cp .env.example .env          # VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the key is imported into the Keychain on first run)
+cp .env.example .env          # or .env.local — VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the key is imported into the Keychain on first run)
 bun run build:helpers         # Swift helper + research agent sidecars
 bun run tauri:dev
 ```

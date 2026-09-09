@@ -18,9 +18,25 @@
 
 ```bash
 bun install
-cp .env.example .env            # VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the rest is optional)
+cp .env.example .env            # or .env.local — VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the rest is optional)
 bun run tauri:dev               # builds missing sidecars on first run, then Vite + Rust + the app
 ```
+
+### Where the environment comes from
+
+- At startup the Rust backend loads `.env.local` and then `.env` — an earlier file wins, the
+  process environment wins over both, empty assignments are ignored — from the repository root
+  and `src-tauri` (development builds), then the current directory and the directory of the
+  executable. This loader is the only way these files reach the backend: the Tauri CLI runs the
+  app from `src-tauri`, `bun run` does not pass `.env` files to the scripts it starts, and Vite
+  only exposes `VITE_*` to the WebView bundle. The log shows `loaded env file` with each path.
+- The public Clerk settings (`VITE_CLERK_PUBLISHABLE_KEY`, `VITE_CLERK_FRONTEND_API_URL`,
+  `BLUEY_CLERK_OAUTH_CLIENT_ID`, `BLUEY_CLERK_ACCOUNT_PORTAL_URL`) are additionally compiled
+  into the binary by `src-tauri/build.rs` from the same files (the build environment wins over
+  them) — the Rust-side equivalent of Vite baking `VITE_*` into the bundle — so `tauri build`
+  products are configured without a file next to the app. Nothing else is ever compiled in; API
+  keys stay in the Keychain and the runtime environment. Editing one of the files rebuilds the app
+  crate automatically; after *creating* one, run `touch src-tauri/build.rs` once.
 
 Other commands:
 

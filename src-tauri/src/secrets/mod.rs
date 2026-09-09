@@ -5,6 +5,9 @@
 //! `provider:<id>:api_key`, `research:exa:api_key`, `research:firecrawl:api_key`,
 //! `agent:anthropic:api_key`, `auth:clerk:client_token`.
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
 use bluey_core::{BlueyError, BlueyResult};
 
 use crate::storage::BUNDLE_ID;
@@ -135,35 +138,53 @@ impl SecretsStore {
     }
 }
 
-/// Read `KEY=value` pairs from a `.env` file next to the executable or the
-/// current directory into the process environment (existing variables win).
-/// Values are never logged.
-pub fn load_dotenv() {
-    let mut candidates: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from(".env")];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(".env"));
+/// Load `.env.local` and then `.env` into the process environment. Variables
+/// that are already set win, and an earlier file wins over a later one (so
+/// `.env.local` overrides `.env`, as with Vite and Bun). Directories searched,
+/// in order: for development builds the repository root and `src-tauri` — the
+/// Tauri CLI runs the app from `src-tauri`, so a plain relative `.env` would
+/// miss the repository's files — then the current directory and the directory
+/// of the executable.
+///
+/// Values are never logged. The loaded paths are returned so the caller can log
+/// them once logging is up (this runs first: `BLUEY_LOG_LEVEL` may live here).
+pub fn load_dotenv() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    #[cfg(debug_assertions)]
+    {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if let Some(root) = manifest.parent() {
+            dirs.push(root.to_path_buf());
         }
+        dirs.push(manifest.to_path_buf());
     }
-    for path in candidates {
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        for line in contents.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
+    dirs.push(PathBuf::from("."));
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        dirs.push(dir);
+    }
+
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut loaded = Vec::new();
+    for dir in dirs {
+        for name in [".env.local", ".env"] {
+            let path = dir.join(name);
+            let Ok(contents) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let key = key.trim();
-            let value = value.trim().trim_matches('"').trim_matches('\'');
-            if !key.is_empty() && std::env::var_os(key).is_none() {
-                std::env::set_var(key, value);
+            // The current directory may be one of the directories above.
+            if !seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())) {
+                continue;
             }
+            for (key, value) in crate::dotenv::parse(&contents) {
+                if std::env::var_os(&key).is_none() {
+                    std::env::set_var(&key, &value);
+                }
+            }
+            loaded.push(path);
         }
-        tracing::info!(path = %path.display(), "loaded .env file");
-        break;
     }
+    loaded
 }

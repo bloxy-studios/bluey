@@ -41,6 +41,12 @@ back to the app.
 * One-time setup step per Clerk instance: create the public OAuth application and put its client
   id in `BLUEY_CLERK_OAUTH_CLIENT_ID` (`docs/DEVELOPMENT.md`). Without it the app runs without
   an account, as before.
+* The public Clerk settings (`VITE_CLERK_PUBLISHABLE_KEY`, `VITE_CLERK_FRONTEND_API_URL`,
+  `BLUEY_CLERK_OAUTH_CLIENT_ID`, `BLUEY_CLERK_ACCOUNT_PORTAL_URL`) are resolved from the process
+  environment — Rust loads `.env.local` and `.env` at boot — and, failing that, from values
+  `src-tauri/build.rs` compiled in from the same files: the Rust-side equivalent of Vite baking
+  `VITE_*` into the bundle under ADR 0003, so installed builds need no file next to the binary.
+  Only that allowlist is ever compiled in; API keys are not.
 * The pure half (URLs, PKCE, redirect parsing, token/ID-token/userinfo decoding, Account Portal
   derivation, loopback request parsing) is in `bluey_protocols::clerk` and unit-tested; the I/O
   half is thin.

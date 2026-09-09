@@ -107,7 +107,8 @@ pub fn run(builder: tauri::Builder<Wry>) {
 
 /// Build every manager and hand them to Tauri as managed state.
 fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
-    crate::secrets::load_dotenv();
+    // `.env.local` / `.env` come first: `BLUEY_LOG_LEVEL` may live there.
+    let env_files = crate::secrets::load_dotenv();
     let paths = Arc::new(AppPaths::resolve()?);
     let _ = LOGGING.set(Logging::init(
         paths.logs_dir.clone(),
@@ -116,6 +117,9 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
     let bus = Arc::new(EventBus::new());
     Logging::connect_bus(bus.clone());
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "bluey starting");
+    for path in &env_files {
+        tracing::info!(path = %path.display(), "loaded env file");
+    }
 
     let storage = Arc::new(Storage::open(paths.clone())?);
     let secrets = Arc::new(SecretsStore::new());

@@ -737,14 +737,57 @@ fn spawn_loopback(
     });
 }
 
-/// OAuth configuration from the environment: issuer from the publishable key
-/// (or `VITE_CLERK_FRONTEND_API_URL`), the public OAuth client id, the
-/// Account Portal URL (explicit or derived) and the redirect style.
+/// A public Clerk setting. The process environment — including the
+/// `.env.local` / `.env` files loaded at boot — wins over the value `build.rs`
+/// compiled in from the same files, which is what configures installed builds
+/// (no file next to the binary). Empty values count as unset.
+fn clerk_setting(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            baked_setting(name)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+}
+
+/// Compile-time defaults emitted by `build.rs` — public identifiers only, the
+/// allowlist lives there.
+fn baked_setting(name: &str) -> Option<&'static str> {
+    match name {
+        "VITE_CLERK_PUBLISHABLE_KEY" => option_env!("BLUEY_BAKED_VITE_CLERK_PUBLISHABLE_KEY"),
+        "VITE_CLERK_FRONTEND_API_URL" => option_env!("BLUEY_BAKED_VITE_CLERK_FRONTEND_API_URL"),
+        "BLUEY_CLERK_OAUTH_CLIENT_ID" => option_env!("BLUEY_BAKED_BLUEY_CLERK_OAUTH_CLIENT_ID"),
+        "BLUEY_CLERK_ACCOUNT_PORTAL_URL" => {
+            option_env!("BLUEY_BAKED_BLUEY_CLERK_ACCOUNT_PORTAL_URL")
+        }
+        _ => None,
+    }
+}
+
+/// OAuth configuration: issuer from the publishable key (or
+/// `VITE_CLERK_FRONTEND_API_URL`), the public OAuth client id, the Account
+/// Portal URL (explicit or derived) and the redirect style.
 fn oauth_config_from_env() -> Option<OAuthConfig> {
-    let host = fapi_host_from_env()?;
+    resolve_oauth_config(&clerk_setting, cfg!(debug_assertions))
+}
+
+/// The pure half of [`oauth_config_from_env`], over any settings lookup.
+fn resolve_oauth_config(
+    setting: &dyn Fn(&str) -> Option<String>,
+    debug_build: bool,
+) -> Option<OAuthConfig> {
+    let Some(host) = fapi_host(setting) else {
+        tracing::info!(
+            "sign-in is not configured: no Clerk publishable key in the environment, .env/.env.local or the build"
+        );
+        return None;
+    };
     let client_id = ["BLUEY_CLERK_OAUTH_CLIENT_ID", "CLERK_OAUTH_CLIENT_ID"]
         .iter()
-        .find_map(|name| std::env::var(name).ok())
+        .find_map(|name| setting(name))
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     let Some(client_id) = client_id else {
@@ -753,13 +796,11 @@ fn oauth_config_from_env() -> Option<OAuthConfig> {
         );
         return None;
     };
-    let account_portal = std::env::var("BLUEY_CLERK_ACCOUNT_PORTAL_URL")
-        .ok()
+    let account_portal = setting("BLUEY_CLERK_ACCOUNT_PORTAL_URL")
         .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| v.starts_with("https://"))
         .or_else(|| clerk::account_portal_url(&host));
-    let redirect = match std::env::var("BLUEY_AUTH_REDIRECT")
-        .ok()
+    let redirect = match setting("BLUEY_AUTH_REDIRECT")
         .map(|v| v.trim().to_ascii_lowercase())
         .as_deref()
     {
@@ -767,7 +808,7 @@ fn oauth_config_from_env() -> Option<OAuthConfig> {
         Some("deep_link") | Some("deep-link") | Some("deeplink") => SignInRedirect::DeepLink,
         // Development builds are not installed in /Applications, so macOS never
         // routes `bluey://` to them; the loopback works everywhere.
-        _ if cfg!(debug_assertions) => SignInRedirect::Loopback,
+        _ if debug_build => SignInRedirect::Loopback,
         _ => SignInRedirect::DeepLink,
     };
     Some(OAuthConfig {
@@ -778,10 +819,10 @@ fn oauth_config_from_env() -> Option<OAuthConfig> {
     })
 }
 
-/// Frontend API host from the environment: an explicit
-/// `VITE_CLERK_FRONTEND_API_URL` (host or URL) wins over the publishable key.
-fn fapi_host_from_env() -> Option<String> {
-    if let Ok(explicit) = std::env::var("VITE_CLERK_FRONTEND_API_URL") {
+/// Frontend API host: an explicit `VITE_CLERK_FRONTEND_API_URL` (host or URL)
+/// wins over the publishable key.
+fn fapi_host(setting: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    if let Some(explicit) = setting("VITE_CLERK_FRONTEND_API_URL") {
         let trimmed = explicit
             .trim()
             .trim_start_matches("https://")
@@ -791,15 +832,111 @@ fn fapi_host_from_env() -> Option<String> {
             return Some(trimmed);
         }
     }
-    let key = std::env::var("VITE_CLERK_PUBLISHABLE_KEY")
-        .or_else(|_| std::env::var("CLERK_PUBLISHABLE_KEY"))
-        .ok()?;
+    let key = setting("VITE_CLERK_PUBLISHABLE_KEY").or_else(|| setting("CLERK_PUBLISHABLE_KEY"))?;
     clerk::fapi_host_from_publishable_key(&key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `pk_test_` + base64("clerk.example.com$").
+    const PUBLISHABLE_KEY: &str = "pk_test_Y2xlcmsuZXhhbXBsZS5jb20k";
+
+    fn settings(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name: &str| map.get(name).cloned()
+    }
+
+    #[test]
+    fn oauth_config_needs_a_publishable_key_and_a_client_id() {
+        assert!(resolve_oauth_config(&settings(&[]), true).is_none());
+        assert!(resolve_oauth_config(
+            &settings(&[("VITE_CLERK_PUBLISHABLE_KEY", PUBLISHABLE_KEY)]),
+            true
+        )
+        .is_none());
+        assert!(resolve_oauth_config(
+            &settings(&[("BLUEY_CLERK_OAUTH_CLIENT_ID", "client_1")]),
+            true
+        )
+        .is_none());
+        // An empty assignment is not a client id.
+        assert!(resolve_oauth_config(
+            &settings(&[
+                ("VITE_CLERK_PUBLISHABLE_KEY", PUBLISHABLE_KEY),
+                ("BLUEY_CLERK_OAUTH_CLIENT_ID", "  "),
+            ]),
+            true
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn oauth_config_derives_issuer_portal_and_redirect_defaults() {
+        let lookup = settings(&[
+            ("VITE_CLERK_PUBLISHABLE_KEY", PUBLISHABLE_KEY),
+            ("BLUEY_CLERK_OAUTH_CLIENT_ID", " client_1 "),
+        ]);
+        let debug = resolve_oauth_config(&lookup, true).unwrap();
+        assert_eq!(debug.issuer, "https://clerk.example.com");
+        assert_eq!(debug.client_id, "client_1");
+        assert_eq!(
+            debug.account_portal.as_deref(),
+            Some("https://accounts.example.com/user")
+        );
+        assert!(matches!(debug.redirect, SignInRedirect::Loopback));
+        let release = resolve_oauth_config(&lookup, false).unwrap();
+        assert!(matches!(release.redirect, SignInRedirect::DeepLink));
+    }
+
+    #[test]
+    fn oauth_config_honours_explicit_overrides() {
+        let config = resolve_oauth_config(
+            &settings(&[
+                ("VITE_CLERK_FRONTEND_API_URL", "https://clerk.bluey.app/"),
+                ("CLERK_OAUTH_CLIENT_ID", "client_2"),
+                (
+                    "BLUEY_CLERK_ACCOUNT_PORTAL_URL",
+                    "https://accounts.bluey.app/user/",
+                ),
+                ("BLUEY_AUTH_REDIRECT", "deep_link"),
+            ]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(config.issuer, "https://clerk.bluey.app");
+        assert_eq!(config.client_id, "client_2");
+        assert_eq!(
+            config.account_portal.as_deref(),
+            Some("https://accounts.bluey.app/user")
+        );
+        assert!(matches!(config.redirect, SignInRedirect::DeepLink));
+
+        // A non-https portal URL is ignored in favour of the derived one; the
+        // redirect override works in release builds too.
+        let config = resolve_oauth_config(
+            &settings(&[
+                ("VITE_CLERK_PUBLISHABLE_KEY", PUBLISHABLE_KEY),
+                ("BLUEY_CLERK_OAUTH_CLIENT_ID", "client_1"),
+                (
+                    "BLUEY_CLERK_ACCOUNT_PORTAL_URL",
+                    "http://insecure.example.com",
+                ),
+                ("BLUEY_AUTH_REDIRECT", "loopback"),
+            ]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            config.account_portal.as_deref(),
+            Some("https://accounts.example.com/user")
+        );
+        assert!(matches!(config.redirect, SignInRedirect::Loopback));
+    }
 
     #[test]
     fn stored_tokens_track_expiry_with_leeway() {

@@ -15,6 +15,7 @@ pub mod capture;
 pub mod commands;
 pub mod context;
 pub mod documents;
+pub mod dotenv;
 pub mod events;
 pub mod logging;
 pub mod modes;
