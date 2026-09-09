@@ -4,8 +4,15 @@
 //! `realtimeInput.audio` frames (PCM16 16 kHz mono) and `audioStreamEnd`
 //! after 500 ms of silence so utterances finalize promptly. Sessions are
 //! capped at ten minutes by the service, so a replacement socket is opened at
-//! 9 min 30 s (or on `goAway`); the old one drains for two seconds and finals
-//! that repeat across the hand-over are dropped by [`FinalDedupe`].
+//! 9 min 30 s (or on `goAway`); the old one drains for two seconds and a final
+//! that repeats across the hand-over is dropped by [`FinalDedupe`] — armed
+//! only around a rotation, so a genuinely repeated short answer ("Yes.") is
+//! kept the rest of the time.
+//!
+//! Server-side errors and closes reconnect with exponential backoff and give
+//! up after a few attempts without transcript progress. Audio never
+//! back-pressures the capture pipeline: a chunk that does not fit the worker's
+//! buffer is dropped.
 //!
 //! The API key travels only in the WebSocket URL query (the Live API's
 //! requirement); every log line uses [`proto::redact_live_url`].
@@ -19,12 +26,12 @@ use bluey_core::{BlueyError, BlueyErrorKind, BlueyResult};
 use bluey_protocols::gemini::{self as proto, LiveEvent};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use super::{
     session_closed, EventSink, FinalDedupe, PcmChunk, SessionOptions, TranscriptionEvent,
-    TranscriptionProvider, TranscriptionSession,
+    TranscriptionProvider, TranscriptionSession, DEDUPE_WINDOW,
 };
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -37,9 +44,15 @@ pub const DRAIN_GRACE: Duration = Duration::from_secs(2);
 pub const SILENCE_STREAM_END: Duration = Duration::from_millis(500);
 /// Server VAD end-of-speech silence requested in `setup`.
 pub const SERVER_SILENCE_MS: u32 = 600;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONNECT_ATTEMPTS: u32 = 3;
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+/// Server-caused reconnects (errors, closes) tolerated without any transcript
+/// progress in between.
+const MAX_RECONNECTS_WITHOUT_PROGRESS: u32 = 5;
+const RECONNECT_BACKOFF_BASE: Duration = Duration::from_millis(500);
+const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(8);
 const COMMAND_BUFFER: usize = 256;
 
 pub struct GeminiLiveProvider {
@@ -74,6 +87,7 @@ impl TranscriptionProvider for GeminiLiveProvider {
             options,
             sink,
             dedupe: Arc::new(parking_lot::Mutex::new(FinalDedupe::default())),
+            dedupe_until: Arc::new(parking_lot::Mutex::new(None)),
         };
         let task = tauri::async_runtime::spawn(async move { worker.run(rx).await });
         Ok(Box::new(LiveSession {
@@ -96,17 +110,32 @@ struct LiveSession {
 #[async_trait]
 impl TranscriptionSession for LiveSession {
     async fn push_audio(&self, chunk: PcmChunk) -> BlueyResult<()> {
-        self.tx
-            .send(Command::Audio(chunk))
-            .await
-            .map_err(|_| session_closed())
+        // Never block the capture pipeline: while the worker reconnects and its
+        // buffer is full, the chunk is dropped (late real-time audio is useless).
+        match self.tx.try_send(Command::Audio(chunk)) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(BlueyError::transcription(
+                "backpressure",
+                "the live transcription session is not keeping up; dropping audio",
+            )),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(session_closed()),
+        }
     }
 
     async fn close(&self) {
-        let _ = self.tx.send(Command::Close).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.tx.send(Command::Close)).await;
         let task = self.task.lock().take();
-        if let Some(task) = task {
-            let _ = tokio::time::timeout(DRAIN_GRACE + Duration::from_secs(2), task).await;
+        if let Some(mut task) = task {
+            if tokio::time::timeout(DRAIN_GRACE + Duration::from_secs(2), &mut task)
+                .await
+                .is_err()
+            {
+                // A stuck worker must not outlive the session: it holds a sink
+                // clone and could deliver finals into whatever session is
+                // active later.
+                tracing::warn!("gemini live worker did not finish draining; aborting it");
+                task.abort();
+            }
         }
     }
 }
@@ -129,8 +158,14 @@ impl Connection {
 }
 
 enum Action {
+    /// Nothing to do.
     None,
+    /// A transcript event arrived: the connection is healthy.
+    Progress,
+    /// Planned hand-over (soft limit, `goAway`).
     Rotate,
+    /// The server errored or closed: reconnect with backoff.
+    Reconnect,
     Fatal(BlueyError),
 }
 
@@ -140,22 +175,25 @@ struct Worker {
     options: SessionOptions,
     sink: EventSink,
     dedupe: Arc<parking_lot::Mutex<FinalDedupe>>,
+    /// Dedupe is armed until this instant (set by a rotation).
+    dedupe_until: Arc<parking_lot::Mutex<Option<Instant>>>,
 }
 
-/// Map a Live `error.status` onto the contract error.
+/// Map a Live `error.status` (gRPC status name or a numeric HTTP-style code)
+/// onto the contract error.
 pub fn map_live_error(status: &str) -> BlueyError {
-    match status.to_ascii_uppercase().as_str() {
-        "UNAUTHENTICATED" | "PERMISSION_DENIED" => BlueyError::new(
+    match status.trim().to_ascii_uppercase().as_str() {
+        "UNAUTHENTICATED" | "PERMISSION_DENIED" | "401" | "403" => BlueyError::new(
             BlueyErrorKind::Configuration,
             "config.api_key_invalid",
             "Google AI Studio rejected the API key for live transcription",
         )
         .recoverable(bluey_core::error::RecoveryAction::ConfigureProvider),
-        "RESOURCE_EXHAUSTED" => BlueyError::network(
+        "RESOURCE_EXHAUSTED" | "429" => BlueyError::network(
             "http_429",
             "the Gemini Live API rate-limited the transcription session",
         ),
-        "NOT_FOUND" | "INVALID_ARGUMENT" => BlueyError::new(
+        "NOT_FOUND" | "INVALID_ARGUMENT" | "404" | "400" => BlueyError::new(
             BlueyErrorKind::Configuration,
             "config.model_not_found",
             "the Live transcription model is not available for this key",
@@ -168,9 +206,28 @@ pub fn map_live_error(status: &str) -> BlueyError {
     }
 }
 
+/// Map the HTTP status of a rejected WebSocket upgrade (a bad key is refused
+/// at the handshake, before any in-band error frame).
+pub fn map_live_http_status(status: u16) -> BlueyError {
+    match status {
+        401 | 403 | 404 | 429 => map_live_error(&status.to_string()),
+        other => BlueyError::network(
+            "connect",
+            format!("the Gemini Live API refused the connection (HTTP {other})"),
+        ),
+    }
+}
+
 /// Configuration errors end the session; everything else is worth a reconnect.
 fn is_fatal(error: &BlueyError) -> bool {
     error.kind == BlueyErrorKind::Configuration
+}
+
+fn reconnect_backoff(reconnects: u32) -> Duration {
+    RECONNECT_BACKOFF_BASE
+        .checked_mul(2u32.saturating_pow(reconnects.saturating_sub(1)))
+        .unwrap_or(RECONNECT_BACKOFF_CAP)
+        .min(RECONNECT_BACKOFF_CAP)
 }
 
 impl Worker {
@@ -179,14 +236,15 @@ impl Worker {
     }
 
     /// Connect, send `setup`, wait for `setupComplete`. Retries transport
-    /// failures with a short backoff; configuration errors are returned as is.
+    /// failures with a short backoff; configuration errors (including a key
+    /// refused at the handshake) are returned as is.
     async fn connect(&self) -> BlueyResult<Connection> {
         let url = proto::live_url(&self.api_key);
         let mut last_error =
             BlueyError::network("connect", "could not connect to the Gemini Live API");
         for attempt in 1..=MAX_CONNECT_ATTEMPTS {
-            match connect_async(url.as_str()).await {
-                Ok((socket, _)) => {
+            match tokio::time::timeout(CONNECT_TIMEOUT, connect_async(url.as_str())).await {
+                Ok(Ok((socket, _))) => {
                     let mut conn = Connection {
                         socket,
                         opened_at: Instant::now(),
@@ -225,12 +283,37 @@ impl Worker {
                         }
                     }
                 }
-                Err(error) => {
+                Ok(Err(tungstenite::Error::Http(response))) => {
+                    let status = response.status().as_u16();
+                    let error = map_live_http_status(status);
+                    tracing::warn!(
+                        attempt,
+                        status,
+                        url = %self.redacted_url(),
+                        "gemini live handshake rejected"
+                    );
+                    if is_fatal(&error) {
+                        return Err(error);
+                    }
+                    last_error = error;
+                }
+                Ok(Err(error)) => {
                     tracing::warn!(
                         attempt,
                         url = %self.redacted_url(),
                         error = %error,
                         "gemini live connect failed"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        attempt,
+                        url = %self.redacted_url(),
+                        "gemini live connect timed out"
+                    );
+                    last_error = BlueyError::network(
+                        "timeout",
+                        "connecting to the Gemini Live API timed out",
                     );
                 }
             }
@@ -252,7 +335,18 @@ impl Worker {
     }
 
     async fn emit_final(&self, text: String, language: Option<String>) {
-        if !self.dedupe.lock().accept(&text, Instant::now()) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let armed = self
+            .dedupe_until
+            .lock()
+            .map(|until| now <= until)
+            .unwrap_or(false);
+        let fresh = self.dedupe.lock().accept(&text, now);
+        if armed && !fresh {
+            tracing::debug!("dropping a final repeated across the session hand-over");
             return;
         }
         let _ = self
@@ -277,11 +371,11 @@ impl Worker {
                         })
                         .await;
                 }
-                Action::None
+                Action::Progress
             }
             LiveEvent::Final { text, language } => {
                 self.emit_final(text, language).await;
-                Action::None
+                Action::Progress
             }
             LiveEvent::GoAway { time_left_ms } => {
                 tracing::info!(?time_left_ms, "gemini live session is going away; rotating");
@@ -293,7 +387,7 @@ impl Worker {
                     Action::Fatal(error)
                 } else {
                     tracing::warn!(status = %status, "gemini live session error; reconnecting");
-                    Action::Rotate
+                    Action::Reconnect
                 }
             }
             LiveEvent::SetupComplete | LiveEvent::ResumptionUpdate { .. } | LiveEvent::Other => {
@@ -303,14 +397,17 @@ impl Worker {
     }
 
     /// Open the replacement socket first, then let the old one drain finals.
+    /// Dedupe is armed for the hand-over window only.
     async fn rotate(&self, old: Connection) -> BlueyResult<Connection> {
         let fresh = self.connect().await?;
+        *self.dedupe_until.lock() = Some(Instant::now() + DRAIN_GRACE + DEDUPE_WINDOW);
         let worker = Self {
             api_key: self.api_key.clone(),
             smart_mode: self.smart_mode,
             options: self.options.clone(),
             sink: self.sink.clone(),
             dedupe: self.dedupe.clone(),
+            dedupe_until: self.dedupe_until.clone(),
         };
         tauri::async_runtime::spawn(async move { worker.drain(old, DRAIN_GRACE).await });
         Ok(fresh)
@@ -338,21 +435,25 @@ impl Worker {
         let _ = conn.socket.close(None).await;
     }
 
+    async fn fail(&self, error: BlueyError) {
+        let _ = self
+            .sink
+            .send(TranscriptionEvent::Failed {
+                source: self.options.source,
+                error,
+            })
+            .await;
+    }
+
     async fn run(self, mut rx: mpsc::Receiver<Command>) {
         let mut conn = match self.connect().await {
             Ok(conn) => conn,
-            Err(error) => {
-                let _ = self
-                    .sink
-                    .send(TranscriptionEvent::Failed {
-                        source: self.options.source,
-                        error,
-                    })
-                    .await;
-                return;
-            }
+            Err(error) => return self.fail(error).await,
         };
+        // Consecutive connect failures while rotating.
         let mut failures = 0u32;
+        // Server-caused reconnects since the last transcript event.
+        let mut reconnects = 0u32;
         loop {
             let rotate_at = conn.opened_at + SOFT_SESSION_LIMIT;
             let silence_deadline = match (conn.stream_end_sent, conn.last_speech) {
@@ -364,19 +465,28 @@ impl Worker {
                     None | Some(Command::Close) => break,
                     Some(Command::Audio(chunk)) => match self.forward(&mut conn, &chunk).await {
                         Ok(()) => Action::None,
-                        Err(_) => Action::Rotate,
+                        Err(_) => Action::Reconnect,
                     },
                 },
                 message = conn.socket.next() => match message {
                     Some(Ok(Message::Text(text))) => self.handle(proto::parse_live_message(&text)).await,
-                    Some(Ok(Message::Close(_))) | None => Action::Rotate,
+                    Some(Ok(Message::Close(_))) | None => {
+                        tracing::info!("gemini live socket closed by the server; reconnecting");
+                        Action::Reconnect
+                    }
                     Some(Ok(_)) => Action::None,
                     Some(Err(error)) => {
                         tracing::warn!(error = %error, "gemini live socket error");
-                        Action::Rotate
+                        Action::Reconnect
                     }
                 },
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(rotate_at)) => Action::Rotate,
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(rotate_at)) => {
+                    tracing::info!(
+                        source = ?self.options.source,
+                        "gemini live session reached the soft limit; rotating"
+                    );
+                    Action::Rotate
+                }
                 _ = async {
                     match silence_deadline {
                         Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
@@ -389,51 +499,46 @@ impl Worker {
                     Action::None
                 }
             };
+            let reconnecting = matches!(action, Action::Reconnect);
             match action {
-                Action::None => {
+                Action::None => {}
+                Action::Progress => {
                     failures = 0;
+                    reconnects = 0;
                 }
-                Action::Rotate => match self.rotate(conn).await {
-                    Ok(fresh) => {
-                        conn = fresh;
-                        failures = 0;
-                    }
-                    Err(error) => {
-                        failures += 1;
-                        if is_fatal(&error) || failures >= MAX_CONSECUTIVE_FAILURES {
-                            let _ = self
-                                .sink
-                                .send(TranscriptionEvent::Failed {
-                                    source: self.options.source,
-                                    error,
-                                })
+                Action::Rotate | Action::Reconnect => {
+                    if reconnecting {
+                        reconnects += 1;
+                        if reconnects > MAX_RECONNECTS_WITHOUT_PROGRESS {
+                            return self
+                                .fail(BlueyError::network(
+                                    "stream",
+                                    "the Gemini Live session keeps failing; giving up",
+                                ))
                                 .await;
-                            return;
                         }
-                        // Keep trying with a fresh socket; audio in the meantime is lost.
-                        match self.connect().await {
-                            Ok(fresh) => conn = fresh,
-                            Err(error) => {
-                                let _ = self
-                                    .sink
-                                    .send(TranscriptionEvent::Failed {
-                                        source: self.options.source,
-                                        error,
-                                    })
-                                    .await;
-                                return;
+                        tokio::time::sleep(reconnect_backoff(reconnects)).await;
+                    }
+                    match self.rotate(conn).await {
+                        Ok(fresh) => {
+                            conn = fresh;
+                            failures = 0;
+                        }
+                        Err(error) => {
+                            failures += 1;
+                            if is_fatal(&error) || failures >= MAX_CONSECUTIVE_FAILURES {
+                                return self.fail(error).await;
+                            }
+                            // Keep trying with a fresh socket; audio in the meantime is lost.
+                            match self.connect().await {
+                                Ok(fresh) => conn = fresh,
+                                Err(error) => return self.fail(error).await,
                             }
                         }
                     }
-                },
+                }
                 Action::Fatal(error) => {
-                    let _ = self
-                        .sink
-                        .send(TranscriptionEvent::Failed {
-                            source: self.options.source,
-                            error,
-                        })
-                        .await;
+                    self.fail(error).await;
                     let _ = conn.socket.close(None).await;
                     return;
                 }
@@ -491,8 +596,29 @@ mod tests {
     }
 
     #[test]
+    fn numeric_codes_and_handshake_statuses_map_too() {
+        assert_eq!(map_live_error("401").code, "config.api_key_invalid");
+        assert_eq!(map_live_error(" 403 ").code, "config.api_key_invalid");
+        assert_eq!(map_live_error("404").code, "config.model_not_found");
+        assert_eq!(map_live_error("429").code, "network.http_429");
+        assert!(is_fatal(&map_live_http_status(403)));
+        assert!(is_fatal(&map_live_http_status(404)));
+        assert!(!is_fatal(&map_live_http_status(429)));
+        assert_eq!(map_live_http_status(502).code, "network.connect");
+        assert!(!is_fatal(&map_live_http_status(502)));
+    }
+
+    #[test]
     fn rotation_happens_before_the_service_cap() {
         assert!(SOFT_SESSION_LIMIT < Duration::from_secs(10 * 60));
         assert!(SILENCE_STREAM_END < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn reconnect_backoff_grows_and_caps() {
+        assert_eq!(reconnect_backoff(1), Duration::from_millis(500));
+        assert_eq!(reconnect_backoff(2), Duration::from_secs(1));
+        assert_eq!(reconnect_backoff(4), Duration::from_secs(4));
+        assert_eq!(reconnect_backoff(10), RECONNECT_BACKOFF_CAP);
     }
 }

@@ -38,8 +38,10 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
 - **Model router** (`bluey_core::router`): `select(task, latency, reasoning, contextTokens,
 visionRequired, preferredRole)` over the user's role assignments
   (`default/fast/reasoning/vision/research/transcription/embedding`) with fallbacks. Default
-  strategy: classification → fast · answer → fast/balanced · coding → default · system design →
-  reasoning · research → agent · summarization → fast. All model identifiers are configuration.
+  strategy: classification → fast · answer → fast (ultra-fast/fast budgets) or default
+  (balanced/deep) · coding → default · system design → reasoning (when reasoning ≥ light) ·
+  research → research (fallback reasoning → default) · summarization → fast. All model
+  identifiers are configuration.
 - **Provider presets** (`bluey_core::presets`): one table of reserved provider ids
   (`gemini`, `azure-foundry`, `anthropic`, `openai`), display names and the recommended model
   per role. `ai_apply_provider_presets { providerId, overwrite }` points roles at a provider's
@@ -48,7 +50,9 @@ visionRequired, preferredRole)` over the user's role assignments
   presets at boot and honours `BLUEY_MODEL_*` overrides. `ai_list_models { providerId, role? }`
   narrows a provider's catalogue to models fit for a role.
 - **Provider adapters** (`AIProvider` trait: `stream(request) -> Stream<AIChunk>`,
-  `embed(model, texts, purpose)`, `list_models(role?)`; connection tests are a tiny `stream`):
+  `embed(model, texts, purpose)`, `list_models(role?)`, `transcribe_audio(model, audio, options)`;
+  connection tests are a tiny `stream` against a *text* model of the provider — never the
+  transcription or embedding assignment — falling back to the kind's preset default):
   - `google_gemini` — **the default** (ADR 0007). Gemini API over REST with the AI Studio key
     in `x-goog-api-key` (never `?key=`): `POST /v1beta/models/{model}:streamGenerateContent?alt=sse`
     with bodies from `bluey_protocols::gemini` — roles `user`/`model`, `systemInstruction`,
@@ -56,8 +60,12 @@ visionRequired, preferredRole)` over the user's role assignments
     **only** `thinkingConfig.thinkingLevel` (never `temperature`/`topP`/`topK`/`candidateCount`/
     `thinkingBudget`). Thinking policy: `deep` reasoning, `deep_reasoning`, `system_design` with
     reasoning ≥ light or a `deep` latency budget → `high`; `classification` / `ultra-fast` →
-    `minimal` on `gemini-3.5-flash-lite` (else `low`); `answer`/`vision` at `fast` → `low`;
-    everything else `medium` (the default, omitted). Embeddings via `batchEmbedContents` on
+    `minimal` on the models that accept it (3.5/3.6 Flash, the Flash-Lite line, the 3 Flash
+    preview; else `low`); `answer`/`vision` at `fast` → `low`; everything else `medium`. The
+    level is always sent explicitly because server defaults differ per model (Flash-Lite
+    defaults to `minimal`). Known limitation: assistant turns replayed as history carry no
+    `thoughtSignature` (accepted because the chat path sends no tools; reasoning continuity
+    across turns is not preserved). Embeddings via `batchEmbedContents` on
     `gemini-embedding-2`, MRL-truncated to `ai.embeddingDimensions` (768 default), with the
     documented prompt prefixes (`title: {title|none} | text: …` for chunks, `task: search result |
     query: …` for queries). Model listing pages `GET /models` and filters by role
@@ -68,9 +76,14 @@ visionRequired, preferredRole)` over the user's role assignments
     Error mapping: 400 `API_KEY_INVALID` → `config.api_key_invalid`; other 400 →
     `ai.invalid_request`; 403 → `config.http_403`; 404 → `config.model_not_found`; 429 →
     `network.http_429` with `details.retryAfterMs` and `details.dailyQuota` (a `quotaId`
-    containing `PerDay`); 5xx → `network.http_5xx`; refusals (`promptFeedback.blockReason` or an
-    error-class `finishReason`) → `ai.blocked_<reason>`. Retries: up to 3 attempts on 429/5xx
-    honouring `retryDelay` (never on 400/403/404); streams retry only before the first byte.
+    containing `PerDay`; a daily quota carries no Retry action); every 5xx → `network.http_5xx`;
+    refusals (`promptFeedback.blockReason` or an error-class `finishReason`) →
+    `ai.blocked_<reason>`; a stream that ends without a `finishReason`, stalls for 120 s, or
+    carries an `{"error": …}` event → `network.stream` / `network.timeout` (never a truncated
+    answer reported as complete). Retries: 3 attempts on 408/429/5xx honouring `retryDelay`
+    (a daily quota or a delay above 8 s ends the loop at once; never on 400/403/404); streams
+    retry only before the first byte; unary calls have a 60 s deadline (15 min for a batch
+    transcription).
   - `azure_foundry` — Microsoft Foundry's OpenAI-compatible **v1 GA** endpoint
     `https://{resource}.openai.azure.com/openai/v1/chat/completions` (no `api-version`;
     `api_version = "preview"` opts into v1 preview features, a dated value selects the legacy
@@ -140,17 +153,25 @@ use the Files API resumable upload (`upload/v1beta/files`, polled until `ACTIVE`
 after the call. `transcription::batch` turns the `audioTranscription` speaker turns into finalized
 `TranscriptSegment`s (`speaker = spk_n`, cut on speaker change / 1.5 s pauses / 40 words, estimated
 timings when the model returns none), stores them when privacy → store transcripts is on, and adds a
-`recording_imported` event to the session — the one given, or a new completed
-"Imported · <file>" session. Settings → Sessions → *Import recording…* / *Add recording*.
+`recording_imported` event to the session — the one given (segments start after its last
+stored segment), or a new completed "Imported · <file>" session. Uploads are deleted right after
+the call — also when the upload fails or times out; recordings above 512 MB are refused (convert
+to MP3/FLAC first); the service's 30-minute (with diarization/word timestamps) and 1-hour caps
+are enforced server-side and surface as `ai.invalid_request`. Nothing is created for a recording
+without speech (`transcription.no_speech`), and a new session requires session history to be on.
+Settings → Sessions → *Import recording…* / *Add recording*.
 
 ### Research
 
 Research Router → `none | search | search_scrape | deep_agent` (ADR 0004). `search`/`scrape`
 run in Rust (Exa `POST /search`, Firecrawl `POST /v2/scrape`); `deep_agent` spawns the Bun
-sidecar with the Claude Agent SDK and scoped tools. Public queries only. The Agent SDK is
-Claude-only (it drives Claude Code) — on Foundry via `CLAUDE_CODE_USE_FOUNDRY=1` and the
-`ANTHROPIC_FOUNDRY_*` variables (see `sidecars/agent/README.md`); it is never used for the
-latency-sensitive live paths, which stay on the direct provider adapters above.
+sidecar with scoped tools — `RESEARCH_BACKEND=gemini` (default: Gemini function calling over
+`@google/genai`, exactly `GEMINI_API_KEY` in its environment) or `claude` (the Claude Agent SDK,
+with the `ANTHROPIC_*` / Foundry variables; see `sidecars/agent/README.md`). The sidecar runs
+with a **cleared environment**: `PATH`/`HOME`/`TMPDIR`/`USER`/`LANG` plus the variables
+`AgentManager::job_env` passes for the selected backend, so `.env` keys loaded into Bluey's own
+process never reach it for the other backend. Public queries only; the sidecar is never used for
+the latency-sensitive live paths, which stay on the direct provider adapters above.
 
 ### Offline behaviour
 

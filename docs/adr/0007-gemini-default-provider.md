@@ -32,11 +32,19 @@ evaluate the product. The verified API facts Bluey codes against live in
    (`GEMINI_API_KEY`). The Live API WebSocket URL is the one place the key travels in the query
    string; it is redacted from every log line. The WebView bundle does not contain `@google/genai`
    and never talks to Gemini directly (ADR 0001).
-5. **`.env` import is one-shot and Keychain-first.** Keys found in the environment are copied
-   into the Keychain only when the Keychain has no entry for that provider, unless
-   `BLUEY_ENV_OVERRIDES_KEYCHAIN=1`. The import logs `imported api key for provider <id>` and
-   nothing else — never values, never lengths. The nominated provider is remembered as
-   `ai.bootstrapProvider` so Settings can explain where the configuration came from.
+5. **`.env` import is Keychain-first and never undoes Settings edits.** Keys found in the
+   environment are copied into the Keychain only when the Keychain has no entry for that
+   provider, unless `BLUEY_ENV_OVERRIDES_KEYCHAIN=1`. The import logs
+   `imported api key for provider <id>` and nothing else — never values, never lengths. The
+   nominated provider is remembered as `ai.bootstrapProvider`: an unchanged nomination only
+   fills unassigned roles, a changed `BLUEY_AI_PROVIDER` re-applies that provider's presets,
+   and the knobs (`BLUEY_EMBEDDING_DIMENSIONS`, `BLUEY_TRANSCRIPTION_PROVIDER`,
+   `RESEARCH_BACKEND`) apply on the first import or a changed nomination only. Existing
+   providers keep their enabled state and base URL (unless the base URL is set in the
+   environment). `bootstrapProvider` is also written by onboarding and the Settings → AI
+   default-provider select — it records whose presets were last applied.
+   Sidecars run with a cleared environment so the keys `.env` loads into Bluey's process reach
+   only the child that needs them.
 6. **Gemini 3.x request rules are enforced in the codec**, not scattered in adapters:
    `thinkingLevel` (never `thinkingBudget`, `temperature`, `topP`, `topK` or `candidateCount` on
    3.x models), roles `user`/`model` with `systemInstruction`, structured output through

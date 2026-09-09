@@ -98,17 +98,29 @@ struct RealtimeSession {
 #[async_trait]
 impl TranscriptionSession for RealtimeSession {
     async fn push_audio(&self, chunk: PcmChunk) -> BlueyResult<()> {
-        self.tx
-            .send(Command::Audio(chunk))
-            .await
-            .map_err(|_| session_closed())
+        // Never block the capture pipeline: a chunk that does not fit while the
+        // worker reconnects is dropped.
+        match self.tx.try_send(Command::Audio(chunk)) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(BlueyError::transcription(
+                "backpressure",
+                "the Voice Live session is not keeping up; dropping audio",
+            )),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(session_closed()),
+        }
     }
 
     async fn close(&self) {
-        let _ = self.tx.send(Command::Close).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.tx.send(Command::Close)).await;
         let task = self.task.lock().take();
-        if let Some(task) = task {
-            let _ = tokio::time::timeout(DRAIN_GRACE + Duration::from_secs(2), task).await;
+        if let Some(mut task) = task {
+            if tokio::time::timeout(DRAIN_GRACE + Duration::from_secs(2), &mut task)
+                .await
+                .is_err()
+            {
+                tracing::warn!("voice live worker did not finish draining; aborting it");
+                task.abort();
+            }
         }
     }
 }
@@ -174,33 +186,44 @@ impl Worker {
             Ok(socket) => socket,
             Err(error) => return self.fail(error).await,
         };
+        // Reconnects since the last transcript event (a healthy session resets it).
         let mut reconnects = 0u32;
+        // Voice Live deltas are increments; the interim shown to the user is the
+        // accumulated utterance, keyed by item id.
+        let mut partial: Option<(Option<String>, String)> = None;
         loop {
+            let mut reconnect = false;
             tokio::select! {
                 command = rx.recv() => match command {
                     None | Some(Command::Close) => break,
                     Some(Command::Audio(chunk)) => {
                         let frame = realtime::append_audio(&chunk.base64);
                         if socket.send(Message::Text(frame.to_string().into())).await.is_err() {
-                            reconnects += 1;
-                            if reconnects > MAX_CONNECT_ATTEMPTS {
-                                return self.fail(BlueyError::network("stream", "the Voice Live socket keeps closing")).await;
-                            }
-                            match self.connect().await {
-                                Ok(fresh) => socket = fresh,
-                                Err(error) => return self.fail(error).await,
-                            }
+                            reconnect = true;
                         }
                     }
                 },
                 message = socket.next() => match message {
                     Some(Ok(Message::Text(text))) => match realtime::parse_event(&text) {
-                        RealtimeEvent::Delta { text, .. } => {
-                            if !text.trim().is_empty() {
-                                let _ = self.sink.send(TranscriptionEvent::Interim { source: self.options.source, text }).await;
+                        RealtimeEvent::Delta { item_id, text } => {
+                            reconnects = 0;
+                            let accumulated = match &mut partial {
+                                Some((id, acc)) if *id == item_id => {
+                                    acc.push_str(&text);
+                                    acc.clone()
+                                }
+                                _ => {
+                                    partial = Some((item_id, text.clone()));
+                                    text
+                                }
+                            };
+                            if !accumulated.trim().is_empty() {
+                                let _ = self.sink.send(TranscriptionEvent::Interim { source: self.options.source, text: accumulated }).await;
                             }
                         }
                         RealtimeEvent::Completed { transcript, .. } => {
+                            reconnects = 0;
+                            partial = None;
                             if !transcript.trim().is_empty() {
                                 let _ = self.sink.send(TranscriptionEvent::Final { source: self.options.source, text: transcript, language: None }).await;
                             }
@@ -214,24 +237,31 @@ impl Worker {
                         RealtimeEvent::Other => {}
                     },
                     Some(Ok(Message::Close(_))) | None => {
-                        reconnects += 1;
-                        if reconnects > MAX_CONNECT_ATTEMPTS {
-                            return self.fail(BlueyError::network("stream", "the Voice Live socket keeps closing")).await;
-                        }
-                        match self.connect().await {
-                            Ok(fresh) => socket = fresh,
-                            Err(error) => return self.fail(error).await,
-                        }
+                        tracing::info!("voice live socket closed by the server; reconnecting");
+                        reconnect = true;
                     }
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
                         tracing::warn!(error = %error, "voice live socket error");
-                        match self.connect().await {
-                            Ok(fresh) => socket = fresh,
-                            Err(error) => return self.fail(error).await,
-                        }
+                        reconnect = true;
                     }
                 },
+            }
+            if reconnect {
+                reconnects += 1;
+                if reconnects > MAX_CONNECT_ATTEMPTS {
+                    return self
+                        .fail(BlueyError::network(
+                            "stream",
+                            "the Voice Live socket keeps closing",
+                        ))
+                        .await;
+                }
+                tokio::time::sleep(Duration::from_millis(400 * u64::from(reconnects))).await;
+                match self.connect().await {
+                    Ok(fresh) => socket = fresh,
+                    Err(error) => return self.fail(error).await,
+                }
             }
         }
         // Closing: give the service a moment to flush the last utterance.

@@ -158,6 +158,42 @@ impl SessionRepository {
         Ok(session)
     }
 
+    /// Insert an already-completed session (imported recordings): a single
+    /// statement, so it can never be observed as `active` and never disturbs
+    /// the live session.
+    pub fn create_completed(
+        db: &Database,
+        mode_id: &str,
+        title: Option<String>,
+    ) -> Result<Session, BlueyError> {
+        let now = now_iso();
+        let session = Session {
+            id: new_id("ses"),
+            mode_id: mode_id.to_string(),
+            started_at: now.clone(),
+            ended_at: Some(now),
+            status: SessionStatus::Completed,
+            title,
+            metadata: None,
+        };
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, mode_id, title, status, started_at, ended_at, metadata, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, NULL, ?5)",
+                params![
+                    session.id,
+                    session.mode_id,
+                    session.title,
+                    status_str(session.status),
+                    session.started_at
+                ],
+            )
+            .sql()?;
+            Ok(())
+        })?;
+        Ok(session)
+    }
+
     /// Fetch a session by id (`storage.not_found` when missing).
     pub fn get(db: &Database, id: &str) -> Result<Session, BlueyError> {
         let row = db.with_conn(|conn| {

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { describeImport, formatOffset, speakerLabel } from "@/features/settings/session-import";
+import {
+  canTranscribeFiles,
+  describeImport,
+  formatOffset,
+  speakerLabel,
+} from "@/features/settings/session-import";
+import { createDefaultSettings } from "@/lib/tauri/mock";
 import type { TranscribeFileResult } from "@/lib/types";
 
 function result(partial: Partial<TranscribeFileResult> = {}): TranscribeFileResult {
@@ -49,5 +55,29 @@ describe("session-import helpers", () => {
     expect(formatOffset(250_000)).toBe("04:10");
     expect(formatOffset(3_725_000)).toBe("1:02:05");
     expect(formatOffset(-5)).toBe("00:00");
+  });
+
+  it("allows file imports only when the transcription role runs on Gemini (or the dev mock)", () => {
+    const settings = createDefaultSettings();
+    expect(canTranscribeFiles(settings)).toBe(true); // seeded: gemini / gemini-3.5-transcribe
+
+    const onFoundry = {
+      ai: {
+        ...settings.ai,
+        models: { ...settings.ai.models, transcription: { providerId: "azure-foundry", model: "MAI-Transcribe-1.5" } },
+      },
+    };
+    expect(canTranscribeFiles(onFoundry)).toBe(false);
+    expect(canTranscribeFiles({ ai: { ...settings.ai, models: { ...settings.ai.models, transcription: null } } })).toBe(false);
+    expect(
+      canTranscribeFiles({
+        ai: {
+          ...settings.ai,
+          providers: [{ id: "mock", kind: "mock", name: "Mock", baseUrl: "", enabled: true, hasApiKey: false }],
+          models: { ...settings.ai.models, transcription: { providerId: "mock", model: "mock-default" } },
+        },
+      }),
+    ).toBe(true);
+    expect(canTranscribeFiles(null)).toBe(false);
   });
 });

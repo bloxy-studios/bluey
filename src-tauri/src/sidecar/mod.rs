@@ -97,11 +97,15 @@ impl HelperClient {
 
     async fn spawn_once(self: &Arc<Self>) -> BlueyResult<()> {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        // The helper needs no configuration from the environment; a cleared
+        // environment keeps `.env` keys loaded into Bluey's process away from it.
         let command = self
             .app
             .shell()
             .sidecar(HELPER_BIN)
-            .map_err(|e| BlueyError::sidecar("spawn", format!("cannot resolve helper: {e}")))?;
+            .map_err(|e| BlueyError::sidecar("spawn", format!("cannot resolve helper: {e}")))?
+            .env_clear()
+            .envs(child_base_env());
         let (rx, child) = command
             .spawn()
             .map_err(|e| BlueyError::sidecar("spawn", format!("cannot spawn helper: {e}")))?;
@@ -403,4 +407,24 @@ fn timeout_for(method: &str) -> Duration {
         "permissions.request" => Duration::from_secs(120),
         _ => Duration::from_secs(2),
     }
+}
+
+/// Variables a child process needs to run at all. Everything else — in
+/// particular the API keys `load_dotenv` puts into Bluey's own environment — is
+/// withheld from sidecars; whatever a child must know is passed explicitly.
+pub const CHILD_BASE_ENV: &[&str] = &[
+    "PATH", "HOME", "TMPDIR", "USER", "LOGNAME", "LANG", "LC_ALL",
+];
+
+/// The minimal environment for a spawned sidecar: [`CHILD_BASE_ENV`] copied
+/// from Bluey's environment when set.
+pub fn child_base_env() -> Vec<(String, String)> {
+    CHILD_BASE_ENV
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| (name.to_string(), value))
+        })
+        .collect()
 }

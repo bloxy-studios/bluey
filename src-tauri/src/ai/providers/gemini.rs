@@ -44,6 +44,14 @@ const MAX_MODEL_PAGES: usize = 10;
 /// Files API: how often / how long to wait for an upload to leave `PROCESSING`.
 const UPLOAD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const UPLOAD_POLL_ATTEMPTS: u32 = 30;
+/// Whole-request deadline for unary calls (embeddings, model list, Files API).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// A batch transcription of up to an hour of audio can take a while.
+const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Uploading a recording of up to 2 GB.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Longest silence between two SSE frames before the stream counts as stalled.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct GeminiProvider {
     http: reqwest::Client,
@@ -61,6 +69,15 @@ fn backoff(attempt: u32) -> Duration {
 
 fn cancelled() -> BlueyError {
     BlueyError::cancelled()
+}
+
+/// Up to 250 ms of jitter so parallel requests do not retry in lockstep.
+fn jitter() -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    Duration::from_millis(u64::from(nanos % 250))
 }
 
 impl GeminiProvider {
@@ -103,10 +120,14 @@ impl GeminiProvider {
             if token.map(|t| t.is_cancelled()).unwrap_or(false) {
                 return Err(cancelled());
             }
-            let response = build()
-                .send()
-                .await
-                .map_err(|e| map_transport_error(&e, HINT))?;
+            let sent = match token {
+                Some(token) => tokio::select! {
+                    _ = token.cancelled() => return Err(cancelled()),
+                    sent = build().send() => sent,
+                },
+                None => build().send().await,
+            };
+            let response = sent.map_err(|e| map_transport_error(&e, HINT))?;
             let status = response.status().as_u16();
             if status < 400 {
                 return Ok(response);
@@ -115,14 +136,22 @@ impl GeminiProvider {
             let body = response.text().await.unwrap_or_default();
             let parsed = proto::parse_error_body(&body);
             let error = proto::map_gemini_error(status, parsed.as_ref());
-            if attempt >= MAX_ATTEMPTS || !proto::is_retryable_status(status) {
+            let daily_quota = parsed
+                .as_ref()
+                .map(proto::GeminiError::is_daily_quota)
+                .unwrap_or(false);
+            let server_delay = parsed.as_ref().and_then(|e| e.retry_after);
+            // A daily quota cannot clear within a retry, and a server delay longer
+            // than the cap would only be honoured by waiting — the caller can
+            // decide that with the `retryAfterMs` detail instead.
+            if attempt >= MAX_ATTEMPTS
+                || !proto::is_retryable_status(status)
+                || daily_quota
+                || server_delay.map(|d| d > BACKOFF_CAP).unwrap_or(false)
+            {
                 return Err(error);
             }
-            let delay = parsed
-                .as_ref()
-                .and_then(|e| e.retry_after)
-                .unwrap_or_else(|| backoff(attempt))
-                .min(BACKOFF_CAP);
+            let delay = server_delay.unwrap_or_else(|| backoff(attempt)) + jitter();
             tracing::info!(
                 status,
                 attempt,
@@ -168,6 +197,7 @@ impl GeminiProvider {
             .send_with_retry(
                 || {
                     self.post(&start_url, &start_body)
+                        .timeout(REQUEST_TIMEOUT)
                         .header("X-Goog-Upload-Protocol", "resumable")
                         .header("X-Goog-Upload-Command", "start")
                         .header("X-Goog-Upload-Header-Content-Length", len.to_string())
@@ -193,6 +223,7 @@ impl GeminiProvider {
             .header("x-goog-api-key", &self.api_key)
             .header("X-Goog-Upload-Offset", "0")
             .header("X-Goog-Upload-Command", "upload, finalize")
+            .timeout(UPLOAD_TIMEOUT)
             .body(bytes)
             .send()
             .await
@@ -202,11 +233,31 @@ impl GeminiProvider {
             .text()
             .await
             .map_err(|e| map_transport_error(&e, HINT))?;
-        let parse = |text: &str| {
-            proto::parse_uploaded_file(text)
-                .map_err(|_| BlueyError::ai("upload_parse", "unexpected Files API response"))
-        };
-        let mut file = parse(&text)?;
+        let file = Self::parse_file(&text)?;
+        // From here on the recording exists at Google: whatever happens next, a
+        // failure must not leave it there for the 48-hour retention window.
+        let name = file.name.clone();
+        match self.await_active(file).await {
+            Ok(file) => Ok(file),
+            Err(error) => {
+                if !name.is_empty() {
+                    self.delete_file(&name).await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn parse_file(text: &str) -> BlueyResult<proto::UploadedFile> {
+        proto::parse_uploaded_file(text)
+            .map_err(|_| BlueyError::ai("upload_parse", "unexpected Files API response"))
+    }
+
+    /// Poll `GET …/files/{id}` until the upload leaves `PROCESSING`.
+    async fn await_active(
+        &self,
+        mut file: proto::UploadedFile,
+    ) -> BlueyResult<proto::UploadedFile> {
         let mut polls = 0u32;
         while file.is_processing() {
             polls += 1;
@@ -218,12 +269,14 @@ impl GeminiProvider {
             }
             tokio::time::sleep(UPLOAD_POLL_INTERVAL).await;
             let url = proto::file_url(&self.base_url, &file.name);
-            let response = self.send_with_retry(|| self.get(&url), None).await?;
+            let response = self
+                .send_with_retry(|| self.get(&url).timeout(REQUEST_TIMEOUT), None)
+                .await?;
             let text = response
                 .text()
                 .await
                 .map_err(|e| map_transport_error(&e, HINT))?;
-            file = parse(&text)?;
+            file = Self::parse_file(&text)?;
         }
         if file.is_failed() || file.uri.is_empty() {
             return Err(BlueyError::ai(
@@ -242,6 +295,7 @@ impl GeminiProvider {
             .http
             .delete(&url)
             .header("x-goog-api-key", &self.api_key)
+            .timeout(REQUEST_TIMEOUT)
             .send()
             .await
         {
@@ -261,7 +315,9 @@ impl GeminiProvider {
         url: &str,
         body: &serde_json::Value,
     ) -> BlueyResult<Transcription> {
-        let response = self.send_with_retry(|| self.post(url, body), None).await?;
+        let response = self
+            .send_with_retry(|| self.post(url, body).timeout(TRANSCRIBE_TIMEOUT), None)
+            .await?;
         let text = response
             .text()
             .await
@@ -328,7 +384,7 @@ impl AiProvider for GeminiProvider {
             let body =
                 proto::build_batch_embed_body(model, &prefixed, Some(self.embedding_dimensions));
             let response = self
-                .send_with_retry(|| self.post(&url, &body), None)
+                .send_with_retry(|| self.post(&url, &body).timeout(REQUEST_TIMEOUT), None)
                 .await?;
             let text = response
                 .text()
@@ -343,6 +399,15 @@ impl AiProvider for GeminiProvider {
                     "the embeddings response did not match the request",
                 ));
             }
+            if parsed
+                .iter()
+                .any(|vector| vector.len() as u32 != self.embedding_dimensions)
+            {
+                return Err(BlueyError::ai(
+                    "embeddings_dimensions",
+                    "the embeddings response did not use the configured dimensions",
+                ));
+            }
             vectors.extend(parsed);
         }
         Ok(vectors)
@@ -353,7 +418,9 @@ impl AiProvider for GeminiProvider {
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_MODEL_PAGES {
             let url = proto::models_url(&self.base_url, page_token.as_deref());
-            let response = self.send_with_retry(|| self.get(&url), None).await?;
+            let response = self
+                .send_with_retry(|| self.get(&url).timeout(REQUEST_TIMEOUT), None)
+                .await?;
             let text = response
                 .text()
                 .await
@@ -433,7 +500,18 @@ fn spawn_gemini_sse(response: reqwest::Response, token: CancellationToken) -> Ch
         loop {
             let frame = tokio::select! {
                 _ = token.cancelled() => break,
-                frame = events.next() => frame,
+                frame = tokio::time::timeout(STREAM_IDLE_TIMEOUT, events.next()) => match frame {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        let _ = tx
+                            .send(Err(BlueyError::network(
+                                "timeout",
+                                "the response stream stalled",
+                            )))
+                            .await;
+                        return;
+                    }
+                },
             };
             let Some(frame) = frame else { break };
             let frame = match frame {
@@ -451,9 +529,24 @@ fn spawn_gemini_sse(response: reqwest::Response, token: CancellationToken) -> Ch
             if frame.data.trim().is_empty() {
                 continue;
             }
+            // A mid-stream `{"error": …}` payload parses as an empty response;
+            // surface it as the error it is (body stays private).
+            if let Some(error) = proto::parse_error_body(&frame.data) {
+                let status = error.http_code.unwrap_or(500);
+                let _ = tx
+                    .send(Err(proto::map_gemini_error(status, Some(&error))))
+                    .await;
+                return;
+            }
             let chunk = match proto::parse_response(&frame.data) {
                 Ok(chunk) => chunk,
-                Err(_) => continue,
+                Err(_) => {
+                    tracing::debug!(
+                        bytes = frame.data.len(),
+                        "skipping an unparseable sse frame"
+                    );
+                    continue;
+                }
             };
             if let Some(reason) = chunk.block_reason.as_deref() {
                 let _ = tx.send(Err(proto::blocked_error(reason))).await;
@@ -481,9 +574,18 @@ fn spawn_gemini_sse(response: reqwest::Response, token: CancellationToken) -> Ch
                 break;
             }
         }
+        // Gemini always ends a stream with a `finishReason`; reaching EOF without
+        // one means the answer was cut off (proxy, server error) — say so rather
+        // than reporting a truncated answer as complete.
         if !finished_sent && !token.is_cancelled() {
-            let _ = tx.send(Ok(StreamItem::Finished(finish))).await;
+            let _ = tx
+                .send(Err(BlueyError::network(
+                    "stream",
+                    "the response stream ended before the model finished",
+                )))
+                .await;
         }
+        let _ = finish;
     });
     stream
 }

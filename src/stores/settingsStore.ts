@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
 import { toBlueyError, type BlueyError, type Settings, type SettingsPatch } from "@/lib/types";
 
@@ -9,7 +10,11 @@ interface SettingsStore {
   /** From `settings.changed` events. */
   applyRemote(settings: Settings): void;
   load(): Promise<void>;
-  /** Persist a patch through the backend; state is updated from the result. */
+  /**
+   * Persist a patch through the backend; state is updated from the result. Never throws:
+   * a failure is recorded in `lastError`, shown as an error toast and resolves `null`, so
+   * callers can fire-and-forget and only need the return value to confirm success.
+   */
   update(patch: SettingsPatch): Promise<Settings | null>;
   reset(): Promise<void>;
 }
@@ -31,7 +36,9 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
       set({ settings, lastError: null });
       return settings;
     } catch (error) {
-      set({ lastError: toBlueyError(error) });
+      const failure = toBlueyError(error, "configuration");
+      set({ lastError: failure });
+      showErrorToast(failure);
       return null;
     }
   },

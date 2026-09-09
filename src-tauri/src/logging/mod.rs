@@ -100,25 +100,43 @@ fn build_filter(level: &str) -> EnvFilter {
 
 // ── Secret redaction ─────────────────────────────────────────────────────────
 
-/// Mask secret-shaped substrings: `sk-…`, `fc-…`, `Bearer …` and
-/// `api-key: …` / `"api-key":"…"` values.
+/// Mask secret-shaped substrings: `sk-…`, `fc-…`, `AIza…` (Google API keys),
+/// `Bearer …`, `api-key: …` / `"api-key":"…"` values and `key=` URL queries
+/// (the Gemini Live WebSocket URL).
 pub fn redact(line: &str) -> String {
-    static PATTERNS: OnceLock<Vec<regex::Regex>> = OnceLock::new();
+    static PATTERNS: OnceLock<Vec<(regex::Regex, &'static str)>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| {
         vec![
-            regex::Regex::new(r"sk-[A-Za-z0-9_\-]{8,}").expect("valid regex"),
-            regex::Regex::new(r"fc-[A-Za-z0-9_\-]{8,}").expect("valid regex"),
-            regex::Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]{8,}").expect("valid regex"),
-            regex::Regex::new(r#"(?i)(api-key["':\s=]+)[A-Za-z0-9._\-]{8,}"#).expect("valid regex"),
+            (
+                regex::Regex::new(r"sk-[A-Za-z0-9_\-]{8,}").expect("valid regex"),
+                "[redacted]",
+            ),
+            (
+                regex::Regex::new(r"fc-[A-Za-z0-9_\-]{8,}").expect("valid regex"),
+                "[redacted]",
+            ),
+            (
+                regex::Regex::new(r"AIza[0-9A-Za-z_\-]{30,}").expect("valid regex"),
+                "[redacted]",
+            ),
+            (
+                regex::Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]{8,}").expect("valid regex"),
+                "[redacted]",
+            ),
+            (
+                regex::Regex::new(r#"(?i)(api-key["':\s=]+)[A-Za-z0-9._\-]{8,}"#)
+                    .expect("valid regex"),
+                "$1[redacted]",
+            ),
+            (
+                regex::Regex::new(r#"(?i)([?&]key=)[^&\s"']+"#).expect("valid regex"),
+                "$1[redacted]",
+            ),
         ]
     });
     let mut out = line.to_string();
-    for (i, pattern) in patterns.iter().enumerate() {
-        if i == 3 {
-            out = pattern.replace_all(&out, "$1[redacted]").into_owned();
-        } else {
-            out = pattern.replace_all(&out, "[redacted]").into_owned();
-        }
+    for (pattern, replacement) in patterns {
+        out = pattern.replace_all(&out, *replacement).into_owned();
     }
     out
 }

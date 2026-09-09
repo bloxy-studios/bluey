@@ -94,20 +94,50 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   tokens (card background `bg-elevated`).
 * **AI tab**: opens with **Default provider** — one select that re-points every role at the
   chosen provider's recommended models (Gemini first; ADR 0007) — then the provider cards
-  (Gemini first, "Default" accent badge on the nominated one). Each card: name + kind pill,
-  Edit, enable switch, hairline, write-only key field ("Key saved ••••" / Replace) with a
-  "Get a free key at aistudio.google.com/apikey" link for Gemini, a ghost
+  (Gemini first, "Default" accent badge on the nominated one). The select lists enabled
+  providers; those without a saved key are disabled with a "(no key)" suffix — the same rule
+  as the card's "Use recommended models" button — and the current default is always listed
+  even when it has lost its key or is disabled. Hint under it: "Switching applies the
+  provider's recommended models to every role." Each card: name + kind pill, Edit, enable
+  switch, hairline, write-only key field ("Key saved ••••" / Replace; Cancel discards the
+  typed draft) with a "Get a free key at aistudio.google.com/apikey" link for Gemini, a ghost
   "✦ Use recommended models" button (disabled until a key is saved) and "Test connection"
-  whose failures render as the standard error banner with its recovery button. The provider
-  dialog lists Gemini first, makes the base URL optional for Gemini/Anthropic and shows API
-  version + deployments only for Foundry. Models rows show the provider's catalogue for that
-  role and a link "Use <recommended>" when the assignment differs from the preset; an
+  whose failures render as the standard error banner with its recovery button (saving a key
+  clears a stale verdict). The provider dialog lists Gemini first, makes the base URL optional
+  for Gemini/Anthropic (placeholder shows the kind's public endpoint), shows API version +
+  deployments only for Foundry and locks the Kind for reserved ids (`gemini`, `azure-foundry`,
+  `anthropic`, `openai`). Models rows: provider select (disabled providers as disabled options;
+  an unassigned role starts on a "Choose provider" placeholder and saves only once both a
+  provider and a model exist — blur or Enter commits the model), the provider's catalogue for
+  that role, and a link "Use <recommended>" when the assignment differs from the preset; an
   "Embedding size" select (768 · 1536 · 3072) appears when embeddings run on Gemini. Research:
   Web search, Deep research agent, **Research backend** (Gemini / Claude — the Anthropic agent
   key field only for Claude), Exa / Firecrawl keys.
-* **Onboarding → Connect Gemini** (after Name): key field with the AI Studio link, "Gemini is
-  connected" once a key is stored, "Use another provider" (opens Settings → AI) and
-  "Skip for now"; Continue is enabled once a key exists (any provider) or the step is skipped.
+* **Audio tab**: setting rows Audio source (Microphone only / System audio only / both),
+  Microphone (input devices, default marked), Transcription language (Auto-detect + common
+  languages), Speaker identification switch, **Transcription provider** select — Gemini Live
+  (cloud, default; falls back to Apple without a Google key), Apple (on-device), Foundry Voice
+  Live (cloud, MAI-Transcribe) — and Voice activity sensitivity (Low / Medium / High). "Audio
+  check" section: Microphone test button that runs the level meter and reports the peak.
+* **Sessions tab**: search field with mode / date filters and a secondary
+  "Import recording…" button (disabled with the title "Assign the transcription role to Google
+  Gemini in Settings → AI to import recordings" unless the transcription role runs on Google
+  Gemini; the button reads "Transcribing…" while the file is processed and the new
+  "Imported · <file>" session opens when done). Rows: title + Live / Paused pill, mode ·
+  date, event / response counts, "Summary" pill, hover-revealed Delete (confirm dialog; the
+  live session cannot be deleted). **Session detail**: back button, inline rename (pencil;
+  Enter or blur commits, Escape cancels), "Add recording", "Export markdown", Delete; then
+  Timeline (expandable events), **Transcript** (mm:ss offset · speaker label — "Speaker n"
+  from diarization, otherwise You / Them by audio source · text; the most recent 300 segments
+  with a footer "Showing 300 of N segments."; a failed lookup shows a muted "Transcript
+  unavailable" instead of hiding the session), Responses, Notes (add on Enter) and Summary
+  (Generate / Regenerate).
+* **Onboarding → Connect Gemini** (after Name): key field with the AI Studio link; saving the
+  key stores it, applies Gemini's recommended models to unassigned roles and runs a
+  connection test — "Checking your key…" then "Gemini is connected", or the standard error
+  banner with Retry when the test fails (a key already stored is verified the same way);
+  "Use another provider" (opens Settings → AI) and "Skip for now"; Continue is enabled once a
+  key exists (any provider) or the step is skipped.
 * **About**: card with release note (title + date, bullet list), rows Help Center (Open ↗),
   Contact Support (Email ↗), Bluey Version (right-aligned version text).
 
@@ -178,10 +208,11 @@ Quit Bluey. Shows a listening/capturing indicator via the item text (e.g. "● L
 ## Onboarding window (760 × 560)
 
 Minimal centered steps with a 6px progress dots row at the top: Welcome → Sign in (Clerk) →
-Name your Bluey → Permissions (one screen per permission: What Bluey needs / Why / What it can
-access, buttons Continue + Open System Settings) → Choose default mode → Configure shortcuts →
-Test screen → Test microphone → Test AI → Ready. Typography: title 24px semibold, body 14px
-muted, primary button bottom-right, "Back" ghost bottom-left.
+Name your Bluey → Connect Gemini (see the AI notes above) → Permissions (one screen per
+permission: What Bluey needs / Why / What it can access, buttons Continue + Open System
+Settings) → Choose default mode → Configure shortcuts → Test screen → Test microphone →
+Test AI → Ready. Typography: title 24px semibold, body 14px muted, primary button
+bottom-right, "Back" ghost bottom-left.
 
 ## Motion
 

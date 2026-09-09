@@ -67,19 +67,12 @@ impl SessionManager {
     }
 
     /// A completed session for an imported recording, created without touching
-    /// the live session (no state transition, no `session.*` events).
+    /// the live session (single insert, never observable as active, no
+    /// `session.*` events).
     pub async fn create_imported(&self, title: String) -> BlueyResult<Session> {
         let mode_id = self.modes.active_id();
         self.storage
-            .run(move |db| {
-                let session = SessionRepository::create(db, &mode_id, Some(title))?;
-                SessionRepository::set_status(
-                    db,
-                    &session.id,
-                    SessionStatus::Completed,
-                    Some(now_iso()),
-                )
-            })
+            .run(move |db| SessionRepository::create_completed(db, &mode_id, Some(title)))
             .await
     }
 

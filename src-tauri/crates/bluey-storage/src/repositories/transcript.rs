@@ -242,6 +242,20 @@ impl TranscriptRepository {
         })
     }
 
+    /// End of the last stored segment of a session in ms (0 when none) — the
+    /// offset at which an imported recording is appended.
+    pub fn last_end_ms(db: &Database, session_id: &str) -> Result<u64, BlueyError> {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT MAX(end_time_ms) FROM transcript_segments WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .map(|v| v.unwrap_or(0).max(0) as u64)
+            .sql()
+        })
+    }
+
     /// Delete segments (all of them, or one session's). Returns the number of
     /// deleted rows; the FTS index is cleaned by trigger.
     pub fn clear(db: &Database, session_id: Option<&str>) -> Result<u64, BlueyError> {

@@ -59,6 +59,7 @@ impl SettingsManager {
         let mut new = old
             .apply_patch(&patch)
             .map_err(|e| bluey_core::BlueyError::invalid_params(format!("invalid patch: {e}")))?;
+        validate(&new)?;
         // Normalise shortcuts (drop unknown ids, fix accelerators).
         new.shortcuts = bluey_core::shortcuts::reconcile(&new.shortcuts);
         self.persist(&new).await?;
@@ -73,6 +74,7 @@ impl SettingsManager {
         let mut new = old
             .apply_patch(&patch)
             .map_err(|e| bluey_core::BlueyError::invalid_params(format!("invalid patch: {e}")))?;
+        validate(&new)?;
         new.shortcuts = bluey_core::shortcuts::reconcile(&new.shortcuts);
         let mut blob = new.clone();
         let providers = std::mem::take(&mut blob.ai.providers);
@@ -192,4 +194,15 @@ impl SettingsManager {
             .await?;
         Ok(new)
     }
+}
+
+/// Cross-field rules a patch from the WebView (or the `.env` import) must meet.
+fn validate(settings: &Settings) -> BlueyResult<()> {
+    if !bluey_core::presets::EMBEDDING_DIMENSION_CHOICES.contains(&settings.ai.embedding_dimensions)
+    {
+        return Err(bluey_core::BlueyError::invalid_params(
+            "ai.embeddingDimensions must be 768, 1536 or 3072",
+        ));
+    }
+    Ok(())
 }

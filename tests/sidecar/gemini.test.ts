@@ -5,6 +5,7 @@
  * refusals and API error mapping. Network-free.
  */
 
+import type { Part } from "@google/genai";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 
@@ -12,6 +13,7 @@ import type { GenerateFn, GenerateParams, GeminiStreamChunk } from "../../sideca
 import {
   functionDeclarations,
   GEMINI_REPORT_SCHEMA,
+  GeminiRunError,
   mapGeminiError,
   runGemini,
 } from "../../sidecars/agent/src/gemini";
@@ -249,6 +251,147 @@ describe("Gemini backend (injected generateContentStream)", () => {
     expect(error["kind"]).toBe("research");
     expect(harness.eventsNamed("research.toolCall")).toHaveLength(2);
     expect(await harness.done).toBe(0);
+  });
+
+  it("fails fast with gemini_empty_turn when a model turn has no parts (no follow-up request)", async () => {
+    let requests = 0;
+    const emptyTurn: GenerateFn = async () => {
+      requests += 1;
+      return chunks({ candidates: [{ content: { role: "model" }, finishReason: "STOP" }] });
+    };
+    const harness = makeHarness({ env: { GEMINI_API_KEY: "k" }, deps: { generateFn: emptyTurn, exaClient } });
+    harness.send({ id: 1, method: "research.run", params: runParams });
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed");
+    expect((failed["data"] as Frame)["error"]).toEqual({
+      code: "gemini_empty_turn",
+      kind: "research",
+      message: "Gemini returned an empty turn (check function-call ids/names)",
+    });
+    expect(requests).toBe(1);
+    expect(await harness.done).toBe(0);
+
+    // The classic trigger — an empty turn right after a function-response round-trip —
+    // surfaces through runGemini as the same error instead of a 400 on the next request.
+    let turn = 0;
+    const emptyAfterCall: GenerateFn = async () => {
+      turn += 1;
+      if (turn === 1) return chunks(callChunk("call-1", "exa_search", { query: "q" }));
+      return chunks({ candidates: [{ content: { role: "model", parts: [] } }] });
+    };
+    await expect(
+      runGemini({
+        model: "gemini-3.8-flash",
+        maxTurns: 6,
+        systemPrompt: "sys",
+        prompt: "prompt",
+        handlers: { exa_search: async () => ({ content: [{ type: "text", text: "[]" }] }) },
+        activeToolNames: ["exa_search"],
+        signal: new AbortController().signal,
+        generate: emptyAfterCall,
+        onTextDelta: () => {},
+        onToolCall: () => {},
+        onProgress: () => {},
+      }),
+    ).rejects.toSatisfy((err: unknown) => err instanceof GeminiRunError && err.code === "gemini_empty_turn");
+    expect(turn).toBe(2);
+  });
+
+  it("returns a tool error for function-call arguments that fail the tool schema instead of running the tool", async () => {
+    const seen: GenerateParams[] = [];
+    let searches = 0;
+    const spyingExa = {
+      async search() {
+        searches += 1;
+        return exaClient.search();
+      },
+    };
+    let turn = 0;
+    const generate: GenerateFn = async (params) => {
+      seen.push({ ...params, contents: [...params.contents] });
+      turn += 1;
+      if (params.config.responseJsonSchema) return chunks(textChunk(reportJson, "STOP"));
+      // `query` missing, `numResults` outside 1..10 — the Claude SDK's tool() would reject this too.
+      if (turn === 1) return chunks(callChunk("call-1", "exa_search", { numResults: 50 }));
+      return chunks(textChunk("giving up on tools", "STOP"));
+    };
+    const harness = makeHarness({
+      env: { GEMINI_API_KEY: "k" },
+      deps: { generateFn: generate, exaClient: spyingExa },
+    });
+    harness.send({ id: 1, method: "research.run", params: runParams });
+    await harness.waitFor(isEvent("research.completed"), "completed");
+    expect(await harness.done).toBe(0);
+
+    expect(searches).toBe(0);
+    // The call is still reported to Rust as issued …
+    expect((harness.eventsNamed("research.toolCall")[0]!["data"] as Frame)["input"]).toEqual({
+      numResults: 50,
+    });
+    // … and the model gets a functionResponse error naming the offending fields.
+    const response = seen[1]!.contents[2]!.parts?.[0]?.functionResponse;
+    expect(response?.id).toBe("call-1");
+    const error = String((response?.response as Record<string, unknown>)["error"]);
+    expect(error).toContain("exa_search error (invalid_arguments)");
+    expect(error).toContain("query");
+    expect(error).toContain("numResults");
+  });
+
+  it("firecrawl_scrape refuses non-http(s) URLs before touching the client", async () => {
+    const seen: GenerateParams[] = [];
+    const scraped: string[] = [];
+    const firecrawlClient = {
+      async scrape(url: string) {
+        scraped.push(url);
+        return { url, title: "Page", markdown: "# Page\n\nbody", truncated: false };
+      },
+    };
+    const call = (id: string, url: string): Part => ({
+      functionCall: { id, name: "firecrawl_scrape", args: { url } },
+    });
+    let turn = 0;
+    const generate: GenerateFn = async (params) => {
+      seen.push({ ...params, contents: [...params.contents] });
+      turn += 1;
+      if (params.config.responseJsonSchema) return chunks(textChunk(reportJson, "STOP"));
+      if (turn === 1) {
+        return chunks({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  call("c-file", "file:///etc/passwd"),
+                  call("c-js", "javascript:alert(1)"),
+                  call("c-bad", "not a url"),
+                  call("c-ok", "https://example.org/page"),
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        });
+      }
+      return chunks(textChunk("done", "STOP"));
+    };
+    const harness = makeHarness({
+      env: { GEMINI_API_KEY: "k" },
+      deps: { generateFn: generate, firecrawlClient },
+    });
+    harness.send({ id: 1, method: "research.run", params: { ...runParams, tools: ["firecrawl_scrape"] } });
+    await harness.waitFor(isEvent("research.completed"), "completed");
+    expect(await harness.done).toBe(0);
+
+    expect(scraped).toEqual(["https://example.org/page"]);
+    const responses = seen[1]!.contents[2]!.parts!.map((p) => p.functionResponse!);
+    expect(responses.map((r) => r.id)).toEqual(["c-file", "c-js", "c-bad", "c-ok"]);
+    const errors = responses.slice(0, 3).map((r) => String((r.response as Record<string, unknown>)["error"]));
+    for (const e of errors) expect(e).toContain("firecrawl_scrape error (invalid_arguments)");
+    expect(errors[0]).toContain("http");
+    expect(errors[1]).toContain("http");
+    expect(errors[2]).toContain("not a valid URL");
+    expect((responses[3]!.response as Record<string, unknown>)["result"]).toContain(
+      "https://example.org/page",
+    );
   });
 
   it("reports refusals as blocked", async () => {

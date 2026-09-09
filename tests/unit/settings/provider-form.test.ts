@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isPresetProviderId,
   newProviderFromDraft,
+  providerBaseUrlPlaceholder,
   providerNeedsBaseUrl,
   providerToDraft,
   PROVIDER_KIND_OPTIONS,
@@ -64,5 +66,15 @@ describe("provider form helpers", () => {
     const gemini: AIProviderConfig = { ...foundry, id: "gemini", kind: "google_gemini", name: "Google Gemini" };
     const custom: AIProviderConfig = { ...foundry, id: "custom", kind: "openai_compatible", name: "Local" };
     expect(sortProviders([custom, foundry, gemini]).map((p) => p.id)).toEqual(["gemini", "azure-foundry", "custom"]);
+  });
+
+  it("recognises reserved ids and suggests the right endpoint per kind", () => {
+    for (const id of ["gemini", "azure-foundry", "anthropic", "openai"]) expect(isPresetProviderId(id)).toBe(true);
+    expect(isPresetProviderId("provider-abc123")).toBe(false);
+
+    expect(providerBaseUrlPlaceholder("openai_compatible")).toBe("https://api.openai.com/v1");
+    expect(providerBaseUrlPlaceholder("azure_foundry")).toBe("https://my-resource.openai.azure.com");
+    expect(providerBaseUrlPlaceholder("google_gemini")).toBe("https://generativelanguage.googleapis.com/v1beta");
+    expect(providerBaseUrlPlaceholder("anthropic")).toBe("https://api.anthropic.com");
   });
 });

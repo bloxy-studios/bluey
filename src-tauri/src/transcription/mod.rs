@@ -128,11 +128,18 @@ impl FinalDedupe {
 }
 
 /// The Gemini model to open for live transcription: the assigned
-/// transcription-role model when it is a Live model, else the default.
+/// transcription-role model when it is a *transcribe* Live model, else the
+/// default. Conversational Live models (`gemini-3.1-flash-live-preview`, …)
+/// are not transcription models and are never opened here.
 pub fn gemini_live_model(assigned: Option<&str>) -> String {
     match assigned.map(str::trim) {
-        Some(model) if !model.is_empty() && model.to_ascii_lowercase().contains("live") => {
-            model.to_string()
+        Some(model) if !model.is_empty() => {
+            let lower = model.to_ascii_lowercase();
+            if lower.contains("transcribe") && lower.contains("live") {
+                model.to_string()
+            } else {
+                GEMINI_LIVE_MODEL.to_string()
+            }
         }
         _ => GEMINI_LIVE_MODEL.to_string(),
     }

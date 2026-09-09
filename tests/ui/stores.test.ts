@@ -1,10 +1,11 @@
 import { describe, expect, it, beforeEach } from "vitest";
 
+import { useToastStore } from "@/components/ui/toast-store";
 import type { AppStatus } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { makeResponse, setupMockApp } from "./helpers";
+import { makeResponse, setupInterceptedApp, setupMockApp } from "./helpers";
 
 function status(partial: Partial<AppStatus>): AppStatus {
   return { state: "ready", audioActive: false, modeId: "general", updatedAt: new Date().toISOString(), ...partial };
@@ -40,6 +41,23 @@ describe("settingsStore", () => {
     // other sections untouched by the deep merge
     expect(useSettingsStore.getState().settings?.general.blueyName).toBe("Bluey");
     expect(useSettingsStore.getState().settings?.audio.source).toBe("both");
+  });
+
+  it("surfaces a failed update as an error toast and resolves null instead of throwing", async () => {
+    const { transport } = await setupInterceptedApp();
+    useToastStore.setState({ toasts: [] });
+    transport.intercept("settings_update", async () => {
+      throw { kind: "storage", code: "storage.locked", message: "database is locked", recoverable: false };
+    });
+
+    const result = await useSettingsStore.getState().update({ general: { launchAtLogin: true } });
+
+    expect(result).toBeNull();
+    expect(useSettingsStore.getState().settings?.general.launchAtLogin).toBe(false);
+    expect(useSettingsStore.getState().lastError?.code).toBe("storage.locked");
+    expect(useToastStore.getState().toasts).toMatchObject([
+      { variant: "error", title: "Storage problem", message: "database is locked" },
+    ]);
   });
 });
 

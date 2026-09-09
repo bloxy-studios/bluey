@@ -25,6 +25,7 @@ use bluey_core::types::{
 };
 use bluey_core::{new_id, now_iso, BlueyError, BlueyResult};
 use bluey_protocols::helper::{DevicesResult, HelperEvent, TranscriptAssembler, WireTranscript};
+use bluey_protocols::voice_live::{self, TranscriptionTransport};
 use bluey_storage::TranscriptRepository;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -84,7 +85,7 @@ pub fn route_for(
         ),
         TranscriptionProviderKind::CloudRealtime => (
             TranscriptionRoute::Apple,
-            Some("no cloud transcription model with a stored key is configured"),
+            Some("cloud realtime transcription needs a Foundry MAI-Transcribe deployment with a stored key (the OpenAI realtime endpoint expects 24 kHz audio)"),
         ),
         TranscriptionProviderKind::Mock => (
             TranscriptionRoute::Apple,
@@ -98,6 +99,8 @@ struct ActiveStt {
     provider: Arc<dyn TranscriptionProvider>,
     model: String,
     language: Option<String>,
+    /// Sources whose provider session is being opened (chunks meanwhile are dropped).
+    opening: HashSet<AudioSource>,
     sessions: HashMap<AudioSource, Box<dyn TranscriptionSession>>,
     failed: HashSet<AudioSource>,
     sink: transcription::EventSink,
@@ -256,9 +259,42 @@ impl AudioManager {
             status.error = None;
         }
         let params = helper_start_params(&config, route);
+        // Reset per-session state and install the cloud transcription sink
+        // *before* the helper starts capturing, so the first PCM chunks are not
+        // dropped for lack of a session.
+        self.assembler.lock().reset();
+        self.partials.lock().clear();
+        self.chunk_times.lock().clear();
+        *self.config.lock() = Some(config.clone());
+        if route == TranscriptionRoute::Pcm {
+            if let Some((provider, model)) = cloud {
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<TranscriptionEvent>(512);
+                let this = self.clone();
+                let pump = tauri::async_runtime::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        this.on_stt_event(event).await;
+                    }
+                });
+                let language = Some(config.transcription.language.clone())
+                    .filter(|l| !l.is_empty() && l != "auto");
+                tracing::info!(provider = ?provider.kind(), model = %model, "cloud transcription active");
+                *self.stt.lock().await = Some(ActiveStt {
+                    provider,
+                    model,
+                    language,
+                    opening: HashSet::new(),
+                    sessions: HashMap::new(),
+                    failed: HashSet::new(),
+                    sink: tx,
+                    pump,
+                });
+            }
+        }
         let value = match self.helper.call("audio.start", params).await {
             Ok(value) => value,
             Err(error) => {
+                self.close_stt().await;
+                *self.config.lock() = None;
                 let mut status = self.status.lock();
                 status.state = AudioSessionState::Error;
                 status.error = Some(error.clone());
@@ -280,33 +316,6 @@ impl AudioManager {
             match self.sessions.start(None, None).await {
                 Ok(_) => self.auto_session.store(true, Ordering::SeqCst),
                 Err(e) => tracing::warn!(error = %e, "could not start a session for listening"),
-            }
-        }
-        self.assembler.lock().reset();
-        self.partials.lock().clear();
-        self.chunk_times.lock().clear();
-        *self.config.lock() = Some(config.clone());
-        if route == TranscriptionRoute::Pcm {
-            if let Some((provider, model)) = cloud {
-                let (tx, mut rx) = tokio::sync::mpsc::channel::<TranscriptionEvent>(512);
-                let this = self.clone();
-                let pump = tauri::async_runtime::spawn(async move {
-                    while let Some(event) = rx.recv().await {
-                        this.on_stt_event(event).await;
-                    }
-                });
-                let language = Some(config.transcription.language.clone())
-                    .filter(|l| !l.is_empty() && l != "auto");
-                tracing::info!(provider = ?provider.kind(), model = %model, "cloud transcription active");
-                *self.stt.lock().await = Some(ActiveStt {
-                    provider,
-                    model,
-                    language,
-                    sessions: HashMap::new(),
-                    failed: HashSet::new(),
-                    sink: tx,
-                    pump,
-                });
             }
         }
         let status = {
@@ -392,6 +401,14 @@ impl AudioManager {
                 ) {
                     return None;
                 }
+                // The OpenAI realtime endpoint expects 24 kHz audio the helper does
+                // not produce; deciding here (not at `open`) lets the session fall
+                // back to Apple instead of silently transcribing nothing.
+                if voice_live::transport_for_model(&assignment.model)
+                    == TranscriptionTransport::OpenaiRealtime
+                {
+                    return None;
+                }
                 let key = self
                     .secrets
                     .get(&provider_key(&provider.id))
@@ -423,33 +440,61 @@ impl AudioManager {
             timing.last_start_ms = chunk.start_ms;
             timing.last_end_ms = chunk.end_ms;
         }
-        let mut guard = self.stt.lock().await;
-        let Some(stt) = guard.as_mut() else { return };
-        if stt.failed.contains(&chunk.source) {
-            return;
-        }
-        if !stt.sessions.contains_key(&chunk.source) {
-            let options = SessionOptions {
-                source: chunk.source,
-                model: stt.model.clone(),
-                language: stt.language.clone(),
-                vocabulary: Vec::new(),
-            };
-            match stt.provider.open(options, stt.sink.clone()).await {
-                Ok(session) => {
-                    stt.sessions.insert(chunk.source, session);
-                }
-                Err(error) => {
-                    stt.failed.insert(chunk.source);
-                    self.bus.publish(BlueyEvent::AudioError(error));
-                    return;
-                }
+        let source = chunk.source;
+        // Fast path: a session exists — hand the chunk over (providers never
+        // block on `push_audio`, so holding the lock here is fine).
+        let (provider, options, sink) = {
+            let mut guard = self.stt.lock().await;
+            let Some(stt) = guard.as_mut() else { return };
+            if stt.failed.contains(&source) || stt.opening.contains(&source) {
+                return;
             }
-        }
-        if let Some(session) = stt.sessions.get(&chunk.source) {
-            if let Err(error) = session.push_audio(chunk).await {
-                tracing::debug!(error = %error, "dropping a pcm chunk");
+            if let Some(session) = stt.sessions.get(&source) {
+                if let Err(error) = session.push_audio(chunk).await {
+                    tracing::debug!(error = %error, "dropping a pcm chunk");
+                }
+                return;
             }
+            stt.opening.insert(source);
+            (
+                stt.provider.clone(),
+                SessionOptions {
+                    source,
+                    model: stt.model.clone(),
+                    language: stt.language.clone(),
+                    vocabulary: Vec::new(),
+                },
+                stt.sink.clone(),
+            )
+        };
+        // Slow path: open the provider session *without* holding the lock — a
+        // connect can take seconds and this runs on the helper event loop.
+        let opened = provider.open(options, sink).await;
+        let stale_session = {
+            let mut guard = self.stt.lock().await;
+            match guard.as_mut() {
+                Some(stt) => {
+                    stt.opening.remove(&source);
+                    match opened {
+                        Ok(session) => {
+                            if let Err(error) = session.push_audio(chunk).await {
+                                tracing::debug!(error = %error, "dropping a pcm chunk");
+                            }
+                            stt.sessions.insert(source, session);
+                        }
+                        Err(error) => {
+                            stt.failed.insert(source);
+                            self.bus.publish(BlueyEvent::AudioError(error));
+                        }
+                    }
+                    None
+                }
+                // Listening stopped while we were connecting.
+                None => opened.ok(),
+            }
+        };
+        if let Some(session) = stale_session {
+            session.close().await;
         }
     }
 
@@ -508,11 +553,21 @@ impl AudioManager {
     async fn close_stt(&self) {
         let active = self.stt.lock().await.take();
         if let Some(stt) = active {
-            for (_, session) in stt.sessions {
+            // Close every source in parallel (each may drain for a few seconds).
+            futures::future::join_all(stt.sessions.into_values().map(|session| async move {
                 session.close().await;
-            }
+            }))
+            .await;
             drop(stt.sink);
-            let _ = tokio::time::timeout(Duration::from_secs(3), stt.pump).await;
+            let mut pump = stt.pump;
+            if tokio::time::timeout(Duration::from_secs(3), &mut pump)
+                .await
+                .is_err()
+            {
+                // A provider clone of the sink is still alive somewhere: stop the
+                // pump so late events cannot land in a later session.
+                pump.abort();
+            }
         }
         self.chunk_times.lock().clear();
     }
@@ -540,6 +595,11 @@ impl AudioManager {
         *self.config.lock() = None;
         let status = {
             let mut status = self.status.lock();
+            // `stop()` and the helper's `audio.stopped{requested}` both land here;
+            // an already-stopped session is not stopped again (no duplicate events).
+            if status.state == AudioSessionState::Stopped && error.is_none() {
+                return status.clone();
+            }
             status.state = if error.is_some() {
                 AudioSessionState::Error
             } else {

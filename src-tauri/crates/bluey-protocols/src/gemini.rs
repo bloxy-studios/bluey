@@ -53,8 +53,16 @@ fn base(base_url: &str) -> &str {
     }
 }
 
+/// Bare model id for URL paths (a `models/` prefix, as returned by `GET /models`
+/// or typed into an override, would otherwise produce `/models/models/…`).
+fn model_id(model: &str) -> &str {
+    let m = model.trim();
+    m.strip_prefix("models/").unwrap_or(m)
+}
+
 /// `…/models/{model}:generateContent` or `…:streamGenerateContent?alt=sse`.
 pub fn generate_url(base_url: &str, model: &str, stream: bool) -> String {
+    let model = model_id(model);
     if stream {
         format!(
             "{}/models/{model}:streamGenerateContent?alt=sse",
@@ -67,12 +75,16 @@ pub fn generate_url(base_url: &str, model: &str, stream: bool) -> String {
 
 /// `…/models/{model}:embedContent`.
 pub fn embed_url(base_url: &str, model: &str) -> String {
-    format!("{}/models/{model}:embedContent", base(base_url))
+    format!("{}/models/{}:embedContent", base(base_url), model_id(model))
 }
 
 /// `…/models/{model}:batchEmbedContents`.
 pub fn batch_embed_url(base_url: &str, model: &str) -> String {
-    format!("{}/models/{model}:batchEmbedContents", base(base_url))
+    format!(
+        "{}/models/{}:batchEmbedContents",
+        base(base_url),
+        model_id(model)
+    )
 }
 
 /// `…/models?pageSize=200[&pageToken=…]`.
@@ -112,15 +124,20 @@ pub fn is_gemini_3(model: &str) -> bool {
     m.starts_with("gemini-3")
 }
 
-/// Whether `thinkingLevel: minimal` is accepted: the 3.5/3.6 Flash and the
-/// Flash-Lite line yes; 3.7/3.8 Flash and the 3.1 Pro preview return 400.
+/// Whether `thinkingLevel: minimal` is accepted. Allow-listed from the model
+/// table: the 3.5 and 3.6 Flash lines (Flash-Lite included), 3.1 Flash-Lite and
+/// the original 3 Flash preview. 3.7/3.8 Flash and every Pro return 400, and an
+/// unknown future id is assumed not to accept it (`low` is always safe).
 pub fn supports_minimal(model: &str) -> bool {
     let m = model.trim().to_ascii_lowercase();
     let m = m.strip_prefix("models/").unwrap_or(&m);
-    if !m.starts_with("gemini-3") || m.contains("pro") {
+    if m.contains("pro") {
         return false;
     }
-    !(m.starts_with("gemini-3.7") || m.starts_with("gemini-3.8"))
+    m.starts_with("gemini-3.5-")
+        || m.starts_with("gemini-3.6-")
+        || m.starts_with("gemini-3.1-flash-lite")
+        || m.starts_with("gemini-3-flash")
 }
 
 /// `generationConfig.thinkingConfig.thinkingLevel`.
@@ -151,7 +168,11 @@ impl ThinkingLevel {
 /// | `reasoning=deep`, `task=deep_reasoning`, `system_design` with reasoning ≥ light, `latency=deep` | `high` |
 /// | `task=classification` or `latency=ultra-fast` | `minimal` when the model accepts it, else `low` |
 /// | `task=answer`/`vision` with `latency=fast` | `low` |
-/// | everything else (balanced, coding, summarization, research) | `medium` (the default; omitted from the body) |
+/// | everything else (balanced, coding, summarization, research) | `medium` |
+///
+/// The level is always sent explicitly: server defaults differ per model
+/// (`gemini-3.5-flash-lite` defaults to `minimal`, some previews to `high`), so
+/// omitting `medium` would silently change the depth on those models.
 pub fn thinking_level_for(
     task: AiTask,
     latency: LatencyBudget,
@@ -214,7 +235,17 @@ pub fn build_generate_body(opts: &GenerateBodyOptions<'_>) -> Value {
                 } else {
                     "model"
                 };
-                let parts: Vec<Value> = message.content.iter().map(part_to_json).collect();
+                // Empty text parts and empty messages are rejected by the API (400);
+                // they can appear when an empty previous answer is replayed as history.
+                let parts: Vec<Value> = message
+                    .content
+                    .iter()
+                    .filter(|part| !matches!(part, AiContentPart::Text { text } if text.trim().is_empty()))
+                    .map(part_to_json)
+                    .collect();
+                if parts.is_empty() {
+                    continue;
+                }
                 contents.push(json!({ "role": role, "parts": parts }));
             }
         }
@@ -234,12 +265,10 @@ pub fn build_generate_body(opts: &GenerateBodyOptions<'_>) -> Value {
         config.insert("maxOutputTokens".into(), json!(max));
     }
     if let Some(level) = opts.thinking_level {
-        if level != ThinkingLevel::Medium {
-            config.insert(
-                "thinkingConfig".into(),
-                json!({ "thinkingLevel": level.as_str() }),
-            );
-        }
+        config.insert(
+            "thinkingConfig".into(),
+            json!({ "thinkingLevel": level.as_str() }),
+        );
     }
     if let Some(spec) = opts.output_schema {
         config.insert("responseMimeType".into(), json!("application/json"));
@@ -616,9 +645,16 @@ pub fn map_gemini_error(http_status: u16, error: Option<&GeminiError>) -> BlueyE
                 details.insert("quotaId".into(), json!(quota));
             }
             details.insert("dailyQuota".into(), json!(daily));
-            BlueyError::network("http_429", message).with_details(Value::Object(details))
+            // A daily quota cannot be retried within the process lifetime, so it
+            // carries no Retry action; per-minute limits do.
+            let error = if daily {
+                BlueyError::new(BlueyErrorKind::Network, "network.http_429", message)
+            } else {
+                BlueyError::network("http_429", message)
+            };
+            error.with_details(Value::Object(details))
         }
-        500 | 502 | 503 | 504 => BlueyError::network(
+        500..=599 => BlueyError::network(
             "http_5xx",
             format!("the Gemini API is unavailable (HTTP {http_status}) — try again"),
         ),
@@ -629,9 +665,9 @@ pub fn map_gemini_error(http_status: u16, error: Option<&GeminiError>) -> BlueyE
     }
 }
 
-/// Whether a failed non-streaming call may be retried (429 / 5xx only).
+/// Whether a failed call may be retried: 408, 429 and every 5xx.
 pub fn is_retryable_status(http_status: u16) -> bool {
-    matches!(http_status, 408 | 429 | 500 | 502 | 503 | 504)
+    matches!(http_status, 408 | 429 | 500..=599)
 }
 
 // ── Embeddings ───────────────────────────────────────────────────────────────
@@ -785,15 +821,18 @@ pub fn parse_models_page(
 }
 
 /// Whether a model is a sensible candidate for a Bluey role: embeddings need
-/// `embedContent`; transcription needs `bidiGenerateContent` on a `transcribe`
-/// model; text roles need `generateContent` on a non-TTS/image/live/embedding/
-/// transcribe model.
+/// `embedContent`; transcription needs a `transcribe` model (the unary batch
+/// model or the Live one); text roles need `generateContent` on a
+/// non-TTS/image/live/embedding/transcribe model.
 pub fn role_filter(role: ModelRole, info: &ModelInfo) -> bool {
     let id = info.id.to_ascii_lowercase();
     let supports = |method: &str| info.supported_methods.iter().any(|m| m == method);
     match role {
         ModelRole::Embedding => supports("embedContent"),
-        ModelRole::Transcription => supports("bidiGenerateContent") && id.contains("transcribe"),
+        ModelRole::Transcription => {
+            id.contains("transcribe")
+                && (supports("generateContent") || supports("bidiGenerateContent"))
+        }
         _ => {
             supports("generateContent")
                 && !id.contains("tts")
@@ -1511,13 +1550,24 @@ mod tests {
     }
 
     #[test]
-    fn medium_thinking_is_the_default_and_omitted() {
+    fn medium_thinking_is_sent_explicitly() {
         let messages = vec![text(AiRole::User, "hi")];
         let body = build_generate_body(&GenerateBodyOptions {
             thinking_level: Some(ThinkingLevel::Medium),
-            ..options("gemini-3.8-flash", &messages)
+            ..options("gemini-3.5-flash-lite", &messages)
         });
-        assert!(body.get("generationConfig").is_none());
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "medium",
+            "flash-lite defaults to minimal, so medium must be explicit"
+        );
+        let body = build_generate_body(&GenerateBodyOptions {
+            thinking_level: None,
+            ..options("gemini-2.5-flash", &messages)
+        });
+        assert!(
+            body.get("generationConfig").is_none(),
+            "pre-3 models: no thinking config"
+        );
         let body = build_generate_body(&GenerateBodyOptions {
             thinking_level: Some(ThinkingLevel::High),
             ..options("gemini-3.8-flash", &messages)
@@ -1775,7 +1825,8 @@ mod tests {
         assert_eq!(ids(ModelRole::Vision), vec!["gemini-3.8-flash"]);
         assert_eq!(
             ids(ModelRole::Transcription),
-            vec!["gemini-3.5-transcribe-live"]
+            vec!["gemini-3.5-transcribe-live", "gemini-3.5-transcribe"],
+            "both the Live and the unary batch transcribe models fit the role"
         );
         assert_eq!(ids(ModelRole::Embedding), vec!["gemini-embedding-2"]);
 
@@ -2108,5 +2159,117 @@ mod transcribe_tests {
         assert!(empty.turns.is_empty());
         assert_eq!(empty.plain_text(), "");
         assert!(parse_transcription("not json").is_err());
+    }
+}
+
+#[cfg(test)]
+mod review_fix_tests {
+    use super::*;
+    use bluey_core::types::{AiMessage, AiRole};
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn model_prefix_is_stripped_from_urls() {
+        assert_eq!(
+            generate_url("", "models/gemini-3.8-flash", false),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+        );
+        assert_eq!(
+            batch_embed_url("", " models/gemini-embedding-2 "),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:batchEmbedContents"
+        );
+        assert_eq!(
+            embed_url("", "gemini-embedding-2"),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent"
+        );
+    }
+
+    #[test]
+    fn empty_parts_and_messages_are_not_forwarded() {
+        let messages = vec![
+            AiMessage::text(AiRole::User, "hello"),
+            AiMessage::text(AiRole::Assistant, "   "),
+            AiMessage {
+                role: AiRole::User,
+                content: Vec::new(),
+            },
+            AiMessage::text(AiRole::User, "again"),
+        ];
+        let body = build_generate_body(&GenerateBodyOptions {
+            model: "gemini-3.8-flash",
+            messages: &messages,
+            max_output_tokens: None,
+            temperature: None,
+            output_schema: None,
+            thinking_level: None,
+        });
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0]["parts"][0]["text"], "hello");
+        assert_eq!(contents[1]["parts"][0]["text"], "again");
+    }
+
+    #[test]
+    fn minimal_is_allow_listed_not_guessed() {
+        assert!(supports_minimal("gemini-3.5-flash-lite"));
+        assert!(supports_minimal("models/gemini-3.5-flash"));
+        assert!(supports_minimal("gemini-3.6-flash"));
+        assert!(supports_minimal("gemini-3.1-flash-lite"));
+        assert!(supports_minimal("gemini-3-flash-preview"));
+        assert!(!supports_minimal("gemini-3.8-flash"));
+        assert!(!supports_minimal("gemini-3.7-flash"));
+        assert!(!supports_minimal("gemini-3.1-pro-preview"));
+        assert!(
+            !supports_minimal("gemini-3.9-flash"),
+            "unknown ids fall back to low"
+        );
+        assert!(!supports_minimal("gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn every_5xx_is_a_retryable_network_error_and_daily_quota_is_not_retried() {
+        for status in [500u16, 501, 502, 503, 504, 521, 599] {
+            let e = map_gemini_error(status, None);
+            assert_eq!(e.code, "network.http_5xx", "{status}");
+            assert!(is_retryable_status(status), "{status}");
+        }
+        assert!(is_retryable_status(408));
+        assert!(!is_retryable_status(418) && !is_retryable_status(400));
+        let daily = GeminiError {
+            quota_id: Some("GenerateRequestsPerDayPerProjectPerModel-FreeTier".into()),
+            ..GeminiError::default()
+        };
+        let e = map_gemini_error(429, Some(&daily));
+        assert_eq!(e.code, "network.http_429");
+        assert!(!e.recoverable, "a daily quota has no Retry action");
+        assert_eq!(e.details.unwrap()["dailyQuota"], true);
+        let minute = map_gemini_error(429, None);
+        assert_eq!(minute.recovery, Some(RecoveryAction::Retry));
+    }
+
+    #[test]
+    fn transcription_role_accepts_the_unary_batch_model() {
+        let batch = ModelInfo {
+            id: "gemini-3.5-transcribe".into(),
+            display_name: None,
+            supported_methods: vec!["generateContent".into()],
+            input_token_limit: None,
+        };
+        let live = ModelInfo {
+            id: "gemini-3.5-transcribe-live".into(),
+            display_name: None,
+            supported_methods: vec!["bidiGenerateContent".into()],
+            input_token_limit: None,
+        };
+        let chat = ModelInfo {
+            id: "gemini-3.8-flash".into(),
+            display_name: None,
+            supported_methods: vec!["generateContent".into()],
+            input_token_limit: None,
+        };
+        assert!(role_filter(ModelRole::Transcription, &batch));
+        assert!(role_filter(ModelRole::Transcription, &live));
+        assert!(!role_filter(ModelRole::Transcription, &chat));
+        assert!(!role_filter(ModelRole::Default, &batch));
     }
 }

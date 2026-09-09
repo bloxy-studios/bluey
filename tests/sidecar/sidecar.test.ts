@@ -7,7 +7,9 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 
-import type { QueryFn } from "../../sidecars/agent/src/agent";
+import { sanitizeErrorMessage, type QueryFn } from "../../sidecars/agent/src/agent";
+import type { BuildVariant } from "../../sidecars/agent/src/config";
+import type { GenerateFn } from "../../sidecars/agent/src/gemini";
 import { startSidecar, type StartSidecarOptions } from "../../sidecars/agent/src/main";
 
 type Frame = Record<string, unknown>;
@@ -109,12 +111,20 @@ const hangingQueryFn: QueryFn = ({ options }) => ({
   },
 });
 
-describe.each([
+const mockCases: Array<{ backend: string; env: Record<string, string>; buildVariant?: BuildVariant }> = [
   { backend: "gemini", env: { BLUEY_AGENT_MOCK: "1" } },
   { backend: "claude", env: { BLUEY_AGENT_MOCK: "1", RESEARCH_BACKEND: "claude" } },
-])("sidecar end-to-end (mock mode, $backend backend)", ({ env }) => {
+  // The lite build's Claude pre-flight must not get in the way of mock mode (no CLI is spawned).
+  {
+    backend: "claude, lite build",
+    env: { BLUEY_AGENT_MOCK: "1", RESEARCH_BACKEND: "claude" },
+    buildVariant: "lite",
+  },
+];
+
+describe.each(mockCases)("sidecar end-to-end (mock mode, $backend backend)", ({ env, buildVariant }) => {
   it("runs a full research job over the protocol and exits cleanly", async () => {
-    const harness = makeHarness({ env });
+    const harness = makeHarness({ env, buildVariant });
     harness.send(baseRun);
 
     const accepted = await harness.waitFor((f) => f["id"] === 1, "accepted response");
@@ -159,7 +169,7 @@ describe.each([
   });
 
   it("serves document_read through the document.request/response round-trip", async () => {
-    const harness = makeHarness({ env });
+    const harness = makeHarness({ env, buildVariant });
     harness.send({
       ...baseRun,
       params: {
@@ -290,6 +300,30 @@ describe("sidecar configuration failures", () => {
     expect(await harness.done).toBe(0);
   });
 
+  it("on the lite build, RESEARCH_BACKEND=claude without BLUEY_CLAUDE_CLI fails with invalid_configuration naming BLUEY_CLAUDE_CLI", async () => {
+    // Credentials are fine; only the CLI is missing. Without the pre-flight this would reach
+    // the SDK, which throws a raw "Native CLI binary … not found" error.
+    const harness = makeHarness({
+      env: { ...stubKeys, ANTHROPIC_API_KEY: "sk-lite-secret" },
+      buildVariant: "lite",
+    });
+    harness.send(baseRun);
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    const error = (failed["data"] as Frame)["error"] as Frame;
+    expect(error["code"]).toBe("invalid_configuration");
+    expect(error["kind"]).toBe("configuration");
+    expect(error["message"]).toContain("BLUEY_CLAUDE_CLI");
+    expect(error["message"]).toContain("BLUEY_AGENT_VARIANT=full");
+    expect(JSON.stringify(harness.frames)).not.toContain("sk-lite-secret");
+    // Nothing but started + failed: no agent session was attempted.
+    expect(harness.frames.filter((f) => f["event"]).map((f) => f["event"])).toEqual([
+      "research.started",
+      "research.failed",
+    ]);
+    expect(await harness.done).toBe(0);
+  });
+
   it("on Microsoft Foundry, fails with invalid_configuration when no resource/base URL is set", async () => {
     const harness = makeHarness({
       env: { ...stubKeys, CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_API_KEY: "foundry-secret" },
@@ -302,6 +336,62 @@ describe("sidecar configuration failures", () => {
     expect(error["kind"]).toBe("configuration");
     expect(error["message"]).toContain("ANTHROPIC_FOUNDRY_RESOURCE");
     expect(JSON.stringify(harness.frames)).not.toContain("foundry-secret");
+    expect(await harness.done).toBe(0);
+  });
+});
+
+describe("sidecar error hygiene", () => {
+  const leakedKey = "AIzaSyD-1234567890abcdefghijklmnopqrstuv";
+
+  it("sanitizeErrorMessage strips JSON bodies and key-like values and caps the length", () => {
+    const raw =
+      'got status: 400 . {"error":{"code":400,"message":"API key not valid. Prompt was: SECRET PROMPT","status":"INVALID_ARGUMENT"}} ' +
+      `url https://g.example/v1beta/models/x:streamGenerateContent?alt=sse&key=${leakedKey} ` +
+      `Authorization: Bearer sk-ant-api03-${"x".repeat(40)} ` +
+      "y".repeat(500);
+    const clean = sanitizeErrorMessage(raw);
+    expect(clean.length).toBeLessThanOrEqual(200);
+    expect(clean).toContain("got status: 400");
+    expect(clean).not.toContain("{");
+    expect(clean).not.toContain("SECRET PROMPT");
+    expect(clean).not.toContain("AIza");
+    expect(clean).not.toContain("sk-ant");
+    expect(clean).toContain("key=[redacted]");
+    expect(clean).toContain("Bearer [redacted]");
+    expect(clean.endsWith("…")).toBe(true);
+    // Short, harmless messages pass through unchanged; blanks get a placeholder.
+    expect(sanitizeErrorMessage("socket hang up")).toBe("socket hang up");
+    expect(sanitizeErrorMessage("   ")).toBe("unknown error");
+    expect(sanitizeErrorMessage("x-goog-api-key=abc123 token=t0k3n")).toBe(
+      "x-goog-api-key=[redacted] token=[redacted]",
+    );
+  });
+
+  it("forwards status-less Gemini SDK errors as agent_execution_failed with a sanitized message", async () => {
+    // No `status` → mapGeminiError leaves it alone → the generic fallback path.
+    const leaky: GenerateFn = async () => {
+      throw new Error(
+        'TypeError: fetch failed {"body":"SECRET PROMPT ECHO"} while calling ' +
+          `https://g.example/models?key=${leakedKey} ` +
+          "z".repeat(400),
+      );
+    };
+    const harness = makeHarness({
+      env: { GEMINI_API_KEY: leakedKey, EXA_API_KEY: "e", FIRECRAWL_API_KEY: "f" },
+      deps: { generateFn: leaky },
+    });
+    harness.send(baseRun);
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    const error = (failed["data"] as Frame)["error"] as Frame;
+    expect(error["code"]).toBe("agent_execution_failed");
+    expect(error["kind"]).toBe("research");
+    const message = error["message"] as string;
+    expect(message.length).toBeLessThanOrEqual(200);
+    expect(message).toContain("fetch failed");
+    expect(message).not.toContain("SECRET PROMPT ECHO");
+    expect(message).not.toContain("{");
+    expect(JSON.stringify(harness.frames)).not.toContain(leakedKey);
     expect(await harness.done).toBe(0);
   });
 });

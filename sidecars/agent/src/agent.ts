@@ -29,7 +29,12 @@ import { z } from "zod";
 
 import { CitationStore } from "./citations";
 import { resolveClaudeCliPath } from "./cli-path";
-import { checkModelCredentials, type AgentConfig } from "./config";
+import {
+  checkClaudeCliAvailable,
+  checkModelCredentials,
+  type AgentConfig,
+  type BuildVariant,
+} from "./config";
 import { createGeminiGenerate, GeminiRunError, mapGeminiError, runGemini, type GenerateFn } from "./gemini";
 import { createMockGeminiGenerate, createMockQueryFn } from "./mock";
 import {
@@ -40,7 +45,7 @@ import {
   type WireCitation,
 } from "./protocol";
 import { buildSystemPrompt } from "./system-prompt";
-import { TOOL_SPECS } from "./tool-specs";
+import { TOOL_INPUT_SCHEMAS, TOOL_SPECS, type ToolInput } from "./tool-specs";
 import { DocumentBroker } from "./tools/documents";
 import { ToolError } from "./tools/errors";
 import { createExaClient, type ExaClient } from "./tools/exa";
@@ -74,6 +79,12 @@ export interface AgentRunDeps {
   firecrawlClient?: FirecrawlClient;
   /** Passed by the compiled per-target entrypoint (embedded CLI binary). */
   embeddedClaudePath?: string;
+  /**
+   * How this binary was built (`lite` = no embedded Claude CLI). Set by the
+   * compiled entrypoints; undefined when running un-bundled in dev, where the
+   * SDK may still find the CLI in node_modules.
+   */
+  buildVariant?: BuildVariant;
   /** Base environment (defaults to process.env). */
   env?: Record<string, string | undefined>;
 }
@@ -190,6 +201,76 @@ function toolFailure(err: unknown, label: string): TextToolResult {
       ? `${label} error (${err.code}): ${err.message}`
       : `${label} error: ${err instanceof Error ? err.message : String(err)}`;
   return { content: [{ type: "text", text: message }], isError: true };
+}
+
+/**
+ * Validate a tool call's arguments against the shared zod shape. The Claude
+ * SDK does this inside `tool()` before invoking the handler; Gemini function-
+ * call arguments arrive unchecked, so every handler validates itself. Invalid
+ * input becomes a tool error the model can act on — a tool is never run with
+ * defaults substituted for missing or malformed arguments.
+ */
+function parseToolInput<Name extends ResearchToolName>(
+  name: Name,
+  input: Record<string, unknown>,
+): { ok: true; data: ToolInput<Name> } | { ok: false; failure: TextToolResult } {
+  const parsed = TOOL_INPUT_SCHEMAS[name].safeParse(input);
+  if (parsed.success) return { ok: true, data: parsed.data as ToolInput<Name> };
+  const detail = parsed.error.issues
+    .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
+    .join("; ");
+  return { ok: false, failure: toolFailure(new ToolError("invalid_arguments", detail), name) };
+}
+
+const URL_ECHO_MAX_CHARS = 120;
+
+/**
+ * Only web pages can be scraped: `new URL()` happily accepts `file:`,
+ * `javascript:` or `data:` URLs, so the scheme is checked explicitly. Returns
+ * the problem to report to the model, or undefined when the URL is fine.
+ */
+function invalidHttpUrl(url: string): string | undefined {
+  const shown = url.length > URL_ECHO_MAX_CHARS ? `${url.slice(0, URL_ECHO_MAX_CHARS)}…` : url;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `"${shown}" is not a valid URL`;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return `"${shown}" is not an http(s) URL — only http:// and https:// pages can be scraped`;
+  }
+  return undefined;
+}
+
+const ERROR_MESSAGE_MAX_CHARS = 200;
+
+/**
+ * Make arbitrary SDK/runtime error text safe for the protocol: drop anything
+ * that looks like a JSON response body (status-less ApiErrors embed them, and
+ * bodies can echo prompt text), redact API keys and `key=` / `token=` values,
+ * collapse whitespace and cap the length. Known error codes never come through
+ * here — only the generic `agent_execution_failed` fallback and the free-text
+ * detail of Claude Code result errors do.
+ */
+export function sanitizeErrorMessage(message: string): string {
+  let text = message;
+  const open = text.indexOf("{");
+  const close = text.lastIndexOf("}");
+  if (open !== -1 && close > open) {
+    text = `${text.slice(0, open)}[response body removed]${text.slice(close + 1)}`;
+  }
+  text = text
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[redacted]")
+    .replace(/sk-ant-[0-9A-Za-z_-]{10,}/g, "[redacted]")
+    .replace(/\b((?:api[_-]?)?key|token|authorization)=[^\s&"'`]+/gi, "$1=[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length > ERROR_MESSAGE_MAX_CHARS) {
+    text = `${text.slice(0, ERROR_MESSAGE_MAX_CHARS - 1)}…`;
+  }
+  return text || "unknown error";
 }
 
 /** Fallback: final text that happens to be our JSON shape. */
@@ -330,13 +411,11 @@ export function startResearchJob(
       handlers.exa_search = async (input) => {
         if (!exa)
           return toolFailure(new ToolError("missing_api_key", "EXA_API_KEY is not set"), "exa_search");
-        const queryText = str(input["query"]) ?? "";
+        const parsed = parseToolInput("exa_search", input);
+        if (!parsed.ok) return parsed.failure;
+        const { query: queryText, numResults, startPublishedDate } = parsed.data;
         try {
-          const results = await exa.search({
-            query: queryText,
-            numResults: typeof input["numResults"] === "number" ? input["numResults"] : undefined,
-            startPublishedDate: str(input["startPublishedDate"]),
-          });
+          const results = await exa.search({ query: queryText, numResults, startPublishedDate });
           for (const r of results) store.add({ title: r.title, url: r.url, snippet: r.snippet });
           progress(`exa_search: ${results.length} result(s) for "${queryText}"`);
           return toolText(
@@ -372,14 +451,12 @@ export function startResearchJob(
             new ToolError("missing_api_key", "FIRECRAWL_API_KEY is not set"),
             "firecrawl_scrape",
           );
-        const url = str(input["url"]) ?? "";
-        try {
-          new URL(url); // validate before hitting the API
-        } catch {
-          return toolFailure(
-            new ToolError("invalid_response", `"${url}" is not a valid URL`),
-            "firecrawl_scrape",
-          );
+        const parsed = parseToolInput("firecrawl_scrape", input);
+        if (!parsed.ok) return parsed.failure;
+        const { url } = parsed.data;
+        const urlProblem = invalidHttpUrl(url); // validate before hitting the API
+        if (urlProblem) {
+          return toolFailure(new ToolError("invalid_arguments", urlProblem), "firecrawl_scrape");
         }
         try {
           const page = await firecrawl.scrape(url);
@@ -396,7 +473,9 @@ export function startResearchJob(
 
     if (request.tools.includes("document_read")) {
       handlers.document_read = async (input) => {
-        const documentId = str(input["documentId"]) ?? "";
+        const parsed = parseToolInput("document_read", input);
+        if (!parsed.ok) return parsed.failure;
+        const { documentId } = parsed.data;
         try {
           const text = await broker.read(documentId);
           progress(`document_read: loaded "${documentId}" (${text.length} chars)`);
@@ -485,7 +564,9 @@ export function startResearchJob(
     const errors = Array.isArray(m["errors"])
       ? (m["errors"] as unknown[]).filter((e): e is string => typeof e === "string")
       : [];
-    const detail = errors.length ? `: ${errors[0]}` : "";
+    // Claude Code error strings can embed API response bodies — same hygiene as the generic path.
+    const firstError = errors[0];
+    const detail = firstError ? `: ${sanitizeErrorMessage(firstError)}` : "";
     switch (subtype) {
       case "error_max_turns":
         emitFailed("max_turns_exceeded", `research stopped after ${turns} turns${detail}`, "research");
@@ -681,7 +762,12 @@ export function startResearchJob(
     const usingInjectedModel =
       config.mockMode || Boolean(config.backend === "gemini" ? deps.generateFn : deps.queryFn);
     if (!usingInjectedModel) {
-      const problem = checkModelCredentials(config);
+      const problem =
+        checkModelCredentials(config) ??
+        checkClaudeCliAvailable(config, {
+          variant: deps.buildVariant,
+          embeddedClaudePath: deps.embeddedClaudePath,
+        });
       if (problem) {
         emitFailed(problem.code, problem.message, "configuration");
         return;
@@ -717,8 +803,10 @@ export function startResearchJob(
         emitFailed(err.code, err.message, err.kind);
         return;
       }
+      // Arbitrary SDK/runtime text (status-less ApiErrors embed response
+      // bodies, URLs can carry key= values) — never forwarded verbatim.
       const message = err instanceof Error ? err.message : String(err);
-      emitFailed("agent_execution_failed", message, "research");
+      emitFailed("agent_execution_failed", sanitizeErrorMessage(message), "research");
     })
     .finally(() => {
       broker.close();

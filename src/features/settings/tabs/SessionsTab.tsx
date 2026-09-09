@@ -17,8 +17,9 @@ import { cn } from "@/lib/utils/cn";
 import { formatDateTime } from "@/lib/utils/format";
 import { useModesStore } from "@/stores/modesStore";
 import { useSessionStore } from "@/stores/sessionStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { SessionDetail } from "../SessionDetail";
-import { importRecording } from "../session-import";
+import { canTranscribeFiles, IMPORT_DISABLED_HINT, importRecording } from "../session-import";
 
 type DateFilter = "all" | "today" | "week";
 
@@ -41,6 +42,7 @@ const STATUS_LABEL: Record<SessionListItem["session"]["status"], string | null> 
 export default function SessionsTab() {
   const modes = useModesStore((s) => s.modes);
   const activeSessionId = useSessionStore((s) => s.active?.id);
+  const canImport = useSettingsStore((s) => canTranscribeFiles(s.settings));
   const [items, setItems] = useState<SessionListItem[]>([]);
   const [text, setText] = useState("");
   const [modeId, setModeId] = useState("");
@@ -154,7 +156,13 @@ export default function SessionsTab() {
             { value: "week", label: "Past week" },
           ]}
         />
-        <Button variant="secondary" size="sm" disabled={importing} onClick={() => void importNewRecording()}>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={importing || !canImport}
+          title={canImport ? undefined : IMPORT_DISABLED_HINT}
+          onClick={() => void importNewRecording()}
+        >
           <FileAudio className="size-3.5" aria-hidden /> {importing ? "Transcribing…" : "Import recording…"}
         </Button>
       </div>

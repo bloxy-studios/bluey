@@ -135,8 +135,11 @@ impl AgentManager {
             }
             ResearchBackend::Claude => {
                 env.push(("RESEARCH_BACKEND".into(), "claude".into()));
-                if let Some(key) = self.secrets.get(AGENT_ANTHROPIC_KEY).await? {
-                    env.push(("ANTHROPIC_API_KEY".into(), key));
+                match self.secrets.get(AGENT_ANTHROPIC_KEY).await? {
+                    Some(key) => env.push(("ANTHROPIC_API_KEY".into(), key)),
+                    // The sidecar runs with a cleared environment, so a key that
+                    // only lives in Bluey's `.env` must be forwarded explicitly.
+                    None => push_passthrough(&mut env, &["ANTHROPIC_API_KEY"]),
                 }
                 push_passthrough(&mut env, CLAUDE_PASSTHROUGH_ENV);
             }
@@ -212,7 +215,11 @@ impl AgentManager {
                 "this job is already running",
             ));
         }
-        let env = self.job_env().await?;
+        // Exactly one backend's credentials (ADR 0007): the sidecar gets a
+        // cleared environment plus what `job_env` decided — never Bluey's own
+        // environment with every `.env` key in it.
+        let mut env = crate::sidecar::child_base_env();
+        env.extend(self.job_env().await?);
         let job_id = request.job_id.clone();
         let model = self.research_model();
 
@@ -223,6 +230,7 @@ impl AgentManager {
             .map_err(|e| {
                 BlueyError::sidecar("spawn", format!("cannot resolve the agent sidecar: {e}"))
             })?
+            .env_clear()
             .envs(env);
         let (rx, mut child) = command.spawn().map_err(|e| {
             BlueyError::sidecar("spawn", format!("cannot spawn the agent sidecar: {e}"))
@@ -303,6 +311,10 @@ impl AgentManager {
         match jsonl::parse_line(text) {
             Ok(Incoming::Event { event, data }) => match proto::parse_agent_event(&event, data) {
                 Some(AgentEvent::Research(research_event)) => {
+                    if !self.jobs.lock().contains_key(job_id) {
+                        tracing::debug!(job = %job_id, "ignoring an event for a finished job");
+                        return;
+                    }
                     let terminal = matches!(
                         research_event,
                         DeepResearchEvent::Completed { .. } | DeepResearchEvent::Failed { .. }
@@ -381,17 +393,15 @@ impl AgentManager {
     }
 
     fn finish(&self, job_id: &str) {
-        // The process exits on its own after a terminal event; make sure it does.
-        let jobs = self.jobs.clone();
-        let job_id = job_id.to_string();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(CANCEL_GRACE).await;
-            if let Some(job) = jobs.lock().remove(&job_id) {
-                if let Some(child) = job.child {
-                    let _ = child.kill();
-                }
-            }
-        });
+        // The job is over: forget it now — so its `Terminated` is not reported
+        // as a failure — and make sure the process really exits.
+        let child = self.jobs.lock().remove(job_id).and_then(|job| job.child);
+        if let Some(child) = child {
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(CANCEL_GRACE).await;
+                let _ = child.kill();
+            });
+        }
     }
 
     fn spawn_watchdog(self: &Arc<Self>, job_id: String) {
@@ -406,15 +416,29 @@ impl AgentManager {
                 .unwrap_or(false);
             if running {
                 tracing::warn!(job = %job_id, "research job hit the wall-clock cap");
-                if this.cancel(&job_id).await {
-                    this.publish_failed(
-                        &job_id,
-                        BlueyError::research(
-                            "timeout",
-                            "the research job took too long and was stopped",
-                        ),
+                // Forget the job first so the sidecar's own `failed{cancelled}`
+                // is not reported on top of the timeout.
+                let child = this.jobs.lock().remove(&job_id).and_then(|job| job.child);
+                if let Some(mut child) = child {
+                    let id = format!("r-{}", this.next_request_id.fetch_add(1, Ordering::SeqCst));
+                    let line = jsonl::encode_request(
+                        &id,
+                        "research.cancel",
+                        proto::research_cancel_params(&job_id),
                     );
+                    let _ = child.write(format!("{line}\n").as_bytes());
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(CANCEL_GRACE).await;
+                        let _ = child.kill();
+                    });
                 }
+                this.publish_failed(
+                    &job_id,
+                    BlueyError::research(
+                        "timeout",
+                        "the research job took too long and was stopped",
+                    ),
+                );
             }
         });
     }

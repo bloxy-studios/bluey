@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Bluey deep-research agent sidecar (Claude Agent SDK, compiled with bun build --compile)",
+  "description": "Bluey deep-research agent sidecar (Gemini (default) or Claude Agent SDK, compiled with bun build --compile)",
   "scripts": {
     "build": "bash ../../scripts/build-agent.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",

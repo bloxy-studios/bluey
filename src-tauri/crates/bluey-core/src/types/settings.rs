@@ -186,7 +186,9 @@ impl Default for AudioSettings {
             microphone_device_id: None,
             transcription_language: "auto".into(),
             speaker_identification: true,
-            transcription_provider: TranscriptionProviderKind::Apple,
+            // Gemini Live by default (ADR 0007); the audio manager falls back to
+            // Apple Speech — with an `stt_fallback` notice — when no Google key is stored.
+            transcription_provider: TranscriptionProviderKind::GeminiLive,
             vad_sensitivity: VadSensitivity::Medium,
         }
     }
