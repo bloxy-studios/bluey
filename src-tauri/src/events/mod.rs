@@ -1,6 +1,8 @@
 //! The in-process event bus: a tokio broadcast channel of
 //! [`bluey_core::events::BlueyEvent`] plus the forwarder task that mirrors
-//! every event onto the Tauri event system (`bluey:<name>`).
+//! every event onto the Tauri event system under
+//! [`BlueyEvent::tauri_event_name`] (`bluey:` + the dotted name with `.` → `/`;
+//! Tauri v2 rejects dots in event names).
 
 use std::sync::Arc;
 
@@ -47,8 +49,10 @@ impl EventSink for EventBus {
     }
 }
 
-/// Spawn the forwarder task that emits every bus event to the WebView as
-/// `bluey:<name>` with the exact contract payload.
+/// Spawn the forwarder task that emits every bus event to the WebView under
+/// its Tauri wire name (`bluey:app/state`, `bluey:auth/changed`, …) with the
+/// exact contract payload. An emit failure is logged — it would mean a wire
+/// name Tauri rejects, which `bluey_core::events` tests rule out.
 pub fn spawn_forwarder(app: AppHandle, bus: Arc<EventBus>) {
     let mut rx = bus.subscribe();
     tauri::async_runtime::spawn(async move {

@@ -142,6 +142,14 @@ fn all_events() -> Vec<BlueyEvent> {
         BlueyEvent::AppError(err.clone()),
         BlueyEvent::SettingsChanged(Settings::default()),
         BlueyEvent::PermissionsChanged(PermissionState::unknown(crate::now_iso())),
+        BlueyEvent::AuthChanged(AuthStatus {
+            state: AuthState::SignedOut,
+            user: None,
+            has_stored_session: false,
+            configured: true,
+            sign_in_pending: false,
+            checked_at: crate::now_iso(),
+        }),
         BlueyEvent::HelperStatus {
             running: true,
             version: None,
@@ -255,11 +263,12 @@ fn all_events() -> Vec<BlueyEvent> {
 
 /// Hard-coded copy of EVENT_NAMES from `src/lib/tauri/events.ts`.
 /// Keep in sync with the frontend.
-const EVENT_NAMES: [&str; 45] = [
+const EVENT_NAMES: [&str; 46] = [
     "app.state",
     "app.error",
     "settings.changed",
     "permissions.changed",
+    "auth.changed",
     "helper.status",
     "screen.changed",
     "screen.captured",
@@ -314,9 +323,34 @@ fn names_match_frontend_event_list_exactly() {
 }
 
 #[test]
-fn tauri_event_names_are_prefixed() {
-    let e = BlueyEvent::PanelNewChat;
-    assert_eq!(e.tauri_event_name(), "bluey:panel.newChat");
+fn tauri_event_names_are_prefixed_and_slash_separated() {
+    assert_eq!(
+        BlueyEvent::PanelNewChat.tauri_event_name(),
+        "bluey:panel/newChat"
+    );
+    assert_eq!(
+        tauri_event_name_for("audio.deviceChanged"),
+        "bluey:audio/deviceChanged"
+    );
+}
+
+/// Tauri v2 rejects event names outside `[A-Za-z0-9-/:_]`; a dot in a wire
+/// name means `emit` fails and the WebView never hears the event.
+#[test]
+fn every_wire_name_is_accepted_by_tauri() {
+    assert!(is_valid_tauri_event_name("bluey:app/state"));
+    assert!(!is_valid_tauri_event_name("bluey:app.state"));
+    assert!(!is_valid_tauri_event_name(""));
+    let rejected: Vec<String> = all_events()
+        .iter()
+        .map(BlueyEvent::tauri_event_name)
+        .filter(|wire| !is_valid_tauri_event_name(wire))
+        .collect();
+    assert_eq!(
+        rejected,
+        Vec::<String>::new(),
+        "wire names Tauri would reject"
+    );
 }
 
 #[test]

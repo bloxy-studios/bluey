@@ -3,6 +3,11 @@
 //! [`EventSink`]; the Tauri layer forwards them as `emit(tauri_event_name(),
 //! payload())`. Payload shapes mirror the TypeScript `EventMap` exactly
 //! (camelCase fields, same nesting).
+//!
+//! Wire names: Tauri v2 only accepts `[A-Za-z0-9-/:_]` in event names — no
+//! dots — so the dotted contract name travels as `bluey:` + name with `.`
+//! replaced by `/` (`"transcript.final"` → `"bluey:transcript/final"`), see
+//! [`tauri_event_name_for`]. `tauriEventName` in `events.ts` is the mirror.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +19,24 @@ use crate::types::{
     Settings, ShortcutId, TranscriptSegment,
 };
 
-/// Prefix every Tauri event name carries (`bluey:` + dotted name).
+/// Prefix every Tauri event name carries (see [`tauri_event_name_for`]).
 pub const EVENT_PREFIX: &str = "bluey:";
+
+/// Tauri wire name of a dotted contract event name: `bluey:` + the name with
+/// `.` → `/`, because Tauri v2 rejects dots in event names
+/// (`"transcript.final"` → `"bluey:transcript/final"`).
+pub fn tauri_event_name_for(name: &str) -> String {
+    format!("{EVENT_PREFIX}{}", name.replace('.', "/"))
+}
+
+/// Whether Tauri v2 accepts `name` as an event name
+/// (`[A-Za-z0-9-/:_]+`).
+pub fn is_valid_tauri_event_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '/' | ':' | '_'))
+}
 
 /// Scroll direction for `panel.scroll`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -275,9 +296,10 @@ impl BlueyEvent {
         }
     }
 
-    /// Full Tauri event name: `"bluey:" + name()`.
+    /// Full Tauri event name — [`tauri_event_name_for`] of [`Self::name`]
+    /// (`"bluey:transcript/final"`).
     pub fn tauri_event_name(&self) -> String {
-        format!("{EVENT_PREFIX}{}", self.name())
+        tauri_event_name_for(self.name())
     }
 
     /// JSON payload in the exact shape the frontend expects (camelCase).

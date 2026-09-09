@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { COMMAND_NAMES } from "@/lib/tauri/commands";
-import { EVENT_NAMES } from "@/lib/tauri/events";
+import { EVENT_NAMES, tauriEventName } from "@/lib/tauri/events";
 
 const ROOT = resolve(__dirname, "../..");
 
@@ -61,10 +61,29 @@ describe("command surface parity (TS contract ⇄ Rust generate_handler!)", () =
 });
 
 describe("event surface parity (events.ts ⇄ bluey_core::events)", () => {
+  const eventsDir = resolve(ROOT, "src-tauri/crates/bluey-core/src/events");
+
   it("every TS event name appears in the Rust event module", () => {
-    const eventsDir = resolve(ROOT, "src-tauri/crates/bluey-core/src/events");
     const source = readFileSync(resolve(eventsDir, "mod.rs"), "utf8");
     const missing = EVENT_NAMES.filter((name) => !source.includes(`"${name}"`));
     expect(missing, `event names missing in Rust: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("the Rust test copy of EVENT_NAMES matches events.ts exactly (same order)", () => {
+    const source = readFileSync(resolve(eventsDir, "tests.rs"), "utf8");
+    const body = /const EVENT_NAMES: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(source)?.[1];
+    expect(body, "EVENT_NAMES array not found in tests.rs").toBeDefined();
+    const rust = [...(body ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "");
+    expect(rust).toEqual([...EVENT_NAMES]);
+  });
+
+  // Tauri v2 rejects event names outside [A-Za-z0-9-/:_]: a dot in a wire name
+  // means `emit` fails and the WebView never hears the event.
+  it("maps every event to a name Tauri accepts", () => {
+    const allowed = /^[A-Za-z0-9\-/:_]+$/;
+    const rejected = EVENT_NAMES.map(tauriEventName).filter((wire) => !allowed.test(wire));
+    expect(rejected, `wire names Tauri would reject: ${rejected.join(", ")}`).toEqual([]);
+    expect(tauriEventName("panel.newChat")).toBe("bluey:panel/newChat");
+    expect(tauriEventName("audio.deviceChanged")).toBe("bluey:audio/deviceChanged");
   });
 });
