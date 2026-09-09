@@ -32,7 +32,7 @@ the mode you're in, and prepares concise, useful help before you even ask.
 * **Native macOS feel** — NSPanel HUD across Spaces and fullscreen apps, menu bar item,
   configurable global shortcuts, Retina/multi-display aware, dark/light, reduced motion.
 
-Bluey is a personal tool: **no billing, subscriptions or teams.** Sign-in uses Clerk.
+Bluey is a personal tool: **no billing, subscriptions or teams.** Sign-in uses Clerk, in your browser.
 
 ## Stack
 Tauri v2 · Rust (tokio, rusqlite, reqwest) · Swift native helper (ScreenCaptureKit, Vision,
@@ -48,7 +48,7 @@ macOS 14+ (Apple Silicon or Intel). To build: Xcode Command Line Tools, Bun ≥ 
 ## Quick start
 ```bash
 bun install
-cp .env.example .env          # VITE_CLERK_PUBLISHABLE_KEY + GEMINI_API_KEY (imported into the Keychain on first run; other providers optional)
+cp .env.example .env          # VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the key is imported into the Keychain on first run)
 bun run build:helpers         # Swift helper + research agent sidecars
 bun run tauri:dev
 ```
@@ -79,6 +79,6 @@ conflict detection.
   every capture path; Bluey never attempts to defeat monitoring software.
 * System audio capture requires Screen Recording permission (ScreenCaptureKit).
 * Speaker identification is derived from audio channel (you vs. others) — not true diarization.
-* Clerk does not officially support Tauri; Bluey uses Clerk's native (non-standard-browser) mode
-  with documented fallbacks (see ADR 0003).
+* Sign-in runs in the system browser (Clerk as OAuth/OIDC provider, PKCE, `bluey://` deep link
+  back into the app — ADR 0008); nothing from Clerk runs inside the WebView.
 * Notifications permission is only available in a signed, bundled app.

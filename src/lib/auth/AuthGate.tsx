@@ -1,9 +1,9 @@
-import { SignIn } from "@clerk/react";
 import { KeyRound } from "lucide-react";
 import { type ReactNode } from "react";
 
 import { BlueyMark } from "@/components/BlueyMark";
 import { Spinner } from "@/components/ui/Spinner";
+import { BrowserSignIn } from "./BrowserSignIn";
 import { useAuthStatus } from "./useAuthStatus";
 
 function CenteredShell({ children }: { children: ReactNode }) {
@@ -15,7 +15,7 @@ function CenteredShell({ children }: { children: ReactNode }) {
   );
 }
 
-/** Shown when Clerk is not configured on a real build (never crashes). */
+/** Shown when sign-in is not configured on a real build (never crashes). */
 function ConfigurationScreen() {
   return (
     <CenteredShell>
@@ -26,7 +26,7 @@ function ConfigurationScreen() {
           </div>
           <div>
             <h1 className="text-[15px] font-semibold text-fg">Sign-in isn't configured</h1>
-            <p className="text-[13px] text-fg-muted">Bluey needs a Clerk publishable key to start.</p>
+            <p className="text-[13px] text-fg-muted">Bluey needs a Clerk instance and a public OAuth app to start.</p>
           </div>
         </div>
         <ol className="mt-4 list-decimal space-y-2 pl-5 text-[13px] leading-relaxed text-fg-muted">
@@ -35,8 +35,9 @@ function ConfigurationScreen() {
             <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">.env</code>
           </li>
           <li>
-            Set <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">VITE_CLERK_PUBLISHABLE_KEY</code> from
-            your Clerk dashboard
+            Set <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">VITE_CLERK_PUBLISHABLE_KEY</code> and{" "}
+            <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">BLUEY_CLERK_OAUTH_CLIENT_ID</code> from your
+            Clerk dashboard (see docs/DEVELOPMENT.md)
           </li>
           <li>Restart Bluey</li>
         </ol>
@@ -48,7 +49,7 @@ function ConfigurationScreen() {
 function SignInScreen() {
   return (
     <CenteredShell>
-      <SignIn routing="hash" />
+      <BrowserSignIn />
     </CenteredShell>
   );
 }
@@ -74,21 +75,21 @@ function HudSignInPrompt() {
 
 export interface AuthGateProps {
   children: ReactNode;
-  /** "hud" keeps the gate compact (the HUD panel cannot host `<SignIn />`). */
+  /** "hud" keeps the gate compact (the HUD panel cannot host the sign-in card). */
   variant?: "full" | "hud";
 }
 
 /**
  * Gates window content on authentication:
- * unconfigured → setup screen · signed out → Clerk `<SignIn />` (or a compact
- * HUD prompt) · unknown → spinner · signed in / dev mode → children.
+ * unconfigured → setup screen · signed out → browser sign-in card (or a compact
+ * HUD prompt) · unknown / not loaded → spinner · signed in / dev mode → children.
  */
 export function AuthGate({ children, variant = "full" }: AuthGateProps) {
-  const { mode, state } = useAuthStatus();
+  const { mode, state, loaded } = useAuthStatus();
 
-  if (mode === "unconfigured") return <ConfigurationScreen />;
-  if (mode === "dev") return <>{children}</>;
-  if (state === "unknown") {
+  if (loaded && mode === "unconfigured") return <ConfigurationScreen />;
+  if (loaded && mode === "dev") return <>{children}</>;
+  if (!loaded || state === "unknown") {
     return variant === "hud" ? null : (
       <CenteredShell>
         <Spinner size={18} />

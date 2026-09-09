@@ -59,6 +59,15 @@ import {
 
 const now = () => new Date().toISOString();
 
+/** The identity the simulated browser sign-in returns. */
+const MOCK_AUTH_USER: AuthUser = {
+  id: "user_mock_jordan",
+  email: "jordan@example.com",
+  firstName: "Jordan",
+  lastName: "Lee",
+  imageUrl: undefined,
+};
+
 /** What the native picker "returns" in the mock. */
 const MOCK_RECORDING_PATH = "/Users/jordan/Recordings/standup.wav";
 /** Canned two-speaker recording for `ai_transcribe_file`. */
@@ -132,8 +141,15 @@ export class MockTransport implements Transport {
   private cancelled = new Set<string>();
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private nextAiFailure: string | null = null;
-  private clientToken: string | null = null;
+  /** Simulate a configured Clerk OAuth app (browser sign-in); off by default so tests run as the dev user. */
+  authConfigured = false;
+  /** How the next simulated browser round-trip ends. */
+  nextSignInOutcome: "success" | "denied" | "hang" = "success";
+  /** Times the Account Portal was opened (assertable in tests). */
+  accountPortalOpens = 0;
   private authUser: AuthUser | null = null;
+  private authTokens = false;
+  private signInPending = false;
 
   private permissions: PermissionState = {
     microphone: "granted",
@@ -247,6 +263,17 @@ export class MockTransport implements Transport {
   }
 
   /* ── helpers ─────────────────────────────────────────────────────────── */
+
+  private authStatus(): AuthStatus {
+    return {
+      state: this.authUser ? "signed_in" : "signed_out",
+      user: this.authUser ?? undefined,
+      hasStoredSession: this.authTokens,
+      configured: this.authConfigured,
+      signInPending: this.signInPending,
+      checkedAt: now(),
+    };
+  }
 
   private delay(ms: number): Promise<void> {
     if (ms <= 0 || this.streamDelayMs === 0) return Promise.resolve();
@@ -655,28 +682,57 @@ export class MockTransport implements Transport {
       this.log("info", "app", "quit requested (ignored in mock)");
     },
 
-    // Auth
-    auth_get_status: (): AuthStatus => ({
-      state: this.authUser ? "signed_in" : "signed_out",
-      user: this.authUser ?? undefined,
-      hasStoredSession: this.clientToken !== null,
-      checkedAt: now(),
-    }),
-    auth_store_session: (args) => {
-      this.clientToken = args.clientToken;
-      this.authUser = args.user;
-      return { state: "signed_in" as const, user: args.user, hasStoredSession: true, checkedAt: now() };
+    // Auth (browser sign-in simulated with a timer)
+    auth_get_status: () => this.authStatus(),
+    auth_begin_sign_in: async () => {
+      if (!this.authConfigured) {
+        throw blueyError({
+          kind: "authentication",
+          code: "auth.not_configured",
+          message: "sign-in is not configured",
+        });
+      }
+      this.signInPending = true;
+      this.emit("auth.changed", this.authStatus());
+      const outcome = this.nextSignInOutcome;
+      this.nextSignInOutcome = "success";
+      if (outcome !== "hang") {
+        setTimeout(
+          () => {
+            if (!this.signInPending) return;
+            this.signInPending = false;
+            if (outcome === "success") {
+              this.authUser = MOCK_AUTH_USER;
+              this.authTokens = true;
+            }
+            this.emit("auth.changed", this.authStatus());
+          },
+          Math.max(this.streamDelayMs * 4, 10),
+        );
+      }
+      return {
+        url: "https://mock.accounts.dev/oauth/authorize?client_id=mock&state=mock",
+        redirect: "loopback" as const,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      };
     },
-    auth_store_token: (args) => {
-      this.clientToken = args.clientToken;
+    auth_cancel_sign_in: () => {
+      this.signInPending = false;
+      const status = this.authStatus();
+      this.emit("auth.changed", status);
+      return status;
     },
-    auth_load_client_token: () => this.clientToken,
     auth_clear_session: () => {
-      this.clientToken = null;
+      this.signInPending = false;
       this.authUser = null;
-      return { state: "signed_out" as const, hasStoredSession: false, checkedAt: now() };
+      this.authTokens = false;
+      const status = this.authStatus();
+      this.emit("auth.changed", status);
+      return status;
     },
-    auth_fapi_fetch: async () => ({ status: 501, headers: {}, body: "mock transport does not proxy Clerk" }),
+    auth_open_account_portal: () => {
+      this.accountPortalOpens += 1;
+    },
 
     // Permissions
     permissions_get: () => this.permissions,

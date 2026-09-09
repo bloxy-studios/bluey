@@ -1,17 +1,14 @@
-import { clerkPublishableKey, useAuthStore } from "./auth-store";
-import { getClerkInstance } from "./clerk-instance";
-import { clearTokenCache } from "./token-cache";
+import { showErrorToast } from "@/components/ui/toast-store";
+import { bluey } from "@/lib/tauri/api";
+import { toBlueyError } from "@/lib/types";
+import { useAuthStore } from "./auth-store";
 
-/** Sign out everywhere: Clerk session (when configured) + stored token. */
+/** Sign out: Rust revokes and forgets the tokens; the store follows the returned status. */
 export async function signOutEverywhere(): Promise<void> {
-  const key = clerkPublishableKey();
-  if (key) {
-    try {
-      await getClerkInstance(key).signOut();
-    } catch (error) {
-      console.warn("[auth] Clerk signOut failed", error);
-    }
+  try {
+    const status = await bluey.auth.clearSession();
+    useAuthStore.getState().applyStatus(status);
+  } catch (error) {
+    showErrorToast(toBlueyError(error, "authentication"));
   }
-  await clearTokenCache();
-  useAuthStore.getState().set({ state: "signed_out", user: null });
 }

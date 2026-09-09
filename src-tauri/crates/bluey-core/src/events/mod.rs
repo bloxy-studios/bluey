@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::BlueyError;
 use crate::types::{
     AccessibilityContext, AiChunk, AiTask, AppStatus, AudioDevice, AudioSource, AudioStatus,
-    BlueyMode, BlueyResponse, ContextSnapshot, DeepResearchEvent, DetectedEvent, LatencyMetrics,
-    OcrContext, PanelState, PermissionState, ScreenFrame, Session, SessionEvent, Settings,
-    ShortcutId, TranscriptSegment,
+    AuthStatus, BlueyMode, BlueyResponse, ContextSnapshot, DeepResearchEvent, DetectedEvent,
+    LatencyMetrics, OcrContext, PanelState, PermissionState, ScreenFrame, Session, SessionEvent,
+    Settings, ShortcutId, TranscriptSegment,
 };
 
 /// Prefix every Tauri event name carries (`bluey:` + dotted name).
@@ -43,6 +43,8 @@ pub enum BlueyEvent {
     SettingsChanged(Settings),
     /// `permissions.changed`
     PermissionsChanged(PermissionState),
+    /// Sign-in state changed (browser sign-in started / finished, sign-out).
+    AuthChanged(AuthStatus),
     /// `helper.status`
     #[serde(rename_all = "camelCase")]
     HelperStatus {
@@ -228,6 +230,7 @@ impl BlueyEvent {
             Self::AppError(_) => "app.error",
             Self::SettingsChanged(_) => "settings.changed",
             Self::PermissionsChanged(_) => "permissions.changed",
+            Self::AuthChanged(_) => "auth.changed",
             Self::HelperStatus { .. } => "helper.status",
             Self::ScreenChanged { .. } => "screen.changed",
             Self::ScreenCaptured(_) => "screen.captured",

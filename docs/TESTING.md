@@ -24,7 +24,7 @@ requests (`tests/native/requests/*.jsonl`) to verify screen capture, OCR, microp
 audio, accessibility and observation deterministically.
 
 ## Manual QA checklist
-**Authentication** — login · logout · session restore after relaunch · missing publishable key screen.
+**Authentication** — *Sign in with your browser* opens the default browser on Clerk; after signing in the browser lands on the `bluey://auth/callback` deep link (installed build) or the loopback page (`tauri dev`) and Bluey flips to signed in with the window brought to front · *Cancel* while waiting · deny/close the browser → toast, still signed out · relaunch restores the session (log: no `stored sign-in rejected`) · Sign out → signed-out card; Manage account opens the Account Portal · missing `VITE_CLERK_PUBLISHABLE_KEY`/`BLUEY_CLERK_OAUTH_CLIENT_ID` → configuration screen · an unrelated `bluey://…` link is ignored.
 **Permissions** — grant · deny · revoke while running (audio stops, repair flow) · retry · Open System Settings links.
 **Screen** — single monitor · multiple monitors · Retina scaling · fullscreen app · Spaces · mirrored/disconnected display · region capture · HUD excluded from captures.
 **Audio** — microphone · system audio · headphones · Bluetooth device · device disconnect mid-session · pause/resume · levels.

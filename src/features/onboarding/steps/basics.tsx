@@ -1,8 +1,8 @@
-import { SignIn } from "@clerk/react";
 import { useEffect, useState } from "react";
 
 import { BlueyMark } from "@/components/BlueyMark";
 import { Input } from "@/components/ui/Input";
+import { BrowserSignIn } from "@/lib/auth/BrowserSignIn";
 import { useAuthStatus } from "@/lib/auth/useAuthStatus";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -34,17 +34,17 @@ export function SignInStep({ onReady }: StepProps) {
   const { mode, state, user } = useAuthStatus();
 
   useEffect(() => {
-    onReady(mode !== "clerk" || state === "signed_in");
+    onReady(mode !== "browser" || state === "signed_in");
   }, [mode, state, onReady]);
 
-  if (mode !== "clerk") {
+  if (mode !== "browser") {
     return (
       <StepShell
         title="Sign in"
         body={
           mode === "dev"
             ? "Developer mode — you're signed in as a local development user."
-            : "Clerk isn't configured (VITE_CLERK_PUBLISHABLE_KEY). You can continue without an account for now."
+            : "Sign-in isn't configured (VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID). You can continue without an account for now."
         }
       />
     );
@@ -56,7 +56,7 @@ export function SignInStep({ onReady }: StepProps) {
 
   return (
     <div className="flex max-h-full flex-col items-center overflow-y-auto">
-      <SignIn routing="hash" />
+      <BrowserSignIn title="Sign in" body="Bluey opens your browser to sign in with your account — come back here when you're done." />
     </div>
   );
 }

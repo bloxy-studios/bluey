@@ -49,7 +49,7 @@ src/                       React 19 + TypeScript frontend (three windows: main H
   lib/tauri/               commands.ts (command surface), events.ts (event surface), api.ts (bluey.*),
                            transport.ts (+ tauri-transport.ts, mock/), event-bus.ts
   lib/engine-contract.ts   UI ⇄ intelligence layer interface
-  lib/auth/                Clerk integration (non-standard-browser mode)
+  lib/auth/                auth store + gate + browser sign-in card (Rust owns the OAuth flow, ADR 0008)
   ai/                      prompt builder, request builder, streaming, generations, optimizer, engine, research
   context/                 snapshot enrichment, retrieval, fusion, token budget, intent
   transcript/              question/event classifier, speaker labelling, transcript window

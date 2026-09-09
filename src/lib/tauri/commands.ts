@@ -18,7 +18,7 @@ import type {
   AudioSessionConfig,
   AudioStatus,
   AuthStatus,
-  AuthUser,
+  SignInStart,
   BlueyDocument,
   BlueyMode,
   BlueyResponse,
@@ -110,22 +110,15 @@ export interface CommandMap {
   app_run_setup_checks: { args: void; result: SetupCheck[] };
   app_quit: { args: void; result: void };
 
-  // ── Auth (Clerk runs in the WebView; Rust only stores the client token) ─
+  // ── Auth (browser sign-in: Rust owns the OAuth flow and the tokens, ADR 0008) ─
   auth_get_status: { args: void; result: AuthStatus };
-  auth_store_session: { args: { clientToken: string; user: AuthUser }; result: AuthStatus };
-  /** Persist a rotated Clerk client JWT alone (user unchanged). */
-  auth_store_token: { args: { clientToken: string }; result: void };
-  auth_load_client_token: { args: void; result: string | null };
+  /** Open the system browser on Clerk's sign-in page; completion arrives as `auth.changed`. */
+  auth_begin_sign_in: { args: void; result: SignInStart };
+  auth_cancel_sign_in: { args: void; result: AuthStatus };
+  /** Sign out: revoke + forget the tokens and the cached user. */
   auth_clear_session: { args: void; result: AuthStatus };
-  /**
-   * Fallback proxy for Clerk Frontend API calls when the WebView origin makes the
-   * Origin+Authorization header combination fail. Only allows https URLs on the
-   * configured Clerk domain; never logs bodies.
-   */
-  auth_fapi_fetch: {
-    args: { url: string; method: string; headers: Record<string, string>; body?: string };
-    result: { status: number; headers: Record<string, string>; body: string };
-  };
+  /** Open Clerk's hosted Account Portal (profile & security) in the browser. */
+  auth_open_account_portal: { args: void; result: void };
 
   // ── Permissions ────────────────────────────────────────────────────────
   permissions_get: { args: void; result: PermissionState };
@@ -339,11 +332,10 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "app_run_setup_checks",
   "app_quit",
   "auth_get_status",
-  "auth_store_session",
-  "auth_store_token",
-  "auth_load_client_token",
+  "auth_begin_sign_in",
+  "auth_cancel_sign_in",
   "auth_clear_session",
-  "auth_fapi_fetch",
+  "auth_open_account_portal",
   "permissions_get",
   "permissions_request",
   "permissions_open_settings",
@@ -464,5 +456,4 @@ export const SECRET_KEYS = {
   exaApiKey: "research:exa:api_key",
   firecrawlApiKey: "research:firecrawl:api_key",
   anthropicAgentApiKey: "agent:anthropic:api_key",
-  clerkClientToken: "auth:clerk:client_token",
 } as const;

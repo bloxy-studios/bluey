@@ -35,11 +35,10 @@ export const bluey = {
   },
   auth: {
     getStatus: callNoArgs("auth_get_status"),
-    storeSession: call("auth_store_session"),
-    storeToken: call("auth_store_token"),
-    loadClientToken: callNoArgs("auth_load_client_token"),
+    beginSignIn: callNoArgs("auth_begin_sign_in"),
+    cancelSignIn: callNoArgs("auth_cancel_sign_in"),
     clearSession: callNoArgs("auth_clear_session"),
-    fapiFetch: call("auth_fapi_fetch"),
+    openAccountPortal: callNoArgs("auth_open_account_portal"),
   },
   permissions: {
     get: callNoArgs("permissions_get"),
