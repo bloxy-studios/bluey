@@ -181,8 +181,10 @@ export class MockTransport implements Transport {
     expanded: false,
     x: 0,
     y: 0,
-    width: 690,
-    height: 108,
+    // Logical native frame (surface + shadow insets), checked against the
+    // native launch config by the HUD geometry contract tests.
+    width: 754,
+    height: 175,
     opacity: 1,
   };
 
@@ -1567,8 +1569,17 @@ export class MockTransport implements Transport {
     },
     panel_set_position: (args) => this.setPanel({ x: args.x, y: args.y }),
     panel_resize: (args) => this.setPanel({ width: args.width, height: args.height }),
-    panel_set_expanded: (args) =>
-      this.setPanel({ expanded: args.expanded, height: args.height ?? (args.expanded ? 480 : 108) }),
+    panel_set_expanded: (args) => {
+      // `height` already includes the borders/insets, even for idle transcripts.
+      const measured = args.height;
+      const height =
+        measured !== undefined && Number.isFinite(measured) && measured > 0
+          ? Math.ceil(measured)
+          : args.expanded
+            ? 544
+            : 175;
+      return this.setPanel({ expanded: args.expanded, height });
+    },
     panel_set_opacity: (args) => this.setPanel({ opacity: args.opacity }),
     panel_set_pinned: (args) => this.setPanel({ pinned: args.pinned }),
     panel_get_state: () => this.panel,
@@ -1684,6 +1695,9 @@ export class MockTransport implements Transport {
   }
 
   private setPanel(patch: Partial<PanelState>): PanelState {
+    if (Object.entries(patch).every(([key, value]) => this.panel[key as keyof PanelState] === value)) {
+      return this.panel;
+    }
     this.panel = { ...this.panel, ...patch };
     this.emit("panel.state", this.panel);
     return this.panel;

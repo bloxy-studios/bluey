@@ -139,6 +139,7 @@ export type SettingsPatch = {
   [K in keyof Settings]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K];
 };
 
+/** Logical native frame, including shadow insets; not the appearance surface. */
 export interface PanelState {
   visible: boolean;
   pinned: boolean;

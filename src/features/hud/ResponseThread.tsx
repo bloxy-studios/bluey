@@ -119,15 +119,18 @@ export function ResponseThread({ onRegenerate }: ResponseThreadProps) {
   }, []);
 
   return (
-    // Content-driven height: the panel grows with the response (DESIGN.md
-    // 380–620px) and the body scrolls past the cap.
-    <div className="relative">
+    // Natural content height until the SURFACE cap is reached. Both flex
+    // ancestors can shrink; only this viewport scrolls, never the chrome.
+    <div className="relative flex min-h-0 min-w-0 flex-auto flex-col overflow-hidden">
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="max-h-[460px] min-h-[120px] overflow-y-auto overscroll-contain px-5 py-4"
+        role="region"
+        aria-label="Response"
+        tabIndex={0}
+        className="min-h-0 overflow-y-auto overscroll-contain"
       >
-        <div className="flex flex-col gap-5">
+        <div className="flex min-h-[120px] flex-col gap-5 px-5 py-4">
           {turns.map((turn, index) => (
             <Turn key={turn.id} turn={turn} isLast={index === turns.length - 1} onRegenerate={onRegenerate} />
           ))}

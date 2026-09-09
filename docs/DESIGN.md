@@ -146,9 +146,13 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
 
 ## HUD (main window — NSPanel, transparent)
 
-* Panel width 690px (user-configurable), idle height 108px, radius 16, background
-  `hud-bg` + blur, 1px inner border `hud-border`, no shadow chrome beyond a soft 0 8px 32px
-  rgba(0,0,0,.35). Whole first row is a drag region except the input.
+* Visible surface width 690px (user-configurable), idle border-box height 111px
+  (56px input + 52px toolbar + divider + outer borders), radius 16, background
+  `hud-bg` + blur, 1px border `hud-border`, soft 0 8px 32px rgba(0,0,0,.35) shadow.
+  The transparent native frame includes 24/32/40/32px shadow insets: **754 × 175px**
+  at launch. Height follows content; width is changed via Appearance, not native
+  edge dragging. See [HUD_GEOMETRY.md](HUD_GEOMETRY.md) for sizing/minimums.
+  Whole first row is a drag region except the input.
 * **Idle layout**: row 1 (56px): text input placeholder "Ask anything about your screen"
   (15px, `fg-muted`), right: 36×36 rounded square (`rgba(255,255,255,.1)`) with ↵ icon.
   Hairline. Row 2 (52px): left — Bluey logo (28px circle icon) then an optional blue pill
@@ -174,8 +178,9 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
 * **Mode menu**: 200px dark menu (`#141414`, radius 12, border), items 15px with 10px 16px
   padding, active mode shows a check at the right, separator, "Manage" row with grid icon
   (opens Settings → Modes).
-* **Response layout** (expanded; panel grows to 380–620px, animated height 180ms
-  ease-out): header row: 36px circle back button (←), "Ask follow-up" input, right: stop
+* **Response layout** (expanded; surface grows naturally up to 620px, further capped
+  by the monitor work area minus frame insets; only the body scrolls): header row:
+  36px circle back button (←), "Ask follow-up" input, right: stop
   button (■ in circle) while streaming or ↵ when idle. Body scrolls: the user's prompt as a
   right-aligned grey pill ("Assist" / the question, `rgba(255,255,255,.12)` radius 12,
   padding 10px 16px), then the response in 15px/1.55 `fg` with markdown (bullets, inline
