@@ -58,13 +58,13 @@ export function OnboardingFlow() {
   const stepKey = useMemo(() => step.id, [step.id]);
 
   return (
-    <div data-tauri-drag-region className="flex h-screen flex-col bg-bg text-fg">
+    <div className="flex h-screen min-w-0 flex-col overflow-hidden bg-bg text-fg">
       <div
         data-tauri-drag-region
-        className="flex shrink-0 items-center justify-center pt-6"
+        className="flex h-11 shrink-0 items-center justify-center"
         aria-label={`Step ${index + 1} of ${STEPS.length}`}
       >
-        <div className="flex items-center gap-1.5">
+        <div className="pointer-events-none flex items-center gap-1.5">
           {STEPS.map((s, i) => (
             <span
               key={s.id}
@@ -78,12 +78,19 @@ export function OnboardingFlow() {
         </div>
       </div>
 
-      <div
+      <main
         key={stepKey}
-        className="flex min-h-0 flex-1 flex-col items-center justify-center px-12 motion-safe:animate-rise-in"
+        aria-label="Onboarding step"
+        className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain"
       >
-        <Step onReady={onReady} />
-      </div>
+        <div className="flex min-h-full flex-col px-12 py-6">
+          {/* Auto margins center short steps, but collapse to zero for tall ones.
+              All content stays in normal flow so its beginning is scrollable. */}
+          <div className="my-auto flex w-full shrink-0 justify-center motion-safe:animate-rise-in">
+            <Step onReady={onReady} />
+          </div>
+        </div>
+      </main>
 
       <div className="flex shrink-0 items-center justify-between px-8 pb-7">
         {index > 0 ? (

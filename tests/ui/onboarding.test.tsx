@@ -14,6 +14,56 @@ describe("OnboardingFlow (MockTransport)", () => {
     await setupMockApp();
   });
 
+  it("keeps one 44px drag strip and stationary controls outside the step's scroll surface", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<TooltipProvider><OnboardingFlow /></TooltipProvider>);
+    const progress = screen.getByLabelText("Step 1 of 11");
+    const scrollBody = screen.getByRole("main", { name: "Onboarding step" });
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    expect(container.querySelectorAll("[data-tauri-drag-region]")).toHaveLength(1);
+    expect(progress).toHaveAttribute("data-tauri-drag-region");
+    expect(progress).toHaveClass("h-11", "shrink-0");
+    expect(scrollBody.closest("[data-tauri-drag-region]")).toBeNull();
+    expect(continueButton.closest("[data-tauri-drag-region]")).toBeNull();
+    expect(scrollBody).toHaveClass("min-h-0", "overflow-y-auto", "overscroll-contain");
+    expect(scrollBody).not.toContainElement(progress);
+    expect(scrollBody).not.toContainElement(continueButton);
+    expect(scrollBody).toContainElement(screen.getByRole("heading", { name: "Welcome to Bluey" }));
+    // A natural-height inner column, not an absolutely positioned centered step,
+    // lets tall content start at the top while short steps consume spare space.
+    expect(scrollBody.firstElementChild).toHaveClass("min-h-full");
+    expect(scrollBody.firstElementChild?.firstElementChild).toHaveClass("my-auto", "shrink-0");
+    await user.tab();
+    expect(continueButton).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBe(continueButton);
+    expect(continueButton).toHaveFocus();
+  });
+
+  it("resets scroll on forward/back navigation but not while editing the same step", async () => {
+    const user = userEvent.setup();
+    render(<TooltipProvider><OnboardingFlow /></TooltipProvider>);
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    const welcome = screen.getByRole("main", { name: "Onboarding step" });
+    welcome.scrollTop = 240;
+    await user.click(continueButton);
+    const signIn = screen.getByRole("main", { name: "Onboarding step" });
+    expect(signIn).not.toBe(welcome);
+    expect(signIn.scrollTop).toBe(0);
+    await user.click(continueButton);
+    const nameStep = screen.getByRole("main", { name: "Onboarding step" });
+    nameStep.scrollTop = 120;
+    await user.type(screen.getByRole("textbox", { name: "Bluey name" }), " for meetings");
+    expect(screen.getByRole("textbox", { name: "Bluey name" })).toHaveValue("Bluey for meetings");
+    expect(screen.getByRole("main", { name: "Onboarding step" })).toBe(nameStep);
+    expect(nameStep.scrollTop).toBe(120);
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("main", { name: "Onboarding step" }).scrollTop).toBe(0);
+    expect(screen.getByRole("button", { name: "Continue" })).toBe(continueButton);
+  });
+
   it("walks every step and completes onboarding", async () => {
     const user = userEvent.setup();
     render(

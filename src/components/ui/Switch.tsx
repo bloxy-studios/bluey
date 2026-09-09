@@ -11,22 +11,23 @@ export interface SwitchProps {
   className?: string;
 }
 
-/** 44×26 macOS-style switch (off `#2a2a2a`, on accent, white knob). */
+/** 44×26 macOS-style switch with a theme-aware off track and white knob. */
 export function Switch({ className, ...props }: SwitchProps) {
   return (
     <RadixSwitch.Root
       {...props}
       className={cn(
         "relative h-[26px] w-[44px] shrink-0 rounded-full outline-none transition-colors duration-150",
-        "bg-[#2a2a2a] data-[state=checked]:bg-accent",
-        "disabled:opacity-50 disabled:pointer-events-none",
+        "bg-border-strong data-[state=checked]:bg-accent",
+        "focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
+        "motion-reduce:transition-none disabled:opacity-50 disabled:pointer-events-none",
         className,
       )}
     >
       <RadixSwitch.Thumb
         className={cn(
           "block size-[22px] translate-x-[2px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.35)]",
-          "transition-transform duration-150 data-[state=checked]:translate-x-[20px]",
+          "transition-transform duration-150 motion-reduce:transition-none data-[state=checked]:translate-x-[20px]",
         )}
       />
     </RadixSwitch.Root>

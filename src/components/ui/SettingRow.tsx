@@ -23,10 +23,18 @@ export function SettingRow({ icon: Icon, title, description, children, className
         <Icon className="size-5 text-fg-muted" strokeWidth={1.8} aria-hidden />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[14px] font-medium text-fg">{title}</div>
-        {description ? <div className="mt-0.5 text-[13px] leading-snug text-fg-muted">{description}</div> : null}
+        <div className="text-[14px] font-medium text-fg [overflow-wrap:anywhere]">{title}</div>
+        {description ? (
+          <div className="mt-0.5 text-[13px] leading-snug text-fg-muted [overflow-wrap:anywhere]">
+            {description}
+          </div>
+        ) : null}
       </div>
-      {children ? <div className="flex shrink-0 items-center gap-2">{children}</div> : null}
+      {children ? (
+        <div className="flex min-w-0 max-w-[45%] shrink-0 flex-wrap items-center justify-end gap-2 [&>*]:max-w-full">
+          {children}
+        </div>
+      ) : null}
     </div>
   );
 }
