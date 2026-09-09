@@ -164,6 +164,7 @@ pub fn run() {
         commands::panel::panel_set_pinned,
         commands::panel::panel_get_state,
         commands::panel::panel_start_drag,
+        commands::hud_menu::hud_menu_popup,
         commands::panel::window_open,
         commands::panel::window_close,
         // Data management

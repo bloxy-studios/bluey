@@ -2,6 +2,8 @@
 //! launch-at-login, opening/closing the secondary windows with a route, and
 //! the data-management helpers behind the `data_*` commands.
 
+pub mod hud_menu;
+
 use std::path::PathBuf;
 
 use bluey_core::events::BlueyEvent;

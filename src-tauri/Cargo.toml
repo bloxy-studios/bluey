@@ -94,7 +94,7 @@ bytes = "1"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSDictionary", "NSURL", "NSGeometry"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSScreen", "NSRunningApplication", "NSWorkspace", "NSPanel", "NSResponder", "NSGraphics"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSScreen", "NSRunningApplication", "NSWorkspace", "NSPanel", "NSResponder", "NSGraphics", "NSMenu", "NSMenuItem", "NSView", "NSCell", "NSImage", "NSColor", "NSAttributedString"] }
 core-foundation = "0.10"
 # CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess
 core-graphics = "0.25"

@@ -14,6 +14,7 @@ pub mod context;
 pub mod data;
 pub mod dev;
 pub mod documents;
+pub mod hud_menu;
 pub mod modes;
 pub mod panel;
 pub mod permissions;

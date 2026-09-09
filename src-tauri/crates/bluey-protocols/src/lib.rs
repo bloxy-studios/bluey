@@ -31,6 +31,7 @@ pub mod exa;
 pub mod firecrawl;
 pub mod gemini;
 pub mod helper;
+pub mod hud_menu;
 pub mod jsonl;
 pub mod openai;
 pub mod panel;

@@ -37,6 +37,7 @@ export function SessionMenu({ children, tooltip }: SessionMenuProps) {
               label: "Resume session",
               action: "resume",
               icon: <Play className="size-4" aria-hidden />,
+              nativeIcon: "play",
             }
           : {
               kind: "item",
@@ -44,6 +45,7 @@ export function SessionMenu({ children, tooltip }: SessionMenuProps) {
               label: "Pause session",
               action: "pause",
               icon: <Pause className="size-4" aria-hidden />,
+              nativeIcon: "pause",
             },
         {
           kind: "item",
@@ -52,6 +54,7 @@ export function SessionMenu({ children, tooltip }: SessionMenuProps) {
           action: "end",
           destructive: true,
           icon: <Square className="size-4" aria-hidden />,
+          nativeIcon: "stop",
         },
       ]
     : [
@@ -62,6 +65,7 @@ export function SessionMenu({ children, tooltip }: SessionMenuProps) {
           label: "Start session",
           action: "start",
           icon: <Play className="size-4" aria-hidden />,
+          nativeIcon: "play",
         },
       ];
   entries.push(
@@ -72,6 +76,7 @@ export function SessionMenu({ children, tooltip }: SessionMenuProps) {
       label: active ? "Open in History" : "Open History",
       action: "history",
       icon: <History className="size-4" aria-hidden />,
+      nativeIcon: "history",
     },
   );
 

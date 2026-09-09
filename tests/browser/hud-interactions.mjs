@@ -48,6 +48,8 @@ try {
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   const page = await browser.newPage({ viewport: { width: 1024, height: 768 }, colorScheme: "dark" });
   page.setDefaultTimeout(5000);
+  // Cold Vite dependency optimization is startup work, not an interaction deadline.
+  page.setDefaultNavigationTimeout(30000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`${base}/?window=main`);

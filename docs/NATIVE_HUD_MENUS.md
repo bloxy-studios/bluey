@@ -1,165 +1,223 @@
-# HUD menu and keyboard interaction review
+# Native HUD menus and keyboard interactions
 
-## Status: native popup is blocked, not implemented
+## Status: Rust-owned AppKit popup implemented; macOS runtime verification pending
 
-The HUD still uses Radix menus in **both** the browser preview and the Tauri
-webview. The button/tooltip nesting, keyboard semantics, selected checks,
-long-label bounds and theme-aware scrolling surfaces are fixed. This is **not**
-a fix for the compact NSPanel's viewport clipping: a web portal cannot paint
-outside its native window. No panel geometry, capture/privacy settings, AI,
-audio, session implementation, Rust code, dependencies or capabilities change.
+In the Tauri runtime, the Mode and Session buttons now open a real `NSMenu`
+through one display-only Rust command, `hud_menu_popup`. AppKit draws/tracks this
+menu outside the compact NSPanel's webview; no panel resize or web portal is used
+to work around clipping. Browser previews retain the existing Radix menus and
+MockTransport. Runtime detection is independent of simulated application data.
 
-Do not enable a `Menu.popup()` adapter on the currently locked version and
-claim leak-free cleanup. The installed Tauri API has an upstream-confirmed
-callback-channel leak that its public JavaScript API cannot dispose.
+The native path compiles against the existing locked dependencies. This is
+**compile/contract/lifetime-ownership evidence**, not a tested macOS NSPanel
+session, measured memory usage, Retina placement, or VoiceOver verification.
+The native checklist below remains required on macOS.
 
-## Verified installed API/source evidence
+Scope: HUD menu presentation/interaction only. Labels, order, active checks,
+disabled items, header/separator grouping, Manage/History destinations and domain
+actions are unchanged. Fixed SF Symbol equivalents preserve the existing icon
+cues; End session retains a semantic red title. AppKit supplies native menu
+material/typography/scrolling/tracking; the web design is unchanged. No panel
+geometry, Settings, capture/privacy configuration, AI, auth, audio, storage,
+providers, dependency versions, workflows or capabilities change. Only the
+existing `objc2-app-kit` dependency gains explicit framework features.
 
-Inspected locally, not inferred from the latest documentation:
+## Installed source and selection-order audit
 
-- `node_modules/@tauri-apps/api/package.json`: **2.11.1**.
-- `src-tauri/Cargo.lock`: Rust **tauri 2.11.5**, **muda 0.19.3**.
-- `@tauri-apps/api/menu/menu.d.ts:64–69` / `menu/menu.js:103–116`:
-  `Menu.popup(at?: PhysicalPosition | LogicalPosition | Position, window?: Window): Promise<void>`.
-  It invokes `plugin:menu|popup`; omitted window means the current window.
-- `@tauri-apps/api/dpi.d.ts:147–191`: `LogicalPosition` holds logical pixels.
-  A future bridge should pass `new LogicalPosition(rect.left, rect.bottom)` from
-  the **button's client rectangle**, not screen coordinates and not multiplied
-  by `devicePixelRatio`. The HUD has one undecorated full-window webview.
-- `@tauri-apps/api/window.d.ts:403–413`: `getCurrentWindow().isFocused()` is a
-  read-only focus query. A future adapter must never call native `setFocus()`
-  when closing a menu; restore only DOM trigger focus when the HUD/document
-  is still focused and the trigger is connected. Opening Settings must not
-  refocus the HUD over the newly opened window or an external app.
-- `@tauri-apps/api/core.d.ts:159–189`: every Rust-backed resource needs explicit
-  `close()`; JavaScript garbage collection does not free it. Menu/item classes
-  inherit `Resource`; `core.js:267–274` invokes `plugin:resources|close`.
+Inspected locally: JS `@tauri-apps/api` **2.11.1**; locked Rust `tauri` **2.11.5**,
+`muda` **0.19.3**, `objc2` **0.6.4**, AppKit/Foundation **0.3.2**.
 
-### Popup completion really does wait for macOS menu tracking
+### The JS menu plugin leak is bypassed, not hidden
 
-In the locked Rust sources (under Cargo's registry `src/`):
+`@tauri-apps/api/menu/base.js:22–73` creates a `Channel` per new menu/item.
+`tauri-2.11.5/src/menu/plugin.rs:361–466,889–930` inserts those channels into
+`MenuChannels` without an unregister operation. Resource close removes a
+*different* resource-table entry (`src/resources/plugin.rs:13–23`). Upstream
+confirms this in [1417768 / #15679](https://github.com/tauri-apps/tauri/commit/1417768f9941f6ee998e7b5c9fe609ada61a6727).
 
-1. `tauri-2.11.5/src/menu/plugin.rs:668–695` calls `menu.popup_inner(...)`
-   before returning from the popup command.
-2. `tauri-2.11.5/src/menu/menu.rs:43–80` executes the popup through
-   `run_item_main_thread!`; `src/menu/mod.rs:25–38` waits on `rx.recv()` for
-   that task to finish.
-3. `muda-0.19.3/src/platform_impl/macos/mod.rs:1190–1215` converts the supplied
-   position to logical points, flips Y using the NSView's height, and directly
-   calls `NSMenu.popUpMenuPositioningItem_atLocation_inView`.
-4. [Apple's API contract](https://developer.apple.com/documentation/appkit/nsmenu/popup(positioning:at:in:))
-   returns true when tracking ended by selection and false when tracking was
-   cancelled. Consequently, **on macOS**, awaiting the installed popup command
-   is an appropriate close boundary for menu/item resource disposal. Do not
-   generalize this finding to GTK or Windows.
+The new path never imports the JS menu API, creates an IPC `Channel`, allocates a
+Tauri menu/resource-table entry or registers per-popup event handlers. It needs
+no upgrade, arbitrary timeout, resource cache or delayed cleanup workaround.
 
-### Cleanup blocker: resources are not the whole lifetime
+### Why not public `tauri::menu` plus a handler?
 
-- `@tauri-apps/api/menu/base.js:22–73` creates a `Channel` for **every**
-  `newMenu` call, including menus/headers/separators without actions.
-- `tauri-2.11.5/src/menu/plugin.rs:361–466` inserts that handler into the
-  application-owned `MenuChannels` map, keyed by menu/item ID, at line 464.
-- `src/menu/plugin.rs:889–930` only inserts/looks up these channels. There is
-  no unregister command. `src/menu/mod.rs:93–105` drops the native item on
-  the main thread but does not remove its channel.
-- `src/resources/plugin.rs:13–23` closes the resource-table entry, not the
-  separate `MenuChannels` map. Thus even carefully closing every Menu,
-  MenuItem, CheckMenuItem and PredefinedMenuItem leaves channels/callbacks
-  behind. Inline item options also register action channels; they are not a fix.
-- Upstream explicitly confirms this problem in
-  [1417768 — fix: menu channels are never cleaned up (#15679)](https://github.com/tauri-apps/tauri/commit/1417768f9941f6ee998e7b5c9fe609ada61a6727).
-  The locked crate does **not** contain that drop-time cleanup. No claim is
-  made here about which published release first includes the fix.
+This was inspected separately from the JS issue:
 
-A timer, delayed `close()`, stable-ID cache, or mocks that silently pretend to
-clean up cannot provide the requested complete lifetime guarantee. This branch
-does not introduce any of them or silently label a web fallback as native.
+- `tauri-2.11.5/src/menu/menu.rs:43–80` calls muda through
+  `run_item_main_thread!`; `src/menu/mod.rs:25–38` waits for that task. This
+  provides a popup close boundary, but does not return the selected ID.
+- `muda-0.19.3/src/platform_impl/macos/mod.rs:1025–1131` receives AppKit
+  target-action and sends `MenuEvent`; `1190–1215` invokes the native popup.
+- **However**, `tauri-2.11.5/src/app.rs:2346–2352` installs a global handler that
+  posts selection through `proxy.send_event(EventLoopMessage::MenuEvent(...))`.
+  A Tauri `on_menu_event` callback is not the synchronous AppKit action callback;
+  its delivery cannot be assumed to precede popup task completion.
+- `muda-0.19.3/src/lib.rs:491–529` stores the handler in a `OnceCell`; after Tauri
+  installs it the alternative receiver gets no events. No global handler
+  replacement, extra event-loop pump, per-popup `on_menu_event` or timing guess
+  is used. The existing tray's event handling is untouched.
 
-### ACL audit
+### Direct public AppKit target-action
 
-`tauri-2.11.5/build.rs:449–468` constructs `core:default` from every core
-plugin's default permission set. The generated references in
-`permissions/{menu,resources,window}/autogenerated/reference.md` include:
+`src-tauri/src/platform/hud_menu_macos.rs` uses public AppKit APIs via objc2:
 
-- `core:menu:allow-new`, `core:menu:allow-popup`;
-- `core:resources:allow-close`;
-- `core:window:allow-is-focused`.
+- `objc2-app-kit-0.3.2/src/generated/NSMenu.rs:77–82,165–173`: `NSMenu` is
+  `MainThreadOnly`; popup synchronously returns a boolean.
+- [Apple's popup contract](https://developer.apple.com/documentation/appkit/nsmenu/popup(positioning:at:in:)):
+  true when tracking ended with selection, false when cancelled. Coordinates
+  are in the supplied view's own coordinate system.
+- `NSMenuItem.rs:82–92,350–380`: selector initialization, weak target, action and
+  integer tag. Our fixed `chooseHudMenuItem:` selector writes a popup-local
+  `Cell<Option<usize>>` synchronously, not a posted Tauri event. After popup
+  returns, Rust reads it only if tracking returned true, rechecking that the tag
+  identifies an enabled item. Highlighted items are never treated as selections.
+- `NSMenuItem.rs:65–74,266–275`: separators, noninteractive headers and checks.
+  Headers fit the app's existing **macOS 14 minimum**. Explicit framework
+  features cover menu/item/view/check-state and existing visual cues; versions
+  and both lockfiles are unchanged.
+- `tauri-2.11.5/src/window/mod.rs:1649–1663` returns the owning window's content
+  NSView; `WebviewWindow::ns_view` delegates to it. We retain that view and its
+  NSWindow on the main thread before tracking. No raw handle crosses threads.
 
-These are the exact commands an explicit-resource adapter would require
-(`getCurrentWindow()` itself does not need an IPC permission). They are already
-covered by `src-tauri/capabilities/main.json`'s existing `core:default`.
-**No ACL additions or command surface are required or included.**
+`BlueyHudMenuTarget` is one ordinary Objective-C class registered once, not
+swizzling or a class per open. Each popup owns its own target instance. Item
+references to it are weak, so there is no menu/target retain cycle.
 
-## Work that is safe on the locked dependency
+## Bounded command and explicit ownership
 
-- The tooltip wraps the actual Radix menu trigger; the trigger forwards to
-  one `IconButton`, with no span swallowing its role, ref or key events.
-- Enter, Space, ArrowDown, pointer activation, selection and Escape use Radix's
-  accessible behavior. Check items expose `aria-checked`, not just a visual tick.
-  Repeated activation cannot toggle the trigger or repeatedly activate ask/new-chat buttons.
-- Generic typed `MenuEntry<Action>` data in `src/lib/tauri/menu-model.ts` keeps
-  display/check/header/separator state independent of domain actions. Menu
-  labels display at most 80 Unicode code points; full item names remain available
-  to accessibility/typeahead, and stored names/IDs are never changed.
-- Session controls still call `session-actions.ts`, retaining its guarded
-  audio/session coordination and error toasts. Mode/Manage calls use the same
-  existing API and now surface rejections as error toasts.
-- Input and HUD shortcut handlers defer to composition state, `isComposing`,
-  WebKit's `keyCode === 229`, and `defaultPrevented`. Active menu/dialog/listbox
-  scope is snapshotted in capture phase before an overlay can remove itself.
-  The HUD's own nonmodal `role=dialog` is not mistaken for an overlay.
-- Held Enter/Escape/new-chat keys do not duplicate asks/cancellation/clears.
-  Plain/Command/Ctrl Enter, empty Assist, Shift-Enter and Command-Shift-Enter
-  retain their existing meanings. Native editing shortcuts are not intercepted.
-- The HUD ignores its received ask/new-chat notifications only while local IME
-  composition is active; backend shortcut registration, configured bindings and
-  noncomposing behavior remain unchanged. Composition gates reset on blur.
-- Browser dropdowns use existing light/dark tokens and Radix available-space
-  bounds with scrolling; long tooltips wrap without shrinking shortcut keycaps.
+`commands::hud_menu::hud_menu_popup(window: WebviewWindow, request)` is async.
+Tauri injects the invoking window; JS cannot choose an owner. Validation accepts
+only `main`; other windows fail despite central application-command registration.
+The result is `string | null` after tracking/cleanup (`null` also covers busy or
+hidden HUD), or a typed validation/dispatch/view error. No plugin menu
+permission is needed. The optional read-only window focus query is already
+covered by the existing `core:default`; no ACL additions are made.
 
-## Automated checks
+`hud-menu-types.ts` mirrors `bluey-protocols::hud_menu`; both suites use the same
+round-trip JSON fixture:
 
-`bun run test` runs the full Vitest suite, including keyboard/IME/overlay and
-trigger/model regressions. `tests/browser/hud-interactions.mjs` runs actual
-Chromium menu keyboard/pointer/action/focus/overflow/tooltip checks using Bun
-and an existing Playwright installation:
+- 1–128 display items, only item/label/separator, no nested menus.
+- Unique nonempty IDs up to 64 ASCII alphanumeric/underscore/hyphen bytes.
+  Frontend-generated `hud-N` IDs are popup-local; domain IDs stay in JS.
+- Single-line labels up to 80 Unicode scalar values, with no control characters.
+  Display normalization never modifies stored mode/session names.
+- Finite client logical `x,y` in `[0,16384]`, also checked against the actual
+  native content view. End alignment uses the button's right edge minus menu
+  width. Respect NSView flipping; no screen coordinates or DPR multiplication.
+- Enabled/check/destructive flags and five fixed icon enum values. Unknown
+  fields/types/icon names fail deserialization. No actions, URLs, selectors,
+  callbacks, shell strings or filesystem images cross this boundary.
+
+Lifetime sequence:
+
+1. Validate before AppKit allocation. Acquire one non-queuing Rust `PopupGate`
+   shared by both menus before main-thread dispatch.
+2. Move its permit and an owning WebviewWindow clone into the main-thread task.
+   Dropping the IPC receiver cannot unlock a menu still tracking. Failed
+   dispatch drops the unqueued closure/permit.
+3. Create/use/drop AppKit objects within `autoreleasepool`, after checking
+   `MainThreadMarker`. A hidden HUD is not raised to service stale input. A visible
+   non-key HUD is accepted: non-activating panels deliberately need not become key
+   when a toolbar button is clicked, so a key-window precondition would swallow
+   the first click. No native `setFocus`, make-key or app activation call is added.
+4. `Popup` retains every created item and its target through tracking.
+   `Popup::drop` clears actions/targets, removes items and releases ownership,
+   including partial construction/unwind. Normal validation/view/dispatch
+   failures use the same RAII paths; allocation aborts are not recoverable.
+5. After tracking returns, resolve only an enabled ID from the validated
+   snapshot. Drop native objects/drain the pool, release the lease, then send the
+   Rust oneshot result. This oneshot is not a Tauri IPC `Channel`. There are no
+   application menu/resource/handler registrations to orphan per open.
+
+## Frontend interaction and action parity
+
+`src/lib/tauri/native-hud-menu.ts` owns serialization, IPC and focus restoration;
+`bluey.hudMenu.popup` uses the normal typed commands/api/transport path. The
+command is covered by command-surface parity. The browser mock's direct command
+returns cancellation; browser HudMenu never calls it and retains Radix behavior.
+
+- The shared frontend guard is acquired synchronously before serialization/IPC.
+  Repeated Mode/Session activations are suppressed, not queued with stale anchors.
+  Success, cancellation, invalid IDs and creation/focus-query failure release it.
+  It stays held through the close-time focus query.
+- Radix `Slot` composes refs/handlers onto the actual native-mode IconButton,
+  with `aria-haspopup`, `aria-expanded`, no additional button/span. Pointer,
+  Enter, Space and ArrowDown open it; repeats, composition/229 and prevented
+  events cannot open another popup. Native open state participates in the
+  existing HUD overlay keyboard scope. AppKit owns Escape/outside dismissal.
+- Only an ID in the open-time enabled-action map can invoke `onSelect`.
+  Mode/Manage use the same calls; Session still delegates to `session-actions.ts`
+  with its existing audio/session coordination and guarded error toasts.
+- Restore only DOM trigger focus it **already had** at open: connected/enabled
+  trigger, focused document and a successful read-only native `isFocused()`
+  query, then recheck DOM state (including whether another control took focus).
+  Restore before the selected action can open Settings. Never call native `setFocus()`.
+- Unmount does not dispose live native resources or release the guard early.
+  Late completion cannot invoke actions/state updates on a departed trigger.
+  A native failure surfaces an error rather than silently falling back to a
+  clipped web menu in the desktop runtime.
+
+Existing IME/held-key/input/new-chat fixes and browser theme/scrolling/tooltip
+styling remain. No domain implementation or shortcut binding changes.
+
+## Automated evidence — Linux host, not macOS runtime
+
+Validated on this branch:
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck`, `bun run lint`, `bun run build` | Passed |
+| `bun run test` | **517 passed**, 62 files (35 new native adapter/trigger tests) |
+| Chromium/Radix fallback script | **17 passed**, 0 failed |
+| Host Rust tests | **286 passed**: core 85, protocols 130 (13 new HUD tests), storage 71 |
+| Rust fmt + host clippy `--all-targets -- -D warnings` | Passed |
+| Darwin app check + Darwin clippy `-- -D warnings` | Passed, compile-only |
+
+```sh
+bun run typecheck
+bun run lint
+bun run test
+bun run build
+CARGO_TARGET_DIR=/path/to/host-target bash scripts/check-rust.sh --darwin
+```
+
+Additional Darwin clippy uses the same check-only environment as that script:
+`cargo clippy --target aarch64-apple-darwin --no-default-features --features dev-tools -- -D warnings`.
+The script's fake Darwin C compiler and cached sidecar placeholders on Linux
+are for **type checking only**, never distributable builds or runtime evidence.
+
+New regressions cover payload round-trip/bounds, main-window restriction,
+selection allowlisting, permit release and dropped receiver lifetimes; real typed
+frontend serialization with mocked native IPC/focus; deferred/rejected requests,
+cross-menu serialization, unmount, button/ref/key semantics, and unchanged domain
+actions. These mocks do not run AppKit or observe its allocator.
+
+Actual Chromium/Radix fallback regression script (no screenshots/installs):
 
 ```sh
 PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs bun tests/browser/hud-interactions.mjs
 ```
 
-The browser test starts/stops its own local Vite server, uses only MockTransport,
-and installs nothing. Its focus-loss check stubs only `document.hasFocus()`;
-it does not claim to validate external macOS app focus. Radix menu open/close
-is exercised in a real browser rather than mocked: opening even a bare Radix
-menu stalls under this environment's forced-Bun/jsdom combination.
+It starts/stops Vite and exercises pointer/keyboard/actions/focus/overflow/tooltips
+using MockTransport. `document.hasFocus()` is stubbed for its focus-loss check,
+not an external macOS app. Floating Radix content is exercised in Chromium, not
+jsdom, where opening it stalls in this environment. Native unit tests do not
+pretend jsdom is an AppKit tracking loop.
 
-An additional `bun --bun run test` runtime check hits existing sidecar Zod
-interop failures (`z.string`/`z.object` undefined); the same failures reproduce
-on untouched `f5b7313`. The standard `bun run test` script succeeds. No sidecar
-or test-runner dependency/configuration changes are included to hide that issue.
+## Native verification checklist — not executed here
 
-## Unblock and native verification checklist (not executed here)
-
-1. Authorize a separately reviewed dependency update/backport that includes
-   upstream menu-channel cleanup; inspect the installed source again.
-2. Implement the popup adapter entirely under `src/lib/tauri`. Select it by the
-   actual Tauri runtime, not by mock-vs-live application data. Acquire an open
-   guard synchronously before async creation; share it across both HUD menus.
-3. Track every successfully created item and menu, handle partial creation and
-   popup failures, and attempt **all** closes in a `finally` path after native
-   tracking ends. Do not drop live resources merely because React unmounted.
-4. Test real native API serialization plus rejected/delayed popup/creation/close
-   mocks, action parity, duplicate-open suppression and unmount cleanup. Mocks
-   alone cannot prove Rust channels are released.
-5. On macOS, exercise mouse/Enter/Space/ArrowDown, Esc and outside clicks from
-   the idle/expanded NSPanel; check Retina/mixed-DPI/multiple-display placement,
-   long lists and names, pointer vs keyboard focus, opening Settings, switching
-   external apps while the menu is open, repeated open/cancel/select cycles and
-   resource/channel counts. Verify no focus theft or capture/privacy changes.
-6. With Japanese/Chinese/Korean input methods, verify candidate Enter/Esc,
-   composition-end-before-keydown (229), held keys, and Command+A/C/V/X/Z.
-
-This environment validates the TypeScript/UI regression suite, **not** NSPanel,
-AppKit, real IME event ordering, VoiceOver, Retina placement or native memory
-lifetime. Existing native viewport clipping remains an explicit open issue.
+1. On macOS 14+, use the actual compact NSPanel (idle and expanded). Confirm
+   both menus extend beyond it with no panel size change. Test pointer,
+   Enter/Space/ArrowDown, Escape/outside click and disabled/checked items.
+2. Check long names/lists, native scrolling, light/dark styling, icon/red-title
+   cues, keyboard focus and VoiceOver.
+3. Test Retina/mixed-DPI/multiple displays and screen-edge positioning,
+   especially end alignment and flipped-view handling.
+4. Open Manage/History, switch external apps while tracking, and activate from
+   the nonactivating panel. Verify no focus theft and that the key-window check
+   does not suppress legitimate clicks. No activation workaround was added.
+5. Repeat open/cancel/select and cross-menu cycles, profile native lifetimes,
+   and inspect application channel/resource/handler counts. Include navigation,
+   window disappearance and native errors. Source ownership is not a heap profile.
+6. Exercise Japanese/Chinese/Korean candidate Enter/Escape, 229 event ordering,
+   held keys and native Command+A/C/V/X/Z editing shortcuts.
