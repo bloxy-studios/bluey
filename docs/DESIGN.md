@@ -234,5 +234,7 @@ confirmation. Nothing else.
   canvas. It is loaded with `tauri::include_image!` and set as a *template* image, so macOS
   tints it for light and dark menu bars and the pressed state. Never use the colour icon in the
   menu bar — as a template it collapses into a solid blob.
-* **In-app mark** — `BlueyMark` (`public/bluey-mark.svg`) is the monochrome UI mark used on the
-  sign-in and setup screens.
+* **In-app mark** — `BlueyMark` (`src/components/BlueyMark.tsx`; the same path lives in
+  `public/bluey-mark.svg`, which is also the favicon): the "b" of the app icon traced to a
+  46-point monochrome vector filled with `currentColor`, so it follows the text colour on the
+  sign-in, setup and HUD surfaces. Regenerate it from `app-icon.png` rather than editing the path.
