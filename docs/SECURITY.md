@@ -20,6 +20,8 @@
 | Gemini key for the research sidecar | Keychain `provider:gemini:api_key` (same entry) | `GEMINI_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=gemini` |
 | Exa / Firecrawl keys | Keychain | Rust research clients; env-injected into the agent sidecar per job |
 | Anthropic key for the agent | Keychain (or `ANTHROPIC_API_KEY` in Bluey's `.env`) | `ANTHROPIC_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=claude` |
+| Sign-in tokens (OAuth access / refresh / ID token) | Keychain `auth:clerk:oauth_tokens` | Rust only (ADR 0008): browser sign-in via Clerk's OAuth/OIDC endpoints; validated/refreshed at boot; revoked on sign-out |
+| Clerk publishable key + public OAuth client id | `VITE_CLERK_PUBLISHABLE_KEY`, `BLUEY_CLERK_OAUTH_CLIENT_ID` (public by design): the environment / `.env.local` / `.env` at startup, else the values `src-tauri/build.rs` compiled in from the same files (an explicit allowlist of public identifiers — never API keys) | Rust derives the issuer; the WebView never talks to Clerk |
 
 Sidecars are spawned with a **cleared environment**: the helper and the research agent receive
 only `PATH`/`HOME`/`TMPDIR`/`USER`/`LANG` plus the variables Rust passes explicitly
@@ -27,8 +29,6 @@ only `PATH`/`HOME`/`TMPDIR`/`USER`/`LANG` plus the variables Rust passes explici
 documented `BLUEY_*` knobs). Keys that `.env` loads into Bluey's own process therefore never reach
 a child process that has no business with them. Log lines are redacted for `sk-…`, `fc-…`,
 `AIza…`, `Bearer …`, `api-key` values and `key=` URL queries.
-| Sign-in tokens (OAuth access / refresh / ID token) | Keychain `auth:clerk:oauth_tokens` | Rust only (ADR 0008): browser sign-in via Clerk's OAuth/OIDC endpoints; validated/refreshed at boot; revoked on sign-out |
-| Clerk publishable key + public OAuth client id | `VITE_CLERK_PUBLISHABLE_KEY`, `BLUEY_CLERK_OAUTH_CLIENT_ID` (public by design) | Rust derives the issuer; the WebView never talks to Clerk |
 
 Keys entered in Settings are written straight to the Keychain and the UI only shows
 "Key saved". `.env` values are imported into the Keychain on first run and can be removed from

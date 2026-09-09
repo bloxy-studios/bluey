@@ -26,20 +26,30 @@ function ConfigurationScreen() {
           </div>
           <div>
             <h1 className="text-[15px] font-semibold text-fg">Sign-in isn't configured</h1>
-            <p className="text-[13px] text-fg-muted">Bluey needs a Clerk instance and a public OAuth app to start.</p>
+            <p className="text-[13px] text-fg-muted">
+              Bluey needs a Clerk instance and a public OAuth app to start.
+            </p>
           </div>
         </div>
         <ol className="mt-4 list-decimal space-y-2 pl-5 text-[13px] leading-relaxed text-fg-muted">
           <li>
-            Copy <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">.env.example</code> to{" "}
-            <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">.env</code>
+            Copy <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">.env.example</code>{" "}
+            to <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">.env</code> or{" "}
+            <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">.env.local</code> in the
+            project root
           </li>
           <li>
-            Set <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">VITE_CLERK_PUBLISHABLE_KEY</code> and{" "}
-            <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">BLUEY_CLERK_OAUTH_CLIENT_ID</code> from your
-            Clerk dashboard (see docs/DEVELOPMENT.md)
+            Set{" "}
+            <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">
+              VITE_CLERK_PUBLISHABLE_KEY
+            </code>{" "}
+            and{" "}
+            <code className="rounded bg-bg-tile px-1.5 py-0.5 font-mono text-[12px]">
+              BLUEY_CLERK_OAUTH_CLIENT_ID
+            </code>{" "}
+            from your Clerk dashboard (see docs/DEVELOPMENT.md)
           </li>
-          <li>Restart Bluey</li>
+          <li>Restart Bluey — the files are read at startup; a packaged build needs a rebuild</li>
         </ol>
       </div>
     </CenteredShell>
@@ -63,7 +73,9 @@ function HudSignInPrompt() {
         <div className="flex-1 text-[13px] text-fg-muted">Sign in to use Bluey.</div>
         <button
           type="button"
-          onClick={() => void import("@/lib/tauri/api").then(({ bluey }) => bluey.window.open({ label: "onboarding" }))}
+          onClick={() =>
+            void import("@/lib/tauri/api").then(({ bluey }) => bluey.window.open({ label: "onboarding" }))
+          }
           className="h-8 rounded-control bg-accent px-3.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover"
         >
           Sign in
