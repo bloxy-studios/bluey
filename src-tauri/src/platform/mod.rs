@@ -179,15 +179,19 @@ pub fn build_tray(app: &AppHandle) -> BlueyResult<()> {
         .build()
         .map_err(tray_err)?;
 
-    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+    // The menu-bar icon is the "b" of the app icon as a monochrome template
+    // (black + alpha, 44 px = 22 pt @2x, `icons/tray/`): macOS tints a template
+    // image for light/dark menu bars and the highlighted state. The full-colour
+    // app icon must not be used here — as a template it collapses to a blob.
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .tooltip("Bluey — Starting")
-        .on_menu_event(|app, event| on_menu_event(app, event.id().as_ref()));
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon).icon_as_template(true);
-    }
-    let tray = builder.build(app).map_err(tray_err)?;
+        .icon(tauri::include_image!("./icons/tray/bluey-menubar@2x.png"))
+        .icon_as_template(true)
+        .on_menu_event(|app, event| on_menu_event(app, event.id().as_ref()))
+        .build(app)
+        .map_err(tray_err)?;
 
     // Keep the listening label and tooltip current.
     let core = app.state::<AppCore>();

@@ -49,6 +49,7 @@ Other commands:
 | `bun run test:rust`                    | `cargo test` for `bluey-core` and `bluey-storage`                                                                                                                                                     |
 | `bun run check:rust`                   | fmt + tests + clippy; add `--darwin` to type-check the app crate for macOS                                                                                                                            |
 | `bun run build:helper` / `build:agent` | native helper / research agent sidecars                                                                                                                                                               |
+| `bun run tauri icon`                   | regenerate `src-tauri/icons/` (`.icns`, `.ico`, PNG sizes) from the 1024×1024 master `app-icon.png`; the menu-bar glyphs in `src-tauri/icons/tray/` are hand-made (see `docs/DESIGN.md`)              |
 | `bun run tauri:build`                  | production `.app` + `.dmg` (see `scripts/release.sh` for signing)                                                                                                                                     |
 
 ## Providers and the `.env` import
