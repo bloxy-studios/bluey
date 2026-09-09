@@ -1,88 +1,83 @@
 import { History, Pause, Play, Square } from "lucide-react";
-import { type ReactNode } from "react";
+import { type ReactElement } from "react";
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/DropdownMenu";
 import { formatDuration } from "@/lib/utils/format";
 import { useSessionStore } from "@/stores/sessionStore";
+import { HudMenu, type HudMenuEntry } from "./HudMenu";
 import { endSession, openSessionHistory, pauseSession, resumeSession, startSession } from "./session-actions";
 
 export interface SessionMenuProps {
-  children: ReactNode;
+  children: ReactElement;
+  tooltip?: string;
 }
 
-/**
- * HUD session menu: the active session (title · duration · state) with
- * pause / resume / end, or "Start session" when none is running.
- */
-export function SessionMenu({ children }: SessionMenuProps) {
+type SessionAction = "start" | "pause" | "resume" | "end" | "history";
+const actions: Record<SessionAction, () => Promise<boolean>> = {
+  start: startSession,
+  pause: pauseSession,
+  resume: resumeSession,
+  end: endSession,
+  history: openSessionHistory,
+};
+
+/** Session actions remain owned by session-actions, including their error toasts. */
+export function SessionMenu({ children, tooltip }: SessionMenuProps) {
   const active = useSessionStore((s) => s.active);
+  const entries: HudMenuEntry<SessionAction>[] = active
+    ? [
+        {
+          kind: "label",
+          id: "summary",
+          label: `${active.title ?? "Untitled session"} · ${formatDuration(active.startedAt)}${active.status === "paused" ? " · paused" : ""}`,
+        },
+        active.status === "paused"
+          ? {
+              kind: "item",
+              id: "resume",
+              label: "Resume session",
+              action: "resume",
+              icon: <Play className="size-4" aria-hidden />,
+            }
+          : {
+              kind: "item",
+              id: "pause",
+              label: "Pause session",
+              action: "pause",
+              icon: <Pause className="size-4" aria-hidden />,
+            },
+        {
+          kind: "item",
+          id: "end",
+          label: "End session",
+          action: "end",
+          destructive: true,
+          icon: <Square className="size-4" aria-hidden />,
+        },
+      ]
+    : [
+        { kind: "label", id: "summary", label: "No active session" },
+        {
+          kind: "item",
+          id: "start",
+          label: "Start session",
+          action: "start",
+          icon: <Play className="size-4" aria-hidden />,
+        },
+      ];
+  entries.push(
+    { kind: "separator", id: "history-separator" },
+    {
+      kind: "item",
+      id: "history",
+      label: active ? "Open in History" : "Open History",
+      action: "history",
+      icon: <History className="size-4" aria-hidden />,
+    },
+  );
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        {active ? (
-          <>
-            <DropdownMenuLabel className="max-w-[260px] truncate">
-              {active.title ?? "Untitled session"} · {formatDuration(active.startedAt)}
-              {active.status === "paused" ? " · paused" : ""}
-            </DropdownMenuLabel>
-            {active.status === "paused" ? (
-              <DropdownMenuItem
-                icon={<Play className="size-4" aria-hidden />}
-                onSelect={() => void resumeSession()}
-              >
-                Resume session
-              </DropdownMenuItem>
-            ) : (
-              <DropdownMenuItem
-                icon={<Pause className="size-4" aria-hidden />}
-                onSelect={() => void pauseSession()}
-              >
-                Pause session
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuItem
-              icon={<Square className="size-4" aria-hidden />}
-              destructive
-              onSelect={() => void endSession()}
-            >
-              End session
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              icon={<History className="size-4" aria-hidden />}
-              onSelect={() => void openSessionHistory()}
-            >
-              Open in History
-            </DropdownMenuItem>
-          </>
-        ) : (
-          <>
-            <DropdownMenuLabel>No active session</DropdownMenuLabel>
-            <DropdownMenuItem
-              icon={<Play className="size-4" aria-hidden />}
-              onSelect={() => void startSession()}
-            >
-              Start session
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              icon={<History className="size-4" aria-hidden />}
-              onSelect={() => void openSessionHistory()}
-            >
-              Open History
-            </DropdownMenuItem>
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <HudMenu entries={entries} onSelect={(action) => void actions[action]()} align="end" tooltip={tooltip}>
+      {children}
+    </HudMenu>
   );
 }

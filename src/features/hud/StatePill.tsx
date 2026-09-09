@@ -42,8 +42,8 @@ export function StatePill({ onRetry }: StatePillProps = {}) {
   switch (pill.kind) {
     case "researching":
       return (
-        <Pill variant="hud" title={pill.message}>
-          <Spinner size={11} /> Researching
+        <Pill variant="hud" className="min-w-0" title={pill.message}>
+          <Spinner size={11} /> <span className="truncate">Researching</span>
         </Pill>
       );
     case "error": {
@@ -81,36 +81,47 @@ export function StatePill({ onRetry }: StatePillProps = {}) {
     }
     case "reading":
       return (
-        <Pill variant="hud">
-          <Spinner size={11} /> Reading screen
+        <Pill variant="hud" className="min-w-0" title="Reading screen">
+          <Spinner size={11} /> <span className="truncate">Reading screen</span>
         </Pill>
       );
     case "thinking":
       return (
-        <Pill variant="hud">
-          <Spinner size={11} /> Thinking
+        <Pill variant="hud" className="min-w-0" title="Thinking">
+          <Spinner size={11} /> <span className="truncate">Thinking</span>
         </Pill>
       );
     case "prepared":
       return (
-        <Pill variant="accent" className="motion-safe:animate-fade-in">
-          Bluey has a suggestion · ⌘⇧↵
+        <Pill
+          variant="accent"
+          className="min-w-0 motion-safe:animate-fade-in"
+          title="Bluey has a suggestion · ⌘⇧↵"
+        >
+          <span className="truncate">Bluey has a suggestion · ⌘⇧↵</span>
         </Pill>
       );
     case "preparing":
       return (
-        <Pill variant="hud">
-          <Spinner size={11} /> Preparing a suggestion
+        <Pill variant="hud" className="min-w-0" title="Preparing a suggestion">
+          <Spinner size={11} /> <span className="truncate">Preparing a suggestion</span>
         </Pill>
       );
     case "listening":
       return (
-        <Pill variant="hud">
-          <span className="size-[7px] rounded-full bg-success motion-safe:animate-pulse-dot" aria-hidden />
-          Listening
+        <Pill variant="hud" className="min-w-0" title="Listening">
+          <span
+            className="size-[7px] shrink-0 rounded-full bg-success motion-safe:animate-pulse-dot"
+            aria-hidden
+          />
+          <span className="truncate">Listening</span>
         </Pill>
       );
     case "idle":
-      return <Pill variant="hud">Bluey · {pill.modeName}</Pill>;
+      return (
+        <Pill variant="hud" className="min-w-0" title={`Bluey · ${pill.modeName}`}>
+          <span className="truncate">Bluey · {pill.modeName}</span>
+        </Pill>
+      );
   }
 }

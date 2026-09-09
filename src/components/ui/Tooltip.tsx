@@ -30,16 +30,17 @@ export function Tooltip({ label, shortcut, side = "top", children, className }: 
         <RadixTooltip.Content
           side={side}
           sideOffset={6}
+          collisionPadding={8}
           className={cn(
-            "z-50 flex items-center gap-2 rounded-[8px] bg-tooltip-bg px-2.5 py-1.5",
+            "z-50 flex max-w-[min(280px,var(--radix-tooltip-content-available-width))] items-center gap-2 rounded-[8px] bg-tooltip-bg px-2.5 py-1.5",
             "text-[13px] font-medium text-white shadow-lg shadow-black/30",
             "motion-safe:animate-tooltip-in",
             className,
           )}
         >
-          {label}
+          <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{label}</span>
           {shortcut ? (
-            <span className="flex items-center gap-1">
+            <span className="flex shrink-0 items-center gap-1">
               {acceleratorToGlyphs(shortcut).map((glyph, i) => (
                 <span
                   key={`${glyph}-${i}`}
