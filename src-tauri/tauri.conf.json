@@ -63,13 +63,16 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob: https://img.clerk.com https://*.clerk.com https://*.clerk.accounts.dev; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; connect-src 'self' ipc: http://ipc.localhost https://*.clerk.accounts.dev https://*.clerk.com https://clerk.bluey.app; frame-src https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:",
+      "csp": "default-src 'self'; img-src 'self' data: blob: https://img.clerk.com https://*.clerk.com https://*.clerk.accounts.dev; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:",
       "devCsp": null
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "Productivity",
     "shortDescription": "Bluey — real-time AI desktop copilot",
     "longDescription": "Bluey understands what is happening on your screen and in your conversations, with your explicit permission, and prepares concise contextual help.",
@@ -80,8 +83,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/bluey-helper", "binaries/bluey-agent"],
-    "resources": ["resources/**/*"],
+    "externalBin": [
+      "binaries/bluey-helper",
+      "binaries/bluey-agent"
+    ],
+    "resources": [
+      "resources/**/*"
+    ],
     "macOS": {
       "minimumSystemVersion": "14.0",
       "entitlements": "entitlements.plist",
@@ -92,6 +100,13 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "bluey"
+        ]
+      }
     }
   }
 }

@@ -43,13 +43,12 @@ pub fn run() {
         commands::app::app_get_dev_info,
         commands::app::app_run_setup_checks,
         commands::app::app_quit,
-        // Auth
+        // Auth (browser sign-in, ADR 0008)
         commands::auth::auth_get_status,
-        commands::auth::auth_store_session,
-        commands::auth::auth_store_token,
-        commands::auth::auth_load_client_token,
+        commands::auth::auth_begin_sign_in,
+        commands::auth::auth_cancel_sign_in,
         commands::auth::auth_clear_session,
-        commands::auth::auth_fapi_fetch,
+        commands::auth::auth_open_account_portal,
         // Permissions
         commands::permissions::permissions_get,
         commands::permissions::permissions_request,

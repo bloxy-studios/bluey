@@ -5,8 +5,11 @@
 - macOS 14+, Xcode Command Line Tools (`xcode-select --install`) — provides Swift 5.9+.
 - [Bun](https://bun.sh) ≥ 1.2, [Rust](https://rustup.rs) stable (≥ 1.85) with
   `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
-- A Clerk application (publishable key) with **Native applications** enabled and
-  `tauri://localhost` + `http://localhost:1420` in allowed origins.
+- A Clerk application (publishable key) with a **public OAuth application** for Bluey
+  (ADR 0008): Clerk Dashboard → *OAuth applications* → create, tick **Public** (PKCE), scopes
+  `openid profile email offline_access`, redirect URIs `bluey://auth/callback` and
+  `http://127.0.0.1/callback`; put its client id in `BLUEY_CLERK_OAUTH_CLIENT_ID`. Keep the
+  consent screen on. Sign-in then happens in your default browser.
 - A Google AI Studio key (`GEMINI_API_KEY`, free tier is fine) — the default provider for chat,
   vision, transcription, embeddings and research. Optional alternates: Microsoft Foundry / Azure
   OpenAI, Anthropic or an OpenAI-compatible endpoint; Exa / Firecrawl keys for research tools.
@@ -15,7 +18,7 @@
 
 ```bash
 bun install
-cp .env.example .env            # VITE_CLERK_PUBLISHABLE_KEY + GEMINI_API_KEY (the rest is optional)
+cp .env.example .env            # VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the rest is optional)
 bun run tauri:dev               # builds missing sidecars on first run, then Vite + Rust + the app
 ```
 

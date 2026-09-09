@@ -3,8 +3,9 @@
 ## Principles
 1. **Nothing happens silently.** Capture and listening only start on explicit user action
    (shortcut, HUD button, menu bar) and are always visible (HUD pill, menu bar item).
-2. **Secrets never reach the renderer.** API keys and the Clerk client token are stored in the
-   macOS Keychain by the Rust process (`keyring`). The WebView can only `set`, `has`, `delete`.
+2. **Secrets never reach the renderer.** API keys and the sign-in tokens are stored in the
+   macOS Keychain by the Rust process (`keyring`). The WebView can only `set`, `has`, `delete`
+   provider keys; it never sees an auth token at all.
 3. **Minimal retention by default.** Raw audio is never persisted; screenshots are off by
    default; transcripts and session history can be disabled; deletion really deletes.
 4. **Model output is untrusted data.** It is rendered as text/markdown, never executed, and the
@@ -26,8 +27,8 @@ only `PATH`/`HOME`/`TMPDIR`/`USER`/`LANG` plus the variables Rust passes explici
 documented `BLUEY_*` knobs). Keys that `.env` loads into Bluey's own process therefore never reach
 a child process that has no business with them. Log lines are redacted for `sk-…`, `fc-…`,
 `AIza…`, `Bearer …`, `api-key` values and `key=` URL queries.
-| Clerk client JWT | Keychain `auth:clerk:client_token` | Replayed by clerk-js at load (native mode) |
-| Clerk publishable key | `VITE_CLERK_PUBLISHABLE_KEY` (public by design) | Frontend |
+| Sign-in tokens (OAuth access / refresh / ID token) | Keychain `auth:clerk:oauth_tokens` | Rust only (ADR 0008): browser sign-in via Clerk's OAuth/OIDC endpoints; validated/refreshed at boot; revoked on sign-out |
+| Clerk publishable key + public OAuth client id | `VITE_CLERK_PUBLISHABLE_KEY`, `BLUEY_CLERK_OAUTH_CLIENT_ID` (public by design) | Rust derives the issuer; the WebView never talks to Clerk |
 
 Keys entered in Settings are written straight to the Keychain and the UI only shows
 "Key saved". `.env` values are imported into the Keychain on first run and can be removed from
@@ -40,8 +41,10 @@ patterns (`sk-…`, `fc-…`, bearer tokens) defensively.
 * Capabilities: `main` (HUD) gets core window/event permissions plus the Bluey commands it
   needs; `settings` additionally gets dialog/opener/autostart; `onboarding` a subset. No window
   gets `shell:allow-execute`; sidecars are spawned from Rust only.
-* CSP restricts scripts to the bundle (Clerk UI is bundled) and connections to Clerk's
-  Frontend API + Tauri IPC. Provider endpoints are contacted from Rust, not from the WebView.
+* CSP restricts scripts to the bundle and connections to Tauri IPC only; nothing in the WebView
+  talks to Clerk or to a provider — sign-in runs in the system browser and Rust completes it
+  (PKCE, `state`, `nonce`, ID-token checks; the loopback listener binds `127.0.0.1` for one
+  request and unrelated `bluey://` links are ignored).
 
 ## Agent security (research sidecar: Gemini function calling or Claude Agent SDK)
 * `tools: []` removes all built-in tools (no Bash/Read/Write/WebFetch); the only tools are the

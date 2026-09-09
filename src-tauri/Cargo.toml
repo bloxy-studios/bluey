@@ -40,6 +40,8 @@ async-trait = "0.1"
 base64 = "0.22"
 regex = "1"
 rusqlite = { version = "0.40", features = [] }
+sha2 = "0.10"
+url = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -56,15 +58,19 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 regex = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+rand = "0.9"
 
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-opener = "2"
+tauri-plugin-deep-link = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
@@ -75,7 +81,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-autostart = "2"
 
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "native-tls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "stream", "native-tls", "http2"] }
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 eventsource-stream = "0.2"
 keyring = { version = "3", features = ["apple-native"] }

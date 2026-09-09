@@ -90,8 +90,11 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   a row enters recording mode (caps highlighted accent, "Press shortcut…", Esc cancels);
   conflicts show an inline warning. A small switch at the right of each row turns the
   shortcut off (row dims to 60%) without forgetting its accelerator.
-* **Profile / Security**: Clerk `<UserProfile />` bundled with dark theme variables matching the
-  tokens (card background `bg-elevated`).
+* **Profile / Security**: a card with the signed-in identity (avatar, name, email) and two
+  actions — **Manage account** (opens Clerk's Account Portal in the browser) and **Sign out**.
+  Sign-in itself never renders inside Bluey: the sign-in card has one primary button, *Sign in
+  with your browser*, then a "Waiting for your browser…" state with *Open the sign-in page
+  again*, *Copy link* and *Cancel* (ADR 0008).
 * **AI tab**: opens with **Default provider** — one select that re-points every role at the
   chosen provider's recommended models (Gemini first; ADR 0007) — then the provider cards
   (Gemini first, "Default" accent badge on the nominated one). The select lists enabled
@@ -207,7 +210,7 @@ Quit Bluey. Shows a listening/capturing indicator via the item text (e.g. "● L
 
 ## Onboarding window (760 × 560)
 
-Minimal centered steps with a 6px progress dots row at the top: Welcome → Sign in (Clerk) →
+Minimal centered steps with a 6px progress dots row at the top: Welcome → Sign in (browser) →
 Name your Bluey → Connect Gemini (see the AI notes above) → Permissions (one screen per
 permission: What Bluey needs / Why / What it can access, buttons Continue + Open System
 Settings) → Choose default mode → Configure shortcuts → Test screen → Test microphone →

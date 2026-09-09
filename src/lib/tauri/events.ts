@@ -13,6 +13,7 @@ import type {
   AppStatus,
   AudioSource,
   AudioStatus,
+  AuthStatus,
   BlueyError,
   BlueyMode,
   BlueyResponse,
@@ -38,6 +39,8 @@ export interface EventMap {
   "app.error": BlueyError;
   "settings.changed": Settings;
   "permissions.changed": PermissionState;
+  /** Browser sign-in started / finished, sign-out (ADR 0008). */
+  "auth.changed": AuthStatus;
   "helper.status": { running: boolean; version?: string; restarted?: boolean; error?: BlueyError };
 
   // screen
@@ -111,6 +114,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "app.error",
   "settings.changed",
   "permissions.changed",
+  "auth.changed",
   "helper.status",
   "screen.changed",
   "screen.captured",

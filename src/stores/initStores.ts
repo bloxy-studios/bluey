@@ -3,6 +3,7 @@
  * Called once from bootstrap (and re-callable after `eventBus.dispose()` in tests).
  */
 
+import { useAuthStore } from "@/lib/auth/auth-store";
 import { eventBus } from "@/lib/tauri/event-bus";
 import type { Unlisten } from "@/lib/tauri/transport";
 import { useAppStore } from "./appStore";
@@ -34,6 +35,7 @@ export async function initStores(): Promise<void> {
     eventBus.on("settings.changed", (settings) => useSettingsStore.getState().applyRemote(settings)),
     eventBus.on("modes.changed", (modes) => useModesStore.getState().applyRemote(modes)),
     eventBus.on("permissions.changed", (p) => usePermissionsStore.getState().applyRemote(p)),
+    eventBus.on("auth.changed", (status) => useAuthStore.getState().applyStatus(status)),
     eventBus.on("panel.state", (state) => usePanelStore.getState().applyRemote(state)),
 
     eventBus.on("session.started", (session) => useSessionStore.getState().setActive(session)),
@@ -60,6 +62,7 @@ export async function initStores(): Promise<void> {
   ];
 
   await Promise.all([
+    useAuthStore.getState().load(),
     useSettingsStore.getState().load(),
     useAppStore.getState().load(),
     useModesStore.getState().load(),
@@ -72,6 +75,7 @@ export async function initStores(): Promise<void> {
 /** Test helper: reset all store state to its initial shape. */
 export function resetStoresForTest(): void {
   useAppStore.setState({ status: null });
+  useAuthStore.setState({ mode: "unconfigured", state: "unknown", user: null, signInPending: false, loaded: false });
   useSettingsStore.setState({ settings: null, lastError: null });
   useModesStore.setState({ modes: [], loaded: false });
   useSessionStore.setState({ active: null, events: [] });

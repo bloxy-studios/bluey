@@ -56,6 +56,7 @@ pub fn set_log_level(level: &str) {
 pub fn run(builder: tauri::Builder<Wry>) {
     let builder = builder
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -230,6 +231,7 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         secrets.clone(),
         storage.clone(),
         hub.clone(),
+        bus.clone(),
         http,
     )?);
     let panel = Arc::new(PanelManager::load(
@@ -276,6 +278,23 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
     });
     events::spawn_forwarder(handle.clone(), bus.clone());
 
+    // `bluey://auth/callback` — the browser hands the sign-in back to us
+    // (ADR 0008). Also picks up a link the app was *launched* with.
+    {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        let link_handle = handle.clone();
+        app.deep_link().on_open_url(move |event| {
+            let urls: Vec<String> = event.urls().into_iter().map(|u| u.to_string()).collect();
+            let handle = link_handle.clone();
+            tauri::async_runtime::spawn(async move { handle_deep_links(handle, urls).await });
+        });
+        if let Ok(Some(urls)) = app.deep_link().get_current() {
+            let urls: Vec<String> = urls.into_iter().map(|u| u.to_string()).collect();
+            let handle = handle.clone();
+            tauri::async_runtime::spawn(async move { handle_deep_links(handle, urls).await });
+        }
+    }
+
     // Windows: HUD becomes an NSPanel; first run shows the onboarding wizard.
     panel.attach(onboarding_completed)?;
     if !onboarding_completed {
@@ -293,11 +312,27 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
     Ok(())
 }
 
+/// Deep links: only the sign-in callback is handled; everything else is
+/// logged and ignored (the URL itself is never logged — it carries the code).
+async fn handle_deep_links(app: AppHandle, urls: Vec<String>) {
+    let core = app.state::<AppCore>();
+    for url in urls {
+        if let Err(error) = core.auth.handle_callback_url(&app, &url).await {
+            tracing::debug!(code = %error.code, "deep link not handled");
+        }
+    }
+}
+
 /// Async part of bootstrap: shortcuts, helper spawn, permission snapshot and
 /// the side effects of the persisted settings.
 async fn finish_boot(app: &AppHandle) {
     let core = app.state::<AppCore>();
     let settings = core.settings.get();
+    // Validate / refresh the stored sign-in in the background (network).
+    let auth_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        auth_handle.state::<AppCore>().auth.restore().await;
+    });
     if let Err(e) = core
         .shortcuts
         .apply_bindings(settings.shortcuts.clone())

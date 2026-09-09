@@ -1,6 +1,6 @@
 # ADR 0003 — Clerk authentication inside a Tauri WebView
 
-**Status:** accepted (with documented fallbacks) · **Date:** 2026-09-07
+**Status:** superseded by ADR 0008 (sign-in moved to the system browser; clerk-js no longer runs in the WebView) · **Date:** 2026-09-07
 
 ## Context
 Authentication is required through Clerk. The production WebView origin is `tauri://localhost`

@@ -18,7 +18,10 @@ pub fn provider_key(provider_id: &str) -> String {
 pub const EXA_KEY: &str = "research:exa:api_key";
 pub const FIRECRAWL_KEY: &str = "research:firecrawl:api_key";
 pub const AGENT_ANTHROPIC_KEY: &str = "agent:anthropic:api_key";
+/// Legacy (clerk-js in the WebView, ADR 0003): deleted at boot when present.
 pub const CLERK_TOKEN_KEY: &str = "auth:clerk:client_token";
+/// OAuth tokens of the browser sign-in (ADR 0008): JSON `{access_token, refresh_token, expires_at, id_token}`.
+pub const CLERK_OAUTH_TOKENS_KEY: &str = "auth:clerk:oauth_tokens";
 
 /// Keychain-backed secret store.
 pub struct SecretsStore {
@@ -41,7 +44,11 @@ impl SecretsStore {
     fn validate_key(key: &str) -> BlueyResult<()> {
         let allowed = matches!(
             key,
-            EXA_KEY | FIRECRAWL_KEY | AGENT_ANTHROPIC_KEY | CLERK_TOKEN_KEY
+            EXA_KEY
+                | FIRECRAWL_KEY
+                | AGENT_ANTHROPIC_KEY
+                | CLERK_TOKEN_KEY
+                | CLERK_OAUTH_TOKENS_KEY
         ) || (key.starts_with("provider:")
             && key.ends_with(":api_key")
             && key.len() > "provider::api_key".len());
