@@ -1,10 +1,12 @@
 /**
  * SINGLE SOURCE OF TRUTH for the event bus.
  *
- * Rust emits every event on the Tauri event named `bluey:<name>` with the
- * payload below (serde camelCase). The frontend subscribes through
- * `eventBus.on(name, handler)` (see `./event-bus.ts`) and never calls
- * `listen()` directly.
+ * Rust emits every event on the Tauri event `tauriEventName(name)` — the
+ * `bluey:` prefix plus the dotted name with `.` replaced by `/`, because Tauri
+ * v2 only accepts `[A-Za-z0-9-/:_]` in event names (`transcript.final` →
+ * `bluey:transcript/final`) — with the payload below (serde camelCase). The
+ * frontend subscribes through `eventBus.on(name, handler)` (see
+ * `./event-bus.ts`) and never calls `listen()` directly.
  */
 
 import type {
@@ -105,8 +107,14 @@ export type EventPayload<K extends EventName> = EventMap[K];
 
 export const EVENT_PREFIX = "bluey:";
 
+/**
+ * Wire name of an event. Tauri v2 rejects event names outside
+ * `[A-Za-z0-9-/:_]` (no dots), so the dotted contract name travels as
+ * `bluey:` + name with `.` → `/`: `"transcript.final"` → `"bluey:transcript/final"`.
+ * Mirrors `BlueyEvent::tauri_event_name` in `bluey_core::events`.
+ */
 export function tauriEventName(name: EventName): string {
-  return `${EVENT_PREFIX}${name}`;
+  return `${EVENT_PREFIX}${name.replace(/\./g, "/")}`;
 }
 
 export const EVENT_NAMES: readonly EventName[] = [
