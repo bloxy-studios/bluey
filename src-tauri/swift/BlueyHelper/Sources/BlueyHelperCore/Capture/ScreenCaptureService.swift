@@ -264,21 +264,26 @@ public final class ScreenCaptureService {
         }
 
         let frameId = "f-" + UUID().uuidString.lowercased()
+        // The temp file is always written: `ocr.recognize` and `capture.discard`
+        // work by path, and Rust caches the path per frame id. `inline` only adds
+        // the encoded image to the frame so the caller skips a second read — an
+        // inline-only frame used to leave OCR with an unknown frame id.
+        let url = tempFrames.url(id: frameId, fileExtension: format.fileExtension)
         var path: String?
-        var inlineImage: String?
-        if params.resolvedInline {
-            inlineImage = data.base64EncodedString()
-        } else {
-            let url = tempFrames.url(id: frameId, fileExtension: format.fileExtension)
-            do {
-                try data.write(to: url, options: [.atomic])
-                path = url.path
-            } catch {
+        do {
+            try data.write(to: url, options: [.atomic])
+            path = url.path
+        } catch {
+            guard params.resolvedInline else {
                 completion(
                     .failure(.internalError("failed to write frame: \(error.localizedDescription)")))
                 return
             }
+            // The inline image still serves the caller (and OCR by `image`).
+            Log.shared.warn(
+                "failed to write frame \(frameId) to disk; returning it inline only: \(error.localizedDescription)")
         }
+        let inlineImage: String? = params.resolvedInline ? data.base64EncodedString() : nil
 
         completion(
             .success(

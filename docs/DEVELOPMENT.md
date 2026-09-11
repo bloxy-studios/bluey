@@ -66,7 +66,11 @@ planned by `bluey_core::presets::plan_env_import`, ADR 0007):
 - `BLUEY_AI_PROVIDER` (`gemini` default | `azure-foundry` | `anthropic` | `openai`) nominates the
   default provider; its recommended models fill every role that is still unassigned and
   `BLUEY_MODEL_*` override single roles. Settings → AI → *Default AI provider* does the same with
-  one click, and *Use recommended models* re-applies a provider's presets.
+  one click, and *Use recommended models* re-applies a provider's presets. Only a **changed**
+  `.env` value re-applies presets over your edits and re-nominates the default: the import
+  remembers what the environment nominated last time (settings table,
+  `env_import:bootstrap_provider`), so a default provider you switched to in Settings — ChatGPT,
+  say — is still the default after a relaunch.
 - `BLUEY_EMBEDDING_DIMENSIONS` (768 / 1536 / 3072), `BLUEY_TRANSCRIPTION_PROVIDER`
   (`gemini_live` default | `apple` | `cloud_realtime`) and `RESEARCH_BACKEND` (`gemini` default |
   `claude`) set the matching settings on the first launch or when `BLUEY_AI_PROVIDER` changes;

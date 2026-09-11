@@ -2,7 +2,9 @@
 //!
 //! One WebSocket per audio source: `setup` → `setupComplete`, then
 //! `realtimeInput.audio` frames (PCM16 16 kHz mono) and `audioStreamEnd`
-//! after 500 ms of silence so utterances finalize promptly. Sessions are
+//! after 500 ms of silence so utterances finalize promptly. The service
+//! answers on **binary** WebSocket frames (UTF-8 JSON), so every frame is
+//! decoded through [`decode_frame`] whatever its opcode. Sessions are
 //! capped at ten minutes by the service, so a replacement socket is opened at
 //! 9 min 30 s (or on `goAway`); the old one drains for two seconds and a final
 //! that repeats across the hand-over is dropped by [`FinalDedupe`] — armed
@@ -423,12 +425,12 @@ impl Worker {
                 break;
             }
             match tokio::time::timeout(remaining, conn.socket.next()).await {
-                Ok(Some(Ok(Message::Text(text)))) => {
-                    if let LiveEvent::Final { text, language } = proto::parse_live_message(&text) {
+                Ok(Some(Ok(Message::Close(_)))) => break,
+                Ok(Some(Ok(message))) => {
+                    if let Some(LiveEvent::Final { text, language }) = decode_frame(&message) {
                         self.emit_final(text, language).await;
                     }
                 }
-                Ok(Some(Ok(_))) => {}
                 _ => break,
             }
         }
@@ -469,12 +471,14 @@ impl Worker {
                     },
                 },
                 message = conn.socket.next() => match message {
-                    Some(Ok(Message::Text(text))) => self.handle(proto::parse_live_message(&text)).await,
                     Some(Ok(Message::Close(_))) | None => {
                         tracing::info!("gemini live socket closed by the server; reconnecting");
                         Action::Reconnect
                     }
-                    Some(Ok(_)) => Action::None,
+                    Some(Ok(message)) => match decode_frame(&message) {
+                        Some(event) => self.handle(event).await,
+                        None => Action::None,
+                    },
                     Some(Err(error)) => {
                         tracing::warn!(error = %error, "gemini live socket error");
                         Action::Reconnect
@@ -549,22 +553,35 @@ impl Worker {
     }
 }
 
+/// One Live message from a WebSocket frame, whatever its opcode: the service
+/// sends its JSON on binary frames, tooling and proxies may re-frame it as
+/// text. Pings, pongs and close frames are not messages.
+fn decode_frame(message: &Message) -> Option<LiveEvent> {
+    match message {
+        Message::Text(text) => Some(proto::parse_live_message(text)),
+        Message::Binary(bytes) => Some(proto::parse_live_frame(bytes)),
+        _ => None,
+    }
+}
+
 /// Read frames until `setupComplete` (errors before it are setup failures).
 async fn wait_for_setup(conn: &mut Connection) -> BlueyResult<()> {
     loop {
         match conn.socket.next().await {
-            Some(Ok(Message::Text(text))) => match proto::parse_live_message(&text) {
-                LiveEvent::SetupComplete => return Ok(()),
-                LiveEvent::Error(status) => return Err(map_live_error(&status)),
-                _ => {}
-            },
             Some(Ok(Message::Close(_))) | None => {
                 return Err(BlueyError::network(
                     "stream",
                     "the Gemini Live socket closed during setup",
                 ))
             }
-            Some(Ok(_)) => {}
+            Some(Ok(message)) => match decode_frame(&message) {
+                Some(LiveEvent::SetupComplete) => return Ok(()),
+                Some(LiveEvent::Error(status)) => return Err(map_live_error(&status)),
+                Some(other) => {
+                    tracing::debug!(kind = other.kind(), "frame before setupComplete ignored")
+                }
+                None => {}
+            },
             Some(Err(_)) => {
                 return Err(BlueyError::network(
                     "stream",
@@ -606,6 +623,22 @@ mod tests {
         assert!(!is_fatal(&map_live_http_status(429)));
         assert_eq!(map_live_http_status(502).code, "network.connect");
         assert!(!is_fatal(&map_live_http_status(502)));
+    }
+
+    #[test]
+    fn binary_and_text_frames_decode_alike_and_control_frames_do_not() {
+        let json = r#"{"setupComplete":{}}"#;
+        assert_eq!(
+            decode_frame(&Message::Text(json.into())),
+            Some(LiveEvent::SetupComplete)
+        );
+        assert_eq!(
+            decode_frame(&Message::Binary(json.as_bytes().to_vec().into())),
+            Some(LiveEvent::SetupComplete),
+            "the service answers on binary frames"
+        );
+        assert_eq!(decode_frame(&Message::Ping(Vec::new().into())), None);
+        assert_eq!(decode_frame(&Message::Pong(Vec::new().into())), None);
     }
 
     #[test]

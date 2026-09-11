@@ -279,8 +279,11 @@ pub struct EnvImportPlan {
     /// Provider ids whose base URL came from the environment (only those may
     /// replace a base URL the user edited in Settings).
     pub explicit_base_urls: Vec<String>,
-    /// The nomination changed, so presets were re-applied over user edits.
+    /// The environment's nomination changed, so presets were re-applied over user edits.
     pub reapplied: bool,
+    /// The provider the environment nominates this time — the caller records
+    /// it and hands it back as `last_env_nomination` on the next boot.
+    pub env_nomination: Option<String>,
     /// Human-readable notes for the log (never values).
     pub warnings: Vec<String>,
 }
@@ -314,15 +317,25 @@ fn truthy(value: Option<String>) -> bool {
     )
 }
 
-/// Plan the import. `env` reads one variable (e.g. `|n| std::env::var(n).ok()`).
+/// Plan the import. `env` reads one variable (e.g. `|n| std::env::var(n).ok()`);
+/// `last_env_nomination` is the provider the *environment* nominated at the
+/// last boot (`EnvImportPlan::env_nomination`, persisted by the caller).
 ///
 /// * a provider is imported when one of its `key_env` variables is set;
 /// * the bootstrap provider is `BLUEY_AI_PROVIDER` when valid, else the first
 ///   imported provider in preset order (Gemini first);
 /// * base URLs come from the env when set, else the existing config's, else the preset;
-/// * the bootstrap provider's recommended models fill unassigned roles and
-///   `BLUEY_MODEL_*` overrides always apply to it.
-pub fn plan_env_import(env: &dyn Fn(&str) -> Option<String>, settings: &Settings) -> EnvImportPlan {
+/// * the nominated provider's recommended models fill unassigned roles and
+///   `BLUEY_MODEL_*` overrides always apply to it; only a **changed** `.env`
+///   nomination re-applies them over the user's edits and re-nominates the
+///   default provider. Switching the default provider in Settings also writes
+///   `ai.bootstrapProvider`, so that field is never the reference — comparing
+///   against it re-pointed every role back to the `.env` provider on each boot.
+pub fn plan_env_import(
+    env: &dyn Fn(&str) -> Option<String>,
+    settings: &Settings,
+    last_env_nomination: Option<&str>,
+) -> EnvImportPlan {
     let mut plan = EnvImportPlan {
         models: settings.ai.models.clone(),
         override_keychain: truthy(env(ENV_OVERRIDE_KEYCHAIN)),
@@ -357,8 +370,7 @@ pub fn plan_env_import(env: &dyn Fn(&str) -> Option<String>, settings: &Settings
         imported.push(preset);
     }
 
-    let previous = settings.ai.bootstrap_provider.as_deref();
-    let first_import = previous.is_none();
+    let first_import = settings.ai.bootstrap_provider.is_none();
     let explicit = non_empty(env(ENV_AI_PROVIDER)).and_then(|value| parse_provider_choice(&value));
     let explicit_configured = explicit
         .map(|preset| {
@@ -378,6 +390,10 @@ pub fn plan_env_import(env: &dyn Fn(&str) -> Option<String>, settings: &Settings
         None => imported.first().copied(),
     };
 
+    // Did the environment's nomination change since the last boot? Nothing
+    // recorded yet (an install predating the record) counts as unchanged, so an
+    // upgrade never re-applies presets over the user's edits.
+    let mut env_changed = false;
     if let Some(preset) = chosen {
         let config = plan
             .providers
@@ -399,21 +415,27 @@ pub fn plan_env_import(env: &dyn Fn(&str) -> Option<String>, settings: &Settings
                     overrides.insert(role, model);
                 }
             }
-            // A changed nomination re-applies the presets over user edits; an
-            // unchanged one only fills gaps, so Settings edits survive reboots.
-            let overwrite = !first_import && previous != Some(config.id.as_str());
+            env_changed = last_env_nomination.is_some_and(|last| last != config.id);
+            // A changed `.env` nomination re-applies the presets over user edits
+            // and becomes the default provider; an unchanged one only fills gaps,
+            // so Settings edits — including a default provider switched there —
+            // survive reboots.
+            let overwrite = !first_import && env_changed;
             if let Ok(changed) = apply_presets(&mut plan.models, &config, overwrite, &overrides) {
                 plan.changed_roles = changed;
             }
             plan.reapplied = overwrite;
-            plan.bootstrap_provider = Some(config.id);
+            if first_import || env_changed {
+                plan.bootstrap_provider = Some(config.id.clone());
+            }
+            plan.env_nomination = Some(config.id);
         }
     }
 
     // Knobs follow the same rule: applied on the first import or when the
-    // nomination changes, never on every boot (they would undo Settings edits).
-    let nomination_changed = plan.bootstrap_provider.as_deref() != previous;
-    if first_import || nomination_changed {
+    // environment's nomination changes, never on every boot (they would undo
+    // Settings edits).
+    if first_import || env_changed {
         plan.embedding_dimensions = non_empty(env(ENV_EMBEDDING_DIMENSIONS))
             .and_then(|v| parse_embedding_dimensions(&v))
             .filter(|dims| *dims != settings.ai.embedding_dimensions);
@@ -426,12 +448,6 @@ pub fn plan_env_import(env: &dyn Fn(&str) -> Option<String>, settings: &Settings
         plan.research_backend = non_empty(env(ENV_RESEARCH_BACKEND))
             .and_then(|v| parse_research_backend(&v))
             .filter(|backend| *backend != settings.ai.research_backend);
-    }
-    if plan.bootstrap_provider == settings.ai.bootstrap_provider {
-        // Unchanged nomination is not a change worth persisting on its own.
-        if plan.providers.is_empty() && plan.changed_roles.is_empty() {
-            plan.bootstrap_provider = None;
-        }
     }
     plan
 }
@@ -569,9 +585,14 @@ mod tests {
             ("GOOGLE_API_KEY", "AIza-secret"),
             ("BLUEY_EMBEDDING_DIMENSIONS", "1536"),
         ]);
-        let plan = plan_env_import(&env, &settings);
+        let plan = plan_env_import(&env, &settings, None);
 
         assert_eq!(plan.bootstrap_provider.as_deref(), Some("gemini"));
+        assert_eq!(
+            plan.env_nomination.as_deref(),
+            Some("gemini"),
+            "the caller records what the environment nominated"
+        );
         assert_eq!(plan.providers.len(), 1);
         assert_eq!(plan.providers[0].kind, AiProviderKind::GoogleGemini);
         assert_eq!(plan.providers[0].base_url, "");
@@ -603,7 +624,7 @@ mod tests {
             ("RESEARCH_BACKEND", "claude"),
             ("BLUEY_ENV_OVERRIDES_KEYCHAIN", "1"),
         ]);
-        let plan = plan_env_import(&env, &settings);
+        let plan = plan_env_import(&env, &settings, None);
 
         assert_eq!(plan.bootstrap_provider.as_deref(), Some("azure-foundry"));
         assert_eq!(plan.providers.len(), 2, "both keyed providers are imported");
@@ -635,15 +656,16 @@ mod tests {
             }),
         );
         let env = env_of(&[("GEMINI_API_KEY", "k")]);
-        let plan = plan_env_import(&env, &settings);
+        let plan = plan_env_import(&env, &settings, None);
         assert_eq!(
             plan.models.default.as_ref().unwrap().provider_id,
             "anthropic"
         );
         assert_eq!(plan.models.fast.as_ref().unwrap().provider_id, "gemini");
 
-        let empty = plan_env_import(&env_of(&[]), &settings);
+        let empty = plan_env_import(&env_of(&[]), &settings, None);
         assert!(empty.is_empty());
+        assert_eq!(empty.env_nomination, None);
     }
 
     fn bootstrapped_settings(provider: &str) -> Settings {
@@ -661,11 +683,12 @@ mod tests {
     }
 
     #[test]
-    fn plan_reapplies_presets_only_when_the_nomination_changes() {
-        // Same nomination as last boot: user edits are kept, nothing to persist.
+    fn plan_reapplies_presets_only_when_the_env_nomination_changes() {
+        // Same `.env` nomination as last boot: user edits are kept, the default
+        // provider is not touched, nothing to persist.
         let settings = bootstrapped_settings("gemini");
         let env = env_of(&[("GEMINI_API_KEY", "k"), ("BLUEY_AI_PROVIDER", "gemini")]);
-        let plan = plan_env_import(&env, &settings);
+        let plan = plan_env_import(&env, &settings, Some("gemini"));
         assert!(!plan.reapplied);
         assert_eq!(
             plan.models.default.as_ref().unwrap().model,
@@ -673,16 +696,19 @@ mod tests {
             "an unchanged nomination fills gaps only"
         );
         assert_eq!(plan.changed_roles.len(), 6);
+        assert_eq!(plan.bootstrap_provider, None);
+        assert_eq!(plan.env_nomination.as_deref(), Some("gemini"));
 
-        // A different nomination re-applies that provider's presets over the edits.
+        // A different `.env` nomination re-applies that provider's presets over the edits.
         let env = env_of(&[
             ("GEMINI_API_KEY", "k"),
             ("AZURE_FOUNDRY_API_KEY", "f"),
             ("BLUEY_AI_PROVIDER", "azure-foundry"),
         ]);
-        let plan = plan_env_import(&env, &settings);
+        let plan = plan_env_import(&env, &settings, Some("gemini"));
         assert!(plan.reapplied);
         assert_eq!(plan.bootstrap_provider.as_deref(), Some("azure-foundry"));
+        assert_eq!(plan.env_nomination.as_deref(), Some("azure-foundry"));
         assert_eq!(
             plan.models.default.as_ref().unwrap().provider_id,
             "azure-foundry"
@@ -690,14 +716,54 @@ mod tests {
     }
 
     #[test]
-    fn plan_applies_knobs_on_first_import_or_nomination_change_only() {
+    fn a_default_provider_switched_in_settings_survives_the_next_boot() {
+        // The user made ChatGPT the default (Settings → AI writes `ai.bootstrapProvider`)
+        // while `.env` still says gemini. Before, the boot import saw a "changed
+        // nomination" and re-pointed every role back to Gemini.
+        let mut settings = bootstrapped_settings("chatgpt");
+        settings.ai.models.set(
+            ModelRole::Default,
+            Some(ModelAssignment {
+                provider_id: "chatgpt".into(),
+                model: "gpt-6-astra".into(),
+            }),
+        );
+        let env = env_of(&[("GEMINI_API_KEY", "k"), ("BLUEY_AI_PROVIDER", "gemini")]);
+
+        let plan = plan_env_import(&env, &settings, Some("gemini"));
+        assert!(!plan.reapplied);
+        assert_eq!(plan.bootstrap_provider, None, "the Settings choice stands");
+        assert_eq!(
+            plan.models.default.as_ref().unwrap().provider_id,
+            "chatgpt",
+            "the user's default role assignment is kept"
+        );
+        assert_eq!(
+            plan.models.fast.as_ref().unwrap().provider_id,
+            "gemini",
+            "unassigned roles are still filled from the nominated provider"
+        );
+
+        // An install that never recorded the env nomination (upgrade): unchanged.
+        let upgraded = plan_env_import(&env, &settings, None);
+        assert!(!upgraded.reapplied);
+        assert_eq!(upgraded.bootstrap_provider, None);
+        assert_eq!(
+            upgraded.models.default.as_ref().unwrap().provider_id,
+            "chatgpt"
+        );
+        assert_eq!(upgraded.env_nomination.as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn plan_applies_knobs_on_first_import_or_env_nomination_change_only() {
         let knobs = [
             ("GEMINI_API_KEY", "k"),
             ("BLUEY_EMBEDDING_DIMENSIONS", "1536"),
             ("BLUEY_TRANSCRIPTION_PROVIDER", "apple"),
             ("RESEARCH_BACKEND", "claude"),
         ];
-        let fresh = plan_env_import(&env_of(&knobs), &Settings::default());
+        let fresh = plan_env_import(&env_of(&knobs), &Settings::default(), None);
         assert_eq!(fresh.embedding_dimensions, Some(1536));
         assert_eq!(
             fresh.transcription_provider,
@@ -705,11 +771,22 @@ mod tests {
         );
         assert_eq!(fresh.research_backend, Some(ResearchBackend::Claude));
 
-        // Already bootstrapped with the same provider: Settings edits win.
-        let later = plan_env_import(&env_of(&knobs), &bootstrapped_settings("gemini"));
+        // Already bootstrapped, same `.env` nomination: Settings edits win.
+        let later = plan_env_import(
+            &env_of(&knobs),
+            &bootstrapped_settings("gemini"),
+            Some("gemini"),
+        );
         assert!(later.embedding_dimensions.is_none());
         assert!(later.transcription_provider.is_none());
         assert!(later.research_backend.is_none());
+        // …even when the user switched the default provider in Settings meanwhile.
+        let switched = plan_env_import(
+            &env_of(&knobs),
+            &bootstrapped_settings("chatgpt"),
+            Some("gemini"),
+        );
+        assert!(switched.embedding_dimensions.is_none());
     }
 
     #[test]
@@ -719,7 +796,7 @@ mod tests {
             ("AZURE_FOUNDRY_ENDPOINT", "https://res.openai.azure.com"),
             ("BLUEY_AI_PROVIDER", "gemini"),
         ]);
-        let plan = plan_env_import(&env, &Settings::default());
+        let plan = plan_env_import(&env, &Settings::default(), None);
         assert_eq!(plan.bootstrap_provider.as_deref(), Some("azure-foundry"));
         assert_eq!(plan.warnings.len(), 1);
         assert!(plan.warnings[0].contains("BLUEY_AI_PROVIDER=gemini"));
@@ -730,7 +807,7 @@ mod tests {
     #[test]
     fn a_foundry_claude_key_does_not_configure_the_anthropic_provider() {
         let env = env_of(&[("ANTHROPIC_FOUNDRY_API_KEY", "f")]);
-        let plan = plan_env_import(&env, &Settings::default());
+        let plan = plan_env_import(&env, &Settings::default(), None);
         assert!(plan.providers.is_empty());
         assert!(plan.keys.is_empty());
         assert!(plan.is_empty());
@@ -744,7 +821,7 @@ mod tests {
             ("BLUEY_TRANSCRIPTION_PROVIDER", "whisper"),
             ("RESEARCH_BACKEND", "gpt"),
         ]);
-        let plan = plan_env_import(&env, &settings);
+        let plan = plan_env_import(&env, &settings, None);
         assert!(plan.embedding_dimensions.is_none());
         assert!(plan.transcription_provider.is_none());
         assert!(plan.research_backend.is_none());

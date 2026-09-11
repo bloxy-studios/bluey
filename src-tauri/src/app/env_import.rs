@@ -10,8 +10,12 @@
 //!
 //! Settings edits survive reboots: an existing provider keeps its enabled
 //! state and base URL (unless the base URL is set in the environment), an
-//! unchanged nomination only fills unassigned roles, and nothing is written
-//! when the plan changes nothing.
+//! unchanged `.env` nomination only fills unassigned roles, and nothing is
+//! written when the plan changes nothing. The provider the environment
+//! nominated last time is remembered in the settings table
+//! ([`ENV_NOMINATION_KEY`]) so a default provider switched in Settings is
+//! not undone at the next boot — `ai.bootstrapProvider` is the user's choice,
+//! not the environment's.
 //!
 //! Logging names the provider only: never values, never lengths.
 
@@ -19,16 +23,41 @@ use std::sync::Arc;
 
 use bluey_core::presets::{self, EnvImportPlan};
 use bluey_core::BlueyResult;
+use bluey_storage::SettingsRepository;
 use serde_json::json;
 
 use crate::secrets::{provider_key, SecretsStore};
 use crate::settings::SettingsManager;
+use crate::storage::Storage;
+
+/// Settings-table key of the provider id `BLUEY_AI_PROVIDER` (or the first keyed
+/// provider) nominated at the last import.
+pub const ENV_NOMINATION_KEY: &str = "env_import:bootstrap_provider";
 
 /// Import from the process environment (after `load_dotenv`). Failures are
 /// reported to the caller but must never abort the boot.
-pub fn import_env(secrets: &Arc<SecretsStore>, settings: &Arc<SettingsManager>) -> BlueyResult<()> {
-    let plan = presets::plan_env_import(&|name| std::env::var(name).ok(), &settings.get());
-    apply(&plan, secrets, settings)
+pub fn import_env(
+    secrets: &Arc<SecretsStore>,
+    settings: &Arc<SettingsManager>,
+    storage: &Arc<Storage>,
+) -> BlueyResult<()> {
+    let last_nomination = storage
+        .run_sync(|db| SettingsRepository::get_json(db, ENV_NOMINATION_KEY))?
+        .and_then(|value| value.as_str().map(str::to_string));
+    let plan = presets::plan_env_import(
+        &|name| std::env::var(name).ok(),
+        &settings.get(),
+        last_nomination.as_deref(),
+    );
+    let applied = apply(&plan, secrets, settings);
+    if let Some(nomination) = &plan.env_nomination {
+        if last_nomination.as_deref() != Some(nomination.as_str()) {
+            let value = serde_json::Value::String(nomination.clone());
+            storage
+                .run_sync(move |db| SettingsRepository::set_json(db, ENV_NOMINATION_KEY, &value))?;
+        }
+    }
+    applied
 }
 
 fn apply(
