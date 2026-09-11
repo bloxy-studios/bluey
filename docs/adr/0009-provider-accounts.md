@@ -41,8 +41,10 @@ considerations do not limit feature scope; they enter this design only as engine
    `AccountsManager` in Rust owns connect / import / cancel / disconnect / restore / refresh and
    resolves a `CredentialSource` per request. The provider-agnostic OAuth machinery — PKCE,
    loopback listener (random or *required* fixed port), manual code paste, device code, token set,
-   single-flight refresh — is extracted from the Clerk sign-in (ADR 0008) into `src-tauri/src/oauth`
-   and `bluey_protocols::oauth`, with Clerk as its first consumer and no behaviour change. Each
+   single-flight refresh — is extracted from the Clerk sign-in (ADR 0008) into the
+   platform-independent `bluey-oauth` crate (runtime: sockets, timers, refresh — host-tested,
+   unlike the macOS-only app crate) and `bluey_protocols::oauth` (pure), with Clerk as its first
+   consumer and no behaviour change. Each
    provider contributes an OAuth profile, a `RequestShaper`, a catalog fetcher and an error mapper;
    the router treats a non-`Connected` account as keyless and skips a `RateLimited` one until
    `until`.

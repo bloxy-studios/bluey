@@ -17,21 +17,27 @@
 //!
 //! Nothing secret is logged: not the authorization URL (it is harmless but
 //! long), not callback URLs (they carry the code), never tokens.
+//!
+//! The provider-agnostic machinery — PKCE and `state`/`nonce` generation, the
+//! one-shot loopback listener, the token set kept in the Keychain — is the
+//! `bluey-oauth` crate (runtime) and `bluey_protocols::oauth` (pure); this
+//! module owns what is Clerk's: configuration, redirect styles, the OIDC
+//! checks, `userinfo`, the Account Portal, and the state machine.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use bluey_core::events::BlueyEvent;
 use bluey_core::types::{AppEvent, AuthState, AuthStatus, AuthUser, SignInRedirect, SignInStart};
 use bluey_core::{now_iso, BlueyError, BlueyErrorKind, BlueyResult};
+use bluey_oauth::{
+    unix_now, LoopbackError, LoopbackListener, LoopbackPort, TokenSet, DEFAULT_REFRESH_LEEWAY,
+};
 use bluey_protocols::clerk::{self, CallbackOutcome};
 use bluey_storage::{SettingsRepository, UserRepository};
 use chrono::SecondsFormat;
-use rand::RngCore;
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
@@ -44,43 +50,6 @@ const CURRENT_USER_KEY: &str = "auth_user_id";
 /// A browser sign-in that has not returned within this window is abandoned.
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
-/// Refresh the access token this long before it expires.
-const REFRESH_LEEWAY: Duration = Duration::from_secs(60);
-/// Longest HTTP request head the loopback listener reads.
-const LOOPBACK_MAX_HEAD: usize = 8 * 1024;
-
-/// What the Keychain holds for the signed-in user (JSON).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredTokens {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    /// Unix seconds.
-    #[serde(default)]
-    expires_at: Option<u64>,
-    #[serde(default)]
-    id_token: Option<String>,
-}
-
-impl StoredTokens {
-    fn from_response(response: clerk::TokenResponse, previous_refresh: Option<String>) -> Self {
-        Self {
-            access_token: response.access_token,
-            refresh_token: response.refresh_token.or(previous_refresh),
-            expires_at: response
-                .expires_in
-                .map(|secs| unix_now().saturating_add(secs)),
-            id_token: response.id_token,
-        }
-    }
-
-    fn is_expiring(&self, leeway: Duration, now: u64) -> bool {
-        match self.expires_at {
-            Some(at) => at.saturating_sub(leeway.as_secs()) <= now,
-            None => false,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 struct OAuthConfig {
@@ -113,23 +82,9 @@ pub struct AuthManager {
     pending: parking_lot::Mutex<Option<PendingSignIn>>,
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn iso_in(duration: Duration) -> String {
     let delta = chrono::Duration::from_std(duration).unwrap_or_else(|_| chrono::Duration::zero());
     (chrono::Utc::now() + delta).to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-/// 16 random bytes, base64url (state / nonce).
-fn random_token() -> String {
-    let mut bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut bytes);
-    clerk::base64url(&bytes)
 }
 
 fn not_configured() -> BlueyError {
@@ -217,28 +172,27 @@ impl AuthManager {
         let config = self.config.clone().ok_or_else(not_configured)?;
         self.cancel_pending();
 
-        let mut random = [0u8; 32];
-        rand::rng().fill_bytes(&mut random);
-        let (code_verifier, code_challenge) = clerk::pkce_pair(&random);
-        let state = random_token();
-        let nonce = random_token();
+        let (code_verifier, code_challenge) = bluey_oauth::pkce();
+        let state = bluey_oauth::random_token();
+        let nonce = bluey_oauth::random_token();
         let cancel = CancellationToken::new();
 
         let (redirect_uri, listener) = match config.redirect {
             SignInRedirect::DeepLink => (clerk::DEEP_LINK_REDIRECT_URI.to_string(), None),
             SignInRedirect::Loopback => {
-                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                let listener = LoopbackListener::bind(LoopbackPort::Any)
                     .await
                     .map_err(|e| {
+                        let detail = match &e {
+                            LoopbackError::Bind(io) => io.to_string(),
+                            other => other.to_string(),
+                        };
                         BlueyError::authentication(
                             "loopback_bind",
-                            format!("cannot open the sign-in callback port: {e}"),
+                            format!("cannot open the sign-in callback port: {detail}"),
                         )
                     })?;
-                let port = listener
-                    .local_addr()
-                    .map_err(|e| BlueyError::internal(format!("loopback address: {e}")))?
-                    .port();
+                let port = listener.port();
                 (clerk::loopback_redirect_uri(port), Some((listener, port)))
             }
         };
@@ -440,14 +394,18 @@ impl AuthManager {
     async fn read_tokens(
         response: reqwest::Response,
         previous_refresh: Option<String>,
-    ) -> BlueyResult<StoredTokens> {
+    ) -> BlueyResult<TokenSet> {
         let status = response.status();
         let body = response.text().await.map_err(transport_error)?;
         if status.is_success() {
             let parsed = clerk::parse_token_response(&body).map_err(|_| {
                 BlueyError::authentication("token_parse", "unexpected token response")
             })?;
-            return Ok(StoredTokens::from_response(parsed, previous_refresh));
+            return Ok(TokenSet::from_response(
+                parsed,
+                previous_refresh,
+                unix_now(),
+            ));
         }
         if status.is_server_error() {
             return Err(BlueyError::network(
@@ -501,11 +459,7 @@ impl AuthManager {
         Ok(clerk::user_from_userinfo(info))
     }
 
-    async fn refresh(
-        &self,
-        config: &OAuthConfig,
-        tokens: &StoredTokens,
-    ) -> BlueyResult<StoredTokens> {
+    async fn refresh(&self, config: &OAuthConfig, tokens: &TokenSet) -> BlueyResult<TokenSet> {
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             BlueyError::authentication("no_refresh_token", "the stored sign-in cannot be renewed")
         })?;
@@ -523,7 +477,7 @@ impl AuthManager {
         Self::read_tokens(response, Some(refresh_token)).await
     }
 
-    async fn load_tokens(&self) -> Option<StoredTokens> {
+    async fn load_tokens(&self) -> Option<TokenSet> {
         let raw = self
             .secrets
             .get(CLERK_OAUTH_TOKENS_KEY)
@@ -535,7 +489,7 @@ impl AuthManager {
 
     /// Persist tokens (Keychain) and the user (SQLite, no tokens); the state
     /// machine leaves `auth_required`.
-    async fn store(&self, tokens: StoredTokens, user: &AuthUser) -> BlueyResult<()> {
+    async fn store(&self, tokens: TokenSet, user: &AuthUser) -> BlueyResult<()> {
         let raw = serde_json::to_string(&tokens)
             .map_err(|_| BlueyError::internal("cannot serialise the sign-in tokens"))?;
         self.secrets.set(CLERK_OAUTH_TOKENS_KEY, raw).await?;
@@ -570,7 +524,7 @@ impl AuthManager {
         let Some(mut tokens) = self.load_tokens().await else {
             return;
         };
-        if tokens.is_expiring(REFRESH_LEEWAY, unix_now()) {
+        if tokens.is_expiring(DEFAULT_REFRESH_LEEWAY, unix_now()) {
             match self.refresh(&config, &tokens).await {
                 Ok(fresh) => tokens = fresh,
                 Err(error) if error.kind == BlueyErrorKind::Authentication => {
@@ -676,45 +630,20 @@ fn transport_error(error: reqwest::Error) -> BlueyError {
 }
 
 /// One-shot loopback listener: accept a single connection, read the request
-/// head, hand the callback URL to the auth manager and answer with a small
-/// page. The socket is bound to 127.0.0.1 on an OS-chosen port and only lives
-/// for one flow.
+/// head (`bluey_oauth::LoopbackListener` — 127.0.0.1, ≤ 8 KB, 5 s), hand the
+/// callback URL to the auth manager and answer with a small page. The socket
+/// only lives for one flow; cancelling the flow ends the wait.
 fn spawn_loopback(
     app: AppHandle,
-    listener: tokio::net::TcpListener,
+    listener: LoopbackListener,
     port: u16,
     cancel: CancellationToken,
 ) {
     tauri::async_runtime::spawn(async move {
-        let accepted = tokio::select! {
-            _ = cancel.cancelled() => return,
-            accepted = listener.accept() => accepted,
-        };
-        let Ok((mut stream, _)) = accepted else {
+        let Ok(accepted) = listener.accept_one(&cancel).await else {
             return;
         };
-        let mut buffer = vec![0u8; LOOPBACK_MAX_HEAD];
-        let mut length = 0usize;
-        let read = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let n = stream.read(&mut buffer[length..]).await?;
-                if n == 0 {
-                    break;
-                }
-                length += n;
-                if buffer[..length].windows(4).any(|w| w == b"\r\n\r\n") || length == buffer.len() {
-                    break;
-                }
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .await;
-        let head = String::from_utf8_lossy(&buffer[..length]).into_owned();
-        let target = match read {
-            Ok(Ok(())) => clerk::http_request_target(&head).map(str::to_string),
-            _ => None,
-        };
-        let outcome = match target {
+        let outcome = match accepted.target {
             Some(target) => {
                 let core = app.state::<AppCore>();
                 core.auth
@@ -727,13 +656,10 @@ fn spawn_loopback(
                 "malformed callback request",
             )),
         };
-        let body = clerk::loopback_html(outcome.is_ok());
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.shutdown().await;
+        accepted
+            .responder
+            .respond_html(&clerk::loopback_html(outcome.is_ok()))
+            .await;
     });
 }
 
@@ -939,49 +865,12 @@ mod tests {
     }
 
     #[test]
-    fn stored_tokens_track_expiry_with_leeway() {
-        let tokens = StoredTokens {
-            access_token: "a".into(),
-            refresh_token: None,
-            expires_at: Some(1_000),
-            id_token: None,
-        };
-        assert!(!tokens.is_expiring(Duration::from_secs(60), 900));
-        assert!(tokens.is_expiring(Duration::from_secs(60), 940));
-        assert!(tokens.is_expiring(Duration::from_secs(60), 2_000));
-        let forever = StoredTokens {
-            expires_at: None,
-            ..tokens.clone()
-        };
-        assert!(!forever.is_expiring(Duration::from_secs(60), u64::MAX));
-    }
-
-    #[test]
-    fn a_refresh_response_without_a_new_refresh_token_keeps_the_old_one() {
-        let response =
-            clerk::parse_token_response(r#"{"access_token":"new","expires_in":60}"#).unwrap();
-        let tokens = StoredTokens::from_response(response, Some("old-rt".into()));
-        assert_eq!(tokens.access_token, "new");
-        assert_eq!(tokens.refresh_token.as_deref(), Some("old-rt"));
-        assert!(tokens.expires_at.unwrap() > unix_now());
-        let rotated =
-            clerk::parse_token_response(r#"{"access_token":"n","refresh_token":"rt2"}"#).unwrap();
-        assert_eq!(
-            StoredTokens::from_response(rotated, Some("old".into()))
-                .refresh_token
-                .as_deref(),
-            Some("rt2")
-        );
-    }
-
-    #[test]
-    fn random_tokens_are_url_safe_and_unique() {
-        let a = random_token();
-        let b = random_token();
-        assert_ne!(a, b);
-        assert_eq!(a.len(), 22);
-        assert!(a
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    fn stored_tokens_keep_the_keychain_json_shape() {
+        // The Keychain entry written by earlier builds must still load.
+        let raw = r#"{"access_token":"at","refresh_token":"rt","expires_at":1700000000,"id_token":"a.b.c"}"#;
+        let tokens: TokenSet = serde_json::from_str(raw).unwrap();
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rt"));
+        assert!(tokens.is_expiring(DEFAULT_REFRESH_LEEWAY, 1_700_000_000));
+        assert_eq!(serde_json::to_string(&tokens).unwrap(), raw);
     }
 }

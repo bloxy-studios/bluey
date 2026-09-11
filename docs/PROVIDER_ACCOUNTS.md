@@ -262,12 +262,12 @@ local credential store, copies the tokens into its own Keychain entry and contin
 
 | Invariant (`docs/SECURITY.md`) | Enforced by |
 |---|---|
-| `secrets_set` / `secrets_delete` accept only `provider:<id>:api_key`; `auth:*` and `account:*` rejected at the command layer | PR 1 (+ tests on both layers) |
-| `data_reset_all` deletes `account:*` and collects errors | PR 1 |
-| One OAuth engine (PKCE, loopback, manual paste, device code, single-flight refresh); Clerk unchanged | PR 1 (`#[tokio::test]`s) |
+| `secrets_set` / `secrets_has` / `secrets_delete` accept only the WebView's `SECRET_KEYS` (`provider:<id>:api_key` plus the research / agent API keys); `auth:*` and `account:*` rejected at the command layer | PR 1 — `secrets::validate_webview_key` (+ tests on both layers) |
+| `data_reset_all` collects failures instead of aborting (and deletes `account:*` once they exist) | PR 1 — `ResetFailures` / `reset_incomplete`; the `account:*` keys join the list in PR 2 |
+| One OAuth engine (PKCE, loopback, manual paste, device code, single-flight refresh); Clerk unchanged | PR 1 — `bluey-oauth` crate (runtime) + `bluey_protocols::oauth` (pure), host-run `#[tokio::test]`s |
 | Tokens Rust-only; WebView sees `ProviderAccount` only; `job_env` never carries OAuth material (test) | PR 2 |
 | Redaction of `chatgpt-account-id`, `sk-ant-oat`, `sk-ant-ort`, `ya29.`, `1//` | PR 2 |
-| Loopback listener rules (127.0.0.1, one request, 8 KB, 5 s, `state` first) | PR 1 |
+| Loopback listener rules (127.0.0.1, one request, 8 KB, 5 s, `state` first) | PR 1 — `bluey_oauth::LoopbackListener` |
 | Consent once per provider; feature flag + Cargo feature | PR 2 |
 | Fingerprint modules with `VERSION` / `CAPTURED_ON`, golden fixtures, `fingerprints:diff`, `accounts_probe_fingerprint` | PR 2b, PR 3a–3c |
 | Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3b (Claude), PR 3a/3c error mappers |

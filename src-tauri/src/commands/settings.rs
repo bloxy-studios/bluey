@@ -31,8 +31,12 @@ pub async fn settings_reset(core: State<'_, AppCore>) -> BlueyResult<Settings> {
     Ok(new)
 }
 
+/// The WebView manages API keys only (`SECRET_KEYS` in `commands.ts`);
+/// sign-in and account tokens are Rust-only and rejected here, before the
+/// store is touched (`crate::secrets::validate_webview_key`).
 #[tauri::command]
 pub async fn secrets_set(core: State<'_, AppCore>, key: String, value: String) -> BlueyResult<()> {
+    crate::secrets::validate_webview_key(&key)?;
     core.secrets.set(&key, value).await?;
     core.settings.refresh_provider_keys();
     Ok(())
@@ -40,11 +44,13 @@ pub async fn secrets_set(core: State<'_, AppCore>, key: String, value: String) -
 
 #[tauri::command]
 pub async fn secrets_has(core: State<'_, AppCore>, key: String) -> BlueyResult<bool> {
+    crate::secrets::validate_webview_key(&key)?;
     core.secrets.has(&key).await
 }
 
 #[tauri::command]
 pub async fn secrets_delete(core: State<'_, AppCore>, key: String) -> BlueyResult<()> {
+    crate::secrets::validate_webview_key(&key)?;
     core.secrets.delete(&key).await?;
     core.settings.refresh_provider_keys();
     Ok(())

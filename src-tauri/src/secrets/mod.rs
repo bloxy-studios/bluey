@@ -1,9 +1,15 @@
 //! Secrets in the macOS Keychain via the `keyring` crate
 //! (service `com.codewithabdul.bluey`). Values never appear in logs or errors.
 //!
-//! Allowed keys mirror `SECRET_KEYS` in `src/lib/tauri/commands.ts`:
-//! `provider:<id>:api_key`, `research:exa:api_key`, `research:firecrawl:api_key`,
-//! `agent:anthropic:api_key`, `auth:clerk:client_token`.
+//! Two allow-lists, two layers:
+//! * the **store** ([`SecretsStore`]) accepts every key Bluey owns —
+//!   `provider:<id>:api_key`, the research / agent keys and the Rust-only
+//!   sign-in tokens (`auth:clerk:*`);
+//! * the **WebView** ([`validate_webview_key`], in front of `secrets_set` /
+//!   `secrets_has` / `secrets_delete`) may touch only the keys of
+//!   `SECRET_KEYS` in `src/lib/tauri/commands.ts` — API keys entered in
+//!   Settings. Sign-in and (ADR 0009) subscription-account tokens never cross
+//!   that boundary in either direction.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -26,6 +32,33 @@ pub const CLERK_TOKEN_KEY: &str = "auth:clerk:client_token";
 /// OAuth tokens of the browser sign-in (ADR 0008): JSON `{access_token, refresh_token, expires_at, id_token}`.
 pub const CLERK_OAUTH_TOKENS_KEY: &str = "auth:clerk:oauth_tokens";
 
+/// `provider:<id>:api_key` with a non-empty id.
+fn is_provider_api_key(key: &str) -> bool {
+    key.strip_prefix("provider:")
+        .and_then(|rest| rest.strip_suffix(":api_key"))
+        .is_some_and(|id| !id.is_empty())
+}
+
+/// Whether the WebView may manage `key` through `secrets_set` /
+/// `secrets_has` / `secrets_delete`: exactly the `SECRET_KEYS` of
+/// `src/lib/tauri/commands.ts` — provider API keys and the research / agent
+/// keys entered in Settings. Sign-in tokens (`auth:*`) and subscription-account
+/// tokens (`account:*`, ADR 0009) are Rust-only and never pass here.
+pub fn is_webview_secret_key(key: &str) -> bool {
+    matches!(key, EXA_KEY | FIRECRAWL_KEY | AGENT_ANTHROPIC_KEY) || is_provider_api_key(key)
+}
+
+/// The command-layer gate in front of [`SecretsStore`] for WebView requests.
+pub fn validate_webview_key(key: &str) -> BlueyResult<()> {
+    if is_webview_secret_key(key) {
+        Ok(())
+    } else {
+        Err(BlueyError::invalid_params(
+            "this secret is not managed from the settings UI",
+        ))
+    }
+}
+
 /// Keychain-backed secret store.
 pub struct SecretsStore {
     service: String,
@@ -44,6 +77,8 @@ impl SecretsStore {
         }
     }
 
+    /// The storage-level allow-list: everything Bluey owns, including the
+    /// Rust-only sign-in tokens the WebView must never reach.
     fn validate_key(key: &str) -> BlueyResult<()> {
         let allowed = matches!(
             key,
@@ -52,9 +87,7 @@ impl SecretsStore {
                 | AGENT_ANTHROPIC_KEY
                 | CLERK_TOKEN_KEY
                 | CLERK_OAUTH_TOKENS_KEY
-        ) || (key.starts_with("provider:")
-            && key.ends_with(":api_key")
-            && key.len() > "provider::api_key".len());
+        ) || is_provider_api_key(key);
         if allowed {
             Ok(())
         } else {
@@ -187,4 +220,50 @@ pub fn load_dotenv() -> Vec<PathBuf> {
         }
     }
     loaded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_webview_gate_mirrors_secret_keys_in_commands_ts() {
+        for key in [
+            "provider:gemini:api_key",
+            "provider:azure-foundry:api_key",
+            EXA_KEY,
+            FIRECRAWL_KEY,
+            AGENT_ANTHROPIC_KEY,
+        ] {
+            assert!(
+                is_webview_secret_key(key),
+                "{key} must be manageable from Settings"
+            );
+            assert!(validate_webview_key(key).is_ok());
+        }
+        for key in [
+            CLERK_TOKEN_KEY,
+            CLERK_OAUTH_TOKENS_KEY,
+            "auth:anything:else",
+            "account:chatgpt-1:oauth_tokens",
+            "provider::api_key",
+            "provider:gemini:oauth_tokens",
+            "provider:gemini",
+            "",
+        ] {
+            assert!(!is_webview_secret_key(key), "{key} must stay Rust-only");
+            assert!(validate_webview_key(key).is_err());
+        }
+    }
+
+    #[test]
+    fn the_store_admits_the_rust_only_keys_the_webview_cannot() {
+        assert!(SecretsStore::validate_key(CLERK_OAUTH_TOKENS_KEY).is_ok());
+        assert!(SecretsStore::validate_key(CLERK_TOKEN_KEY).is_ok());
+        assert!(SecretsStore::validate_key("provider:gemini:api_key").is_ok());
+        assert!(SecretsStore::validate_key(EXA_KEY).is_ok());
+        assert!(SecretsStore::validate_key("account:chatgpt-1:oauth_tokens").is_err());
+        assert!(SecretsStore::validate_key("provider::api_key").is_err());
+        assert!(SecretsStore::validate_key("random").is_err());
+    }
 }
