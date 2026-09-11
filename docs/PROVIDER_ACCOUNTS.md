@@ -18,7 +18,7 @@ fingerprint parity, drift detection, an extra-usage guard and automatic fallback
 | Google Gemini, Foundry/Azure, Anthropic, OpenAI-compatible | API key (`provider:<id>:api_key`) | shipped | — | ADR 0007 | — |
 | ChatGPT Free / Plus / Pro | Codex OAuth (`account:<id>:oauth_tokens`) | **built** (unofficial, experimental) | `codex/0.154.0` / 2026-09-11 (documented, not yet captured from the CLI) | 2026-09-11 | PR 3a |
 | Claude Pro / Max | claude.ai OAuth, Claude Code wire format | **built** (unofficial, experimental) | `claude_code/2.1.258` / 2026-09-11 (documented, not yet captured from the CLI — §4b.1) | 2026-09-11 | PR 3b |
-| Google AI Pro / Ultra | Antigravity OAuth, Cloud Code `v1internal` | specified | — / — | 2026-09-11 | PR 3c |
+| Google AI Pro / Ultra | Antigravity OAuth, Cloud Code `v1internal` | **built** (unofficial, experimental — Google's terms call it a breach, ADR 0009) | `antigravity/2.12.2` / 2026-09-11 (documented from CLIProxyAPI, not yet captured from the app — §4c.1) | 2026-09-11 | PR 3c |
 
 The **accounts layer** itself landed in PR 2: the mirrored types (`bluey_core::types::accounts` ⇄
 `src/lib/types/accounts.ts`), the pure rules (`bluey_core::accounts`), the `RequestShaper` trait,
@@ -29,8 +29,9 @@ branch, the HUD *Reconnect* / *Use API key instead* recoveries, the runtime flag
 `settings.experimental.subscriptionAccounts` and the Cargo feature `subscription-accounts`. ChatGPT
 flipped to *built* in PR 3a (`src-tauri/src/accounts/chatgpt.rs`, `src-tauri/src/ai/providers/chatgpt.rs`,
 `bluey_protocols::codex`) and Claude in PR 3b (`src-tauri/src/accounts/claude.rs`, the Anthropic adapter's
-OAuth mode, `bluey_protocols::claude_code`); Google AI follows in PR 3c — until then its profile is a
-placeholder that answers `account.provider_pending`.
+OAuth mode, `bluey_protocols::claude_code`) and Google AI in PR 3c (`src-tauri/src/accounts/antigravity.rs`,
+`src-tauri/src/ai/providers/antigravity.rs`, `bluey_protocols::antigravity`). A build without the
+feature shows every card as unavailable and says so.
 
 The tables below are also **data**: `bluey_protocols::fingerprints::{codex, claude_code, antigravity}`
 hold `VERSION` / `CAPTURED_ON`, the comparison rules and the *documented* capture per endpoint
@@ -222,6 +223,43 @@ the §4c.1 first step of PR 3c and settles both.
 | Terms and enforcement | Antigravity Additional Terms (read 2026-09-11): *"Using third party software, tools, or services to access the Service (e.g. using OpenClaw with Antigravity OAuth) is a breach of this Agreement. Such actions may be grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts."* Mass 403 ToS suspensions of Pro/Ultra accounts since 2026-02; Google statement 2026-03-18 on abuse detection for "Gemini CLI oAuth with third-party software"; Gemini CLI consumer path shut down 2026-06-18 ("This client is no longer supported for Gemini Code Assist for individuals…") | `antigravity.google/terms`; gemini-cli Discussions #22970, #28017; deprecation page 2026-06-11 | owner's decision (ADR 0009); enters the consent copy verbatim and the stop-all-accounts rule |
 | Capture knob | Antigravity 2.x is an Electron app: `HTTPS_PROXY` / system proxy plus a trusted local CA; the IDE fork honours VS Code's `http.proxy` | — | VERIFY on the day; the capture settles UA, host, headers, tier ids, system instruction |
 
+**What Bluey sends (PR 3c, `bluey_protocols::antigravity`).** Sign-in: the five-scope authorize URL
+(`access_type=offline`, `prompt=consent`, PKCE), loopback `51121` → any free port; the form-encoded
+exchange and refresh carry the client secret, which is public in Google's app but **not committed** —
+the build supplies it (`BLUEY_ANTIGRAVITY_CLIENT_SECRET`, at compile time or in the environment; without
+it the card explains and the Gemini key keeps working); refresh with `User-Agent: Go-http-client/2.0`.
+Identity: `userinfo` for the e-mail, `loadCodeAssist` on the prod host (`{"metadata":{"ideType":
+"ANTIGRAVITY"}}`, plus `cloudaicompanionProject` when the user supplied one) for the project and the plan
+label (`paidTier` → `currentTier` → default allowed tier; *Pro* / *Ultra* by name until the ids are
+captured), `ineligibleTiers[].VALIDATION_REQUIRED` → `Unavailable{PolicyBlocked}` carrying the link,
+`onboardUser` (snake_case body, `X-Goog-Api-Client: gl-node/22.21.1`, re-posted until `done`) when no
+project exists; a Workspace account without one is told to pass the project id (the Accounts card field
+is a UI follow-up — `accounts_connect` already carries `projectId`). Requests: the Gemini
+`generateContent` body normalised per model line — Gemini keeps `thinkingLevel` (`minimal` → `low` where
+the line rejects it), Claude takes a `thinkingBudget` below `maxOutputTokens` (≥ 1024 or none) and no
+`temperature` next to it, GPT-OSS carries no thinking config, `safetySettings` gone,
+`systemInstruction.role = user` — wrapped as `{model, project, request{…, sessionId}, userAgent:
+"antigravity", requestType: "agent" | "image_gen", requestId: "agent-<uuid>"}` with `sessionId` =
+`-<63-bit hash of the Bluey session>`; `POST daily-cloudcode-pa.googleapis.com/v1internal:
+streamGenerateContent?alt=sse` with exactly `Content-Type`, `Authorization: Bearer`, `User-Agent:
+antigravity/hub/<version> darwin/<arch>` (version from the Hub manifest, cached 6 h, floor 2.9.1, else
+2.12.2) over a dedicated HTTP/1.1-only client (no ALPN, one pool); `maxOutputTokens` is kept (VERIFY);
+no identity text by default — the probe A/Bs it and says when it was needed. Responses: `{response,
+traceId}` frames unwrapped into the shared Gemini SSE loop. Catalog: `fetchAvailableModels {project}` →
+the pool with presets (`fast` = `gemini-3.1-flash-lite`, `default`/`vision` = the newest Flash High,
+`reasoning`/`research` = `claude-opus-4-6-thinking`, else Gemini Pro High), internal ids skipped, the
+curated 2026-09-11 list when the endpoint refuses. Errors (`antigravity::map_error`): a 403 whose message
+names a *violation of Terms of Service* → `Unavailable{PolicyBlocked}` — the account stops, nothing
+retries, the toast carries the appeal address; `VALIDATION_REQUIRED` → `PolicyBlocked` with the link;
+other 403s → `PolicyBlocked` with the message; *no longer supported* (any status) and wrapper-shape 400s
+(`Unknown name`, `Invalid JSON payload`) → `Unavailable{FingerprintDrift}`; 429 `QUOTA_EXHAUSTED` /
+`INSUFFICIENT_G1_CREDITS_BALANCE` / daily quota / a delay ≥ 5 min → `RateLimited{until: now + delay
+(30 min without one)}`, capacity → one short retry then fallback; 401 → `NeedsReauth`; 404 → model
+not found. Import: the Keychain item `gemini` / `antigravity` (standalone app and `agy`; the IDE's
+`state.vscdb` is not read), read-only — an expired access token is renewed, safe because Google refresh
+tokens do not rotate. One Google account per install (ADR 0009); the multi-account rotation the brief
+sketched is not built.
+
 ## Drift signals and the extra-usage guard
 
 | Provider | Signal | Meaning | Bluey does |
@@ -355,8 +393,8 @@ local credential store, copies the tokens into its own Keychain entry and contin
 | Consent once per provider; feature flag + Cargo feature | PR 2 — `ConsentDialog` + `experimental.acceptedAccountConsents`; `experimental.subscriptionAccounts` (Settings → AI → Accounts switch); `subscription-accounts` (default on; `AccountsManager::build_enabled`) |
 | A `Connecting` status never survives a restart; a failed sign-in moves the account to the status its error names (`bluey_core::accounts::status_after_error`) | PR 2 — `AccountsManager::load` / `finish_connect` |
 | Fingerprint modules with `VERSION` / `CAPTURED_ON`, golden fixtures, `fingerprints:diff`, `accounts_probe_fingerprint` | PR 2b — `bluey_protocols::fingerprints::{codex, claude_code, antigravity}` (constants, rules, documented captures → `tests/fixtures/fingerprints/*/documented/`, the diff), the `bluey-fingerprints` harness (`capture`, `import-har`, `diff`, `bless`; captures scrubbed before writing); PR 3a–3c — shapers reading the same constants, real probes, blessed goldens |
-| Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3a — `bluey_protocols::codex::map_error` + `drift_reason` (403 policy / drift, `usage_not_included`, 400 "unsupported parameter"), `AccountsManager::note_request_error` flips the account and the router falls back (no retry); PR 3b — `bluey_protocols::claude_code::map_error` / `drift_reason`: the extra-usage 400 → `Unavailable{ExtraUsageBilling}`, a bare 429 without unified headers → `Unavailable{FingerprintDrift}`, both before any schema retry; PR 3c |
-| Imports read-only | PR 3a — ChatGPT reads `auth.json`, never writes, never refreshes at import; PR 3b — Claude reads the Keychain item / `.credentials.json` / `.claude.json` the same way; PR 3c |
+| Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3a — `bluey_protocols::codex::map_error` + `drift_reason` (403 policy / drift, `usage_not_included`, 400 "unsupported parameter"), `AccountsManager::note_request_error` flips the account and the router falls back (no retry); PR 3b — `bluey_protocols::claude_code::map_error` / `drift_reason`: the extra-usage 400 → `Unavailable{ExtraUsageBilling}`, a bare 429 without unified headers → `Unavailable{FingerprintDrift}`, both before any schema retry; PR 3c — `bluey_protocols::antigravity::map_error` / `drift_reason`: a Terms-of-Service 403 → `Unavailable{PolicyBlocked}` (the account stops, nothing retries), `VALIDATION_REQUIRED` carries the link, *no longer supported* and wrapper-shape 400s → `Unavailable{FingerprintDrift}` |
+| Imports read-only | PR 3a — ChatGPT reads `auth.json`, never writes, never refreshes at import; PR 3b — Claude reads the Keychain item / `.credentials.json` / `.claude.json` the same way; PR 3c — Google AI reads the Keychain item `gemini` / `antigravity`, never writes it (an expired access token is renewed: Google refresh tokens do not rotate) |
 | A connected account is a provider to the router only while usable; `NeedsReauth` / `Unavailable` / an active `RateLimited` window = keyless = fallback chain | PR 3a — `bluey_core::accounts::provider_config`, `AiManager::providers` |
 | Catalog presets never assign a model the catalog did not return; they fill unassigned roles after a fetch and re-point stale ones | PR 3a — `bluey_core::accounts::apply_catalog_presets` |
 
@@ -366,7 +404,7 @@ local credential store, copies the tokens into its own Keychain entry and contin
 |---|---|---|
 | 1 | Claude Code capture (CLI version, auth transport, identity text, billing header, `metadata.user_id`, betas, Stainless headers, `/v1/models` with OAuth, profile endpoint, loopback port rules) | built in PR 3b from the Claude table: `cch` = the simple SHA-256 reading, Bluey's prompt as a `<system-reminder>` in the first user turn (no `mid-conversation-system`), curated catalog fallback. Still open until the §4b.1 capture + probe of the owner's CLI (2.1.268): the `cch` algorithm (two references disagree), the Stainless versions bundled in 2.1.268, six-vs-five scopes, whether the token response carries `account`/`organization` (Bluey refetches the profile), `/v1/models` with OAuth, and the redirect-URI rejection in claude-code #93216 (open 2026-09-09) — a possible day-one login blocker the pasted-code flow works around. |
 | 2 | OpenAI Codex (client id, authorize URL/scopes, port 1455, device-code contract, ID-token claims, headers, `instructions` validation, `client_version`, 429 headers, image limits) | built in PR 3a from the ChatGPT table. Still open until the first real sign-in + capture + probe: whether 4-scope tokens also work (Bluey sends six), whether the token response carries `expires_in` (Bluey falls back to the JWT `exp`), the `instructions` replay (template vs `""`), the 200-response usage headers the probe reads, and image byte / pixel limits |
-| 3 | Antigravity (client id/secret, scopes, redirect rules, `loadCodeAssist`/`onboardUser`, wrapper/envelope, header fingerprint, system instruction, model ids per pool, sandbox hosts) | see the Google AI table |
+\1built in PR 3c from the Google AI table with CLIProxyAPI's answers where the references disagree: `antigravity/hub/<version> darwin/<arch>` from the Hub manifest, the daily non-sandbox host, the thin header set, no identity text by default (the probe A/Bs it). Still open until the §4c.1 capture of the real app: the UA family and header set, the host, the Pro / Ultra tier ids, whether `maxOutputTokens` is accepted for Gemini lines (Bluey keeps it), quota response headers, `-preview` ids, the exact schema of the Keychain item |
 | 4 | Import paths and formats | see *Importing an existing sign-in* |
 | 5–7 | Gemini image hints, WebP, structured-output cost | `docs/LATENCY.md` |
 | 8 | Rate-limit UX copy | decided with the Accounts UI in PR 2; the drift table above fixes the semantics |

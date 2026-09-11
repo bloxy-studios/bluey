@@ -124,8 +124,13 @@ visionRequired, preferredRole)` over the user's role assignments
   Code's Keychain item), the Anthropic adapter runs in OAuth mode (Bearer, `?beta=true`,
   `bluey_protocols::claude_code::ClaudeCodeShaper`: two fingerprint `system` blocks, Bluey's prompt as
   a `<system-reminder>` on the first user turn, `metadata.user_id`, betas) and the Claude error mapper
-  carries the extra-usage guard — a "billed outside the plan" 400 or a bare 429 stops the account. The
-  Google AI profile is a placeholder answering `account.provider_pending` until PR 3c.
+  carries the extra-usage guard — a "billed outside the plan" 400 or a bare 429 stops the account. Google AI
+  is real since PR 3c — `accounts/antigravity.rs` signs in with the Antigravity client (loopback
+  51121 → any port), resolves the Cloud Code project and plan through `loadCodeAssist` /
+  `onboardUser`, and `providers/antigravity.rs` sends the Gemini body wrapped by
+  `bluey_protocols::antigravity::AntigravityShaper` to `v1internal:streamGenerateContent` over a
+  dedicated HTTP/1.1 client, unwrapping the `{response, traceId}` frames in the shared Gemini SSE
+  loop (`SseMode::CloudCode`); a Terms-of-Service 403 stops the account for good.
   Switches: `settings.experimental.subscriptionAccounts` (runtime) and the Cargo feature
   `subscription-accounts` (build). The fingerprints themselves are data: `bluey_protocols::fingerprints` holds
   `VERSION` / `CAPTURED_ON`, the comparison rules and the documented capture per provider

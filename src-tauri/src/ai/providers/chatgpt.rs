@@ -350,6 +350,7 @@ mod tests {
                 account_id: Some("9d1c250a-e61b-44d9-88ed-5944d1962f5e".into()),
                 catalog: None,
                 device_id: String::new(),
+                project_id: None,
             },
         )
         .with_base_url(base)

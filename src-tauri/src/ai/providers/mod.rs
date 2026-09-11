@@ -1,6 +1,8 @@
 //! Provider adapter trait + shared HTTP/error plumbing for the AI manager.
 
 pub mod anthropic;
+#[cfg(feature = "subscription-accounts")]
+pub mod antigravity;
 pub mod azure;
 #[cfg(feature = "subscription-accounts")]
 pub mod chatgpt;
@@ -75,6 +77,8 @@ pub struct OAuthCredential {
     pub catalog: Option<ProviderModelCatalog>,
     /// Stable per-install device id (64 hex) for `metadata.user_id`-style fields.
     pub device_id: String,
+    /// Antigravity: the Cloud Code project the account works on (`AccountIdentity::project_id`).
+    pub project_id: Option<String>,
 }
 
 impl std::fmt::Debug for OAuthCredential {
@@ -84,6 +88,7 @@ impl std::fmt::Debug for OAuthCredential {
             .field("account_id", &self.account_id)
             .field("catalog", &self.catalog.as_ref().map(|c| c.models.len()))
             .field("device_id", &self.device_id)
+            .field("project_id", &self.project_id)
             .finish()
     }
 }
@@ -262,6 +267,40 @@ fn claude_provider(
     .recoverable(RecoveryAction::UseApiKey))
 }
 
+/// The Google AI Pro/Ultra adapter — Cloud Code through the Antigravity client (feature builds).
+#[cfg(feature = "subscription-accounts")]
+fn antigravity_provider(
+    credential: ProviderCredential,
+    _http: reqwest::Client,
+) -> BlueyResult<Box<dyn AiProvider>> {
+    match credential {
+        // Google traffic uses its own HTTP/1.1-only client (`accounts::antigravity::google_http`).
+        ProviderCredential::OAuth(oauth) => {
+            Ok(Box::new(antigravity::AntigravityProvider::new(oauth)))
+        }
+        _ => Err(BlueyError::account(
+            "not_connected",
+            "connect the Google AI account in Settings → AI → Accounts first",
+        )
+        .recoverable(RecoveryAction::reconnect_account(
+            bluey_core::types::ANTIGRAVITY_PROVIDER_ID,
+            bluey_core::types::ANTIGRAVITY_PROVIDER_ID,
+        ))),
+    }
+}
+
+#[cfg(not(feature = "subscription-accounts"))]
+fn antigravity_provider(
+    _credential: ProviderCredential,
+    _http: reqwest::Client,
+) -> BlueyResult<Box<dyn AiProvider>> {
+    Err(BlueyError::account(
+        "disabled",
+        "this build of Bluey was made without subscription accounts",
+    )
+    .recoverable(RecoveryAction::UseApiKey))
+}
+
 /// Build the adapter for a provider config. `embedding_dimensions` is the
 /// configured MRL size for Gemini embeddings.
 pub fn build_provider(
@@ -276,13 +315,7 @@ pub fn build_provider(
         // Served by a subscription account (ADR 0009).
         AiProviderKind::ChatgptCodex => chatgpt_provider(credential, http),
         AiProviderKind::ClaudeSubscription => claude_provider(credential, http),
-        // The Google adapter lands in PR 3c. Until then the router's fallback
-        // chain reaches the API-key providers.
-        AiProviderKind::AntigravityGoogle => Err(BlueyError::account(
-            "provider_pending",
-            "this provider is served by a subscription account, which this version cannot route yet — use an API-key provider for now",
-        )
-        .recoverable(RecoveryAction::UseApiKey)),
+        AiProviderKind::AntigravityGoogle => antigravity_provider(credential, http),
         kind => {
             let api_key = match credential {
                 ProviderCredential::ApiKey(key) => key,
