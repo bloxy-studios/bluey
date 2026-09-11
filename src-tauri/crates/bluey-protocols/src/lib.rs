@@ -38,10 +38,16 @@
 //!   store parsing, the catalog, thinking / effort knobs, the `ClaudeCodeShaper` that
 //!   reproduces `fingerprints::claude_code`, and the extra-usage guard in the error mapper.
 //!
+//! * [`antigravity`] — Google AI Pro/Ultra through the Antigravity OAuth client on Cloud Code
+//!   `v1internal` (ADR 0009 §4c): Google OAuth constants and forms, `loadCodeAssist` /
+//!   `onboardUser` parsing, the Hub version → User-Agent, the catalog, the request wrapper
+//!   as `AntigravityShaper`, the response envelope and the error mapper (ToS 403 stops).
+//!
 //! No Tauri, tokio, or network dependencies live here.
 
 pub mod agent;
 pub mod anthropic;
+pub mod antigravity;
 pub mod azure;
 pub mod claude_code;
 pub mod clerk;

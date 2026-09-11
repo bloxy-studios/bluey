@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use bluey_core::error::RecoveryAction;
 use bluey_core::types::{
     AccountConnectOptions, AccountIdentity, AiProviderKind, ConnectFlow, FingerprintProbe,
-    ProviderModelCatalog, ANTIGRAVITY_PROVIDER_ID,
+    ProviderModelCatalog,
 };
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_oauth::TokenSet;
@@ -81,10 +81,10 @@ pub trait ProviderProfile: Send + Sync {
     ) -> BlueyResult<FingerprintProbe>;
 }
 
-/// Placeholder for a provider whose integration lands in a later PR: the
-/// account card exists, and every action explains what is missing instead of
-/// pretending. Replaced by the real profile in PR 3a (ChatGPT), 3b (Claude),
-/// 3c (Google).
+/// Placeholder for a provider this build does not carry (a build without the
+/// `subscription-accounts` feature): the account card exists, and every action
+/// explains what is missing instead of pretending. Feature builds ship the real
+/// profiles — ChatGPT (PR 3a), Claude (PR 3b), Google AI (PR 3c).
 pub struct PendingProfile {
     provider_id: &'static str,
     kind: AiProviderKind,
@@ -200,18 +200,25 @@ fn claude_profile() -> Arc<dyn ProviderProfile> {
     })
 }
 
+/// Google AI is real since PR 3c — in builds with the `subscription-accounts` feature.
+#[cfg(feature = "subscription-accounts")]
+fn antigravity_profile() -> Arc<dyn ProviderProfile> {
+    Arc::new(super::antigravity::AntigravityProfile)
+}
+
+#[cfg(not(feature = "subscription-accounts"))]
+fn antigravity_profile() -> Arc<dyn ProviderProfile> {
+    Arc::new(PendingProfile {
+        provider_id: bluey_core::types::ANTIGRAVITY_PROVIDER_ID,
+        kind: AiProviderKind::AntigravityGoogle,
+        display_name: "Google AI",
+        lands_in: "a build with the subscription-accounts feature",
+    })
+}
+
 /// The profiles this build ships, in UI order.
 pub fn profiles() -> Vec<Arc<dyn ProviderProfile>> {
-    vec![
-        chatgpt_profile(),
-        claude_profile(),
-        Arc::new(PendingProfile {
-            provider_id: ANTIGRAVITY_PROVIDER_ID,
-            kind: AiProviderKind::AntigravityGoogle,
-            display_name: "Google AI",
-            lands_in: "PR 3c",
-        }),
-    ]
+    vec![chatgpt_profile(), claude_profile(), antigravity_profile()]
 }
 
 #[cfg(test)]
@@ -241,14 +248,14 @@ mod tests {
     #[test]
     fn pending_errors_point_at_the_api_key_path() {
         let profile = PendingProfile {
-            provider_id: ANTIGRAVITY_PROVIDER_ID,
+            provider_id: bluey_core::types::ANTIGRAVITY_PROVIDER_ID,
             kind: AiProviderKind::AntigravityGoogle,
             display_name: "Google AI",
-            lands_in: "PR 3c",
+            lands_in: "a build with the subscription-accounts feature",
         };
         let error = profile.pending();
         assert_eq!(error.code, "account.provider_pending");
-        assert!(error.message.contains("PR 3c"));
+        assert!(error.message.contains("subscription-accounts"));
         assert_eq!(error.recovery, Some(RecoveryAction::UseApiKey));
         assert!(!error.message.contains("token"));
     }

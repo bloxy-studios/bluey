@@ -7,14 +7,17 @@
 //! `account:<id>:oauth_tokens`, read and written **only** here), a
 //! single-flight refresh per account, the pending sign-in flows, and the
 //! `accounts.changed` / `accounts.catalog` events. What a provider *is* — its
-//! OAuth flow, catalog, refresh, revoke, probe — is a [`profile::ProviderProfile`];
-//! this PR ships placeholders for the three reserved ids, PR 3a–3c replace them.
+//! OAuth flow, catalog, refresh, revoke, probe — is a [`profile::ProviderProfile`]:
+//! ChatGPT (PR 3a), Claude (PR 3b) and Google AI (PR 3c) in feature builds,
+//! placeholders that say so otherwise.
 //!
 //! Two switches: the Cargo feature `subscription-accounts` (compile the
 //! feature out entirely: every account shows as unavailable) and
 //! `settings.experimental.subscriptionAccounts` (hide the section and refuse
 //! new sign-ins without a rebuild). Nothing here logs a token, ever.
 
+#[cfg(feature = "subscription-accounts")]
+pub mod antigravity;
 #[cfg(feature = "subscription-accounts")]
 pub mod chatgpt;
 #[cfg(feature = "subscription-accounts")]
@@ -328,7 +331,7 @@ impl AccountsManager {
     ) -> BlueyResult<ProviderAccount> {
         self.ensure_enabled()?;
         let profile = self.profile_for(provider_id)?;
-        // One account per provider until PR 3c adds Google multi-account.
+        // One account per provider — ADR 0009's single-user stance.
         let account_id = provider_id.to_string();
         self.cancel_pending(&account_id);
         let mut account = self.stored(&account_id)?;

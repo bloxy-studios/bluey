@@ -83,8 +83,8 @@ conflict detection.
 * Speaker identification is derived from audio channel (you vs. others) — not true diarization.
 * Sign-in runs in the system browser (Clerk as OAuth/OIDC provider, PKCE, `bluey://` deep link
   back into the app — ADR 0008); nothing from Clerk runs inside the WebView.
-* Signing in with a paid AI subscription (ChatGPT via Codex OAuth and Claude Pro/Max via claude.ai
-  OAuth — available; Google AI Pro/Ultra via Antigravity OAuth — coming with PR 3c; ADR 0009) is
+* Signing in with a paid AI subscription (ChatGPT via Codex OAuth, Claude Pro/Max via claude.ai
+  OAuth and Google AI Pro/Ultra via Antigravity OAuth; ADR 0009) is
   **unofficial and experimental**: Bluey speaks the vendors'
   own client protocols, the vendors may change or stop them without notice, and when a provider
   stops recognising Bluey it stops and falls back to your API key rather than spend paid extra

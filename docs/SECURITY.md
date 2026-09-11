@@ -80,6 +80,12 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
   refreshes first signs the other out later — the Import button says so. Claude (PR 3b) reads the
   Keychain item `Claude Code-credentials` (macOS may ask for permission), else
   `~/.claude/.credentials.json`, plus `~/.claude.json` for the account uuid — read-only, no refresh.
+  Google AI (PR 3c) reads the Keychain item `gemini` / `antigravity` the standalone Antigravity app
+  and `agy` keep (macOS may ask), never writes it; an expired access token is renewed, which is safe
+  because Google refresh tokens do not rotate.
+* **The Antigravity OAuth client secret** is public in Google's shipped app but not committed here:
+  the build supplies it (`BLUEY_ANTIGRAVITY_CLIENT_SECRET`). It is not a user secret, it is never
+  logged, and a build without it simply cannot start a Google sign-in.
 * **The per-install device id** (`accounts:device_id` in the settings table, 64 random hex) identifies
   this install in the shapers' `metadata.user_id`-style fields. It is not a secret, carries no user
   data and never leaves together with a token.

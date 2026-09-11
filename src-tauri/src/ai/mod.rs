@@ -165,11 +165,13 @@ impl AiManager {
             // inside); a dead refresh token surfaces as `account.needs_reauth`.
             let accounts = self.accounts()?;
             let tokens = accounts.credential_for(&config.id).await?;
+            let identity = accounts.identity(&config.id);
             ProviderCredential::OAuth(OAuthCredential {
                 access_token: tokens.access_token,
-                account_id: accounts.identity(&config.id).and_then(|i| i.account_id),
+                account_id: identity.as_ref().and_then(|i| i.account_id.clone()),
                 catalog: accounts.catalog(&config.id),
                 device_id: accounts.device_id(),
+                project_id: identity.and_then(|i| i.project_id),
             })
         } else {
             match self.secrets.get(&provider_key(&config.id)).await? {

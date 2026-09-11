@@ -365,7 +365,7 @@ impl AiProvider for GeminiProvider {
                 Some(&token),
             )
             .await?;
-        Ok(spawn_gemini_sse(response, token))
+        Ok(spawn_gemini_sse(response, token, SseMode::Direct))
     }
 
     async fn embed(
@@ -491,7 +491,22 @@ impl AiProvider for GeminiProvider {
     }
 }
 
-fn spawn_gemini_sse(response: reqwest::Response, token: CancellationToken) -> ChunkStream {
+/// How the `data:` frames are framed: the Gemini API sends `GenerateContentResponse`
+/// chunks directly; Cloud Code (`v1internal`, the Antigravity adapter) wraps each
+/// one in `{response, traceId}` and reports errors through its own envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SseMode {
+    Direct,
+    /// Built with `subscription-accounts`; the variant is unused otherwise.
+    #[cfg_attr(not(feature = "subscription-accounts"), allow(dead_code))]
+    CloudCode,
+}
+
+pub(super) fn spawn_gemini_sse(
+    response: reqwest::Response,
+    token: CancellationToken,
+    mode: SseMode,
+) -> ChunkStream {
     let (tx, stream) = channel_stream();
     tauri::async_runtime::spawn(async move {
         let mut events = response.bytes_stream().eventsource();
@@ -529,22 +544,44 @@ fn spawn_gemini_sse(response: reqwest::Response, token: CancellationToken) -> Ch
             if frame.data.trim().is_empty() {
                 continue;
             }
+            let data = match mode {
+                SseMode::Direct => frame.data,
+                SseMode::CloudCode => {
+                    // The Antigravity mapper knows the Cloud Code stop signals.
+                    if let Some(error) = bluey_protocols::antigravity::map_stream_error(
+                        &frame.data,
+                        bluey_oauth::unix_now(),
+                    ) {
+                        let _ = tx.send(Err(error)).await;
+                        return;
+                    }
+                    match bluey_protocols::antigravity::envelope_response(&frame.data) {
+                        Ok(Some(inner)) => inner.to_string(),
+                        _ => {
+                            tracing::debug!(
+                                bytes = frame.data.len(),
+                                "skipping a cloud code frame without a response"
+                            );
+                            continue;
+                        }
+                    }
+                }
+            };
             // A mid-stream `{"error": …}` payload parses as an empty response;
             // surface it as the error it is (body stays private).
-            if let Some(error) = proto::parse_error_body(&frame.data) {
-                let status = error.http_code.unwrap_or(500);
-                let _ = tx
-                    .send(Err(proto::map_gemini_error(status, Some(&error))))
-                    .await;
-                return;
+            if mode == SseMode::Direct {
+                if let Some(error) = proto::parse_error_body(&data) {
+                    let status = error.http_code.unwrap_or(500);
+                    let _ = tx
+                        .send(Err(proto::map_gemini_error(status, Some(&error))))
+                        .await;
+                    return;
+                }
             }
-            let chunk = match proto::parse_response(&frame.data) {
+            let chunk = match proto::parse_response(&data) {
                 Ok(chunk) => chunk,
                 Err(_) => {
-                    tracing::debug!(
-                        bytes = frame.data.len(),
-                        "skipping an unparseable sse frame"
-                    );
+                    tracing::debug!(bytes = data.len(), "skipping an unparseable sse frame");
                     continue;
                 }
             };
