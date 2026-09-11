@@ -4,6 +4,7 @@
  * accessibility, transcript, active app); TS enriches with session/user/mode context.
  */
 
+import type { SnapshotTrace } from "./latency";
 import type { DocumentKind, DocumentScope } from "./documents";
 import type { BlueyMode, ResponseStyle } from "./mode";
 import type { SessionEvent } from "./session";
@@ -189,6 +190,8 @@ export interface ContextSnapshot {
   userInstruction?: string;
   /** Native assembly timings (ms). */
   timings?: Partial<Record<"capture" | "ocr" | "accessibility" | "transcript" | "assembly", number>>;
+  /** What the native builder observed on the Rust clock (ADR 0010 §2); the engine anchors on `replyMs`. */
+  trace?: SnapshotTrace;
 }
 
 /** Options for the Rust fast-path `context_build_snapshot`. */

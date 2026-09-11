@@ -227,6 +227,9 @@ pub struct AiRequest {
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<ModelAssignment>,
+    /// The WebView's half of the fast-path trace (ADR 0010 §2), when the engine measured it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<super::TraceStamps>,
     pub created_at: String,
 }
 

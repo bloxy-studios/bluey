@@ -36,6 +36,7 @@ import {
   type DeepResearchRequest,
   type DetectedEvent,
   type DetectedEventType,
+  type LatencyTrace,
   type ResponseSection,
   type RetrievalQuery,
   type RetrievedChunk,
@@ -46,6 +47,7 @@ import {
   type SessionSummary,
   type SnapshotOptions,
   type StructuredModelOutput,
+  type TraceStamps,
 } from "@/lib/types";
 import { allocateBudget, defaultContextBudget } from "@/context/budget";
 import { estimateTokens, fuseContext } from "@/context/fusion";
@@ -59,6 +61,7 @@ import { assertCloudAiAllowed, cloudAiAllowed } from "./cloud-gate";
 import { GenerationGate } from "./generations";
 import { assembleMetrics, emitDevMetrics } from "./metrics";
 import { PromptBuilder, type VisionAttachment } from "./prompt-builder";
+import { afterNextPaint, perfNow } from "./trace";
 import { CLASSIFICATION_SYSTEM, classificationUser } from "./prompts";
 import { buildAIRequest, maxOutputTokensFor } from "./request";
 import {
@@ -88,6 +91,8 @@ export interface EngineApi {
     stream(request: AIRequest, onChunk: (chunk: AIChunk) => void): Promise<void>;
     cancel(args: { requestId: string }): Promise<boolean>;
     cancelAll(): Promise<number>;
+    /** The fast-path trace's late stamps (first paint, done) — optional, best-effort (ADR 0010 §2). */
+    reportTrace?(args: { requestId: string; stamps: TraceStamps }): Promise<LatencyTrace | null>;
   };
   responses: { save(args: { response: BlueyResponse }): Promise<BlueyResponse> };
   session: {
@@ -261,18 +266,45 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     assertCloudAiAllowed(input.settings);
     const startedAt = now().getTime();
 
+    // The fast-path trace (ADR 0010 §2): WebView stamps are offsets from the
+    // moment the native snapshot reply arrived; Rust merges them by request id.
+    const askStartedTs = perfNow();
+    let anchorTs = askStartedTs;
+    let anchorRust: number | undefined;
+    let ipcMs: number | undefined;
+    let snapshotReadyMs: number | undefined;
+    let captureDoneMs: number | undefined;
+    let imageBytes: number | undefined;
+    let imagePx: number | undefined;
+
     // Phase: capturing ──────────────────────────────────────────────────────
     if (input.captureScreen && !input.snapshot) phase(opts, "capturing");
-    let snapshot =
-      input.snapshot ??
-      (await buildNativeSnapshot({
+    let snapshot: ContextSnapshot;
+    if (input.snapshot) {
+      snapshot = input.snapshot;
+    } else {
+      const invokeTs = perfNow();
+      snapshot = await buildNativeSnapshot({
         mode: input.mode,
         settings: input.settings,
         trigger: input.trigger,
         captureScreen: input.captureScreen,
         transcriptWindowSeconds: input.transcriptWindowSeconds,
         api,
-      }));
+      });
+      const replyTs = perfNow();
+      anchorTs = replyTs;
+      snapshotReadyMs = 0;
+      const nativeTrace = snapshot.trace;
+      if (nativeTrace) {
+        anchorRust = nativeTrace.replyMs;
+        const nativeMs = nativeTrace.replyMs - nativeTrace.startedMs;
+        ipcMs = Math.max(0, replyTs - invokeTs - nativeMs);
+        captureDoneMs = nativeTrace.captureDoneMs;
+        imageBytes = nativeTrace.imageBytes;
+        imagePx = nativeTrace.imagePx;
+      }
+    }
     checkAlive(opts);
 
     // Phase: analyzing ──────────────────────────────────────────────────────
@@ -285,6 +317,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       settings: input.settings,
       api,
     });
+    const retrievalDoneMs = perfNow() - anchorTs;
     checkAlive(opts);
 
     const research = await maybeResearch(input, snapshot);
@@ -367,6 +400,9 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       outputSchema,
       now,
     });
+    const promptBuiltMs = perfNow() - anchorTs;
+    let firstPaintMs: number | undefined;
+    let firstPaintScheduled = false;
 
     // Phase: streaming ──────────────────────────────────────────────────────
     const responseId = `resp_${idGen()}`;
@@ -386,6 +422,22 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     let lastDraftLength = -1;
     let streamingAnnounced = false;
 
+    const streamInvokedMs = perfNow() - anchorTs;
+    request.trace = {
+      trigger: opts.silent ? "prepare" : input.trigger,
+      anchorMs: anchorRust,
+      ipcMs,
+      shortcutMs: input.triggeredAtMs,
+      captureDoneMs,
+      imageBytes,
+      imagePx,
+      askStartedMs: askStartedTs - anchorTs,
+      snapshotReadyMs,
+      retrievalDoneMs,
+      promptBuiltMs,
+      streamInvokedMs,
+    };
+
     const handle = streamRequest(
       request,
       {
@@ -402,6 +454,12 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
           if (draftContent.length > lastDraftLength) {
             lastDraftLength = draftContent.length;
             opts.callbacks.onDraft?.({ ...baseResponse, content: draftContent });
+            if (!firstPaintScheduled) {
+              firstPaintScheduled = true;
+              afterNextPaint(() => {
+                if (firstPaintMs === undefined) firstPaintMs = perfNow() - anchorTs;
+              });
+            }
           }
         },
       },
@@ -411,6 +469,16 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     opts.onStreamHandle(handle);
 
     const outcome: StreamOutcome = await handle.done;
+    const doneMs = perfNow() - anchorTs;
+    if (api.ai.reportTrace) {
+      // Best-effort: the late half of the trace; never delays the answer.
+      void api.ai
+        .reportTrace({
+          requestId: opts.requestId,
+          stamps: { anchorMs: anchorRust, ipcMs, streamInvokedMs, firstPaintMs, doneMs },
+        })
+        .catch(() => null);
+    }
     checkAlive(opts);
     if (outcome.finishReason === "cancelled") throw new CancelledError();
     if (outcome.finishReason === "error") {

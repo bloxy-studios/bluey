@@ -142,6 +142,19 @@ visionRequired, preferredRole)` over the user's role assignments
 - **Metrics**: time to first token, total latency, token usage → `ai_requests` table +
   `dev.metrics` event.
 
+### Fast-path trace (ADR 0010 §2)
+
+Every request's `ai_requests` record carries `trace` — the merged `LatencyTrace`: shortcut → capture
+done → snapshot ready → retrieval done → prompt built → request sent → response headers → first token
+→ first paint → done, all on Bluey's monotonic clock (`crate::clock::mono_ms`, ms since the process
+started). `AiManager::run_stream` merges the Rust stamps (request received / sent, headers, first
+delta, stream end) with the WebView's offsets (`AiRequest.trace`, anchored on the
+`context_build_snapshot` reply that `ContextSnapshot.trace` stamps); `ai_report_trace` folds first
+paint / done in afterwards; `ai.trace` (developer mode) feeds the p50 / p95 per stage in
+Settings → Advanced → *Fast path*. `dev_bench_fast_path` (`app/bench.rs`, `bun run bench:fastpath`)
+drives the native path against the mock or a real provider and prints the table `docs/LATENCY.md`
+asks fast-path PRs to paste. The trace measures; PR 4b / 5 change the path.
+
 ### Transcription providers (`TranscriptionProvider` trait)
 
 `src-tauri/src/transcription/`: `TranscriptionProvider::open(options, sink) → TranscriptionSession`

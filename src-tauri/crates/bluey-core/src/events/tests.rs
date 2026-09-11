@@ -248,6 +248,7 @@ fn all_events() -> Vec<BlueyEvent> {
         BlueyEvent::AiCancelled {
             request_id: "req_1".into(),
         },
+        BlueyEvent::AiTrace(crate::types::LatencyTrace::default()),
         BlueyEvent::ResearchEvent(DeepResearchEvent::Started {
             job_id: "job_1".into(),
         }),
@@ -264,6 +265,7 @@ fn all_events() -> Vec<BlueyEvent> {
         BlueyEvent::ShortcutTriggered {
             id: ShortcutId::TogglePanel,
             at: crate::now_iso(),
+            mono_ms: 12.5,
         },
         BlueyEvent::PanelState(PanelState::default()),
         BlueyEvent::PanelScroll {
@@ -283,7 +285,7 @@ fn all_events() -> Vec<BlueyEvent> {
 
 /// Hard-coded copy of EVENT_NAMES from `src/lib/tauri/events.ts`.
 /// Keep in sync with the frontend.
-const EVENT_NAMES: [&str; 48] = [
+const EVENT_NAMES: [&str; 49] = [
     "app.state",
     "app.error",
     "settings.changed",
@@ -317,6 +319,7 @@ const EVENT_NAMES: [&str; 48] = [
     "ai.completed",
     "ai.failed",
     "ai.cancelled",
+    "ai.trace",
     "research.event",
     "session.started",
     "session.paused",
@@ -406,6 +409,7 @@ fn payloads_are_camel_case_and_match_ts_shapes() {
     let p = BlueyEvent::ShortcutTriggered {
         id: ShortcutId::CaptureAnalyze,
         at: "t".into(),
+        mono_ms: 12.5,
     }
     .payload();
     assert_eq!(p["id"], "capture_analyze");

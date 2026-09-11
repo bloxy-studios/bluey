@@ -4,6 +4,7 @@
  * Mirrors `bluey_core::types::ai`.
  */
 
+import type { TraceStamps } from "./latency";
 import type { BlueyError } from "./errors";
 import type { ModelRole } from "./mode";
 import type { Citation } from "./response";
@@ -98,6 +99,8 @@ export interface AIRequest {
   temperature?: number;
   /** Explicit override of the router decision. */
   modelOverride?: ModelAssignment;
+  /** The WebView's half of the fast-path trace (ADR 0010 §2), when the engine measured it. */
+  trace?: TraceStamps;
   createdAt: string;
 }
 

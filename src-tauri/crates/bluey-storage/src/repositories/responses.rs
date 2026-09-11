@@ -5,6 +5,7 @@ use bluey_core::now_iso;
 use bluey_core::types::response::{
     BlueyResponse, FeedbackCategory, FeedbackRating, ResponseFeedback,
 };
+use bluey_core::types::LatencyTrace;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -193,6 +194,9 @@ pub struct AiRequestRecord {
     pub total_ms: Option<u64>,
     pub finish_reason: Option<String>,
     pub error_code: Option<String>,
+    /// The merged fast-path trace (ADR 0010 §2), when one was assembled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<LatencyTrace>,
     /// Defaults to now when empty.
     pub created_at: String,
 }
@@ -217,8 +221,8 @@ impl AiRequestRepository {
             conn.execute(
                 "INSERT OR REPLACE INTO ai_requests (id, session_id, task, provider_id, model,
                     latency_budget, context_tokens, input_tokens, output_tokens, ttft_ms,
-                    total_ms, finish_reason, error_code, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    total_ms, finish_reason, error_code, created_at, trace)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     record.id,
                     record.session_id,
@@ -233,7 +237,8 @@ impl AiRequestRepository {
                     record.total_ms.map(|v| v as i64),
                     record.finish_reason,
                     record.error_code,
-                    created_at
+                    created_at,
+                    trace_json(record.trace.as_ref())
                 ],
             )
             .sql()?;
@@ -248,7 +253,7 @@ impl AiRequestRepository {
                 .prepare(
                     "SELECT id, session_id, task, provider_id, model, latency_budget,
                             context_tokens, input_tokens, output_tokens, ttft_ms, total_ms,
-                            finish_reason, error_code, created_at
+                            finish_reason, error_code, created_at, trace
                        FROM ai_requests ORDER BY created_at DESC, id DESC LIMIT ?1",
                 )
                 .sql()?;
@@ -269,12 +274,35 @@ impl AiRequestRepository {
                         finish_reason: r.get(11)?,
                         error_code: r.get(12)?,
                         created_at: r.get(13)?,
+                        trace: parse_trace(r.get::<_, Option<String>>(14)?),
                     })
                 })
                 .sql()?;
             rows.collect::<Result<Vec<_>, _>>().sql()
         })
     }
+
+    /// Replace the trace of one request (the WebView's late stamps arrive after
+    /// the record was written). `Ok(false)` when no such request exists.
+    pub fn update_trace(db: &Database, id: &str, trace: &LatencyTrace) -> Result<bool, BlueyError> {
+        db.with_conn(|conn| {
+            let changed = conn
+                .execute(
+                    "UPDATE ai_requests SET trace = ?2 WHERE id = ?1",
+                    params![id, trace_json(Some(trace))],
+                )
+                .sql()?;
+            Ok(changed > 0)
+        })
+    }
+}
+
+fn trace_json(trace: Option<&LatencyTrace>) -> Option<String> {
+    trace.and_then(|t| serde_json::to_string(t).ok())
+}
+
+fn parse_trace(text: Option<String>) -> Option<LatencyTrace> {
+    text.and_then(|t| serde_json::from_str(&t).ok())
 }
 
 #[cfg(test)]
@@ -410,5 +438,55 @@ mod tests {
         assert_eq!(recent[0].total_ms, Some(1700));
         assert!(!recent[0].created_at.is_empty());
         assert!(AiRequestRepository::record(&db, &AiRequestRecord::default()).is_err());
+    }
+    #[test]
+    fn ai_request_trace_round_trips_and_updates() {
+        let db = testutil::db();
+        let trace = LatencyTrace {
+            request_id: "req_t1".into(),
+            trigger: "shortcut_capture".into(),
+            t_shortcut: Some(900.0),
+            t_capture_done: Some(980.0),
+            t_request_sent: Some(1045.0),
+            t_first_token: Some(1400.0),
+            image_bytes: Some(180_000),
+            image_px: Some(1440),
+            provider_id: Some("gemini".into()),
+            model: Some("gemini-3.5-flash-lite".into()),
+            ..LatencyTrace::default()
+        };
+        let rec = AiRequestRecord {
+            id: "req_t1".into(),
+            task: "answer".into(),
+            provider_id: Some("gemini".into()),
+            ttft_ms: Some(500),
+            trace: Some(trace.clone()),
+            ..AiRequestRecord::default()
+        };
+        AiRequestRepository::record(&db, &rec).unwrap();
+        let recent = AiRequestRepository::recent(&db, 5).unwrap();
+        assert_eq!(recent[0].trace, Some(trace.clone()));
+
+        let mut later = trace.clone();
+        later.t_first_paint = Some(1417.0);
+        later.t_done = Some(2022.0);
+        assert!(AiRequestRepository::update_trace(&db, "req_t1", &later).unwrap());
+        assert!(!AiRequestRepository::update_trace(&db, "req_missing", &later).unwrap());
+        let recent = AiRequestRepository::recent(&db, 5).unwrap();
+        assert_eq!(
+            recent[0].trace.as_ref().and_then(|t| t.t_first_paint),
+            Some(1417.0)
+        );
+        assert_eq!(recent[0].ttft_ms, Some(500), "the other columns stay");
+
+        let without = AiRequestRecord {
+            id: "req_t2".into(),
+            task: "classification".into(),
+            ..AiRequestRecord::default()
+        };
+        AiRequestRepository::record(&db, &without).unwrap();
+        let recent = AiRequestRepository::recent(&db, 5).unwrap();
+        assert_eq!(recent[0].id, "req_t2");
+        assert_eq!(recent[0].trace, None);
     }
 }

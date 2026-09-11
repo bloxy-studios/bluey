@@ -23,6 +23,7 @@ import type {
   DeepResearchEvent,
   DetectedEvent,
   LatencyMetrics,
+  LatencyTrace,
   OCRContext,
   PanelState,
   PermissionState,
@@ -83,6 +84,8 @@ export interface EventMap {
   "ai.completed": { requestId: string; totalMs: number; timeToFirstTokenMs?: number };
   "ai.failed": { requestId: string; error: BlueyError };
   "ai.cancelled": { requestId: string };
+  /** The merged fast-path trace of one request (developer mode only, ADR 0010 §2). */
+  "ai.trace": LatencyTrace;
 
   // research
   "research.event": DeepResearchEvent;
@@ -97,7 +100,8 @@ export interface EventMap {
   "modes.changed": BlueyMode[];
 
   // shortcuts / panel
-  "shortcut.triggered": { id: ShortcutId; at: string };
+  /** `monoMs`: the keydown on Bluey's monotonic clock — the fast-path trace's `tShortcut`. */
+  "shortcut.triggered": { id: ShortcutId; at: string; monoMs?: number };
   "panel.state": PanelState;
   "panel.scroll": { direction: "up" | "down" };
   "panel.focusInput": Record<string, never>;
@@ -157,6 +161,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "ai.completed",
   "ai.failed",
   "ai.cancelled",
+  "ai.trace",
   "research.event",
   "session.started",
   "session.paused",

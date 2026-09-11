@@ -19,6 +19,8 @@ export interface AskRequest {
   captureScreen?: boolean;
   promptLabel?: string;
   detectedEvent?: DetectedEvent;
+  /** The global shortcut's keydown on Bluey's monotonic clock (fast-path trace). */
+  triggeredAtMs?: number;
 }
 
 /**
@@ -53,6 +55,7 @@ export function useAsk() {
         detectedEvent: request.detectedEvent,
         sessionEvents:
           sessionState.active && sessionState.events.length > 0 ? sessionState.events : undefined,
+        triggeredAtMs: typeof request.triggeredAtMs === "number" ? request.triggeredAtMs : undefined,
       },
       {
         onPhase: (phase) => useChatStore.getState().setPhase(generation, phase),
@@ -82,7 +85,7 @@ export function useAsk() {
    * ⌘⇧↵ — show the response prepared for the question currently surfaced
    * (then any other prepared response); otherwise generate from the transcript.
    */
-  const generateOrTakePrepared = useCallback(() => {
+  const generateOrTakePrepared = useCallback((triggeredAtMs?: number) => {
     const engine = getEngine();
     const preparedEventId = useProactiveStore.getState().preparedEventId;
     const prepared =
@@ -95,7 +98,11 @@ export function useAsk() {
       useProactiveStore.getState().consumePrepared();
       return;
     }
-    ask({ trigger: "shortcut_generate", promptLabel: "Suggested response" });
+    ask({
+      trigger: "shortcut_generate",
+      promptLabel: "Suggested response",
+      triggeredAtMs: typeof triggeredAtMs === "number" ? triggeredAtMs : undefined,
+    });
   }, [ask]);
 
   const regenerate = useCallback(() => {

@@ -8,8 +8,9 @@ import { useAppStore } from "@/stores/appStore";
 import { hasActiveHudOverlay, isComposingKey } from "./hud-keyboard";
 
 export interface HudShortcutHandlers {
-  onCaptureAnalyze: () => void;
-  onGenerate: () => void;
+  /** `triggeredAtMs`: the global shortcut's keydown on Bluey's monotonic clock (the trace's `tShortcut`); absent for local keys. */
+  onCaptureAnalyze: (triggeredAtMs?: number) => void;
+  onGenerate: (triggeredAtMs?: number) => void;
   onNewChat: () => void;
   onEscape: () => void;
 }
@@ -55,16 +56,17 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
       }
     };
 
-    const offShortcut = eventBus.on("shortcut.triggered", ({ id }) => {
+    const offShortcut = eventBus.on("shortcut.triggered", ({ id, monoMs }) => {
       // Keep backend bindings/dispatch intact; only protect local IME work from
       // ask/new-chat notifications received while the HUD is composing.
       if (composing && (id === "capture_analyze" || id === "generate_response" || id === "new_chat")) return;
+      const triggeredAtMs = typeof monoMs === "number" ? monoMs : undefined;
       switch (id) {
         case "capture_analyze":
-          handlersRef.current.onCaptureAnalyze();
+          handlersRef.current.onCaptureAnalyze(triggeredAtMs);
           break;
         case "generate_response":
-          handlersRef.current.onGenerate();
+          handlersRef.current.onGenerate(triggeredAtMs);
           break;
         case "new_chat":
           handlersRef.current.onNewChat();

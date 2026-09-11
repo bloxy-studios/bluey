@@ -13,6 +13,7 @@ pub mod app;
 pub mod audio;
 pub mod auth;
 pub mod capture;
+pub mod clock;
 pub mod commands;
 pub mod context;
 pub mod documents;
@@ -95,6 +96,7 @@ pub fn run() {
         commands::context::context_build_snapshot,
         // AI
         commands::ai::ai_stream,
+        commands::ai::ai_report_trace,
         commands::ai::ai_cancel,
         commands::ai::ai_cancel_all,
         commands::ai::ai_embed,
@@ -190,6 +192,7 @@ pub fn run() {
         commands::dev::dev_simulate,
         commands::dev::dev_get_metrics,
         commands::dev::dev_restart_helper,
+        commands::dev::dev_bench_fast_path,
     ]);
     app::run(builder);
 }

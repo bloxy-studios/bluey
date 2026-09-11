@@ -1,9 +1,10 @@
 # Latency — how the ⌘↵ fast path is measured
 
 Companion to ADR 0010. This document is the method and the numbers; the ADR is the decision.
-The bench and the trace described here land with the fast-path PRs (`bun run bench:fastpath`,
-PR 4a in `docs/reference/provider-accounts-fast-path-brief.md` §6) — until then the baseline
-comes from the dev overlay's stage timings and the `ttft_ms` column of `ai_requests`.
+The trace and the bench described here are built (PR 4a): every request carries a `LatencyTrace`
+(`ai_requests.trace`, `ai.trace` in developer mode, p50 / p95 per stage in Settings → Advanced →
+*Fast path*), and `bun run bench:fastpath` prints the percentile table. The fast-path *changes*
+(ADR 0010 §3–9) follow in PR 4b / 5 and paste their before / after tables here.
 
 ## What "fast" means here
 
@@ -40,14 +41,24 @@ t_request_sent, t_response_headers, t_first_token, t_first_paint, t_done,
 image_bytes, image_px, prompt_tokens, provider_id, model
 ```
 
-Rust owns the timestamps it can observe (`t_shortcut` from `ShortcutManager`, `t_capture_done`
-from the capture manager, `t_request_sent`, `t_response_headers`, `t_first_token` from the
-provider adapter); TS owns `t_snapshot_ready`, `t_retrieval_done`, `t_prompt_built`,
-`t_first_paint` and `t_done`. Both sides use monotonic clocks; TS reports offsets relative to the
-`context_build_snapshot` reply so the halves merge without wall-clock skew. The merged trace is
-persisted with the `ai_requests` metrics record (next to the existing `ttft_ms`) and emitted as
-`ai.trace` when developer mode is on; the dev overlay shows p50 / p95 per stage over the last 50
-requests.
+Rust owns the timestamps it can observe — `t_shortcut` from `ShortcutManager`
+(`shortcut.triggered.monoMs`), `t_capture_done` and the reply moment from the snapshot builder
+(`ContextSnapshot.trace`), `t_request_sent`, `t_response_headers`, `t_first_token` from the AI
+manager around the provider adapter — and TS owns `t_snapshot_ready`, `t_retrieval_done`,
+`t_prompt_built`, `t_first_paint` (a `requestAnimationFrame` after the first draft) and `t_done`.
+Both sides use monotonic clocks (Rust: `crate::clock::mono_ms`, ms since the process started; TS:
+`performance.now()`); TS reports its stamps as **offsets relative to the `context_build_snapshot`
+reply** (`TraceStamps` on the request, plus a late `ai_report_trace` for first paint / done) and adds
+the reply's IPC cost it measured (round trip minus the native build time, the trace's `ipcMs`), so
+the halves merge without wall-clock skew (`bluey_core::latency::merge`). Asks without a native
+snapshot anchor on the request's arrival. `t_shortcut` is the trigger moment: the global shortcut
+keydown when there was one, else the moment the HUD submitted the question. The merged trace is
+persisted with the `ai_requests` metrics record (column `trace`, next to `ttft_ms`) and emitted as
+`ai.trace` when developer mode is on (or in `dev-tools` / debug builds); the dev overlay
+(Settings → Advanced → *Fast path*) shows p50 / p95 per stage over the last 50 requests, cumulative
+from the trigger, nearest-rank, never the mean. Extra fields the brief did not list: `ipcMs`;
+`imagePx` is the screenshot's long edge; `promptTokens` is the provider's input count when it
+reports one, else the engine's estimate.
 
 ## The bench
 
@@ -56,9 +67,21 @@ bun run bench:fastpath --iterations 30 --provider mock      # local stages only,
 bun run bench:fastpath --iterations 30 --provider gemini    # headline number, needs a key
 ```
 
-`dev_bench_fast_path { iterations, provider }` (a `dev-tools` command) drives the real
-shortcut → capture → snapshot → prompt → request path against a fixture screen
-(`tests/fixtures/screens/`) and prints a percentile table. Rules:
+`dev_bench_fast_path { iterations, provider, fixture? }` (developer mode or a `dev-tools` build)
+drives the real native path — trigger moment → capture → snapshot assembly → a request carrying the
+screenshot → provider → first token — `iterations` times and returns the percentile table
+(`BenchReport`, with the markdown to paste). The capture is **live** by default (the numbers are
+claimed for the Mac it runs on); `--fixture tests/fixtures/screens/general-1440.jpg.b64` stands a
+synthetic 1440 × 900 IDE-like screen in where ScreenCaptureKit cannot run (CI, no screen
+permission) or when two runs must see the identical frame — fixture frames skip OCR because the
+helper never saw them. `bun run bench:fastpath` launches the app with `--features dev-tools` and
+`BLUEY_BENCH_FASTPATH=1` (plus `BLUEY_BENCH_ITERATIONS` / `_PROVIDER` / `_FIXTURE` / `_OUT`); the
+app boots, benches after `finish_boot`, prints the table, writes the JSON report (`.bench/`) and
+exits (0 clean, 2 some runs failed, 3 could not run); `--ci` fails when the local total p50 is
+above the runner threshold. What the bench cannot measure is the WebView's own work — the
+TypeScript fuse / budget / prompt build and the first paint — those come from the traces of real
+⌘↵ presses in the dev overlay; the bench's `prompt built` row is the Rust stand-in prompt (the same
+image payload, no retrieval). Rules:
 
 * 30 iterations, the first 3 discarded (cold caches), p50 and p95 reported, never the mean.
 * Same fixture screen, same mode (General), same model for every run in a comparison.
@@ -81,8 +104,11 @@ shortcut → capture → snapshot → prompt → request path against a fixture 
 
 ## Baseline
 
-`main @ 49485b5` — **not yet measured**; PR 4a commits the first table here from the owner's
-Mac. Known structural facts about the baseline (file:line at `49485b5`):
+**Not yet measured.** PR 4a built the trace and the bench in a sandbox without macOS; the first
+table comes from the owner's Mac — run `bun run bench:fastpath --iterations 30 --provider mock`
+(local stages) and, with a Gemini key, `--provider gemini`, then paste both tables here under this
+heading with the commit and the machine. Until then the structural facts below describe the
+baseline the bench will measure (file:line at `49485b5`):
 
 * the snapshot awaits OCR and AX (`src-tauri/src/context/mod.rs:77-78`; helper timeouts capture
   3 s / OCR 5 s / AX 1 s, `sidecar/mod.rs:400-410`; Vision default level `accurate`);

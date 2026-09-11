@@ -50,9 +50,17 @@ export function HudPanel() {
     [ask, expanded, screenEnabled],
   );
 
-  const assist = useCallback(() => {
-    ask({ trigger: "shortcut_capture", captureScreen: screenEnabled, promptLabel: "Assist" });
-  }, [ask, screenEnabled]);
+  const assist = useCallback(
+    (triggeredAtMs?: number) => {
+      ask({
+        trigger: "shortcut_capture",
+        captureScreen: screenEnabled,
+        promptLabel: "Assist",
+        triggeredAtMs: typeof triggeredAtMs === "number" ? triggeredAtMs : undefined,
+      });
+    },
+    [ask, screenEnabled],
+  );
 
   const onEscape = useCallback(() => {
     if (streaming) void stop();

@@ -26,6 +26,10 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         "0003_embedding_model",
         include_str!("../migrations/0003_embedding_model.sql"),
     ),
+    (
+        "0004_ai_request_trace",
+        include_str!("../migrations/0004_ai_request_trace.sql"),
+    ),
 ];
 
 /// A single SQLite database handle shared by all repositories.
@@ -236,7 +240,8 @@ mod tests {
             vec![
                 "0001_init".to_string(),
                 "0002_fts_sync".to_string(),
-                "0003_embedding_model".to_string()
+                "0003_embedding_model".to_string(),
+                "0004_ai_request_trace".to_string()
             ]
         );
         assert!(db.path().is_none());

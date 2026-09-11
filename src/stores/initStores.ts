@@ -57,6 +57,7 @@ export async function initStores(): Promise<void> {
     eventBus.on("research.event", (event) => useResearchStore.getState().apply(event)),
 
     eventBus.on("dev.metrics", (metrics) => useDevStore.getState().setMetrics(metrics)),
+    eventBus.on("ai.trace", (trace) => useDevStore.getState().pushTrace(trace)),
     eventBus.on("dev.log", (entry) => useDevStore.getState().pushLog(entry)),
 
     // Cross-cutting loops: proactive preparation (HUD only) and global error toasts.

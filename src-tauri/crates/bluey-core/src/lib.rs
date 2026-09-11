@@ -24,6 +24,7 @@ pub mod accounts;
 pub mod budget;
 pub mod context;
 pub mod events;
+pub mod latency;
 pub mod modes;
 pub mod presets;
 pub mod router;

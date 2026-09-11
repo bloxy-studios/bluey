@@ -1,6 +1,7 @@
 import { Bug, FileCode2, RefreshCcw, ScrollText } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
+import { formatStageMs, summarize } from "@/ai/trace";
 import { Button } from "@/components/ui/Button";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
@@ -8,7 +9,7 @@ import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
 import { showToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
-import type { DevSimulation, LogLevel } from "@/lib/types";
+import { toBlueyError, type DevSimulation, type LogLevel } from "@/lib/types";
 import { formatMs } from "@/lib/utils/format";
 import { useDevStore } from "@/stores/devStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -29,12 +30,29 @@ export default function AdvancedTab() {
   const update = useSettingsStore((s) => s.update);
   const metrics = useDevStore((s) => s.metrics);
   const setMetrics = useDevStore((s) => s.setMetrics);
+  const traces = useDevStore((s) => s.traces);
+  const clearTraces = useDevStore((s) => s.clearTraces);
+  const bench = useDevStore((s) => s.bench);
+  const setBench = useDevStore((s) => s.setBench);
+  const [benchRunning, setBenchRunning] = useState(false);
 
   useEffect(() => {
     void bluey.dev.getMetrics().then(setMetrics).catch(() => undefined);
   }, [setMetrics]);
 
+  const runBench = async () => {
+    setBenchRunning(true);
+    try {
+      setBench(await bluey.dev.benchFastPath({ options: { iterations: 10, provider: "mock" } }));
+    } catch (error) {
+      showToast(toBlueyError(error, "ai").message);
+    } finally {
+      setBenchRunning(false);
+    }
+  };
+
   if (!settings) return null;
+  const stageRows = summarize(traces);
 
   return (
     <>
@@ -112,6 +130,57 @@ export default function AdvancedTab() {
               </tr>
             </tbody>
           </table>
+
+          <SectionHeader
+            title="Fast path"
+            description={
+              traces.length > 0
+                ? `p50 / p95 over the last ${traces.length} traced requests — ms since ⌘↵ (ADR 0010)`
+                : "p50 / p95 per stage appear here after the first traced request (ms since ⌘↵, ADR 0010)"
+            }
+          />
+          {stageRows.length > 0 ? (
+            <table className="w-full max-w-[520px] text-[13px]" data-testid="fast-path-table">
+              <thead>
+                <tr className="text-left text-fg-muted">
+                  <th className="py-1 font-normal">Stage</th>
+                  <th className="py-1 text-right font-normal">p50</th>
+                  <th className="py-1 text-right font-normal">p95</th>
+                  <th className="py-1 text-right font-normal">n</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stageRows.map((row) => (
+                  <tr key={row.stage} className="border-b border-border/40 last:border-0">
+                    <td className="py-1.5 text-fg-muted">{row.label}</td>
+                    <td className="py-1.5 text-right font-mono text-fg">{formatStageMs(row.p50Ms)}</td>
+                    <td className="py-1.5 text-right font-mono text-fg">{formatStageMs(row.p95Ms)}</td>
+                    <td className="py-1.5 text-right font-mono text-fg-muted">{row.samples}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" size="sm" disabled={benchRunning} onClick={() => void runBench()}>
+              {benchRunning ? "Running bench…" : "Run bench (mock, 10 runs)"}
+            </Button>
+            {traces.length > 0 ? (
+              <Button variant="secondary" size="sm" onClick={clearTraces}>
+                Clear traces
+              </Button>
+            ) : null}
+            {bench ? (
+              <span className="text-[12px] text-fg-muted">
+                local total p50 {formatStageMs(bench.localTotalP50Ms)} · p95 {formatStageMs(bench.localTotalP95Ms)}
+              </span>
+            ) : null}
+          </div>
+          {bench ? (
+            <pre className="max-w-[640px] whitespace-pre-wrap rounded-md border border-border/40 p-3 font-mono text-[12px] text-fg">
+              {bench.markdown}
+            </pre>
+          ) : null}
         </>
       ) : null}
     </>

@@ -121,6 +121,81 @@ type Handlers = {
   [K in CommandName]: (args: CommandArgs<K>) => CommandResult<K> | Promise<CommandResult<K>>;
 };
 
+import type { BenchOptions, BenchReport, LatencyTrace } from "@/lib/types/latency";
+
+/** The mock's monotonic clock (ms since the transport module loaded) — stands in for Rust's. */
+const MONO_ORIGIN = Date.now();
+function monoMs(): number {
+  return Date.now() - MONO_ORIGIN;
+}
+
+/** A deterministic fast-path trace for one mock answer (numbers from the docs' baseline sketch). */
+function mockTrace(
+  request: { requestId: string; trace?: { trigger?: string } },
+  selection: { providerId: string; model: string },
+  firstTokenMs: number | undefined,
+  totalMs: number,
+): LatencyTrace {
+  const t0 = monoMs() - totalMs - 150;
+  return {
+    requestId: request.requestId,
+    trigger: request.trace?.trigger ?? "typed",
+    tShortcut: t0,
+    tCaptureDone: t0 + 84,
+    tSnapshotReady: t0 + 130,
+    tRetrievalDone: t0 + 138,
+    tPromptBuilt: t0 + 150,
+    tRequestSent: t0 + 155,
+    tResponseHeaders: t0 + 215,
+    tFirstToken: firstTokenMs === undefined ? undefined : t0 + 150 + firstTokenMs,
+    tFirstPaint: firstTokenMs === undefined ? undefined : t0 + 150 + firstTokenMs + 12,
+    tDone: t0 + 150 + totalMs,
+    ipcMs: 9,
+    imageBytes: 148_000,
+    imagePx: 1512,
+    promptTokens: 2130,
+    providerId: selection.providerId,
+    model: selection.model,
+  };
+}
+
+/** A canned `dev_bench_fast_path` report (the real one needs the native path). */
+function mockBenchReport(options: BenchOptions): BenchReport {
+  const counted = Math.max(0, options.iterations - 3);
+  const rows = [
+    ["capture", "capture", 78, 131],
+    ["snapshot_ready", "snapshot ready (incl. OCR/AX where still awaited)", 612, 905],
+    ["prompt_built", "prompt built", 626, 921],
+    ["request_sent", "request sent (local total)", 642, 940],
+    ["response_headers", "response headers", 705, 1010],
+    ["first_token", "first token", 1188, 1620],
+    ["done", "done", 2410, 3105],
+  ] as const;
+  const markdown = [
+    `Fast path bench — provider \`${options.provider}\` / \`mock-default\`, ${counted} runs counted (3 warm-up discarded, 0 failed), ${options.fixture ? "fixture" : "live"} screen, ${new Date().toISOString()}`,
+    "",
+    "| Stage | p50 / p95 | n |",
+    "|---|---|---|",
+    ...rows.map(([, label, p50, p95]) => `| ${label} | ${p50} ms / ${p95} ms | ${counted} |`),
+    "| image bytes / prompt tokens | 145 KB / 2130 | |",
+  ].join("\n");
+  return {
+    provider: options.provider,
+    model: "mock-default",
+    iterations: counted,
+    discarded: 3,
+    failures: 0,
+    fixture: Boolean(options.fixture),
+    rows: rows.map(([stage, label, p50, p95]) => ({ stage, label, samples: counted, p50Ms: p50, p95Ms: p95 })),
+    imageBytesP50: 148_000,
+    promptTokensP50: 2130,
+    localTotalP50Ms: 642,
+    localTotalP95Ms: 940,
+    markdown,
+    ranAt: new Date().toISOString(),
+  };
+}
+
 export class MockTransport implements Transport {
   readonly kind = "mock" as const;
 
@@ -681,6 +756,7 @@ export class MockTransport implements Transport {
       timeToFirstTokenMs: firstToken,
     });
     this.emit("ai.completed", { requestId: request.requestId, totalMs, timeToFirstTokenMs: firstToken });
+    this.emit("ai.trace", mockTrace(request, selection, firstToken, totalMs));
     this.metrics = {
       ...this.metrics,
       modelMs: totalMs,
@@ -1225,6 +1301,14 @@ export class MockTransport implements Transport {
       this.setAppState({ state: "capturing" });
       await this.delay(this.streamDelayMs * 4);
       const snapshot = this.buildSnapshot(args);
+      const replyMs = monoMs();
+      snapshot.trace = {
+        startedMs: replyMs - 130,
+        captureDoneMs: replyMs - 46,
+        replyMs,
+        imageBytes: snapshot.screen?.image ? 148_000 : undefined,
+        imagePx: snapshot.screen ? 1512 : undefined,
+      };
       this.setAppState({ state: "analyzing" });
       this.emit("context.updated", { snapshot, reason: "manual" });
       return snapshot;
@@ -1232,6 +1316,7 @@ export class MockTransport implements Transport {
 
     // AI
     ai_stream: (args) => this.streamAi(args),
+    ai_report_trace: () => null,
     ai_cancel: (args) => {
       this.cancelled.add(args.requestId);
       return true;
@@ -2013,6 +2098,7 @@ export class MockTransport implements Transport {
 
     // Developer mode
     dev_simulate: (args) => this.simulate(args.simulation),
+    dev_bench_fast_path: (args) => mockBenchReport(args.options),
     dev_get_metrics: () => this.metrics,
     dev_restart_helper: async () => {
       this.emit("helper.status", { running: false });

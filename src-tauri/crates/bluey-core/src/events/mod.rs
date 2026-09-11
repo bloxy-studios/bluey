@@ -198,6 +198,8 @@ pub enum BlueyEvent {
     /// `ai.cancelled`
     #[serde(rename_all = "camelCase")]
     AiCancelled { request_id: String },
+    /// `ai.trace` — the merged fast-path trace of one request (developer mode only).
+    AiTrace(crate::types::LatencyTrace),
 
     // ── research ────────────────────────────────────────────────────────────
     /// `research.event`
@@ -225,8 +227,13 @@ pub enum BlueyEvent {
     ModesChanged(Vec<BlueyMode>),
 
     // ── shortcuts / panel ───────────────────────────────────────────────────
-    /// `shortcut.triggered`
-    ShortcutTriggered { id: ShortcutId, at: String },
+    /// `shortcut.triggered` — `mono_ms` is the keydown on Bluey's monotonic clock (the fast-path trace's `t_shortcut`).
+    #[serde(rename_all = "camelCase")]
+    ShortcutTriggered {
+        id: ShortcutId,
+        at: String,
+        mono_ms: f64,
+    },
     /// `panel.state`
     PanelState(PanelState),
     /// `panel.scroll`
@@ -285,6 +292,7 @@ impl BlueyEvent {
             Self::AiCompleted { .. } => "ai.completed",
             Self::AiFailed { .. } => "ai.failed",
             Self::AiCancelled { .. } => "ai.cancelled",
+            Self::AiTrace(_) => "ai.trace",
             Self::ResearchEvent(_) => "research.event",
             Self::SessionStarted(_) => "session.started",
             Self::SessionPaused(_) => "session.paused",
