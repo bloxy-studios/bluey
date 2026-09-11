@@ -33,12 +33,17 @@
 //!   constants and bodies, identity from the ID token, `~/.codex/auth.json` import parsing,
 //!   the Responses API request builder, SSE events, the model catalog, error mapping and
 //!   the `CodexShaper` that reproduces `fingerprints::codex`.
+//! * [`claude_code`] — Claude Pro/Max through claude.ai OAuth in the Claude Code wire format
+//!   (ADR 0009 §4b): OAuth constants and bodies, profile → identity, Claude Code's credential
+//!   store parsing, the catalog, thinking / effort knobs, the `ClaudeCodeShaper` that
+//!   reproduces `fingerprints::claude_code`, and the extra-usage guard in the error mapper.
 //!
 //! No Tauri, tokio, or network dependencies live here.
 
 pub mod agent;
 pub mod anthropic;
 pub mod azure;
+pub mod claude_code;
 pub mod clerk;
 pub mod codex;
 pub mod exa;

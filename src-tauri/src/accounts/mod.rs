@@ -17,10 +17,12 @@
 
 #[cfg(feature = "subscription-accounts")]
 pub mod chatgpt;
+#[cfg(feature = "subscription-accounts")]
+pub mod claude;
 pub mod profile;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bluey_core::accounts::{self as rules, codes};
 use bluey_core::error::RecoveryAction;
@@ -47,6 +49,37 @@ use profile::{Connected, ProviderProfile};
 
 /// Settings-table key of the account list (statuses, identities — no tokens).
 const ACCOUNTS_KEY: &str = "accounts:list";
+/// Settings-table key of the stable per-install device id (64 hex; not a secret —
+/// it identifies this install in `metadata.user_id`-style fields).
+const DEVICE_ID_KEY: &str = "accounts:device_id";
+
+static DEVICE_ID: OnceLock<String> = OnceLock::new();
+
+/// The install's device id — the one `AccountsManager::load` persisted, or a
+/// process-local one when the manager has not loaded (tests).
+pub fn process_device_id() -> String {
+    DEVICE_ID
+        .get_or_init(|| hex(&bluey_oauth::random_bytes::<32>()))
+        .clone()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn load_or_create_device_id(storage: &Storage) -> BlueyResult<String> {
+    let stored = storage
+        .run_sync(|db| SettingsRepository::get_json(db, DEVICE_ID_KEY))?
+        .and_then(|value| value.as_str().map(str::to_string))
+        .filter(|id| id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()));
+    if let Some(id) = stored {
+        return Ok(id);
+    }
+    let fresh = hex(&bluey_oauth::random_bytes::<32>());
+    let value = serde_json::Value::String(fresh.clone());
+    storage.run_sync(move |db| SettingsRepository::set_json(db, DEVICE_ID_KEY, &value))?;
+    Ok(fresh)
+}
 
 fn catalog_key(account_id: &str) -> String {
     format!("accounts:catalog:{account_id}")
@@ -70,6 +103,7 @@ pub struct AccountsManager {
     catalogs: parking_lot::RwLock<HashMap<String, ProviderModelCatalog>>,
     tokens: parking_lot::Mutex<HashMap<String, Arc<TokenCache>>>,
     pending: parking_lot::Mutex<HashMap<String, PendingConnect>>,
+    device_id: String,
 }
 
 impl AccountsManager {
@@ -110,6 +144,8 @@ impl AccountsManager {
                 catalogs.insert(account.account_id.clone(), catalog);
             }
         }
+        let device_id = load_or_create_device_id(&storage)?;
+        let _ = DEVICE_ID.set(device_id.clone());
         Ok(Self {
             secrets,
             storage,
@@ -121,7 +157,13 @@ impl AccountsManager {
             catalogs: parking_lot::RwLock::new(catalogs),
             tokens: parking_lot::Mutex::new(HashMap::new()),
             pending: parking_lot::Mutex::new(HashMap::new()),
+            device_id,
         })
+    }
+
+    /// Stable per-install device id (64 hex) for the shapers' `metadata.user_id` fields.
+    pub fn device_id(&self) -> String {
+        self.device_id.clone()
     }
 
     /// Whether this build includes subscription accounts at all.

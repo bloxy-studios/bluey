@@ -77,7 +77,12 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
   `~/.codex`, Antigravity's data directory or their Keychain items. ChatGPT (PR 3a) reads
   `$CODEX_HOME/auth.json` / `~/.codex/auth.json` and does **not** refresh at import time: OpenAI
   rotates refresh tokens, so the copied session is shared with the CLI and whichever side
-  refreshes first signs the other out later — the Import button says so.
+  refreshes first signs the other out later — the Import button says so. Claude (PR 3b) reads the
+  Keychain item `Claude Code-credentials` (macOS may ask for permission), else
+  `~/.claude/.credentials.json`, plus `~/.claude.json` for the account uuid — read-only, no refresh.
+* **The per-install device id** (`accounts:device_id` in the settings table, 64 random hex) identifies
+  this install in the shapers' `metadata.user_id`-style fields. It is not a secret, carries no user
+  data and never leaves together with a token.
 * **One consent dialog per provider, once**, before the browser opens: what is sent, whose plan
   limits are used, that the integration is unofficial and may stop working, and what Bluey does
   when it does.

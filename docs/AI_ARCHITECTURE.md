@@ -119,8 +119,13 @@ visionRequired, preferredRole)` over the user's role assignments
   `bluey_protocols::codex::CodexShaper` (instructions = the model's template, Bluey's prompt as a
   `developer` item; a test diffs the shaper against the documented fingerprint). A connected
   account is a provider to the router (`has_api_key` = usable); a 401, plan limit or block moves
-  the account's status and the router falls back to the API-key providers. Claude and Google AI
-  profiles are placeholders answering `account.provider_pending` until PR 3b / 3c.
+  the account's status and the router falls back to the API-key providers. Claude is real since PR 3b — `accounts/claude.rs`
+  signs in (PKCE loopback 54545 → any port → pasted `code#state`, or a read-only import of Claude
+  Code's Keychain item), the Anthropic adapter runs in OAuth mode (Bearer, `?beta=true`,
+  `bluey_protocols::claude_code::ClaudeCodeShaper`: two fingerprint `system` blocks, Bluey's prompt as
+  a `<system-reminder>` on the first user turn, `metadata.user_id`, betas) and the Claude error mapper
+  carries the extra-usage guard — a "billed outside the plan" 400 or a bare 429 stops the account. The
+  Google AI profile is a placeholder answering `account.provider_pending` until PR 3c.
   Switches: `settings.experimental.subscriptionAccounts` (runtime) and the Cargo feature
   `subscription-accounts` (build). The fingerprints themselves are data: `bluey_protocols::fingerprints` holds
   `VERSION` / `CAPTURED_ON`, the comparison rules and the documented capture per provider
