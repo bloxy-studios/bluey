@@ -719,11 +719,19 @@ pub fn build_responses_body(opts: &ResponsesBodyOptions<'_>) -> Value {
     }
     let mut text = json!({ "verbosity": opts.verbosity });
     if let Some(schema) = opts.output_schema {
+        // Strict mode wants every property required (optionals nullable) and
+        // `additionalProperties: false` on every object — zod's output has
+        // neither, and the backend answers such a schema with HTTP 400.
+        let strict = schema.strict.unwrap_or(true);
         text["format"] = json!({
             "type": "json_schema",
             "name": schema.name,
-            "schema": schema.schema,
-            "strict": schema.strict.unwrap_or(true),
+            "schema": if strict {
+                crate::json_schema::strict_variant(&schema.schema)
+            } else {
+                crate::json_schema::strip_meta(&schema.schema)
+            },
+            "strict": strict,
         });
     }
     json!({
@@ -1930,6 +1938,11 @@ mod tests {
         assert_eq!(own["input"][0]["content"][1]["detail"], "high");
         assert_eq!(own["text"]["format"]["type"], "json_schema");
         assert_eq!(own["text"]["format"]["strict"], true);
+        assert_eq!(
+            own["text"]["format"]["schema"],
+            json!({ "type": "object", "required": [], "additionalProperties": false }),
+            "strict mode needs additionalProperties: false on every object"
+        );
         let no_system = build_responses_body(&ResponsesBodyOptions {
             model: "m",
             messages: &[AiMessage::text(AiRole::User, "hi")],
@@ -1943,6 +1956,78 @@ mod tests {
         assert_eq!(
             no_system["instructions"], DEFAULT_INSTRUCTIONS,
             "never empty"
+        );
+    }
+
+    #[test]
+    fn a_zod_schema_with_optional_fields_is_sent_in_its_strict_form() {
+        // What `outputSchemaFor("answer")` emits: optionals missing from `required`,
+        // a top-level `$schema` — the shape the Responses API rejects with HTTP 400.
+        let zod = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "responseType": { "type": "string", "const": "answer" },
+                "title": { "type": "string" },
+                "content": { "type": "string" },
+                "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            },
+            "required": ["responseType", "content"],
+            "additionalProperties": false
+        });
+        let strict = build_responses_body(&ResponsesBodyOptions {
+            model: "gpt-6-astra",
+            messages: &[AiMessage::text(AiRole::User, "hi")],
+            instructions: InstructionsPolicy::Own,
+            effort: "low",
+            verbosity: "low",
+            prompt_cache_key: "k",
+            output_schema: Some(&JsonSchemaSpec {
+                name: "bluey_answer".into(),
+                schema: zod.clone(),
+                strict: Some(true),
+            }),
+            image_detail: "auto",
+        });
+        let format = &strict["text"]["format"];
+        assert_eq!(format["name"], "bluey_answer");
+        assert!(format["schema"].get("$schema").is_none());
+        assert_eq!(
+            format["schema"]["required"],
+            json!(["confidence", "content", "responseType", "title"]),
+            "every property (serde_json keeps keys sorted)"
+        );
+        assert_eq!(
+            format["schema"]["properties"]["title"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(
+            format["schema"]["properties"]["confidence"]["type"],
+            json!(["number", "null"])
+        );
+        assert_eq!(format["schema"]["properties"]["confidence"]["maximum"], 1);
+
+        let lenient = build_responses_body(&ResponsesBodyOptions {
+            model: "gpt-6-astra",
+            messages: &[AiMessage::text(AiRole::User, "hi")],
+            instructions: InstructionsPolicy::Own,
+            effort: "low",
+            verbosity: "low",
+            prompt_cache_key: "k",
+            output_schema: Some(&JsonSchemaSpec {
+                name: "bluey_answer".into(),
+                schema: zod,
+                strict: Some(false),
+            }),
+            image_detail: "auto",
+        });
+        let format = &lenient["text"]["format"];
+        assert_eq!(format["strict"], false);
+        assert!(format["schema"].get("$schema").is_none());
+        assert_eq!(
+            format["schema"]["required"],
+            json!(["responseType", "content"]),
+            "non-strict keeps the caller's optionals"
         );
     }
 

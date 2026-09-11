@@ -226,8 +226,12 @@ the §4c.1 first step of PR 3c and settles both.
 **What Bluey sends (PR 3c, `bluey_protocols::antigravity`).** Sign-in: the five-scope authorize URL
 (`access_type=offline`, `prompt=consent`, PKCE), loopback `51121` → any free port; the form-encoded
 exchange and refresh carry the client secret, which is public in Google's app but **not committed** —
-the build supplies it (`BLUEY_ANTIGRAVITY_CLIENT_SECRET`, at compile time or in the environment; without
-it the card explains and the Gemini key keeps working); refresh with `User-Agent: Go-http-client/2.0`.
+the build supplies it: `BLUEY_ANTIGRAVITY_CLIENT_SECRET` in `.env.local` / `.env` (baked in by
+`src-tauri/build.rs` like the Clerk identifiers, so installed builds carry it) or in the build / run
+environment; copy the value from the *OAuth client* row above (CLIProxyAPI's
+`internal/auth/antigravity/constants.go`) on the day. Without it the Google AI card reports
+*Unavailable* with the reason, *Connect* raises `config.antigravity_client_secret` instead of opening
+the browser, and the Gemini key keeps working; refresh with `User-Agent: Go-http-client/2.0`.
 Identity: `userinfo` for the e-mail, `loadCodeAssist` on the prod host (`{"metadata":{"ideType":
 "ANTIGRAVITY"}}`, plus `cloudaicompanionProject` when the user supplied one) for the project and the plan
 label (`paidTier` → `currentTier` → default allowed tier; *Pro* / *Ultra* by name until the ids are

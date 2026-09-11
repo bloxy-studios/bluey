@@ -47,6 +47,15 @@ pub trait ProviderProfile: Send + Sync {
     /// The request fingerprint this build reproduces, once the provider is real.
     fn fingerprint(&self) -> Option<FingerprintInfo>;
 
+    /// Why this *build* cannot connect the provider at all — a compile-time
+    /// gap such as a missing OAuth client secret — when it cannot. `None` =
+    /// ready to sign in. The manager shows the reason on the account card
+    /// while the account is disconnected instead of offering a *Connect* that
+    /// can only fail; `begin_connect` still returns the matching error.
+    fn unavailable_in_this_build(&self) -> Option<String> {
+        None
+    }
+
     /// Open the browser (or start the device / manual flow) and return the
     /// pending sign-in.
     async fn begin_connect(

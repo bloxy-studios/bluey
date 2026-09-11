@@ -84,8 +84,10 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
   and `agy` keep (macOS may ask), never writes it; an expired access token is renewed, which is safe
   because Google refresh tokens do not rotate.
 * **The Antigravity OAuth client secret** is public in Google's shipped app but not committed here:
-  the build supplies it (`BLUEY_ANTIGRAVITY_CLIENT_SECRET`). It is not a user secret, it is never
-  logged, and a build without it simply cannot start a Google sign-in.
+  the build supplies it (`BLUEY_ANTIGRAVITY_CLIENT_SECRET` in `.env.local` / `.env`, baked in by
+  `src-tauri/build.rs` next to the public Clerk identifiers, or set in the environment). It is not a
+  user secret, it is never logged, and a build without it simply cannot start a Google sign-in — the
+  account card says so up front.
 * **The per-install device id** (`accounts:device_id` in the settings table, 64 random hex) identifies
   this install in the shapers' `metadata.user_id`-style fields. It is not a secret, carries no user
   data and never leaves together with a token.

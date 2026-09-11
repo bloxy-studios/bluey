@@ -224,7 +224,8 @@ impl AccountsManager {
     }
 
     /// Every account, in UI order. A build without the feature reports each
-    /// one as unavailable so the UI can say why.
+    /// one as unavailable so the UI can say why; so does a provider this build
+    /// cannot connect ([`Self::present`]).
     pub fn list(&self) -> Vec<ProviderAccount> {
         let mut accounts = self.accounts.read().clone();
         if !Self::build_enabled() {
@@ -236,6 +237,33 @@ impl AccountsManager {
             }
         }
         accounts
+            .into_iter()
+            .map(|account| self.present(account))
+            .collect()
+    }
+
+    /// The account as the WebView sees it. A disconnected account whose
+    /// provider this build cannot connect at all
+    /// (`ProviderProfile::unavailable_in_this_build` — e.g. Google AI without
+    /// the Antigravity client secret) shows as *unavailable* with the reason,
+    /// so the card explains up front instead of a *Connect* that can only fail.
+    /// The stored status stays `Disconnected`; only the view changes.
+    fn present(&self, mut account: ProviderAccount) -> ProviderAccount {
+        if account.status != AccountStatus::Disconnected {
+            return account;
+        }
+        let detail = self
+            .profiles
+            .iter()
+            .find(|profile| profile.provider_id() == account.provider_id)
+            .and_then(|profile| profile.unavailable_in_this_build());
+        if let Some(detail) = detail {
+            account.status = AccountStatus::Unavailable {
+                reason: UnavailableReason::Other,
+                detail: Some(detail),
+            };
+        }
+        account
     }
 
     pub fn status(&self, account_id: &str) -> BlueyResult<ProviderAccount> {
@@ -272,7 +300,8 @@ impl AccountsManager {
         self.catalogs.read().get(account_id).cloned()
     }
 
-    /// Store an account, persist the list and publish `accounts.changed`.
+    /// Store an account, persist the list and publish `accounts.changed` (as
+    /// the WebView should see it — [`Self::present`]).
     async fn set_account(&self, account: ProviderAccount) -> BlueyResult<ProviderAccount> {
         let snapshot = {
             let mut accounts = self.accounts.write();
@@ -284,9 +313,10 @@ impl AccountsManager {
         self.storage
             .run(move |db| SettingsRepository::set_json(db, ACCOUNTS_KEY, &value))
             .await?;
+        let presented = self.present(account);
         self.bus
-            .publish(BlueyEvent::AccountsChanged(account.clone()));
-        Ok(account)
+            .publish(BlueyEvent::AccountsChanged(presented.clone()));
+        Ok(presented)
     }
 
     async fn store_catalog(&self, catalog: ProviderModelCatalog) -> BlueyResult<()> {
@@ -444,7 +474,10 @@ impl AccountsManager {
                 }
                 tracing::info!(account = account_id, "subscription account connected");
                 if let Err(error) = self.refresh_catalog(account_id, true).await {
-                    tracing::debug!(account = account_id, code = %error.code, "catalog fetch deferred");
+                    // The account is connected; without a catalog the next preset
+                    // application refetches and fails the same way, so say so now.
+                    tracing::warn!(account = account_id, code = %error.code, "the account's model catalog could not be fetched");
+                    self.bus.publish(BlueyEvent::AppError(error));
                 }
             }
             Err(error) => {

@@ -141,12 +141,37 @@ export function outputSchemaFor(schemaId: ResponseSchemaId): JsonSchemaSpec {
 
 // ── Tolerant parsing ────────────────────────────────────────────────────────
 
+/**
+ * Providers in strict structured-output mode (ChatGPT / Codex, Foundry,
+ * OpenAI-compatible) are sent every optional field as a required *nullable*
+ * one (`bluey_protocols::json_schema`), so `null` here means "absent".
+ */
+const undefinedIfNull = <T>(value: T | null | undefined): T | undefined => value ?? undefined;
+
 const tolerantSection = z.object({
-  title: z.string().default(""),
-  content: z.string().default(""),
-  kind: sectionKind.optional(),
-  language: z.string().optional(),
-  collapsed: z.boolean().optional(),
+  title: z
+    .string()
+    .nullish()
+    .transform((v) => v ?? ""),
+  content: z
+    .string()
+    .nullish()
+    .transform((v) => v ?? ""),
+  kind: sectionKind.nullish().transform(undefinedIfNull),
+  language: z.string().nullish().transform(undefinedIfNull),
+  collapsed: z.boolean().nullish().transform(undefinedIfNull),
+});
+
+const tolerantCodeBlock = z.object({
+  language: z.string(),
+  code: z.string(),
+  filename: z.string().nullish().transform(undefinedIfNull),
+});
+
+const tolerantCitation = z.object({
+  title: z.string(),
+  url: z.string(),
+  snippet: z.string().nullish().transform(undefinedIfNull),
 });
 
 const RESPONSE_TYPES: readonly ResponseType[] = [
@@ -159,14 +184,14 @@ const RESPONSE_TYPES: readonly ResponseType[] = [
 ];
 
 const tolerantOutput = z.object({
-  responseType: z.string().optional(),
-  title: z.string().optional(),
-  content: z.string().optional(),
-  sections: z.array(z.unknown()).optional(),
+  responseType: z.string().nullish().transform(undefinedIfNull),
+  title: z.string().nullish().transform(undefinedIfNull),
+  content: z.string().nullish().transform(undefinedIfNull),
+  sections: z.array(z.unknown()).nullish().transform(undefinedIfNull),
   code: z.unknown().optional(),
-  diagram: z.string().optional(),
-  confidence: z.number().optional(),
-  citations: z.array(z.unknown()).optional(),
+  diagram: z.string().nullish().transform(undefinedIfNull),
+  confidence: z.number().nullish().transform(undefinedIfNull),
+  citations: z.array(z.unknown()).nullish().transform(undefinedIfNull),
 });
 
 /** Strip a wrapping markdown code fence (```json ... ```), if present. */
@@ -237,7 +262,7 @@ function coerceSections(raw: unknown[] | undefined): StructuredModelOutput["sect
 }
 
 function coerceCode(raw: unknown): StructuredModelOutput["code"] {
-  const parsed = codeBlockSchema.safeParse(raw);
+  const parsed = tolerantCodeBlock.safeParse(raw);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -245,7 +270,7 @@ function coerceCitations(raw: unknown[] | undefined): StructuredModelOutput["cit
   if (!raw) return undefined;
   const citations: NonNullable<StructuredModelOutput["citations"]> = [];
   for (const entry of raw) {
-    const parsed = citationSchema.safeParse(entry);
+    const parsed = tolerantCitation.safeParse(entry);
     if (parsed.success) citations.push(parsed.data);
   }
   return citations.length > 0 ? citations : undefined;

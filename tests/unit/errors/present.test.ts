@@ -75,6 +75,39 @@ describe("describeError", () => {
     expect(shortcut.message).toBe("`Q` is not a valid shortcut");
   });
 
+  it("keeps the provider's own reason for a rejected request", () => {
+    // Rust quotes the provider ("ChatGPT rejected the request: Invalid schema …"); the generic
+    // copy would hide the one sentence that explains what to fix.
+    const quoted = describeError(
+      error({
+        kind: "ai",
+        code: "ai.invalid_request",
+        message: "the Gemini API rejected the request (HTTP 400) — check the model id and request options",
+      }),
+    );
+    expect(quoted.title).toBe("Request rejected");
+    expect(quoted.message).toBe("The Gemini API rejected the request (HTTP 400) — check the model id and request options");
+
+    const bare = describeError(error({ kind: "ai", code: "ai.invalid_request", message: "  " }));
+    expect(bare.message).toContain("Settings → AI");
+  });
+
+  it("explains a build without the Antigravity client secret and offers the API key path", () => {
+    const missing = presentError(
+      error({
+        kind: "configuration",
+        code: "config.antigravity_client_secret",
+        message: "this build of Bluey carries no Antigravity OAuth client secret — …",
+        recovery: { type: "use_api_key" },
+      }),
+    );
+    expect(missing.title).toBe("Google sign-in isn't set up in this build");
+    expect(missing.message).toContain("BLUEY_ANTIGRAVITY_CLIENT_SECRET");
+    expect(missing.message).toContain(".env.local");
+    expect(missing.message).toContain("Gemini API key");
+    expect(missing.actionLabel).toBe("Use API key instead");
+  });
+
   it("covers the remaining provider codes and the informational STT fallback", () => {
     expect(describeError(error({ kind: "configuration", code: "config.unknown_provider" })).title).toBe("Provider not found");
     expect(describeError(error({ kind: "configuration", code: "config.no_preset" })).title).toBe("No recommended models");

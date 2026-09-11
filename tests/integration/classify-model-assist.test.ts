@@ -71,6 +71,20 @@ describe("classify with fast-model refinement", () => {
     expect(userText).toContain(MID_CONFIDENCE_SEGMENT.text);
   });
 
+  it("treats null refinement fields from strict-mode providers as absent", async () => {
+    fake.setAIScript(refinementScript('{"type":"technical_question","requiresResponse":null,"confidence":null}'));
+    const engine = createResponseEngine();
+    const event = await engine.classify({
+      segment: MID_CONFIDENCE_SEGMENT,
+      recent: [],
+      mode: interviewMode,
+      settings: settingsWithFastModel,
+    });
+    expect(event).not.toBeNull();
+    expect(event!.type).toBe("technical_question");
+    expect(event!.confidence).toBeCloseTo(0.58, 5); // heuristic value kept
+  });
+
   it("drops the event when the model confidently says none", async () => {
     fake.setAIScript(refinementScript('{"type":"none","confidence":0.9}'));
     const engine = createResponseEngine();

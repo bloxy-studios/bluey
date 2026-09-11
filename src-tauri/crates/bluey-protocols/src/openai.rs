@@ -70,14 +70,22 @@ pub fn build_chat_body(opts: &ChatBodyOptions<'_>) -> Value {
         obj.insert("temperature".into(), json!(t));
     }
     if let Some(spec) = opts.output_schema {
+        // Strict structured outputs reject a schema whose objects leave a property out of
+        // `required` or lack `additionalProperties: false` (HTTP 400) — zod's output does
+        // both, so send the strict-mode variant (see `crate::json_schema`).
+        let strict = spec.strict.unwrap_or(true);
         obj.insert(
             "response_format".into(),
             json!({
                 "type": "json_schema",
                 "json_schema": {
                     "name": spec.name,
-                    "strict": spec.strict.unwrap_or(true),
-                    "schema": spec.schema,
+                    "strict": strict,
+                    "schema": if strict {
+                        crate::json_schema::strict_variant(&spec.schema)
+                    } else {
+                        crate::json_schema::strip_meta(&spec.schema)
+                    },
                 }
             }),
         );
@@ -266,7 +274,12 @@ mod tests {
         ];
         let spec = JsonSchemaSpec {
             name: "answer".into(),
-            schema: serde_json::json!({"type":"object"}),
+            schema: serde_json::json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": { "content": { "type": "string" }, "title": { "type": "string" } },
+                "required": ["content"]
+            }),
             strict: None,
         };
         let body = build_chat_body(&ChatBodyOptions {
@@ -287,6 +300,15 @@ mod tests {
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["name"], "answer");
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+        // The strict-mode variant of the schema goes on the wire (`crate::json_schema`).
+        let schema = &body["response_format"]["json_schema"]["schema"];
+        assert!(schema.get("$schema").is_none());
+        assert_eq!(schema["required"], serde_json::json!(["content", "title"]));
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["properties"]["title"]["type"],
+            serde_json::json!(["string", "null"])
+        );
     }
 
     #[test]

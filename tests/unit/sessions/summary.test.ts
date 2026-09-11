@@ -96,6 +96,17 @@ describe("generateSessionSummary", () => {
     expect(summary.decisions).toEqual([]);
   });
 
+  it("reads null fields from strict-mode providers as empty", async () => {
+    const { api } = apiReturning(
+      JSON.stringify({ overview: "Short one.", topics: null, questions: null, answers: null, decisions: ["Ship"], actionItems: null, openItems: null, improvements: null, sections: null }),
+    );
+    const summary = await generateSessionSummary(summarizeInput(), { api });
+    expect(summary.overview).toBe("Short one.");
+    expect(summary.topics).toEqual([]);
+    expect(summary.decisions).toEqual(["Ship"]);
+    expect(summary.sections).toBeUndefined();
+  });
+
   it("asks for a study guide in lecture mode", async () => {
     const { api, requests } = apiReturning(summaryJson);
     await generateSessionSummary(
