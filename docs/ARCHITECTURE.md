@@ -62,7 +62,9 @@ src-tauri/                 Rust Tauri v2 application (macOS)
   crates/bluey-storage/    SQLite (rusqlite): migrations, repositories, FTS5 search, documents (parse/chunk/index/retrieve), retention
   crates/bluey-protocols/  pure wire codecs (tested on any host): SSE parser, Azure/OpenAI/Anthropic/Exa/Firecrawl request+response
                            models, realtime transcription messages, sidecar JSON-Lines envelopes + helper/agent mappers,
-                           panel geometry, Clerk Frontend-API host derivation
+                           panel geometry, Clerk Frontend-API host derivation, OAuth primitives (PKCE, URLs, callbacks)
+  crates/bluey-oauth/      platform-independent OAuth runtime (host-tested): one-shot loopback listener, device-code
+                           polling, token sets with single-flight refresh — used by the Clerk sign-in and the provider accounts
   Info.plist               usage strings (microphone, speech, accessibility, screen capture) + LSUIElement, merged by the bundler
   src/                     app crate: commands/, state/, ai/ (providers, streaming, cancellation), sidecar/ (helper client),
                            agent/ (research sidecar client), research/ (Exa, Firecrawl), transcription/ (cloud realtime),

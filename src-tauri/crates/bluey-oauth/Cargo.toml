@@ -1,0 +1,21 @@
+[package]
+name = "bluey-oauth"
+version = "0.1.0"
+description = "Provider-agnostic OAuth runtime for Bluey: loopback callback listener, device-code polling, token sets with single-flight refresh"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bluey-protocols = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tokio-util = { workspace = true }
+rand = "0.9"
+
+[dev-dependencies]
+pretty_assertions = "1"
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "test-util"] }

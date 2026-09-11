@@ -5,7 +5,9 @@
    (shortcut, HUD button, menu bar) and are always visible (HUD pill, menu bar item).
 2. **Secrets never reach the renderer.** API keys and the sign-in tokens are stored in the
    macOS Keychain by the Rust process (`keyring`). The WebView can only `set`, `has`, `delete`
-   provider keys; it never sees an auth token at all.
+   the API keys listed in `SECRET_KEYS` (`src/lib/tauri/commands.ts`: provider, Exa, Firecrawl
+   and agent keys); the `secrets_*` commands reject every other key (`auth:*`, `account:*`)
+   before the store is touched, and the WebView never sees a token at all.
 3. **Minimal retention by default.** Raw audio is never persisted; screenshots are off by
    default; transcripts and session history can be disabled; deletion really deletes.
 4. **Model output is untrusted data.** It is rendered as text/markdown, never executed, and the
@@ -46,9 +48,11 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
   written only by `AccountsManager`, and never reach the WebView, the logs, SQLite or a child
   process. The WebView sees `ProviderAccount` — status, plan, e-mail, project id — and nothing
   else. A test asserts that the research sidecar's `job_env` never contains OAuth material.
-* **The WebView's secret allow-list narrows, it does not widen.** `secrets_set` / `secrets_delete`
-  accept only `provider:<id>:api_key`; `auth:*` and `account:*` are rejected at the command layer
-  (`SecretsStore::validate_key` stays as the storage-level allow-list).
+* **The WebView's secret allow-list narrows, it does not widen.** `secrets_set` / `secrets_has` /
+  `secrets_delete` accept only the `SECRET_KEYS` of `commands.ts` — `provider:<id>:api_key` and
+  the research / agent API keys; `auth:*` and `account:*` are rejected at the command layer
+  (`secrets::validate_webview_key`), and `SecretsStore::validate_key` stays as the storage-level
+  allow-list.
 * **Redaction grows with the tokens**: `chatgpt-account-id`, `sk-ant-oat…`, `sk-ant-ort…`,
   `ya29.…` and `1//…` join the log patterns above.
 * **Loopback listeners** bind `127.0.0.1` only, accept a single request of ≤ 8 KB with a 5 s read
@@ -64,7 +68,9 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
 * **One consent dialog per provider, once**, before the browser opens: what is sent, whose plan
   limits are used, that the integration is unofficial and may stop working, and what Bluey does
   when it does.
-* `data_reset_all` deletes `account:*` entries too and collects errors instead of aborting.
+* `data_reset_all` runs every step even when one fails and reports the failures together
+  (`reset_incomplete`, with the steps in `details`); it deletes `account:*` entries too once they
+  exist.
 
 ## Fast path and prefetch (ADR 0010)
 
@@ -83,8 +89,9 @@ follows the *store transcripts / screenshots* settings exactly as before.
   gets `shell:allow-execute`; sidecars are spawned from Rust only.
 * CSP restricts scripts to the bundle and connections to Tauri IPC only; nothing in the WebView
   talks to Clerk or to a provider — sign-in runs in the system browser and Rust completes it
-  (PKCE, `state`, `nonce`, ID-token checks; the loopback listener binds `127.0.0.1` for one
-  request and unrelated `bluey://` links are ignored).
+  (PKCE, `state`, `nonce`, ID-token checks; the `bluey-oauth` loopback listener binds
+  `127.0.0.1` only, for one request of at most 8 KB within 5 s, and unrelated `bluey://` links
+  are ignored).
 
 ## Agent security (research sidecar: Gemini function calling or Claude Agent SDK)
 * `tools: []` removes all built-in tools (no Bash/Read/Write/WebFetch); the only tools are the

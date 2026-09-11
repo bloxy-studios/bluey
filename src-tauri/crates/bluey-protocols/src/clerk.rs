@@ -147,14 +147,23 @@ mod tests {
 //
 // Bluey signs users in through the system browser (ADR 0008): it is a *public*
 // OAuth client of the Clerk instance (PKCE, no client secret). Everything here
-// is pure — URLs, PKCE, redirect parsing, token/ID-token/userinfo decoding —
-// so it can be unit-tested; the app crate does the I/O.
+// is pure — URLs, redirect parsing, ID-token/userinfo decoding — so it can be
+// unit-tested; the app crate does the I/O. The provider-agnostic pieces (PKCE,
+// the authorization-URL builder, token bodies and responses, JWT payload
+// decoding, the loopback listener's HTTP bits) live in [`crate::oauth`] and
+// are re-exported here under their historical names.
 
 use bluey_core::types::AuthUser;
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use url::Url;
+
+use crate::oauth;
+pub use crate::oauth::{
+    base64url, http_request_target, loopback_html, parse_oauth_error, parse_token_response,
+    pkce_pair, token_exchange_form, token_refresh_form, token_revoke_form, CallbackOutcome,
+    OAuthErrorBody, TokenResponse,
+};
 
 /// Scopes requested at sign-in: an ID token (`openid`), the user card
 /// (`profile`, `email`) and a refresh token (`offline_access`) so the session
@@ -191,19 +200,6 @@ pub fn revoke_endpoint(issuer: &str) -> String {
     oauth_endpoint(issuer, "revoke")
 }
 
-/// base64url without padding (RFC 4648 §5), as PKCE and JWTs use it.
-pub fn base64url(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-/// PKCE (RFC 7636): 32 random bytes → a 43-character `code_verifier` and its
-/// `S256` `code_challenge`.
-pub fn pkce_pair(random: &[u8; 32]) -> (String, String) {
-    let verifier = base64url(random);
-    let challenge = base64url(&Sha256::digest(verifier.as_bytes()));
-    (verifier, challenge)
-}
-
 /// `http://127.0.0.1:<port>/callback`.
 pub fn loopback_redirect_uri(port: u16) -> String {
     format!("http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}")
@@ -223,36 +219,19 @@ pub struct AuthorizeRequest<'a> {
 /// The `/oauth/authorize` URL to open in the browser (authorization code +
 /// PKCE `S256`, OIDC `nonce`).
 pub fn authorize_url(request: &AuthorizeRequest<'_>) -> Result<String, String> {
-    let mut url = Url::parse(&authorize_endpoint(request.issuer)).map_err(|e| e.to_string())?;
-    if url.scheme() != "https" {
+    let endpoint = authorize_endpoint(request.issuer);
+    if !endpoint.starts_with("https://") {
         return Err("the issuer must be an https URL".to_string());
     }
-    url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", request.client_id)
-        .append_pair("redirect_uri", request.redirect_uri)
-        .append_pair("scope", OAUTH_SCOPES)
-        .append_pair("state", request.state)
-        .append_pair("code_challenge", request.code_challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("nonce", request.nonce);
-    Ok(url.to_string())
-}
-
-/// What a redirect back into Bluey carried.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallbackOutcome {
-    Code {
-        code: String,
-        state: String,
-    },
-    /// The authorization server refused (`error=access_denied`, …) or the
-    /// redirect carried no code.
-    Denied {
-        error: String,
-        description: Option<String>,
-        state: Option<String>,
-    },
+    oauth::authorize_url(&oauth::AuthorizeUrl {
+        endpoint: &endpoint,
+        client_id: request.client_id,
+        redirect_uri: request.redirect_uri,
+        scope: OAUTH_SCOPES,
+        state: request.state,
+        code_challenge: request.code_challenge,
+        extra: &[("nonce", request.nonce)],
+    })
 }
 
 /// Parse a redirect URL — the `bluey://auth/callback` deep link or the
@@ -265,108 +244,7 @@ pub fn parse_callback(url: &str) -> Option<CallbackOutcome> {
         "http" => parsed.host_str() == Some("127.0.0.1") && parsed.path() == LOOPBACK_CALLBACK_PATH,
         _ => false,
     };
-    if !ours {
-        return None;
-    }
-    let mut code = None;
-    let mut state = None;
-    let mut error = None;
-    let mut description = None;
-    for (key, value) in parsed.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "state" => state = Some(value.into_owned()),
-            "error" => error = Some(value.into_owned()),
-            "error_description" => description = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-    if let Some(error) = error.filter(|e| !e.is_empty()) {
-        return Some(CallbackOutcome::Denied {
-            error,
-            description,
-            state,
-        });
-    }
-    match (code, state) {
-        (Some(code), Some(state)) if !code.is_empty() && !state.is_empty() => {
-            Some(CallbackOutcome::Code { code, state })
-        }
-        (_, state) => Some(CallbackOutcome::Denied {
-            error: "invalid_callback".to_string(),
-            description: Some("the redirect carried no authorization code".to_string()),
-            state,
-        }),
-    }
-}
-
-/// Form body of the authorization-code exchange (public client: no secret,
-/// the PKCE verifier proves we started the flow).
-pub fn token_exchange_form(
-    client_id: &str,
-    code: &str,
-    redirect_uri: &str,
-    code_verifier: &str,
-) -> Vec<(&'static str, String)> {
-    vec![
-        ("grant_type", "authorization_code".to_string()),
-        ("code", code.to_string()),
-        ("redirect_uri", redirect_uri.to_string()),
-        ("client_id", client_id.to_string()),
-        ("code_verifier", code_verifier.to_string()),
-    ]
-}
-
-/// Form body of a refresh-token grant.
-pub fn token_refresh_form(client_id: &str, refresh_token: &str) -> Vec<(&'static str, String)> {
-    vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_token.to_string()),
-        ("client_id", client_id.to_string()),
-    ]
-}
-
-/// Form body of a token revocation (RFC 7009).
-pub fn token_revoke_form(client_id: &str, token: &str) -> Vec<(&'static str, String)> {
-    vec![
-        ("token", token.to_string()),
-        ("client_id", client_id.to_string()),
-    ]
-}
-
-/// A successful `/oauth/token` response.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct TokenResponse {
-    pub access_token: String,
-    #[serde(default)]
-    pub token_type: Option<String>,
-    /// Seconds until the access token expires.
-    #[serde(default)]
-    pub expires_in: Option<u64>,
-    #[serde(default)]
-    pub refresh_token: Option<String>,
-    #[serde(default)]
-    pub id_token: Option<String>,
-    #[serde(default)]
-    pub scope: Option<String>,
-}
-
-pub fn parse_token_response(json: &str) -> Result<TokenResponse, serde_json::Error> {
-    serde_json::from_str(json)
-}
-
-/// An OAuth error body (`{"error": "invalid_grant", "error_description": …}`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct OAuthErrorBody {
-    pub error: String,
-    #[serde(default)]
-    pub error_description: Option<String>,
-}
-
-pub fn parse_oauth_error(json: &str) -> Option<OAuthErrorBody> {
-    serde_json::from_str::<OAuthErrorBody>(json)
-        .ok()
-        .filter(|body| !body.error.is_empty())
+    ours.then(|| oauth::callback_outcome(&parsed))
 }
 
 /// The claims Bluey reads from an ID token.
@@ -391,17 +269,7 @@ pub struct IdTokenClaims {
 /// rely on TLS; issuer, audience, nonce and expiry are still validated by
 /// [`validate_id_token`].
 pub fn decode_id_token_claims(id_token: &str) -> Option<IdTokenClaims> {
-    let mut parts = id_token.trim().split('.');
-    let _header = parts.next()?;
-    let payload = parts.next()?;
-    parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload.trim_end_matches('='))
-        .ok()?;
-    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let value = oauth::decode_jwt_payload(id_token)?;
     let text = |key: &str| value.get(key).and_then(Value::as_str).map(String::from);
     let aud = match value.get("aud") {
         Some(Value::String(one)) => vec![one.clone()],
@@ -529,41 +397,6 @@ pub fn account_portal_url(fapi_host: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// The request-target of an HTTP/1.x `GET` request head
-/// (`GET /callback?code=… HTTP/1.1` → `/callback?code=…`).
-pub fn http_request_target(head: &str) -> Option<&str> {
-    let line = head.lines().next()?;
-    let mut parts = line.split_whitespace();
-    if parts.next()? != "GET" {
-        return None;
-    }
-    let target = parts.next()?;
-    target.starts_with('/').then_some(target)
-}
-
-/// The page the loopback listener shows after the redirect (no tokens, no
-/// scripts, no external resources).
-pub fn loopback_html(success: bool) -> String {
-    let (title, body) = if success {
-        (
-            "Signed in to Bluey",
-            "You're signed in. You can close this tab and go back to Bluey.",
-        )
-    } else {
-        (
-            "Sign-in didn't complete",
-            "Bluey could not finish signing you in. Go back to Bluey and try again.",
-        )
-    };
-    format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title>\
-<style>body{{font:15px -apple-system,system-ui,sans-serif;background:#161616;color:#f2f2f2;\
-display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}\
-main{{text-align:center;max-width:420px;padding:32px}}h1{{font-size:20px;margin:0 0 8px}}\
-p{{color:#9a9a9a;margin:0}}</style></head><body><main><h1>{title}</h1><p>{body}</p></main></body></html>"
-    )
 }
 
 #[cfg(test)]

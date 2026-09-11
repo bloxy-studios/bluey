@@ -19,7 +19,11 @@
 //!   AX snapshots, transcript events incl. speaker labelling).
 //! * [`agent`]     — research-agent sidecar event mapping to `DeepResearchEvent`.
 //! * [`panel`]     — pure panel geometry (clamping, step moves, per-display memory).
-//! * [`clerk`]     — Clerk Frontend-API host derivation from a publishable key.
+//! * [`clerk`]     — Clerk Frontend-API host derivation from a publishable key and the pure
+//!   half of the Clerk browser sign-in (redirect styles, OIDC `nonce`, ID-token checks).
+//! * [`oauth`]     — provider-agnostic OAuth 2.0 client primitives: PKCE, authorization URLs,
+//!   redirect / manual-code parsing, token bodies and responses, JWT payload decoding, the
+//!   loopback listener's HTTP bits (the runtime half is the `bluey-oauth` crate).
 //!
 //! No Tauri, tokio, or network dependencies live here.
 
@@ -33,6 +37,7 @@ pub mod gemini;
 pub mod helper;
 pub mod hud_menu;
 pub mod jsonl;
+pub mod oauth;
 pub mod openai;
 pub mod panel;
 pub mod realtime;
