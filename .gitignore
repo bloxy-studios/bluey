@@ -34,6 +34,8 @@ sidecars/**/dist
 coverage
 research/
 src-tauri/target-darwin
+# Fingerprint captures of the official clients (scrubbed, but local by design; goldens are committed)
+tests/fixtures/fingerprints/*/captures/
 
 # Rust module directories that collide with generic ignore patterns
 !src-tauri/src/research/

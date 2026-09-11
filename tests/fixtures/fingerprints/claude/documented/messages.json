@@ -1,0 +1,222 @@
+{
+  "schema": 1,
+  "provider": "claude",
+  "source": "documented",
+  "capturedAt": "2026-09-11T00:00:00Z",
+  "fingerprint": {
+    "version": "claude_code/2.1.258",
+    "capturedOn": "2026-09-11"
+  },
+  "client": "claude-cli/2.1.258",
+  "request": {
+    "method": "POST",
+    "url": "https://api.anthropic.com/v1/messages?beta=true",
+    "headers": [
+      {
+        "name": "accept",
+        "value": "application/json"
+      },
+      {
+        "name": "accept-encoding",
+        "value": "gzip, deflate, br, zstd"
+      },
+      {
+        "name": "anthropic-dangerous-direct-browser-access",
+        "value": "true"
+      },
+      {
+        "name": "anthropic-version",
+        "value": "2023-06-01"
+      },
+      {
+        "name": "authorization",
+        "value": "Bearer <ACCESS_TOKEN>"
+      },
+      {
+        "name": "host",
+        "value": "api.anthropic.com"
+      },
+      {
+        "name": "user-agent",
+        "value": "claude-cli/2.1.258 (external, cli)"
+      },
+      {
+        "name": "x-app",
+        "value": "cli"
+      },
+      {
+        "name": "x-claude-code-session-id",
+        "value": "<UUID>"
+      },
+      {
+        "name": "x-client-request-id",
+        "value": "<UUID>"
+      },
+      {
+        "name": "x-stainless-arch",
+        "value": "arm64"
+      },
+      {
+        "name": "x-stainless-lang",
+        "value": "js"
+      },
+      {
+        "name": "x-stainless-os",
+        "value": "MacOS"
+      },
+      {
+        "name": "x-stainless-package-version",
+        "value": "0.112.1"
+      },
+      {
+        "name": "x-stainless-retry-count",
+        "value": "0"
+      },
+      {
+        "name": "x-stainless-runtime",
+        "value": "node"
+      },
+      {
+        "name": "x-stainless-runtime-version",
+        "value": "v26.3.0"
+      },
+      {
+        "name": "x-stainless-timeout",
+        "value": "600"
+      },
+      {
+        "name": "anthropic-beta",
+        "value": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
+      },
+      {
+        "name": "content-type",
+        "value": "application/json"
+      }
+    ],
+    "body": {
+      "kind": "json",
+      "value": {
+        "context_management": {
+          "edits": [
+            {
+              "keep": "all",
+              "type": "clear_thinking_20251015"
+            }
+          ]
+        },
+        "max_tokens": 128000,
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "<TEXT 5>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"<HEX64>\",\"account_uuid\":\"<UUID>\",\"session_id\":\"<UUID>\"}"
+        },
+        "model": "claude-sonnet-5",
+        "output_config": {
+          "effort": "medium"
+        },
+        "stream": true,
+        "system": [
+          {
+            "text": "x-anthropic-billing-header: cc_version=2.1.258.000; cc_entrypoint=cli; cch=00000;",
+            "type": "text"
+          },
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral"
+            },
+            "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+            "type": "text"
+          }
+        ],
+        "thinking": {
+          "display": "summarized",
+          "type": "adaptive"
+        }
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": [
+      {
+        "name": "content-type",
+        "value": "text/event-stream; charset=utf-8"
+      },
+      {
+        "name": "request-id",
+        "value": "<ID>"
+      },
+      {
+        "name": "anthropic-ratelimit-unified-status",
+        "value": "allowed"
+      },
+      {
+        "name": "anthropic-ratelimit-unified-5h-status",
+        "value": "allowed"
+      },
+      {
+        "name": "anthropic-ratelimit-unified-7d-status",
+        "value": "allowed"
+      },
+      {
+        "name": "anthropic-ratelimit-unified-5h-reset",
+        "value": "<UNIX_SECONDS>"
+      },
+      {
+        "name": "anthropic-ratelimit-unified-7d-reset",
+        "value": "<UNIX_SECONDS>"
+      },
+      {
+        "name": "anthropic-ratelimit-unified-5h-utilization",
+        "value": "0.12"
+      },
+      {
+        "name": "anthropic-ratelimit-unified-7d-utilization",
+        "value": "0.34"
+      },
+      {
+        "name": "anthropic-ratelimit-unified-representative-claim",
+        "value": "five_hour"
+      }
+    ],
+    "body": {
+      "kind": "sse",
+      "events": [
+        {
+          "event": "message_start",
+          "data": {
+            "message": {
+              "content": [],
+              "id": "<ID>",
+              "model": "claude-sonnet-5",
+              "role": "assistant",
+              "stop_reason": null,
+              "stop_sequence": null,
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 1
+              }
+            },
+            "type": "message_start"
+          }
+        }
+      ]
+    }
+  },
+  "notes": [
+    "built from docs/PROVIDER_ACCOUNTS.md — placeholders stand for the values the scrubber replaces"
+  ]
+}

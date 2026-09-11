@@ -23,7 +23,12 @@
     "build:helpers": "bash scripts/build-helper.sh && bash scripts/build-agent.sh",
     "ensure:sidecars": "bash scripts/ensure-sidecars.sh",
     "check:rust": "bash scripts/check-rust.sh",
-    "test:rust": "cd src-tauri && cargo test -p bluey-core -p bluey-storage -p bluey-protocols -p bluey-oauth",
+    "test:rust": "cd src-tauri && cargo test -p bluey-core -p bluey-storage -p bluey-protocols -p bluey-oauth -p bluey-fingerprints",
+    "fingerprints:capture": "cargo run -q --manifest-path src-tauri/Cargo.toml -p bluey-fingerprints -- capture",
+    "fingerprints:import-har": "cargo run -q --manifest-path src-tauri/Cargo.toml -p bluey-fingerprints -- import-har",
+    "fingerprints:diff": "cargo run -q --manifest-path src-tauri/Cargo.toml -p bluey-fingerprints -- diff",
+    "fingerprints:bless": "cargo run -q --manifest-path src-tauri/Cargo.toml -p bluey-fingerprints -- bless",
+    "fingerprints:list": "cargo run -q --manifest-path src-tauri/Cargo.toml -p bluey-fingerprints -- list",
     "release": "bash scripts/release.sh"
   },
   "dependencies": {

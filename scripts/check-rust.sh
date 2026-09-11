@@ -15,10 +15,10 @@ cd "$ROOT/src-tauri"
 
 echo "▶ cargo fmt --check"
 cargo fmt --all -- --check
-echo "▶ cargo test (bluey-core, bluey-storage, bluey-protocols, bluey-oauth)"
-cargo test -p bluey-core -p bluey-storage -p bluey-protocols -p bluey-oauth
-echo "▶ cargo clippy (bluey-core, bluey-storage, bluey-protocols, bluey-oauth)"
-cargo clippy -p bluey-core -p bluey-storage -p bluey-protocols -p bluey-oauth --all-targets -- -D warnings
+echo "▶ cargo test (bluey-core, bluey-storage, bluey-protocols, bluey-oauth, bluey-fingerprints)"
+cargo test -p bluey-core -p bluey-storage -p bluey-protocols -p bluey-oauth -p bluey-fingerprints
+echo "▶ cargo clippy (bluey-core, bluey-storage, bluey-protocols, bluey-oauth, bluey-fingerprints)"
+cargo clippy -p bluey-core -p bluey-storage -p bluey-protocols -p bluey-oauth -p bluey-fingerprints --all-targets -- -D warnings
 
 if [[ "${1:-}" == "--darwin" ]]; then
   echo "▶ cargo check --target aarch64-apple-darwin (app crate)"

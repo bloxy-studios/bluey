@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "provider": "claude",
+  "source": "documented",
+  "capturedAt": "2026-09-11T00:00:00Z",
+  "fingerprint": {
+    "version": "claude_code/2.1.258",
+    "capturedOn": "2026-09-11"
+  },
+  "client": "claude-cli/2.1.258",
+  "request": {
+    "method": "GET",
+    "url": "https://api.anthropic.com/v1/models?limit=100",
+    "headers": [
+      {
+        "name": "accept",
+        "value": "application/json"
+      },
+      {
+        "name": "accept-encoding",
+        "value": "gzip, deflate, br, zstd"
+      },
+      {
+        "name": "anthropic-dangerous-direct-browser-access",
+        "value": "true"
+      },
+      {
+        "name": "anthropic-version",
+        "value": "2023-06-01"
+      },
+      {
+        "name": "authorization",
+        "value": "Bearer <ACCESS_TOKEN>"
+      },
+      {
+        "name": "host",
+        "value": "api.anthropic.com"
+      },
+      {
+        "name": "user-agent",
+        "value": "claude-cli/2.1.258 (external, cli)"
+      },
+      {
+        "name": "x-app",
+        "value": "cli"
+      },
+      {
+        "name": "x-claude-code-session-id",
+        "value": "<UUID>"
+      },
+      {
+        "name": "x-client-request-id",
+        "value": "<UUID>"
+      },
+      {
+        "name": "x-stainless-arch",
+        "value": "arm64"
+      },
+      {
+        "name": "x-stainless-lang",
+        "value": "js"
+      },
+      {
+        "name": "x-stainless-os",
+        "value": "MacOS"
+      },
+      {
+        "name": "x-stainless-package-version",
+        "value": "0.112.1"
+      },
+      {
+        "name": "x-stainless-retry-count",
+        "value": "0"
+      },
+      {
+        "name": "x-stainless-runtime",
+        "value": "node"
+      },
+      {
+        "name": "x-stainless-runtime-version",
+        "value": "v26.3.0"
+      },
+      {
+        "name": "x-stainless-timeout",
+        "value": "600"
+      },
+      {
+        "name": "anthropic-beta",
+        "value": "oauth-2025-04-20"
+      }
+    ],
+    "body": {
+      "kind": "empty"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": [
+      {
+        "name": "content-type",
+        "value": "application/json"
+      },
+      {
+        "name": "request-id",
+        "value": "<ID>"
+      }
+    ],
+    "body": {
+      "kind": "json",
+      "value": {
+        "data": [
+          {
+            "created_at": "<DATE>",
+            "display_name": "Claude Sonnet 5",
+            "id": "claude-sonnet-5",
+            "type": "model"
+          }
+        ],
+        "first_id": "claude-sonnet-5",
+        "has_more": false,
+        "last_id": "claude-sonnet-5"
+      }
+    }
+  },
+  "notes": [
+    "built from docs/PROVIDER_ACCOUNTS.md — placeholders stand for the values the scrubber replaces"
+  ]
+}

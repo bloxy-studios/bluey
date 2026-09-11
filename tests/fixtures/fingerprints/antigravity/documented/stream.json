@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "provider": "antigravity",
+  "source": "documented",
+  "capturedAt": "2026-09-11T00:00:00Z",
+  "fingerprint": {
+    "version": "antigravity/2.12.2",
+    "capturedOn": "2026-09-11"
+  },
+  "client": "antigravity/hub/2.12.2",
+  "request": {
+    "method": "POST",
+    "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+    "headers": [
+      {
+        "name": "authorization",
+        "value": "Bearer <ACCESS_TOKEN>"
+      },
+      {
+        "name": "content-type",
+        "value": "application/json"
+      },
+      {
+        "name": "host",
+        "value": "daily-cloudcode-pa.googleapis.com"
+      },
+      {
+        "name": "user-agent",
+        "value": "antigravity/hub/2.12.2 darwin/arm64"
+      }
+    ],
+    "body": {
+      "kind": "json",
+      "value": {
+        "model": "gemini-3.8-flash-high",
+        "project": "<PROJECT_ID>",
+        "request": {
+          "contents": [
+            {
+              "parts": [
+                {
+                  "text": "<TEXT 5>"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "generationConfig": {
+            "thinkingConfig": {
+              "includeThoughts": true
+            }
+          },
+          "sessionId": "<SESSION_ID>"
+        },
+        "requestId": "agent-<UUID>",
+        "requestType": "agent",
+        "userAgent": "antigravity"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": [
+      {
+        "name": "content-type",
+        "value": "text/event-stream"
+      }
+    ],
+    "body": {
+      "kind": "sse",
+      "events": [
+        {
+          "data": {
+            "response": {
+              "candidates": [
+                {
+                  "content": {
+                    "parts": [
+                      {
+                        "text": "<TEXT 5>"
+                      }
+                    ],
+                    "role": "model"
+                  }
+                }
+              ],
+              "modelVersion": "gemini-3.8-flash-high"
+            },
+            "traceId": "<HEX32>"
+          }
+        }
+      ]
+    }
+  },
+  "notes": [
+    "built from docs/PROVIDER_ACCOUNTS.md — placeholders stand for the values the scrubber replaces"
+  ]
+}

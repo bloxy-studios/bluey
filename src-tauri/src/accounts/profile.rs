@@ -16,6 +16,7 @@ use bluey_core::types::{
 };
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_oauth::TokenSet;
+use bluey_protocols::fingerprints;
 use bluey_protocols::request_shaper::FingerprintInfo;
 use tokio_util::sync::CancellationToken;
 
@@ -119,7 +120,14 @@ impl ProviderProfile for PendingProfile {
     }
 
     fn fingerprint(&self) -> Option<FingerprintInfo> {
-        None
+        // The documented fingerprint (`bluey_protocols::fingerprints`) that PR 3a–3c reproduce;
+        // the Accounts card shows its version and capture date.
+        Some(match self.kind {
+            AiProviderKind::ChatgptCodex => fingerprints::codex::INFO,
+            AiProviderKind::ClaudeSubscription => fingerprints::claude_code::INFO,
+            AiProviderKind::AntigravityGoogle => fingerprints::antigravity::INFO,
+            _ => return None,
+        })
     }
 
     async fn begin_connect(

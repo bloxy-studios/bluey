@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "provider": "chatgpt",
+  "source": "documented",
+  "capturedAt": "2026-09-11T00:00:00Z",
+  "fingerprint": {
+    "version": "codex/0.154.0",
+    "capturedOn": "2026-09-11"
+  },
+  "client": "codex_cli_rs/0.154.0",
+  "request": {
+    "method": "GET",
+    "url": "https://chatgpt.com/backend-api/codex/models?client_version=0.154.0",
+    "headers": [
+      {
+        "name": "authorization",
+        "value": "Bearer <ACCESS_TOKEN>"
+      },
+      {
+        "name": "chatgpt-account-id",
+        "value": "<ACCOUNT_UUID>"
+      },
+      {
+        "name": "host",
+        "value": "chatgpt.com"
+      },
+      {
+        "name": "originator",
+        "value": "codex_cli_rs"
+      },
+      {
+        "name": "session-id",
+        "value": "<UUID>"
+      },
+      {
+        "name": "thread-id",
+        "value": "<UUID>"
+      },
+      {
+        "name": "user-agent",
+        "value": "codex_cli_rs/0.154.0 (Mac OS 26.0; arm64) <TERMINAL>"
+      },
+      {
+        "name": "version",
+        "value": "0.154.0"
+      },
+      {
+        "name": "x-client-request-id",
+        "value": "<UUID>"
+      },
+      {
+        "name": "accept",
+        "value": "application/json"
+      }
+    ],
+    "body": {
+      "kind": "empty"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": [
+      {
+        "name": "content-type",
+        "value": "application/json"
+      }
+    ],
+    "body": {
+      "kind": "json",
+      "value": {
+        "models": [
+          {
+            "available_in_plans": [
+              "plus",
+              "pro"
+            ],
+            "context_window": 400000,
+            "default_reasoning_level": "medium",
+            "description": "<TEXT 20>",
+            "display_name": "GPT-6 Astra",
+            "input_modalities": [
+              "text",
+              "image"
+            ],
+            "minimal_client_version": "0.150.0",
+            "model_messages": {
+              "instructions_template": "<INSTRUCTIONS_TEMPLATE>"
+            },
+            "priority": 1,
+            "slug": "gpt-6-astra",
+            "supported_in_api": true,
+            "supported_reasoning_levels": [
+              {
+                "description": "<TEXT 20>",
+                "effort": "medium"
+              }
+            ],
+            "visibility": "list"
+          }
+        ]
+      }
+    }
+  },
+  "notes": [
+    "built from docs/PROVIDER_ACCOUNTS.md — placeholders stand for the values the scrubber replaces"
+  ]
+}

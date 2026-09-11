@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "provider": "antigravity",
+  "source": "documented",
+  "capturedAt": "2026-09-11T00:00:00Z",
+  "fingerprint": {
+    "version": "antigravity/2.12.2",
+    "capturedOn": "2026-09-11"
+  },
+  "client": "antigravity/hub/2.12.2",
+  "request": {
+    "method": "POST",
+    "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+    "headers": [
+      {
+        "name": "authorization",
+        "value": "Bearer <ACCESS_TOKEN>"
+      },
+      {
+        "name": "content-type",
+        "value": "application/json"
+      },
+      {
+        "name": "host",
+        "value": "daily-cloudcode-pa.googleapis.com"
+      },
+      {
+        "name": "user-agent",
+        "value": "antigravity/hub/2.12.2 darwin/arm64"
+      }
+    ],
+    "body": {
+      "kind": "json",
+      "value": {
+        "project": "<PROJECT_ID>"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": [
+      {
+        "name": "content-type",
+        "value": "application/json; charset=UTF-8"
+      }
+    ],
+    "body": {
+      "kind": "json",
+      "value": {
+        "models": {
+          "gemini-3.8-flash-high": {
+            "displayName": "Gemini 3.8 Flash",
+            "maxOutputTokens": 65536,
+            "maxTokens": 1048576,
+            "quotaInfo": {
+              "remainingFraction": 0.9,
+              "resetTime": "<DATE>"
+            }
+          }
+        },
+        "webSearchModelIds": []
+      }
+    }
+  },
+  "notes": [
+    "built from docs/PROVIDER_ACCOUNTS.md — placeholders stand for the values the scrubber replaces"
+  ]
+}

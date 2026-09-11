@@ -64,6 +64,14 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
   instead of the plan is a *stop* signal: the request halts, the account flips to
   `Unavailable{fingerprint_drift | extra_usage_billing}`, Bluey falls back to the API-key provider
   and tells the user. A drifted fingerprint is never retried automatically.
+* **Captures are scrubbed before they touch disk.** The fingerprint harness
+  (`bun run fingerprints:capture`, `fingerprints:import-har`) forwards the official client's request
+  — real token included — only to the real upstream, and writes the exchange to a git-ignored
+  `captures/` directory after `bluey_protocols::fingerprints::scrub` has replaced tokens, JWTs,
+  API keys, account / organisation / project ids, e-mails, device and session ids, home
+  directories and the user's own text and images with placeholders (`<ACCESS_TOKEN>`, `<UUID>`,
+  `<EMAIL>`, `<TEXT n>`, `<BASE64 n>`). Only reviewed goldens are committed, and a test scans every
+  committed fixture for secret shapes.
 * **Imports are read-only.** Importing an existing sign-in from Claude Code, Codex CLI or the
   Antigravity app copies tokens into Bluey's own Keychain entry and never writes to `~/.claude`,
   `~/.codex`, Antigravity's data directory or their Keychain items.

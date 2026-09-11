@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "provider": "antigravity",
+  "source": "documented",
+  "capturedAt": "2026-09-11T00:00:00Z",
+  "fingerprint": {
+    "version": "antigravity/2.12.2",
+    "capturedOn": "2026-09-11"
+  },
+  "client": "antigravity/hub/2.12.2",
+  "request": {
+    "method": "POST",
+    "url": "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    "headers": [
+      {
+        "name": "authorization",
+        "value": "Bearer <ACCESS_TOKEN>"
+      },
+      {
+        "name": "content-type",
+        "value": "application/json"
+      },
+      {
+        "name": "host",
+        "value": "cloudcode-pa.googleapis.com"
+      },
+      {
+        "name": "user-agent",
+        "value": "antigravity/hub/2.12.2 darwin/arm64"
+      },
+      {
+        "name": "accept",
+        "value": "*/*"
+      }
+    ],
+    "body": {
+      "kind": "json",
+      "value": {
+        "metadata": {
+          "ideType": "ANTIGRAVITY"
+        }
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": [
+      {
+        "name": "content-type",
+        "value": "application/json; charset=UTF-8"
+      }
+    ],
+    "body": {
+      "kind": "json",
+      "value": {
+        "allowedTiers": [
+          {
+            "id": "<TIER_ID>",
+            "isDefault": true
+          }
+        ],
+        "cloudaicompanionProject": "<PROJECT_ID>",
+        "currentTier": {
+          "id": "<TIER_ID>",
+          "name": "Google AI Pro"
+        }
+      }
+    }
+  },
+  "notes": [
+    "built from docs/PROVIDER_ACCOUNTS.md — placeholders stand for the values the scrubber replaces"
+  ]
+}
