@@ -379,6 +379,28 @@ impl Default for AdvancedSettings {
     }
 }
 
+/// Mirrors `ExperimentalSettings` — switches for features that can be turned
+/// off without a rebuild (ADR 0009: a broken provider must be one toggle away).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentalSettings {
+    /// Show the Accounts section and allow subscription sign-ins. Default on:
+    /// it is the point of the feature for the owner's builds.
+    pub subscription_accounts: bool,
+    /// Provider ids whose consent dialog was accepted (shown once per provider).
+    #[serde(default)]
+    pub accepted_account_consents: Vec<String>,
+}
+
+impl Default for ExperimentalSettings {
+    fn default() -> Self {
+        Self {
+            subscription_accounts: true,
+            accepted_account_consents: Vec::new(),
+        }
+    }
+}
+
 /// Mirrors `Settings`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -392,6 +414,9 @@ pub struct Settings {
     pub privacy: PrivacySettings,
     pub shortcuts: Vec<ShortcutBinding>,
     pub advanced: AdvancedSettings,
+    /// Absent in settings stored before ADR 0009 → defaults.
+    #[serde(default)]
+    pub experimental: ExperimentalSettings,
 }
 
 impl Default for Settings {
@@ -406,6 +431,7 @@ impl Default for Settings {
             privacy: PrivacySettings::default(),
             shortcuts: crate::shortcuts::default_bindings(),
             advanced: AdvancedSettings::default(),
+            experimental: ExperimentalSettings::default(),
         }
     }
 }

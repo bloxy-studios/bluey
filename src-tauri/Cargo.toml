@@ -104,11 +104,14 @@ core-graphics = "0.25"
 accessibility-sys = "0.2"
 
 [features]
-default = ["bundled-sqlite"]
+default = ["bundled-sqlite", "subscription-accounts"]
 # Compile SQLite from source (release builds). Disabled for the Linux-host darwin cross-check.
 bundled-sqlite = ["bluey-storage/bundled-sqlite"]
 # Enable the in-process mock AI provider and dev simulations (also available in debug builds).
 dev-tools = []
+# Subscription accounts (ADR 0009): compile the accounts layer in. Without it every account
+# reports `unavailable` and the sign-in commands refuse.
+subscription-accounts = []
 
 [profile.release]
 codegen-units = 1

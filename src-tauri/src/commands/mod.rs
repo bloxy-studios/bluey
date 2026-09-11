@@ -5,6 +5,7 @@
 //! delegate to the managers in [`crate::state::AppCore`] and map results onto
 //! the typed contract; no business logic lives here.
 
+pub mod accounts;
 pub mod ai;
 pub mod app;
 pub mod audio;

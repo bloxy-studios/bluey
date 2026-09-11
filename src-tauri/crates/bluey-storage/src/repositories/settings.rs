@@ -220,6 +220,7 @@ impl ModelConfigRepository {
                         deployments: opt_from_json(deployments)?,
                         enabled,
                         has_api_key: false,
+                        auth_method: Default::default(),
                     })
                 },
             )
@@ -441,6 +442,7 @@ mod tests {
             )])),
             enabled: true,
             has_api_key: true, // must NOT persist
+            auth_method: Default::default(),
         };
         ModelConfigRepository::upsert(&db, &cfg).unwrap();
         let listed = ModelConfigRepository::list(&db).unwrap();

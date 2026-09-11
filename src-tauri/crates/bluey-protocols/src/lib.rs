@@ -24,6 +24,8 @@
 //! * [`oauth`]     — provider-agnostic OAuth 2.0 client primitives: PKCE, authorization URLs,
 //!   redirect / manual-code parsing, token bodies and responses, JWT payload decoding, the
 //!   loopback listener's HTTP bits (the runtime half is the `bluey-oauth` crate).
+//! * [`request_shaper`] — the `RequestShaper` trait: a subscription provider's request
+//!   fingerprint as data (headers, system blocks, drift detection), applied last by the adapter.
 //!
 //! No Tauri, tokio, or network dependencies live here.
 
@@ -41,6 +43,7 @@ pub mod oauth;
 pub mod openai;
 pub mod panel;
 pub mod realtime;
+pub mod request_shaper;
 pub mod sse;
 pub mod transcript_import;
 pub mod voice_live;

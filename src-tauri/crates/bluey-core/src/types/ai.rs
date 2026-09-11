@@ -46,6 +46,12 @@ pub enum AiProviderKind {
     AzureFoundry,
     Anthropic,
     OpenaiCompatible,
+    /// ChatGPT subscription through the Codex OAuth flow (ADR 0009, reserved id `chatgpt`).
+    ChatgptCodex,
+    /// Claude Pro/Max through claude.ai OAuth in the Claude Code wire format (reserved id `claude`).
+    ClaudeSubscription,
+    /// Google AI Pro/Ultra through Antigravity OAuth on Cloud Code (reserved id `antigravity`).
+    AntigravityGoogle,
     Mock,
 }
 
@@ -63,6 +69,10 @@ pub struct AiProviderConfig {
     pub deployments: Option<std::collections::BTreeMap<String, String>>,
     pub enabled: bool,
     pub has_api_key: bool,
+    /// API key (default) or an OAuth subscription account (ADR 0009). Stored
+    /// settings without the field are API-key providers.
+    #[serde(default)]
+    pub auth_method: super::accounts::ProviderAuthMethod,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

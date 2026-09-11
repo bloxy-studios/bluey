@@ -115,6 +115,7 @@ impl AiManager {
                 deployments: None,
                 enabled: true,
                 has_api_key: false,
+                auth_method: Default::default(),
             });
         }
         providers

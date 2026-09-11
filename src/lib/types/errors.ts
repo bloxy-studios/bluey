@@ -26,6 +26,10 @@ export type RecoveryAction =
   | { type: "sign_in" }
   | { type: "restart_helper" }
   | { type: "configure_provider" }
+  /** Reconnect a subscription account (ADR 0009): the HUD's "Reconnect" pill. */
+  | { type: "reconnect_account"; accountId: string; providerId: string }
+  /** Route the role to an API-key provider instead: the HUD's "Use API key instead" pill. */
+  | { type: "use_api_key" }
   | { type: "none" };
 
 export type PermissionKind = "microphone" | "screenRecording" | "accessibility" | "notifications" | "speechRecognition";

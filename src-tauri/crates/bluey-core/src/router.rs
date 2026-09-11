@@ -39,6 +39,9 @@ pub fn provider_supports_vision(kind: AiProviderKind) -> bool {
         | AiProviderKind::AzureFoundry
         | AiProviderKind::Anthropic
         | AiProviderKind::OpenaiCompatible
+        | AiProviderKind::ChatgptCodex
+        | AiProviderKind::ClaudeSubscription
+        | AiProviderKind::AntigravityGoogle
         | AiProviderKind::Mock => true,
     }
 }
@@ -298,6 +301,7 @@ mod tests {
             deployments: None,
             enabled,
             has_api_key: has_key,
+            auth_method: Default::default(),
         }
     }
 

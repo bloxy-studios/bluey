@@ -26,6 +26,8 @@ import type {
   OCRContext,
   PanelState,
   PermissionState,
+  ProviderAccount,
+  ProviderModelCatalog,
   ScreenFrame,
   Session,
   SessionEvent,
@@ -43,6 +45,10 @@ export interface EventMap {
   "permissions.changed": PermissionState;
   /** Browser sign-in started / finished, sign-out (ADR 0008). */
   "auth.changed": AuthStatus;
+  /** A subscription account's status, identity or fingerprint changed (ADR 0009). */
+  "accounts.changed": ProviderAccount;
+  /** The models a subscription exposes were (re)fetched. */
+  "accounts.catalog": ProviderModelCatalog;
   "helper.status": { running: boolean; version?: string; restarted?: boolean; error?: BlueyError };
 
   // screen
@@ -123,6 +129,8 @@ export const EVENT_NAMES: readonly EventName[] = [
   "settings.changed",
   "permissions.changed",
   "auth.changed",
+  "accounts.changed",
+  "accounts.catalog",
   "helper.status",
   "screen.changed",
   "screen.captured",

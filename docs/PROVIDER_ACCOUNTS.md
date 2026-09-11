@@ -20,6 +20,16 @@ fingerprint parity, drift detection, an extra-usage guard and automatic fallback
 | Claude Pro / Max | claude.ai OAuth, Claude Code wire format | specified | — / — (capture first, §4b.1) | 2026-09-11 | PR 3b |
 | Google AI Pro / Ultra | Antigravity OAuth, Cloud Code `v1internal` | specified | — / — | 2026-09-11 | PR 3c |
 
+The **accounts layer** itself landed in PR 2: the mirrored types (`bluey_core::types::accounts` ⇄
+`src/lib/types/accounts.ts`), the pure rules (`bluey_core::accounts`), the `RequestShaper` trait,
+`AccountsManager` with pluggable `ProviderProfile`s, the `accounts_*` commands and
+`accounts.changed` / `accounts.catalog` events, `MockTransport` fake accounts with fixture
+catalogs, Settings → AI → Accounts (cards, consent dialog, import button), the onboarding
+branch, the HUD *Reconnect* / *Use API key instead* recoveries, the runtime flag
+`settings.experimental.subscriptionAccounts` and the Cargo feature `subscription-accounts`. The
+three provider rows flip from *specified* to *built* with PR 3a–3c; until then their profiles are
+placeholders that answer `account.provider_pending`.
+
 `bun run fingerprints:diff <provider>` (PR 2b) and `accounts_probe_fingerprint` (dev) are how
 the two right-hand columns are kept true after every official-client release.
 
@@ -265,10 +275,11 @@ local credential store, copies the tokens into its own Keychain entry and contin
 | `secrets_set` / `secrets_has` / `secrets_delete` accept only the WebView's `SECRET_KEYS` (`provider:<id>:api_key` plus the research / agent API keys); `auth:*` and `account:*` rejected at the command layer | PR 1 — `secrets::validate_webview_key` (+ tests on both layers) |
 | `data_reset_all` collects failures instead of aborting (and deletes `account:*` once they exist) | PR 1 — `ResetFailures` / `reset_incomplete`; the `account:*` keys join the list in PR 2 |
 | One OAuth engine (PKCE, loopback, manual paste, device code, single-flight refresh); Clerk unchanged | PR 1 — `bluey-oauth` crate (runtime) + `bluey_protocols::oauth` (pure), host-run `#[tokio::test]`s |
-| Tokens Rust-only; WebView sees `ProviderAccount` only; `job_env` never carries OAuth material (test) | PR 2 |
-| Redaction of `chatgpt-account-id`, `sk-ant-oat`, `sk-ant-ort`, `ya29.`, `1//` | PR 2 |
+| Tokens Rust-only (`account:<id>:oauth_tokens`, read and written by `AccountsManager` only); WebView sees `ProviderAccount` only; the sidecar env never names account material (test) | PR 2 — `secrets::account_tokens_key`, `AccountsManager`, `agent::env_boundary_tests` |
+| Redaction of `chatgpt-account-id`, `sk-ant-oat`, `sk-ant-ort`, `ya29.`, `1//` | PR 2 — `logging::redact` (+ test) |
 | Loopback listener rules (127.0.0.1, one request, 8 KB, 5 s, `state` first) | PR 1 — `bluey_oauth::LoopbackListener` |
-| Consent once per provider; feature flag + Cargo feature | PR 2 |
+| Consent once per provider; feature flag + Cargo feature | PR 2 — `ConsentDialog` + `experimental.acceptedAccountConsents`; `experimental.subscriptionAccounts` (Settings → AI → Accounts switch); `subscription-accounts` (default on; `AccountsManager::build_enabled`) |
+| A `Connecting` status never survives a restart; a failed sign-in moves the account to the status its error names (`bluey_core::accounts::status_after_error`) | PR 2 — `AccountsManager::load` / `finish_connect` |
 | Fingerprint modules with `VERSION` / `CAPTURED_ON`, golden fixtures, `fingerprints:diff`, `accounts_probe_fingerprint` | PR 2b, PR 3a–3c |
 | Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3b (Claude), PR 3a/3c error mappers |
 | Imports read-only | PR 3a–3c |

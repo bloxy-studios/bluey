@@ -40,6 +40,18 @@ export const bluey = {
     clearSession: callNoArgs("auth_clear_session"),
     openAccountPortal: callNoArgs("auth_open_account_portal"),
   },
+  accounts: {
+    list: callNoArgs("accounts_list"),
+    connect: call("accounts_connect"),
+    import: call("accounts_import"),
+    cancelConnect: call("accounts_cancel_connect"),
+    submitCode: call("accounts_submit_code"),
+    disconnect: call("accounts_disconnect"),
+    status: call("accounts_status"),
+    catalog: call("accounts_catalog"),
+    refreshCatalog: call("accounts_refresh_catalog"),
+    probeFingerprint: call("accounts_probe_fingerprint"),
+  },
   permissions: {
     get: callNoArgs("permissions_get"),
     request: call("permissions_request"),

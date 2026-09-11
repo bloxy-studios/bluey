@@ -48,13 +48,43 @@ impl BlueyErrorKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RecoveryAction {
-    OpenSystemSettings { pane: PermissionKind },
-    OpenSettings { tab: String },
+    OpenSystemSettings {
+        pane: PermissionKind,
+    },
+    OpenSettings {
+        tab: String,
+    },
     Retry,
     SignIn,
     RestartHelper,
     ConfigureProvider,
+    /// Reconnect a subscription account (ADR 0009): the HUD's *Reconnect* pill.
+    /// Boxed so `BlueyError` stays small on every `Result` (`clippy::result_large_err`);
+    /// on the wire it is `{ "type": "reconnect_account", "accountId", "providerId" }`.
+    ReconnectAccount(Box<AccountRef>),
+    /// Route the role to an API-key provider instead: the HUD's *Use API key instead* pill.
+    UseApiKey,
     None,
+}
+
+/// The account a [`RecoveryAction::ReconnectAccount`] points at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRef {
+    pub account_id: String,
+    pub provider_id: String,
+}
+
+impl RecoveryAction {
+    pub fn reconnect_account(
+        account_id: impl Into<String>,
+        provider_id: impl Into<String>,
+    ) -> Self {
+        Self::ReconnectAccount(Box::new(AccountRef {
+            account_id: account_id.into(),
+            provider_id: provider_id.into(),
+        }))
+    }
 }
 
 /// The single error type returned by every Bluey subsystem.
@@ -141,6 +171,17 @@ impl BlueyError {
             message,
         )
         .recoverable(RecoveryAction::SignIn)
+    }
+
+    /// A subscription-account error (`account.<code>`, ADR 0009). Recovery is
+    /// chosen by the caller: `ReconnectAccount` for `needs_reauth`, `UseApiKey`
+    /// when the account is unavailable, none for a rate-limit window.
+    pub fn account(code: &str, message: impl Into<String>) -> Self {
+        Self::new(
+            BlueyErrorKind::Authentication,
+            format!("account.{code}"),
+            message,
+        )
     }
 
     pub fn configuration(code: &str, message: impl Into<String>) -> Self {
@@ -235,5 +276,33 @@ mod tests {
             .with_details(serde_json::json!({"ms": 3000}));
         let back: BlueyError = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         assert_eq!(e, back);
+    }
+}
+
+#[cfg(test)]
+mod size_and_wire_tests {
+    use super::*;
+
+    /// Every subsystem returns `Result<_, BlueyError>`; clippy's `result_large_err`
+    /// fires above 128 bytes, so payload-heavy recovery actions are boxed.
+    #[test]
+    fn bluey_error_stays_small() {
+        assert!(
+            std::mem::size_of::<BlueyError>() <= 128,
+            "{}",
+            std::mem::size_of::<BlueyError>()
+        );
+    }
+
+    #[test]
+    fn reconnect_account_keeps_the_flat_wire_shape() {
+        let action = RecoveryAction::reconnect_account("claude", "claude");
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "reconnect_account", "accountId": "claude", "providerId": "claude" })
+        );
+        let back: RecoveryAction = serde_json::from_value(json).unwrap();
+        assert_eq!(back, action);
     }
 }

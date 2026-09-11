@@ -6,6 +6,7 @@
 //! must not appear anywhere above the real invocation).
 
 pub mod accessibility;
+pub mod accounts;
 pub mod agent;
 pub mod ai;
 pub mod app;
@@ -50,6 +51,17 @@ pub fn run() {
         commands::auth::auth_cancel_sign_in,
         commands::auth::auth_clear_session,
         commands::auth::auth_open_account_portal,
+        // Provider accounts (subscription sign-in, ADR 0009)
+        commands::accounts::accounts_list,
+        commands::accounts::accounts_connect,
+        commands::accounts::accounts_import,
+        commands::accounts::accounts_cancel_connect,
+        commands::accounts::accounts_submit_code,
+        commands::accounts::accounts_disconnect,
+        commands::accounts::accounts_status,
+        commands::accounts::accounts_catalog,
+        commands::accounts::accounts_refresh_catalog,
+        commands::accounts::accounts_probe_fingerprint,
         // Permissions
         commands::permissions::permissions_get,
         commands::permissions::permissions_request,

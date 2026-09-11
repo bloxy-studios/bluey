@@ -73,6 +73,16 @@ planned by `bluey_core::presets::plan_env_import`, ADR 0007):
 - The research sidecar ships as the **lite** binary (Gemini) unless `RESEARCH_BACKEND=claude`
   (or `BLUEY_AGENT_VARIANT=full`) at build time, which embeds the Claude CLI.
 
+## Subscription accounts (ADR 0009)
+
+Settings → AI → **Accounts** signs in with the owner's ChatGPT, Claude or Google AI subscription
+(unofficial; see `docs/PROVIDER_ACCOUNTS.md`). Two switches: the Cargo feature
+`subscription-accounts` (in `default`; build with `--no-default-features --features dev-tools` to
+compile the layer out — every account then reports `unavailable`) and the runtime setting
+`experimental.subscriptionAccounts` (the switch in the Accounts section; off hides the cards and
+refuses new sign-ins). The `mock` transport (`bun run dev`) ships fake accounts that connect on a
+timer with fixture catalogs; the real provider profiles land in PR 3a–3c.
+
 ## Working without macOS
 
 The platform-independent Rust crates and the whole TypeScript codebase build and test on Linux.
