@@ -51,6 +51,12 @@ const KIND_MESSAGES: Partial<Record<BlueyError["kind"], string>> = {
   configuration: "Something in Settings needs attention before this works.",
 };
 
+/** A provider answered HTTP 400. Rust usually quotes the provider's reason — see `describeError`. */
+const REQUEST_REJECTED = {
+  title: "Request rejected",
+  message: "The provider rejected the request. Check the model id and options in Settings → AI.",
+};
+
 /** Code-specific copy (provider errors map to stable codes in Rust; see AI_ARCHITECTURE.md). */
 const CODE_COPY: Record<string, { title: string; message: string }> = {
   "config.api_key_invalid": {
@@ -77,6 +83,13 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
   "config.no_preset": {
     title: "No recommended models",
     message: "Bluey has no recommended models for this provider kind. Assign models per role in Settings → AI → Models.",
+  },
+  // Google AI (Antigravity) sign-in needs Google's desktop-app OAuth client secret compiled in;
+  // without it Rust stops before the browser opens (docs/PROVIDER_ACCOUNTS.md › Google AI).
+  "config.antigravity_client_secret": {
+    title: "Google sign-in isn't set up in this build",
+    message:
+      "This build has no Antigravity OAuth client secret, so Bluey can't open the Google sign-in. Add BLUEY_ANTIGRAVITY_CLIENT_SECRET to .env.local and rebuild (docs/PROVIDER_ACCOUNTS.md › Google AI), or keep using your Gemini API key.",
   },
   "ai.transcription_parse": {
     title: "Couldn't read the transcript",
@@ -106,10 +119,7 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     message: "The provider is having trouble right now. Try again in a minute.",
   },
   "network.timeout": { title: "Request timed out", message: "The provider took too long to answer. Try again." },
-  "ai.invalid_request": {
-    title: "Request rejected",
-    message: "The provider rejected the request. Check the model id and options in Settings → AI.",
-  },
+  "ai.invalid_request": REQUEST_REJECTED,
   "privacy.cloud_ai_disabled": {
     title: "Cloud AI is off",
     message: "Turn Cloud AI back on in Settings → Privacy to let Bluey ask a model.",
@@ -161,6 +171,11 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     message: "Bluey only knows ChatGPT, Claude and Google AI subscriptions.",
   },
 };
+
+/** Rust's messages start lowercase ("the Gemini API rejected …"); toasts read as sentences. */
+function sentenceCase(text: string): string {
+  return text.length > 0 ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
 
 function formatRetry(ms: unknown): string {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return "";
@@ -214,6 +229,15 @@ export function describeError(error: BlueyError): { title: string; message: stri
   if (error.code === "account.provider_pending") {
     // Rust names the provider and the PR that lands it.
     return { title: "Not available yet", message: error.message };
+  }
+  if (error.code === "ai.invalid_request") {
+    // Rust names the provider and quotes its reason ("ChatGPT rejected the request: Invalid
+    // schema …") — that is what fixes the request, so it outranks the generic copy.
+    const detail = error.message.trim();
+    return {
+      title: REQUEST_REJECTED.title,
+      message: detail.length > 0 ? sentenceCase(detail) : REQUEST_REJECTED.message,
+    };
   }
   const specific = CODE_COPY[error.code];
   if (specific) return specific;

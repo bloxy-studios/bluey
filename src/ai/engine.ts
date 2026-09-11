@@ -144,10 +144,11 @@ class CancelledError extends Error {
   }
 }
 
+// Strict-mode providers answer optional fields with `null` (see `src/modes/schemas.ts`).
 const classifyRefinement = z.object({
   type: z.string(),
-  requiresResponse: z.boolean().optional(),
-  confidence: z.number().min(0).max(1).optional(),
+  requiresResponse: z.boolean().nullish(),
+  confidence: z.number().min(0).max(1).nullish(),
 });
 
 const DETECTED_TYPES: readonly DetectedEventType[] = [

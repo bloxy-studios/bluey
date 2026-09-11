@@ -128,6 +128,35 @@ describe("parseStructuredOutput tolerance", () => {
     const parsed = parseStructuredOutput("answer", '{"responseType":"answer","content":"x","confidence":3}');
     expect(parsed?.confidence).toBe(1);
   });
+
+  it("reads null as absent — strict-mode providers answer every optional field", () => {
+    // ChatGPT / Codex, Foundry and OpenAI-compatible endpoints are sent the optionals as
+    // required nullable fields (bluey_protocols::json_schema) and return `null` for them.
+    const parsed = parseStructuredOutput(
+      "coding",
+      JSON.stringify({
+        responseType: "code",
+        title: null,
+        content: "Use a hash map.",
+        sections: [{ title: "Approach", content: "One pass.", kind: null, language: null }],
+        code: { language: "python", code: "def f(): pass", filename: null },
+        diagram: null,
+        confidence: null,
+        citations: [{ title: "Docs", url: "https://x.test", snippet: null }],
+      }),
+    );
+    expect(parsed?.responseType).toBe("code");
+    expect(parsed?.title).toBeUndefined();
+    expect(parsed?.content).toBe("Use a hash map.");
+    expect(parsed?.sections).toEqual([{ title: "Approach", content: "One pass." }]);
+    expect(parsed?.code).toEqual({ language: "python", code: "def f(): pass" });
+    expect(parsed?.diagram).toBeUndefined();
+    expect(parsed?.confidence).toBeUndefined();
+    expect(parsed?.citations).toEqual([{ title: "Docs", url: "https://x.test" }]);
+
+    const nulls = parseStructuredOutput("answer", '{"responseType":"answer","content":null,"sections":null,"code":null}');
+    expect(nulls).toEqual({ responseType: "answer", content: '{"responseType":"answer","content":null,"sections":null,"code":null}' });
+  });
 });
 
 describe("parse helpers", () => {

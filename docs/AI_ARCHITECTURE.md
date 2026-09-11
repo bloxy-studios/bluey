@@ -98,6 +98,13 @@ visionRequired, preferredRole)` over the user's role assignments
     resource key (Foundry accepts `x-api-key`), `model` = deployment name
     (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`).
   - `openai_compatible` — any `/v1/chat/completions` (Bearer auth).
+  - **Structured-output schemas** (zod → JSON Schema in the WebView) are normalised per provider
+    by `bluey_protocols::json_schema` before they go on the wire: the top-level `$schema` is
+    stripped for everyone (Gemini and Anthropic reject unknown keywords); for OpenAI's *strict*
+    mode — Codex `text.format`, Foundry / OpenAI-compatible `response_format` — every property
+    is listed in `required`, previously optional ones become nullable (`["string", "null"]`) and
+    every object gets `additionalProperties: false`, because a schema that breaks those rules is
+    answered with HTTP 400 (`ai.invalid_request`). The WebView parsers read `null` as absent.
   - `mock` — deterministic streamed answers for development and tests (clearly isolated; only
     selectable when developer mode is on).
 - **Provider accounts** (ADR 0009, `src-tauri/src/accounts`): the owner's ChatGPT, Claude and

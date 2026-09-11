@@ -295,16 +295,10 @@ fn part_to_json(part: &AiContentPart) -> Value {
 }
 
 /// Remove the top-level `$schema` key (zod v4's `toJSONSchema` adds it and the
-/// API rejects unknown keywords); everything else is forwarded untouched.
+/// API rejects unknown keywords); everything else is forwarded untouched —
+/// Gemini takes optional properties as they are (`crate::json_schema`).
 pub fn strip_schema_meta(schema: &Value) -> Value {
-    match schema {
-        Value::Object(map) => {
-            let mut cleaned = map.clone();
-            cleaned.remove("$schema");
-            Value::Object(cleaned)
-        }
-        other => other.clone(),
-    }
+    crate::json_schema::strip_meta(schema)
 }
 
 // ── generateContent response / SSE chunk ─────────────────────────────────────

@@ -83,9 +83,15 @@ pub fn build_messages_body(opts: &MessagesBodyOptions<'_>) -> Value {
     }
     if let Some(spec) = opts.output_schema {
         if !opts.schema_as_prompt_fallback {
+            // zod's top-level `$schema` is metadata the validator does not need.
             obj.insert(
                 "output_config".into(),
-                json!({ "format": { "type": "json_schema", "schema": spec.schema } }),
+                json!({
+                    "format": {
+                        "type": "json_schema",
+                        "schema": crate::json_schema::strip_meta(&spec.schema)
+                    }
+                }),
             );
         }
     }

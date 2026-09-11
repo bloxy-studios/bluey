@@ -11,7 +11,12 @@
 //!
 //! Only public identifiers are ever baked: the allowlist is the whole point.
 //! API keys stay in the Keychain / runtime environment and never enter the
-//! binary. Values are never printed.
+//! binary. The one non-Clerk entry, `BLUEY_ANTIGRAVITY_CLIENT_SECRET`, is
+//! Google's *desktop-app* OAuth client secret — public in the shipped
+//! Antigravity app, not a user secret (`docs/SECURITY.md`) — which the repo
+//! deliberately does not commit; baking it from `.env` / `.env.local` is what
+//! lets *Connect Google AI* open the browser in dev and installed builds alike
+//! (`docs/PROVIDER_ACCOUNTS.md › Google AI`). Values are never printed.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -26,6 +31,8 @@ const BAKED_SETTINGS: &[&str] = &[
     "VITE_CLERK_FRONTEND_API_URL",
     "BLUEY_CLERK_OAUTH_CLIENT_ID",
     "BLUEY_CLERK_ACCOUNT_PORTAL_URL",
+    // Read by `accounts::antigravity::client_secret` as `BLUEY_BAKED_BLUEY_ANTIGRAVITY_CLIENT_SECRET`.
+    "BLUEY_ANTIGRAVITY_CLIENT_SECRET",
 ];
 
 fn main() {

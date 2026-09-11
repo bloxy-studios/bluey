@@ -8,9 +8,11 @@
 //! `bluey_protocols::antigravity::AntigravityShaper`; this file only does I/O.
 //!
 //! The OAuth client secret is public in the shipped app but deliberately not
-//! committed: the build supplies it (`BLUEY_ANTIGRAVITY_CLIENT_SECRET`, see
-//! `docs/PROVIDER_ACCOUNTS.md › Google AI`). Without it the card says so and
-//! the Gemini API key keeps working.
+//! committed: the build supplies it — `BLUEY_ANTIGRAVITY_CLIENT_SECRET` in
+//! `.env.local` / `.env`, baked in by `build.rs` like the Clerk identifiers, or
+//! set in the environment (see `docs/PROVIDER_ACCOUNTS.md › Google AI`).
+//! Without it the card reports the build as unable to sign in, *Connect*
+//! explains, and the Gemini API key keeps working.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -51,23 +53,27 @@ const ONBOARD_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Default)]
 pub struct AntigravityProfile;
 
-/// The OAuth client secret: the environment at run time (development), else the
-/// value baked in at build time. `None` = this build cannot sign in to Google.
+/// The OAuth client secret: the process environment at run time (the shell, or
+/// `.env.local` / `.env` loaded at boot in development), else the value
+/// `build.rs` baked from those files at build time, else one exported in the
+/// build shell. `None` = this build cannot sign in to Google.
 pub fn client_secret() -> Option<String> {
     std::env::var("BLUEY_ANTIGRAVITY_CLIENT_SECRET")
         .ok()
+        .or_else(|| option_env!("BLUEY_BAKED_BLUEY_ANTIGRAVITY_CLIENT_SECRET").map(str::to_string))
         .or_else(|| option_env!("BLUEY_ANTIGRAVITY_CLIENT_SECRET").map(str::to_string))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
+/// Why a build without the secret cannot start a Google sign-in — shown on the
+/// account card and in the *Connect* error (never a token, never a value).
+pub const MISSING_SECRET_DETAIL: &str = "this build of Bluey carries no Antigravity OAuth client secret — add BLUEY_ANTIGRAVITY_CLIENT_SECRET to .env.local and rebuild (docs/PROVIDER_ACCOUNTS.md › Google AI), or keep using a Gemini API key";
+
 fn secret_or_error() -> BlueyResult<String> {
     client_secret().ok_or_else(|| {
-        BlueyError::configuration(
-            "antigravity_client_secret",
-            "this build of Bluey carries no Antigravity OAuth client secret — build with BLUEY_ANTIGRAVITY_CLIENT_SECRET set (docs/PROVIDER_ACCOUNTS.md › Google AI), or use a Gemini API key",
-        )
-        .recoverable(bluey_core::error::RecoveryAction::UseApiKey)
+        BlueyError::configuration("antigravity_client_secret", MISSING_SECRET_DETAIL)
+            .recoverable(bluey_core::error::RecoveryAction::UseApiKey)
     })
 }
 
@@ -516,6 +522,12 @@ impl ProviderProfile for AntigravityProfile {
         Some(fingerprints::antigravity::INFO)
     }
 
+    fn unavailable_in_this_build(&self) -> Option<String> {
+        client_secret()
+            .is_none()
+            .then(|| MISSING_SECRET_DETAIL.to_string())
+    }
+
     async fn begin_connect(
         &self,
         _http: &reqwest::Client,
@@ -776,5 +788,28 @@ mod tests {
             "http://localhost:51121/oauth-callback"
         );
         assert!(shaper().user_agent().starts_with("antigravity/hub/"));
+    }
+
+    #[test]
+    fn a_build_without_the_secret_says_so_before_the_browser_opens() {
+        let profile = AntigravityProfile;
+        // The availability the card shows and the error *Connect* raises agree,
+        // and both name the variable to set — never a value.
+        assert_eq!(
+            profile.unavailable_in_this_build().is_some(),
+            client_secret().is_none()
+        );
+        let error = secret_or_error().err();
+        assert_eq!(error.is_some(), client_secret().is_none());
+        if let Some(error) = error {
+            assert_eq!(error.code, "config.antigravity_client_secret");
+            assert_eq!(error.message, MISSING_SECRET_DETAIL);
+            assert_eq!(
+                error.recovery,
+                Some(bluey_core::error::RecoveryAction::UseApiKey)
+            );
+        }
+        assert!(MISSING_SECRET_DETAIL.contains("BLUEY_ANTIGRAVITY_CLIENT_SECRET"));
+        assert!(!MISSING_SECRET_DETAIL.contains("GOCSPX"));
     }
 }

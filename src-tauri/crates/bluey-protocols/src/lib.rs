@@ -42,6 +42,10 @@
 //!   `v1internal` (ADR 0009 §4c): Google OAuth constants and forms, `loadCodeAssist` /
 //!   `onboardUser` parsing, the Hub version → User-Agent, the catalog, the request wrapper
 //!   as `AntigravityShaper`, the response envelope and the error mapper (ToS 403 stops).
+//! * [`json_schema`] — structured-output schema normalisation per provider: `$schema`
+//!   stripping (Gemini, Anthropic) and the OpenAI strict-mode variant (every property
+//!   required, optionals nullable, `additionalProperties: false`) for Codex, Foundry and
+//!   OpenAI-compatible endpoints.
 //!
 //! No Tauri, tokio, or network dependencies live here.
 
@@ -58,6 +62,7 @@ pub mod firecrawl;
 pub mod gemini;
 pub mod helper;
 pub mod hud_menu;
+pub mod json_schema;
 pub mod jsonl;
 pub mod oauth;
 pub mod openai;

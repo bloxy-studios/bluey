@@ -33,16 +33,17 @@ export function summaryOutputSchema(): JsonSchemaSpec {
   };
 }
 
+// Strict-mode providers answer optional fields with `null` (see `src/modes/schemas.ts`).
 const tolerantSummary = z.object({
-  overview: z.string().optional(),
-  topics: z.array(z.string()).optional(),
-  questions: z.array(z.string()).optional(),
-  answers: z.array(z.string()).optional(),
-  decisions: z.array(z.string()).optional(),
-  actionItems: z.array(z.string()).optional(),
-  openItems: z.array(z.string()).optional(),
-  improvements: z.array(z.string()).optional(),
-  sections: z.array(z.object({ title: z.string(), content: z.string() })).optional(),
+  overview: z.string().nullish(),
+  topics: z.array(z.string()).nullish(),
+  questions: z.array(z.string()).nullish(),
+  answers: z.array(z.string()).nullish(),
+  decisions: z.array(z.string()).nullish(),
+  actionItems: z.array(z.string()).nullish(),
+  openItems: z.array(z.string()).nullish(),
+  improvements: z.array(z.string()).nullish(),
+  sections: z.array(z.object({ title: z.string(), content: z.string() })).nullish(),
 });
 
 const MAX_TRANSCRIPT_TOKENS = 6000;
@@ -158,7 +159,7 @@ export async function generateSessionSummary(
     actionItems: parsed.actionItems ?? [],
     openItems: parsed.openItems ?? [],
     improvements: parsed.improvements ?? [],
-    sections: parsed.sections,
+    sections: parsed.sections ?? undefined,
     createdAt: resolved.now().toISOString(),
   };
 }
