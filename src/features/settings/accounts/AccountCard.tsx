@@ -24,6 +24,8 @@ export interface AccountCardProps {
   onRefreshCatalog: () => void;
   onSubmitCode: (code: string) => void;
   onProbe: () => void;
+  /** Point every role the catalog suggests at this account's models. */
+  onApplyPresets?: () => void;
 }
 
 const TONE_CLASS: Record<StatusTone, string> = {
@@ -51,6 +53,7 @@ export function AccountCard({
   onRefreshCatalog,
   onSubmitCode,
   onProbe,
+  onApplyPresets,
 }: AccountCardProps) {
   const [code, setCode] = useState("");
   const { status, identity } = account;
@@ -186,13 +189,23 @@ export function AccountCard({
               <KeyRound className="size-3.5" aria-hidden />
               {status.state === "needs_reauth" ? "Reconnect" : `Connect ${copy.name}`}
             </Button>
-            <Button variant="ghost" size="sm" onClick={onImport}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onImport}
+              title="Copies the official client's sign-in into Bluey's Keychain (read-only). Sign-in tokens rotate on refresh, so the two may later sign each other out."
+            >
               {copy.importLabel}
             </Button>
           </>
         ) : null}
         {connected ? (
           <>
+            {onApplyPresets && catalog && catalog.models.some((m) => m.suggestedRoles.length > 0) ? (
+              <Button variant="secondary" size="sm" onClick={onApplyPresets}>
+                Use recommended models
+              </Button>
+            ) : null}
             <Button variant="secondary" size="sm" onClick={onRefreshCatalog}>
               <RefreshCw className="size-3.5" aria-hidden /> Refresh models
             </Button>

@@ -29,6 +29,10 @@
 //! * [`fingerprints`] — the fingerprints themselves as data: the scrubbed capture format,
 //!   the scrubber, per-provider rules with `VERSION` / `CAPTURED_ON`, the documented
 //!   captures and the drift diff behind `bun run fingerprints:diff`.
+//! * [`codex`]     — ChatGPT through the Codex OAuth flow (ADR 0009 §4): the OAuth
+//!   constants and bodies, identity from the ID token, `~/.codex/auth.json` import parsing,
+//!   the Responses API request builder, SSE events, the model catalog, error mapping and
+//!   the `CodexShaper` that reproduces `fingerprints::codex`.
 //!
 //! No Tauri, tokio, or network dependencies live here.
 
@@ -36,6 +40,7 @@ pub mod agent;
 pub mod anthropic;
 pub mod azure;
 pub mod clerk;
+pub mod codex;
 pub mod exa;
 pub mod fingerprints;
 pub mod firecrawl;

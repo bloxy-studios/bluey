@@ -11,6 +11,7 @@ import { presetForKind } from "@/lib/ai/provider-presets";
 import { bluey } from "@/lib/tauri/api";
 import { SECRET_KEYS } from "@/lib/tauri/commands";
 import {
+  isSubscriptionKind,
   toBlueyError,
   type AIProviderConfig,
   type ModelRole,
@@ -19,7 +20,9 @@ import {
   type ResponseLength,
   type ResponseTone,
 } from "@/lib/types";
+import { useAccountsStore } from "@/stores/accountsStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { PROVIDER_COPY } from "../accounts/account-copy";
 import { AccountsSection } from "../accounts/AccountsSection";
 import { ProviderCard, ProviderDialog } from "../ProviderCard";
 import {
@@ -169,6 +172,7 @@ export default function AITab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const applyRemote = useSettingsStore((s) => s.applyRemote);
+  const accounts = useAccountsStore((s) => s.accounts);
   const [dialog, setDialog] = useState<{ mode: "add" } | { mode: "edit"; provider: AIProviderConfig } | null>(
     null,
   );
@@ -178,9 +182,25 @@ export default function AITab() {
   if (!settings) return null;
   const { ai } = settings;
   const providers = sortProviders(ai.providers);
-  const enabledProviders = providers.filter((p) => p.enabled);
+  // Connected subscription accounts are providers to the router too (ADR 0009 §3.6): they
+  // appear in the role and default-provider selects, never in the API-key provider list.
+  const accountProviders: AIProviderConfig[] = settings.experimental.subscriptionAccounts
+    ? accounts
+        .filter((a) => a.status.state === "connected" || a.status.state === "rate_limited")
+        .map((a) => ({
+          id: a.providerId,
+          kind: a.kind,
+          name: PROVIDER_COPY[a.providerId as keyof typeof PROVIDER_COPY]?.name ?? a.providerId,
+          baseUrl: "",
+          enabled: true,
+          hasApiKey: a.status.state === "connected",
+          authMethod: "oauth_subscription",
+        }))
+    : [];
+  const routable = [...providers, ...accountProviders];
+  const enabledProviders = routable.filter((p) => p.enabled);
   const defaultProviderId =
-    ai.bootstrapProvider && providers.some((p) => p.id === ai.bootstrapProvider)
+    ai.bootstrapProvider && routable.some((p) => p.id === ai.bootstrapProvider)
       ? ai.bootstrapProvider
       : (ai.models.default?.providerId ?? "");
   const embeddingProvider = providers.find((p) => p.id === ai.models.embedding?.providerId);
@@ -211,11 +231,11 @@ export default function AITab() {
 
   const switchDefaultProvider = async (providerId: string) => {
     if (!providerId || providerId === defaultProviderId) return;
-    const provider = providers.find((p) => p.id === providerId);
+    const provider = routable.find((p) => p.id === providerId);
     if (!provider || !provider.hasApiKey) return; // keyless options are disabled; stay defensive
     setSwitching(true);
     try {
-      if (presetForKind(provider.kind)) {
+      if (presetForKind(provider.kind) || isSubscriptionKind(provider.kind)) {
         applyRemote(await bluey.ai.applyProviderPresets({ providerId, overwrite: true }));
       }
       const saved = await update({ ai: { bootstrapProvider: providerId } });
@@ -242,7 +262,7 @@ export default function AITab() {
           options={[
             ...(defaultProviderId ? [] : [{ value: "", label: "Choose a provider" }]),
             // Enabled providers, plus the current default whatever its state so the select never goes blank.
-            ...providers
+            ...routable
               .filter((p) => p.enabled || p.id === defaultProviderId)
               .map((p) => ({
                 value: p.id,
@@ -292,7 +312,7 @@ export default function AITab() {
       />
       <div className="flex flex-col divide-y divide-border/50">
         {ROLES.map(({ role, label, hint }) => (
-          <ModelRoleRow key={role} role={role} label={label} hint={hint} providers={providers} />
+          <ModelRoleRow key={role} role={role} label={label} hint={hint} providers={routable} />
         ))}
       </div>
 

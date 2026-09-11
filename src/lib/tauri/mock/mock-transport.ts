@@ -329,6 +329,30 @@ export class MockTransport implements Transport {
   }
 
   /** The simulated browser came back: apply `outcome` to a connecting account. */
+  /**
+   * Mirror of `bluey_core::accounts::apply_catalog_presets`: `overwrite` re-points every role the
+   * catalog suggests; otherwise only unassigned roles and roles pointing at a model the catalog
+   * no longer lists. Emits `settings.changed` when anything moved.
+   */
+  private applyCatalogPresets(catalog: ProviderModelCatalog, overwrite: boolean): void {
+    const models = { ...this.settings.ai.models };
+    let changed = false;
+    for (const role of MODEL_ROLES) {
+      const suggested = catalog.models.find((m) => m.suggestedRoles.includes(role));
+      if (!suggested) continue;
+      const current = models[role];
+      const stale =
+        current?.providerId === catalog.providerId && !catalog.models.some((m) => m.id === current.model);
+      if (!(overwrite || !current || stale)) continue;
+      if (current?.providerId === catalog.providerId && current.model === suggested.id) continue;
+      models[role] = { providerId: catalog.providerId, model: suggested.id };
+      changed = true;
+    }
+    if (!changed) return;
+    this.settings = { ...this.settings, ai: { ...this.settings.ai, models } };
+    this.emitSettings();
+  }
+
   private finishAccountConnect(accountId: string, outcome: MockTransport["nextAccountOutcome"]): void {
     this.accountTimers.delete(accountId);
     this.pendingManualCodes.delete(accountId);
@@ -347,6 +371,8 @@ export class MockTransport implements Transport {
           catalogFetchedAt: at,
         });
         this.emit("accounts.catalog", catalog);
+        // Mirror of the Rust side: a fresh catalog fills the roles nobody serves yet.
+        this.applyCatalogPresets(catalog, false);
         return;
       }
       case "denied":
@@ -1337,6 +1363,18 @@ export class MockTransport implements Transport {
       return result;
     },
     ai_list_models: (args) => {
+      // A subscription account lists what its plan's catalog exposes (mirror of the ChatGPT adapter).
+      const account = this.accounts.find((a) => a.providerId === args.providerId);
+      if (account) {
+        const catalog = this.accountCatalogs.get(account.accountId);
+        if (!catalog)
+          throw blueyError({
+            kind: "authentication",
+            code: "account.not_connected",
+            message: "connect the account and refresh its models first",
+          });
+        return args.role === "embedding" || args.role === "transcription" ? [] : catalog.models.map((m) => m.id);
+      }
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
       const models = FIXTURE_MODELS_BY_KIND[provider?.kind ?? "mock"] ?? [];
       // Mirror of the Rust per-role filter: embeddings / transcription / text generation.
@@ -1354,6 +1392,18 @@ export class MockTransport implements Transport {
       }
     },
     ai_apply_provider_presets: (args) => {
+      const account = this.accounts.find((a) => a.providerId === args.providerId);
+      if (account) {
+        const catalog = this.accountCatalogs.get(account.accountId);
+        if (!catalog || account.status.state !== "connected")
+          throw blueyError({
+            kind: "authentication",
+            code: "account.not_connected",
+            message: "connect the account before applying its models",
+          });
+        this.applyCatalogPresets(catalog, args.overwrite);
+        return this.settings;
+      }
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
       if (!provider)
         throw blueyError({

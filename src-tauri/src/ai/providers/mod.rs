@@ -2,6 +2,8 @@
 
 pub mod anthropic;
 pub mod azure;
+#[cfg(feature = "subscription-accounts")]
+pub mod chatgpt;
 pub mod gemini;
 pub mod mock;
 pub mod openai;
@@ -9,7 +11,7 @@ pub mod openai;
 use bluey_core::error::RecoveryAction;
 use bluey_core::types::{
     AiMessage, AiProviderConfig, AiProviderKind, AiTask, FinishReason, JsonSchemaSpec,
-    LatencyBudget, ModelRole, ReasoningLevel,
+    LatencyBudget, ModelRole, ProviderModelCatalog, ReasoningLevel,
 };
 use bluey_core::{BlueyError, BlueyErrorKind, BlueyResult};
 use futures::stream::BoxStream;
@@ -54,6 +56,39 @@ pub struct ProviderRequest {
     /// Drives thinking depth on providers that expose it (Gemini `thinkingLevel`).
     pub latency: LatencyBudget,
     pub reasoning: ReasoningLevel,
+    /// The Bluey session the request belongs to — subscription providers key
+    /// their conversation ids and prompt caches on it.
+    pub session_id: Option<String>,
+}
+
+/// An OAuth subscription account's credential for one request (ADR 0009): the
+/// access token travels here for the duration of the call; adapters never keep it.
+#[derive(Clone)]
+pub struct OAuthCredential {
+    pub access_token: String,
+    /// Provider-side account id (Codex `chatgpt_account_id`), when known.
+    pub account_id: Option<String>,
+    /// The account's cached model catalog (reasoning levels, `list_models`).
+    pub catalog: Option<ProviderModelCatalog>,
+}
+
+impl std::fmt::Debug for OAuthCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthCredential")
+            .field("access_token", &"<redacted>")
+            .field("account_id", &self.account_id)
+            .field("catalog", &self.catalog.as_ref().map(|c| c.models.len()))
+            .finish()
+    }
+}
+
+/// What `build_provider` authenticates with.
+#[derive(Debug, Clone)]
+pub enum ProviderCredential {
+    /// The mock, or an API-key provider without a key (→ `config.missing_key`).
+    None,
+    ApiKey(String),
+    OAuth(OAuthCredential),
 }
 
 /// One item of a provider stream.
@@ -108,32 +143,72 @@ pub trait AiProvider: Send + Sync {
     }
 }
 
-/// Build the adapter for a provider config. `api_key` is `None` only for mock.
-/// `embedding_dimensions` is the configured MRL size for Gemini embeddings.
+/// The ChatGPT adapter — real in builds with the `subscription-accounts` feature.
+#[cfg(feature = "subscription-accounts")]
+fn chatgpt_provider(
+    credential: ProviderCredential,
+    http: reqwest::Client,
+) -> BlueyResult<Box<dyn AiProvider>> {
+    match credential {
+        ProviderCredential::OAuth(oauth) => {
+            Ok(Box::new(chatgpt::ChatgptProvider::new(http, oauth)))
+        }
+        _ => Err(BlueyError::account(
+            "not_connected",
+            "connect the ChatGPT account in Settings → AI → Accounts first",
+        )
+        .recoverable(RecoveryAction::reconnect_account(
+            bluey_core::types::CHATGPT_PROVIDER_ID,
+            bluey_core::types::CHATGPT_PROVIDER_ID,
+        ))),
+    }
+}
+
+#[cfg(not(feature = "subscription-accounts"))]
+fn chatgpt_provider(
+    _credential: ProviderCredential,
+    _http: reqwest::Client,
+) -> BlueyResult<Box<dyn AiProvider>> {
+    Err(BlueyError::account(
+        "disabled",
+        "this build of Bluey was made without subscription accounts",
+    )
+    .recoverable(RecoveryAction::UseApiKey))
+}
+
+/// Build the adapter for a provider config. `embedding_dimensions` is the
+/// configured MRL size for Gemini embeddings.
 pub fn build_provider(
     config: &AiProviderConfig,
-    api_key: Option<String>,
+    credential: ProviderCredential,
     http: reqwest::Client,
     dev: std::sync::Arc<crate::state::DevState>,
     embedding_dimensions: u32,
 ) -> BlueyResult<Box<dyn AiProvider>> {
     match config.kind {
         AiProviderKind::Mock => Ok(Box::new(mock::MockProvider::new(dev))),
-        // Served by a subscription account (ADR 0009); the adapters that take a
-        // `CredentialSource::OAuth` land in PR 3a–3c. Until then the router's
-        // fallback chain reaches the API-key providers.
-        AiProviderKind::ChatgptCodex
-        | AiProviderKind::ClaudeSubscription
-        | AiProviderKind::AntigravityGoogle => Err(BlueyError::account(
-            "provider_pending",
-            "this provider is served by a subscription account, which this version cannot route yet — use an API-key provider for now",
-        )
-        .recoverable(RecoveryAction::UseApiKey)),
+        // Served by a subscription account (ADR 0009).
+        AiProviderKind::ChatgptCodex => chatgpt_provider(credential, http),
+        // The Claude and Google adapters land in PR 3b / 3c. Until then the
+        // router's fallback chain reaches the API-key providers.
+        AiProviderKind::ClaudeSubscription | AiProviderKind::AntigravityGoogle => {
+            Err(BlueyError::account(
+                "provider_pending",
+                "this provider is served by a subscription account, which this version cannot route yet — use an API-key provider for now",
+            )
+            .recoverable(RecoveryAction::UseApiKey))
+        }
         kind => {
-            let api_key = api_key.ok_or_else(|| {
-                BlueyError::configuration("missing_key", "the provider has no API key configured")
-                    .recoverable(RecoveryAction::ConfigureProvider)
-            })?;
+            let api_key = match credential {
+                ProviderCredential::ApiKey(key) => key,
+                _ => {
+                    return Err(BlueyError::configuration(
+                        "missing_key",
+                        "the provider has no API key configured",
+                    )
+                    .recoverable(RecoveryAction::ConfigureProvider))
+                }
+            };
             match kind {
                 AiProviderKind::GoogleGemini => Ok(Box::new(gemini::GeminiProvider::new(
                     http,

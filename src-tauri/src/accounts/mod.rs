@@ -15,6 +15,8 @@
 //! `settings.experimental.subscriptionAccounts` (hide the section and refuse
 //! new sign-ins without a rebuild). Nothing here logs a token, ever.
 
+#[cfg(feature = "subscription-accounts")]
+pub mod chatgpt;
 pub mod profile;
 
 use std::collections::HashMap;
@@ -24,14 +26,16 @@ use bluey_core::accounts::{self as rules, codes};
 use bluey_core::error::RecoveryAction;
 use bluey_core::events::BlueyEvent;
 use bluey_core::types::{
-    AccountConnectOptions, AccountStatus, FingerprintProbe, ModelRole, ProviderAccount,
-    ProviderAuthMethod, ProviderModelCatalog, UnavailableReason,
+    AccountConnectOptions, AccountIdentity, AccountStatus, AiProviderConfig, ConnectFlowKind,
+    FingerprintProbe, ModelRole, ProviderAccount, ProviderAuthMethod, ProviderModelCatalog,
+    Settings, UnavailableReason,
 };
 use bluey_core::{now_iso, BlueyError, BlueyErrorKind, BlueyResult};
 use bluey_oauth::{unix_now, RefreshError, TokenCache, TokenSet, DEFAULT_REFRESH_LEEWAY};
 use bluey_storage::SettingsRepository;
 use chrono::Utc;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
@@ -296,6 +300,25 @@ impl AccountsManager {
                 return Err(error);
             }
         };
+        // Profiles have no window handle: the browser (or the device-code page) opens here.
+        let to_open = match start.flow.kind {
+            ConnectFlowKind::Browser | ConnectFlowKind::ManualCode => start.flow.url.clone(),
+            ConnectFlowKind::DeviceCode => start
+                .flow
+                .verification_url
+                .clone()
+                .or_else(|| start.flow.url.clone()),
+        };
+        if let Some(url) = to_open {
+            if let Err(error) = app.opener().open_url(&url, None::<&str>) {
+                start.cancel.cancel();
+                return Err(BlueyError::account(
+                    "browser_open_failed",
+                    format!("could not open the browser: {error}"),
+                )
+                .recoverable(RecoveryAction::Retry));
+            }
+        }
         account.status = AccountStatus::Connecting {
             flow: start.flow.clone(),
         };
@@ -507,6 +530,7 @@ impl AccountsManager {
                 self.store_catalog(catalog.clone()).await?;
                 account.catalog_fetched_at = Some(catalog.fetched_at.clone());
                 self.set_account(account).await?;
+                self.apply_catalog_presets_after_fetch(&catalog).await;
                 Ok(catalog)
             }
             Err(error) => {
@@ -533,6 +557,108 @@ impl AccountsManager {
         let profile = self.profile_for(&account.provider_id)?;
         let tokens = self.credential_for(account_id).await?;
         profile.probe(&self.http, &tokens).await
+    }
+
+    /// After a catalog fetch: fill unassigned roles (and roles pointing at a
+    /// model this catalog no longer lists) with the suggested models (§3.7).
+    async fn apply_catalog_presets_after_fetch(&self, catalog: &ProviderModelCatalog) {
+        let mut models = self.settings.get().ai.models;
+        let changed = rules::apply_catalog_presets(&mut models, catalog, false);
+        if changed.is_empty() {
+            return;
+        }
+        match self
+            .settings
+            .update(serde_json::json!({ "ai": { "models": models } }))
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(provider = %catalog.provider_id, roles = changed.len(), "assigned catalog presets")
+            }
+            Err(error) => {
+                tracing::warn!(provider = %catalog.provider_id, code = %error.code, "cannot assign catalog presets")
+            }
+        }
+    }
+
+    /// Point roles at the account's recommended models (`ai_apply_provider_presets`
+    /// for a subscription provider). `overwrite = false` fills only unassigned roles.
+    pub async fn apply_presets(&self, provider_id: &str, overwrite: bool) -> BlueyResult<Settings> {
+        self.ensure_enabled()?;
+        let account = self.stored(provider_id)?;
+        if !account.status.is_connected() {
+            return Err(BlueyError::account(
+                "not_connected",
+                "connect the account before applying its models",
+            ));
+        }
+        let catalog = match self.catalog(provider_id) {
+            Some(catalog) => catalog,
+            None => self.refresh_catalog(provider_id, true).await?,
+        };
+        let mut models = self.settings.get().ai.models;
+        let changed = rules::apply_catalog_presets(&mut models, &catalog, overwrite);
+        tracing::info!(
+            provider = provider_id,
+            roles = changed.len(),
+            overwrite,
+            "applied catalog presets"
+        );
+        let (_, new) = self
+            .settings
+            .update(serde_json::json!({ "ai": { "models": models } }))
+            .await?;
+        Ok(new)
+    }
+
+    /// The accounts as the router sees them (§3.6): one provider per account,
+    /// keyed while usable. Empty when the layer is switched off.
+    pub fn provider_configs(&self) -> Vec<AiProviderConfig> {
+        if !self.enabled() {
+            return Vec::new();
+        }
+        let now = Utc::now();
+        self.list()
+            .iter()
+            .map(|account| rules::provider_config(account, now, true))
+            .collect()
+    }
+
+    /// The signed-in identity of an account, if any.
+    pub fn identity(&self, account_id: &str) -> Option<AccountIdentity> {
+        self.stored(account_id)
+            .ok()
+            .and_then(|account| account.identity)
+    }
+
+    /// A request through the account failed: move it to the status the error
+    /// names (401 → `NeedsReauth`, plan limit → `RateLimited`, block or drifted
+    /// fingerprint → `Unavailable`). Plain provider errors leave the status alone.
+    pub async fn note_request_error(&self, account_id: &str, error: &BlueyError) {
+        let Some(status) = rules::status_after_error(error) else {
+            return;
+        };
+        let Ok(mut account) = self.stored(account_id) else {
+            return;
+        };
+        if account.status == status {
+            return;
+        }
+        tracing::warn!(account = account_id, code = %error.code, status = status.state_name(), "account status changed after a request error");
+        account.status = status;
+        let _ = self.set_account(account).await;
+    }
+
+    /// A request through the account succeeded: a rate-limit window it was
+    /// waiting out is over.
+    pub async fn note_request_success(&self, account_id: &str) {
+        let Ok(mut account) = self.stored(account_id) else {
+            return;
+        };
+        if matches!(account.status, AccountStatus::RateLimited { .. }) {
+            account.status = AccountStatus::Connected;
+            let _ = self.set_account(account).await;
+        }
     }
 
     async fn load_tokens(&self, account_id: &str) -> Option<TokenSet> {

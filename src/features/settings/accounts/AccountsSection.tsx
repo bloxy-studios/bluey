@@ -2,7 +2,9 @@ import { useState } from "react";
 
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Switch } from "@/components/ui/Switch";
-import { showToast } from "@/components/ui/toast-store";
+import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { bluey } from "@/lib/tauri/api";
+import { toBlueyError } from "@/lib/types";
 import { useAccountsStore } from "@/stores/accountsStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { AccountCard } from "./AccountCard";
@@ -17,6 +19,7 @@ import { ConsentDialog } from "./ConsentDialog";
 export function AccountsSection() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
+  const applyRemote = useSettingsStore((s) => s.applyRemote);
   const accounts = useAccountsStore((s) => s.accounts);
   const catalogs = useAccountsStore((s) => s.catalogs);
   const connect = useAccountsStore((s) => s.connect);
@@ -46,6 +49,16 @@ export function AccountsSection() {
       experimental: { acceptedAccountConsents: [...accepted.filter((id) => id !== copy.id), copy.id] },
     });
     if (saved) void connect(copy.id);
+  };
+
+  // Every role the account's catalog suggests → this account (§3.7); roles it doesn't serve keep theirs.
+  const applyPresets = async (copy: ProviderCopy) => {
+    try {
+      applyRemote(await bluey.ai.applyProviderPresets({ providerId: copy.id, overwrite: true }));
+      showToast(`${copy.name}'s recommended models are assigned`, 2000);
+    } catch (error) {
+      showErrorToast(toBlueyError(error, "configuration"));
+    }
   };
 
   return (
@@ -83,6 +96,7 @@ export function AccountsSection() {
                 onCancel={() => void cancelConnect(account.accountId)}
                 onDisconnect={() => void disconnect(account.accountId)}
                 onRefreshCatalog={() => void refreshCatalog(account.accountId, true)}
+                onApplyPresets={() => void applyPresets(copy)}
                 onSubmitCode={(code) => void submitCode(account.accountId, code)}
                 onProbe={() =>
                   void probeFingerprint(account.accountId).then((probe) => {

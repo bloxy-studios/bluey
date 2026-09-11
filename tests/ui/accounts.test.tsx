@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useToastStore } from "@/components/ui/toast-store";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import AITab from "@/features/settings/tabs/AITab";
+import { bluey } from "@/lib/tauri/api";
 import type { MockTransport } from "@/lib/tauri/mock";
 import { useAccountsStore } from "@/stores/accountsStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -175,6 +176,34 @@ describe("Settings → AI → Accounts (MockTransport)", () => {
       providerId: "gemini",
       model: "gemini-3.5-flash-lite",
     });
+  });
+
+  it("a connected account is a provider for the roles and its recommended models can be applied", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByTestId("accounts-list");
+    await acceptConsents("chatgpt");
+    expect(within(screen.getByRole("combobox", { name: "Default provider" })).queryByRole("option", { name: "ChatGPT" })).toBeNull();
+    await user.click(within(card("chatgpt")).getByRole("button", { name: "Connect ChatGPT" }));
+    await waitFor(() => expect(within(card("chatgpt")).getByText("ChatGPT Plus · connected")).toBeInTheDocument());
+
+    // Connected → listed as a provider in the role selects and the default-provider switch.
+    expect(within(screen.getByRole("combobox", { name: "Default provider" })).getByRole("option", { name: "ChatGPT" })).toBeInTheDocument();
+    expect(within(screen.getByRole("combobox", { name: "Default AI provider" })).getByRole("option", { name: "ChatGPT" })).toBeInTheDocument();
+
+    await user.click(within(card("chatgpt")).getByRole("button", { name: "Use recommended models" }));
+    await waitFor(() => {
+      const models = useSettingsStore.getState().settings!.ai.models;
+      expect(models.default).toEqual({ providerId: "chatgpt", model: "gpt-6-astra" });
+      expect(models.fast).toEqual({ providerId: "chatgpt", model: "gpt-5.6-luna" });
+      expect(models.reasoning).toEqual({ providerId: "chatgpt", model: "gpt-6-astra" });
+      expect(models.vision).toEqual({ providerId: "chatgpt", model: "gpt-6-astra" });
+    });
+    // Roles the catalog does not serve keep their provider.
+    expect(useSettingsStore.getState().settings!.ai.models.embedding?.providerId).toBe("gemini");
+    expect(useSettingsStore.getState().settings!.ai.models.transcription?.providerId).toBe("gemini");
+    expect(await bluey.ai.listModels({ providerId: "chatgpt", role: "default" })).toContain("gpt-6-astra");
+    expect(await bluey.ai.listModels({ providerId: "chatgpt", role: "embedding" })).toEqual([]);
   });
 
   it("the switch hides the cards and blocks new sign-ins without a rebuild", async () => {

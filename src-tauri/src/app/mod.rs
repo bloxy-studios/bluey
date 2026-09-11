@@ -238,6 +238,8 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         settings.clone(),
         http.clone(),
     )?);
+    // Connected accounts are providers to the router and lend their tokens per request.
+    ai.attach_accounts(accounts.clone());
     let auth = Arc::new(AuthManager::load(
         secrets.clone(),
         storage.clone(),
