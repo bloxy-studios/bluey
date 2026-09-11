@@ -42,7 +42,10 @@ with the reason.
   (`src-tauri/src/transcription/gemini_live.rs`, frames from `bluey_protocols::gemini`):
   `setup` → `setupComplete`, `realtimeInput.audio` (PCM16 16 kHz mono), `audioStreamEnd` after
   500 ms of silence so utterances finalize promptly, `interimInputTranscription` → partials,
-  `inputTranscription` → finals (with the detected language). The service caps a session at
+  `inputTranscription` → finals (with the detected language). The service answers on **binary**
+  WebSocket frames carrying UTF-8 JSON (the browser SDK reads a `Blob`), so every frame is
+  decoded whatever its opcode — a text-only reader never sees `setupComplete` and times out
+  during setup (`network.timeout`) before any audio is sent. The service caps a session at
   ten minutes, so a replacement socket is opened at 9 min 30 s or on `goAway`; the old socket
   drains for two seconds and a final that repeats the previous one within two seconds is
   dropped — dedupe is armed only around a rotation, so a genuinely repeated short answer is kept

@@ -132,7 +132,7 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
     )?);
     set_log_level(settings.get().advanced.log_level.as_str());
     // `.env` → Keychain/settings (ADR 0007). Never fatal.
-    if let Err(error) = env_import::import_env(&secrets, &settings) {
+    if let Err(error) = env_import::import_env(&secrets, &settings, &storage) {
         tracing::warn!(error = %error, "env import failed");
     }
 

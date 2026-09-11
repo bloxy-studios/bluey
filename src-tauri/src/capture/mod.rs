@@ -2,7 +2,7 @@
 //! helper, frame cache, OCR result cache, observation, snapshot persistence
 //! and window content protection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -29,6 +29,49 @@ const PROTECTED_NOTE: &str = "Bluey is excluded from most screen sharing and rec
 displays may still see it.";
 const UNPROTECTED_NOTE: &str = "Bluey windows are visible in screen shares and recordings.";
 
+/// Frames remembered per id. Inline captures carry their image here, so the
+/// bound keeps memory flat over a long session; the helper's temp files are
+/// its own concern (stale ones go at helper startup).
+const FRAME_CACHE_CAPACITY: usize = 8;
+
+/// A captured frame the app still holds: the helper's temp file when it wrote
+/// one, the base64 image when the capture asked for it inline. Either one
+/// serves `read_frame` and OCR (`ocr.recognize` accepts `path` or `image`).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct CachedFrame {
+    path: Option<PathBuf>,
+    image: Option<String>,
+}
+
+/// Insertion-ordered frame cache bounded at [`FRAME_CACHE_CAPACITY`].
+#[derive(Default)]
+struct FrameCache {
+    order: VecDeque<String>,
+    entries: HashMap<String, CachedFrame>,
+}
+
+impl FrameCache {
+    fn insert(&mut self, id: String, frame: CachedFrame) {
+        if self.entries.insert(id.clone(), frame).is_none() {
+            self.order.push_back(id);
+        }
+        while self.order.len() > FRAME_CACHE_CAPACITY {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+
+    fn get(&self, id: &str) -> Option<CachedFrame> {
+        self.entries.get(id).cloned()
+    }
+
+    fn remove(&mut self, id: &str) -> Option<CachedFrame> {
+        self.order.retain(|known| known != id);
+        self.entries.remove(id)
+    }
+}
+
 pub struct CaptureManager {
     app: AppHandle,
     helper: Arc<HelperClient>,
@@ -37,7 +80,7 @@ pub struct CaptureManager {
     bus: Arc<EventBus>,
     sessions: Arc<crate::sessions::SessionManager>,
     ax: Arc<crate::accessibility::AxManager>,
-    frames: parking_lot::Mutex<HashMap<String, PathBuf>>,
+    frames: parking_lot::Mutex<FrameCache>,
     last_ocr: parking_lot::Mutex<Option<(String, OcrContext)>>,
     observing: AtomicBool,
     protection: AtomicBool,
@@ -63,7 +106,7 @@ impl CaptureManager {
             bus,
             sessions,
             ax,
-            frames: parking_lot::Mutex::new(HashMap::new()),
+            frames: parking_lot::Mutex::new(FrameCache::default()),
             last_ocr: parking_lot::Mutex::new(None),
             observing: AtomicBool::new(false),
             protection: AtomicBool::new(protection),
@@ -165,10 +208,18 @@ impl CaptureManager {
             .map_err(|_| BlueyError::capture("malformed", "malformed capture response"))?;
         let frame = helper_proto::frame_to_screen_frame(wire, target);
 
-        if let Some(path) = &frame.path {
-            self.frames
-                .lock()
-                .insert(frame.id.clone(), PathBuf::from(path));
+        // An inline capture used to arrive without a temp file, so the frame id
+        // was never cached and the OCR that follows every ⌘↵ failed with
+        // `unknown_frame`. Remember whatever the helper returned — path, image
+        // or both — so OCR and `read_frame` can always find the frame.
+        if frame.path.is_some() || frame.image.is_some() {
+            self.frames.lock().insert(
+                frame.id.clone(),
+                CachedFrame {
+                    path: frame.path.as_deref().map(PathBuf::from),
+                    image: frame.image.clone(),
+                },
+            );
         }
 
         // The event mirrors the frame without the inline image (kept small).
@@ -210,24 +261,36 @@ impl CaptureManager {
         });
     }
 
-    /// Read a cached frame back as base64.
-    pub async fn read_frame(&self, frame_id: &str) -> BlueyResult<String> {
-        let path = self
-            .frames
+    fn cached_frame(&self, frame_id: &str) -> BlueyResult<CachedFrame> {
+        self.frames
             .lock()
             .get(frame_id)
-            .cloned()
-            .ok_or_else(|| BlueyError::capture("unknown_frame", "unknown frame id"))?;
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|_| BlueyError::capture("read_failed", "cannot read the cached frame"))?;
-        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+            .ok_or_else(|| BlueyError::capture("unknown_frame", "unknown frame id"))
     }
 
-    /// Discard a cached frame (helper deletes the temp file).
+    /// Read a cached frame back as base64 (the temp file, else the inline image).
+    pub async fn read_frame(&self, frame_id: &str) -> BlueyResult<String> {
+        let cached = self.cached_frame(frame_id)?;
+        if let Some(path) = &cached.path {
+            if let Ok(bytes) = tokio::fs::read(path).await {
+                return Ok(base64::engine::general_purpose::STANDARD.encode(bytes));
+            }
+            if cached.image.is_none() {
+                return Err(BlueyError::capture(
+                    "read_failed",
+                    "cannot read the cached frame",
+                ));
+            }
+        }
+        cached
+            .image
+            .ok_or_else(|| BlueyError::capture("unknown_frame", "unknown frame id"))
+    }
+
+    /// Discard a cached frame (helper deletes the temp file when there is one).
     pub async fn discard_frame(&self, frame_id: &str) -> BlueyResult<()> {
-        let path = self.frames.lock().remove(frame_id);
-        if let Some(path) = path {
+        let cached = self.frames.lock().remove(frame_id);
+        if let Some(path) = cached.and_then(|frame| frame.path) {
             let _ = self
                 .helper
                 .call("capture.discard", json!({ "path": path.to_string_lossy() }))
@@ -262,18 +325,19 @@ impl CaptureManager {
         let screen = self.settings.get().screen;
         let level = level.unwrap_or(screen.ocr_level);
         let languages = languages.unwrap_or(screen.ocr_languages);
-        let path = self
-            .frames
-            .lock()
-            .get(frame_id)
-            .cloned()
-            .ok_or_else(|| BlueyError::capture("unknown_frame", "unknown frame id"))?;
-        let params = json!({
-            "path": path.to_string_lossy(),
+        let cached = self.cached_frame(frame_id)?;
+        let mut params = json!({
             "level": match level { OcrLevel::Fast => "fast", OcrLevel::Accurate => "accurate" },
             "languages": languages,
             "minConfidence": 0.3,
         });
+        // `ocr.recognize` takes the temp file by path, or the image itself when
+        // an inline capture has no file (docs/HELPER_PROTOCOL.md › ocr.recognize).
+        match (&cached.path, &cached.image) {
+            (Some(path), _) => params["path"] = json!(path.to_string_lossy()),
+            (None, Some(image)) => params["image"] = json!(image),
+            (None, None) => return Err(BlueyError::capture("unknown_frame", "unknown frame id")),
+        }
         let value = self.helper.call("ocr.recognize", params).await?;
         let wire: helper_proto::WireOcrResult = serde_json::from_value(value)
             .map_err(|_| BlueyError::internal("malformed OCR response"))?;
@@ -339,5 +403,50 @@ impl CaptureManager {
         }
         self.protection.store(enabled, Ordering::SeqCst);
         Ok(self.protection())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(path: Option<&str>, image: Option<&str>) -> CachedFrame {
+        CachedFrame {
+            path: path.map(PathBuf::from),
+            image: image.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_cache_keeps_inline_images_as_well_as_paths() {
+        let mut cache = FrameCache::default();
+        cache.insert("f-1".into(), frame(Some("/tmp/f-1.jpg"), None));
+        cache.insert("f-2".into(), frame(None, Some("QUJD")));
+        assert_eq!(cache.get("f-1"), Some(frame(Some("/tmp/f-1.jpg"), None)));
+        assert_eq!(
+            cache.get("f-2"),
+            Some(frame(None, Some("QUJD"))),
+            "an inline capture without a temp file is still a known frame"
+        );
+        assert_eq!(cache.remove("f-2"), Some(frame(None, Some("QUJD"))));
+        assert_eq!(cache.get("f-2"), None);
+        assert_eq!(cache.order.len(), 1);
+    }
+
+    #[test]
+    fn the_cache_forgets_the_oldest_frames_past_its_capacity() {
+        let mut cache = FrameCache::default();
+        for i in 0..(FRAME_CACHE_CAPACITY + 3) {
+            cache.insert(format!("f-{i}"), frame(None, Some("QUJD")));
+        }
+        assert_eq!(cache.entries.len(), FRAME_CACHE_CAPACITY);
+        assert_eq!(cache.order.len(), FRAME_CACHE_CAPACITY);
+        assert_eq!(cache.get("f-0"), None, "the oldest went first");
+        assert!(cache
+            .get(&format!("f-{}", FRAME_CACHE_CAPACITY + 2))
+            .is_some());
+        // Re-inserting a known id keeps one slot for it.
+        cache.insert("f-5".into(), frame(Some("/tmp/f-5.jpg"), None));
+        assert_eq!(cache.order.iter().filter(|id| *id == "f-5").count(), 1);
     }
 }

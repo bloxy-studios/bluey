@@ -63,8 +63,11 @@ permission is handled in Rust (tauri-plugin-notification), not by the helper.
 ### capture (ScreenCaptureKit)
 Common params: `format` (`"jpeg"` default \| `"png"`), `quality` (0–1, default 0.8),
 `maxDimension` (default 1600, longest side in pixels after downscale), `inline`
-(default false → write temp file), `changeDetection` (default true), `excludeSelf` (default true —
-Bluey's own windows are excluded from the content filter).
+(default false; `true` **adds** the base64 `image` to the frame — the temp file is written either
+way, so `path` always serves `ocr.recognize` / `capture.discard`; should the write fail on an
+inline capture the frame comes back with `path: null` and the caller uses `image`),
+`changeDetection` (default true), `excludeSelf` (default true — Bluey's own windows are excluded
+from the content filter).
 
 | method | params | result |
 |---|---|---|
@@ -79,7 +82,7 @@ Bluey's own windows are excluded from the content filter).
 ```jsonc
 // Frame
 {
-  "id": "f-…", "path": "/…/bluey/frames/f-….jpg", "image": null /* base64 when inline */,
+  "id": "f-…", "path": "/…/bluey/frames/f-….jpg", "image": null /* base64 when inline; the path is written regardless */,
   "mimeType": "image/jpeg", "width": 1600, "height": 1035, "displayId": "69733382",
   "scaleFactor": 2, "capturedAt": "2026-09-07T12:00:00.000Z",
   "hash": "a3f0…", "changed": true, "durationMs": 87

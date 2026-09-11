@@ -903,6 +903,11 @@ pub fn live_audio_stream_end() -> Value {
 }
 
 /// Server → client Live messages relevant to transcription.
+///
+/// The service sends them as **binary** WebSocket frames carrying UTF-8 JSON
+/// (the browser SDK reads a `Blob`, the Python samples `decode()` bytes), so a
+/// client that only reads text frames never sees `setupComplete` — decode both
+/// opcodes through [`parse_live_frame`] / [`parse_live_message`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiveEvent {
     SetupComplete,
@@ -924,6 +929,27 @@ pub enum LiveEvent {
     /// Server-reported error (`status`/`code` only, never the message body).
     Error(String),
     Other,
+}
+
+impl LiveEvent {
+    /// The variant's name — safe to log (transcript text never travels here).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::SetupComplete => "setupComplete",
+            Self::Interim(_) => "interimInputTranscription",
+            Self::Final { .. } => "inputTranscription",
+            Self::GoAway { .. } => "goAway",
+            Self::ResumptionUpdate { .. } => "sessionResumptionUpdate",
+            Self::Error(_) => "error",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Decode one binary frame from the Live socket: the same JSON as a text
+/// frame, as UTF-8 bytes.
+pub fn parse_live_frame(bytes: &[u8]) -> LiveEvent {
+    parse_live_message(&String::from_utf8_lossy(bytes))
 }
 
 /// Decode one text frame from the Live socket.
@@ -1826,6 +1852,44 @@ mod tests {
 
         let (empty, next) = parse_models_page(r#"{"models":[]}"#).unwrap();
         assert!(empty.is_empty() && next.is_none());
+    }
+
+    #[test]
+    fn binary_live_frames_decode_like_text_frames() {
+        // The service answers on binary WebSocket frames; `setupComplete` must
+        // be recognised there or every session times out during setup.
+        assert_eq!(
+            parse_live_frame(br#"{"setupComplete":{}}"#),
+            LiveEvent::SetupComplete
+        );
+        assert_eq!(
+            parse_live_frame(
+                br#"{"serverContent":{"inputTranscription":{"text":"hello there","languageCode":"en-US"}}}"#
+            ),
+            LiveEvent::Final {
+                text: "hello there".into(),
+                language: Some("en-US".into()),
+            }
+        );
+        assert_eq!(
+            parse_live_frame(br#"{"serverContent":{"interimInputTranscription":{"text":"hel"}}}"#),
+            LiveEvent::Interim("hel".into())
+        );
+        assert_eq!(
+            parse_live_frame(br#"{"error":{"status":"UNAUTHENTICATED"}}"#),
+            LiveEvent::Error("UNAUTHENTICATED".into())
+        );
+        assert_eq!(parse_live_frame(b"\xff\xfe not json"), LiveEvent::Other);
+        assert_eq!(LiveEvent::SetupComplete.kind(), "setupComplete");
+        assert_eq!(
+            LiveEvent::Final {
+                text: "secret".into(),
+                language: None
+            }
+            .kind(),
+            "inputTranscription",
+            "the kind never carries transcript text"
+        );
     }
 
     #[test]
