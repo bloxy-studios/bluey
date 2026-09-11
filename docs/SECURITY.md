@@ -21,6 +21,7 @@
 | Exa / Firecrawl keys | Keychain | Rust research clients; env-injected into the agent sidecar per job |
 | Anthropic key for the agent | Keychain (or `ANTHROPIC_API_KEY` in Bluey's `.env`) | `ANTHROPIC_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=claude` |
 | Sign-in tokens (OAuth access / refresh / ID token) | Keychain `auth:clerk:oauth_tokens` | Rust only (ADR 0008): browser sign-in via Clerk's OAuth/OIDC endpoints; validated/refreshed at boot; revoked on sign-out |
+| AI subscription tokens (ChatGPT / Claude / Google — ADR 0009, from the Provider Accounts PRs) | Keychain `account:<account_id>:oauth_tokens` | Rust only (`AccountsManager`): refreshed under a single-flight lock, injected into provider requests by the adapter, never returned to the WebView, never passed to a sidecar |
 | Clerk publishable key + public OAuth client id | `VITE_CLERK_PUBLISHABLE_KEY`, `BLUEY_CLERK_OAUTH_CLIENT_ID` (public by design): the environment / `.env.local` / `.env` at startup, else the values `src-tauri/build.rs` compiled in from the same files (an explicit allowlist of public identifiers — never API keys) | Rust derives the issuer; the WebView never talks to Clerk |
 
 Sidecars are spawned with a **cleared environment**: the helper and the research agent receive
@@ -34,6 +35,45 @@ Keys entered in Settings are written straight to the Keychain and the UI only sh
 "Key saved". `.env` values are imported into the Keychain on first run and can be removed from
 disk afterwards. Nothing secret is written to SQLite or logs; the logger redacts common key
 patterns (`sk-…`, `fc-…`, bearer tokens) defensively.
+
+## Provider accounts — subscription sign-in (ADR 0009)
+
+The Provider Accounts PRs (`docs/PROVIDER_ACCOUNTS.md` lists which PR enforces what) add a second
+credential source next to API keys: the owner's own ChatGPT, Claude and Google AI subscriptions,
+signed in through the vendors' OAuth flows. These invariants hold for every one of them:
+
+* **Tokens are Rust-only.** They live under `account:<account_id>:oauth_tokens`, are read and
+  written only by `AccountsManager`, and never reach the WebView, the logs, SQLite or a child
+  process. The WebView sees `ProviderAccount` — status, plan, e-mail, project id — and nothing
+  else. A test asserts that the research sidecar's `job_env` never contains OAuth material.
+* **The WebView's secret allow-list narrows, it does not widen.** `secrets_set` / `secrets_delete`
+  accept only `provider:<id>:api_key`; `auth:*` and `account:*` are rejected at the command layer
+  (`SecretsStore::validate_key` stays as the storage-level allow-list).
+* **Redaction grows with the tokens**: `chatgpt-account-id`, `sk-ant-oat…`, `sk-ant-ort…`,
+  `ya29.…` and `1//…` join the log patterns above.
+* **Loopback listeners** bind `127.0.0.1` only, accept a single request of ≤ 8 KB with a 5 s read
+  timeout, and check `state` before anything else. Manual code paste (`code#state`) is validated
+  the same way.
+* **No silent spending.** A response saying the request is billed to extra usage or pay-as-you-go
+  instead of the plan is a *stop* signal: the request halts, the account flips to
+  `Unavailable{fingerprint_drift | extra_usage_billing}`, Bluey falls back to the API-key provider
+  and tells the user. A drifted fingerprint is never retried automatically.
+* **Imports are read-only.** Importing an existing sign-in from Claude Code, Codex CLI or the
+  Antigravity app copies tokens into Bluey's own Keychain entry and never writes to `~/.claude`,
+  `~/.codex`, Antigravity's data directory or their Keychain items.
+* **One consent dialog per provider, once**, before the browser opens: what is sent, whose plan
+  limits are used, that the integration is unofficial and may stop working, and what Bluey does
+  when it does.
+* `data_reset_all` deletes `account:*` entries too and collects errors instead of aborting.
+
+## Fast path and prefetch (ADR 0010)
+
+The speculative warm frame reuses the smart-observation frame (≤ 1.5 s old, unchanged dHash) for
+⌘↵ only when screen permission is granted **and** the smart-observation setting is on; retrieval
+for the current transcript question is precomputed from the transcript the user is already
+recording. Nothing is captured that the user did not already enable, and no frame is sent to a
+model without ⌘↵ / ⌘⇧↵. OCR moves off the critical path but keeps its retention rules: OCR text
+follows the *store transcripts / screenshots* settings exactly as before.
 
 ## Frontend ⇄ backend boundary
 * Every command has a typed signature in `src/lib/tauri/commands.ts`; the Rust side validates

@@ -32,7 +32,8 @@ the mode you're in, and prepares concise, useful help before you even ask.
 * **Native macOS feel** — NSPanel HUD across Spaces and fullscreen apps, menu bar item,
   configurable global shortcuts, Retina/multi-display aware, dark/light, reduced motion.
 
-Bluey is a personal tool: **no billing, subscriptions or teams.** Sign-in uses Clerk, in your browser.
+Bluey is a personal tool: **no billing, subscriptions or teams of its own** — you bring your own
+AI provider keys or, where supported, your own AI subscriptions. Sign-in uses Clerk, in your browser.
 
 ## Stack
 Tauri v2 · Rust (tokio, rusqlite, reqwest) · Swift native helper (ScreenCaptureKit, Vision,
@@ -72,7 +73,8 @@ conflict detection.
 [Capture](docs/CAPTURE_ARCHITECTURE.md) · [Audio](docs/AUDIO_ARCHITECTURE.md) ·
 [Mode system](docs/MODE_SYSTEM.md) · [Security](docs/SECURITY.md) · [Testing](docs/TESTING.md) ·
 [Design](docs/DESIGN.md) · [Helper protocol](docs/HELPER_PROTOCOL.md) ·
-[Agent sidecar protocol](docs/AGENT_SIDECAR_PROTOCOL.md) · [ADRs](docs/adr/)
+[Agent sidecar protocol](docs/AGENT_SIDECAR_PROTOCOL.md) ·
+[Provider accounts](docs/PROVIDER_ACCOUNTS.md) · [Latency](docs/LATENCY.md) · [ADRs](docs/adr/)
 
 ## Platform limitations (honest list)
 * Content protection hides the panel from most capture APIs but macOS does not guarantee it for
@@ -81,4 +83,10 @@ conflict detection.
 * Speaker identification is derived from audio channel (you vs. others) — not true diarization.
 * Sign-in runs in the system browser (Clerk as OAuth/OIDC provider, PKCE, `bluey://` deep link
   back into the app — ADR 0008); nothing from Clerk runs inside the WebView.
+* Signing in with a paid AI subscription (ChatGPT via Codex OAuth, Claude Pro/Max via claude.ai
+  OAuth, Google AI Pro/Ultra via Antigravity OAuth — ADR 0009, landing with the Provider Accounts
+  PRs) is **unofficial and experimental**: Bluey speaks the vendors' own client protocols, the
+  vendors may change or stop them without notice, and when a provider stops recognising Bluey it
+  stops and falls back to your API key rather than spend paid extra usage. Status per provider:
+  `docs/PROVIDER_ACCOUNTS.md`.
 * Notifications permission is only available in a signed, bundled app.
