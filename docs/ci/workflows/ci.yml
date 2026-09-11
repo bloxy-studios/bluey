@@ -43,7 +43,7 @@ jobs:
             : > "src-tauri/binaries/${bin}-aarch64-apple-darwin"
             chmod +x "src-tauri/binaries/${bin}-aarch64-apple-darwin"
           done
-      - name: fmt + tests + clippy (bluey-core, bluey-storage, bluey-protocols) and macOS cargo check
+      - name: fmt + tests + clippy (bluey-core, bluey-storage, bluey-protocols, bluey-oauth, bluey-fingerprints) and macOS cargo check
         run: bash scripts/check-rust.sh --darwin
       - name: clippy for the app crate on the macOS target (incl. unit tests)
         run: |

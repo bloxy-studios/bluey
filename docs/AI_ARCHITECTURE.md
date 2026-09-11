@@ -115,7 +115,11 @@ visionRequired, preferredRole)` over the user's role assignments
   `antigravity` (kinds `chatgpt_codex`, `claude_subscription`, `antigravity_google`); the
   profiles shipped today are placeholders answering `account.provider_pending` until PR 3a–3c.
   Switches: `settings.experimental.subscriptionAccounts` (runtime) and the Cargo feature
-  `subscription-accounts` (build). Facts, consent copy and the runbook: `docs/PROVIDER_ACCOUNTS.md`.
+  `subscription-accounts` (build). The fingerprints themselves are data: `bluey_protocols::fingerprints` holds
+  `VERSION` / `CAPTURED_ON`, the comparison rules and the documented capture per provider
+  (`tests/fixtures/fingerprints/<provider>/documented/`), and the `bluey-fingerprints` harness
+  (`bun run fingerprints:capture | import-har | diff | bless`) keeps them true against the real
+  clients. Facts, consent copy and the runbook: `docs/PROVIDER_ACCOUNTS.md`.
 - **Cancellation**: each request has a `CancellationToken`; `ai_cancel(requestId)` aborts the
   HTTP stream; newer generations cancel older ones.
 - **Metrics**: time to first token, total latency, token usage → `ai_requests` table +

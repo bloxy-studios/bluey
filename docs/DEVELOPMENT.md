@@ -46,7 +46,8 @@ Other commands:
 | `bun run typecheck`                    | `tsc --noEmit` for the app and the agent sidecar                                                                                                                                                      |
 | `bun run lint` / `bun run format`      | ESLint (strict TS, hooks) / Prettier                                                                                                                                                                  |
 | `bun run test`                         | Vitest (unit, integration, UI)                                                                                                                                                                        |
-| `bun run test:rust`                    | `cargo test` for `bluey-core`, `bluey-storage`, `bluey-protocols` and `bluey-oauth`                                                                                                                   |
+| `bun run test:rust`                    | `cargo test` for `bluey-core`, `bluey-storage`, `bluey-protocols`, `bluey-oauth` and `bluey-fingerprints`                                                                                             |
+| `bun run fingerprints:capture <provider>` · `fingerprints:import-har` · `fingerprints:diff` · `fingerprints:bless` · `fingerprints:list` | the fingerprint capture harness (`src-tauri/crates/bluey-fingerprints`): point the official CLI at a local proxy, import a HAR, diff a capture against the documented fingerprint and the blessed golden, bless it — `docs/PROVIDER_ACCOUNTS.md › Re-capture runbook` |
 | `bun run check:rust`                   | fmt + tests + clippy; add `--darwin` to type-check the app crate for macOS                                                                                                                            |
 | `bun run build:helper` / `build:agent` | native helper / research agent sidecars                                                                                                                                                               |
 | `bun run tauri icon`                   | regenerate `src-tauri/icons/` (`.icns`, `.ico`, PNG sizes) from the 1024×1024 master `app-icon.png`; the menu-bar glyphs in `src-tauri/icons/tray/` are hand-made (see `docs/DESIGN.md`)              |
@@ -81,7 +82,11 @@ Settings → AI → **Accounts** signs in with the owner's ChatGPT, Claude or Go
 compile the layer out — every account then reports `unavailable`) and the runtime setting
 `experimental.subscriptionAccounts` (the switch in the Accounts section; off hides the cards and
 refuses new sign-ins). The `mock` transport (`bun run dev`) ships fake accounts that connect on a
-timer with fixture catalogs; the real provider profiles land in PR 3a–3c.
+timer with fixture catalogs; the real provider profiles land in PR 3a–3c. The providers' request
+fingerprints are data in `bluey_protocols::fingerprints` (`VERSION` / `CAPTURED_ON`, rules, the
+documented captures under `tests/fixtures/fingerprints/<provider>/documented/`); after every
+official-client release, `bun run fingerprints:capture <provider>` + `bun run fingerprints:diff
+<provider>` tells you which doc column and which constant to update.
 
 ## Working without macOS
 

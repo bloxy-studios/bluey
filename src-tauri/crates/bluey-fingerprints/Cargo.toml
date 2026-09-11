@@ -1,0 +1,29 @@
+[package]
+name = "bluey-fingerprints"
+version = "0.1.0"
+description = "Fingerprint capture harness for Bluey's subscription providers: a local capture proxy the official CLIs are pointed at, HAR import, the documented/golden drift diff (bun run fingerprints:*)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "fingerprints"
+path = "src/main.rs"
+
+[dependencies]
+bluey-protocols = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "signal"] }
+tokio-util = { workspace = true }
+url = { workspace = true }
+# TLS through rustls with the `ring` provider already in the lockfile (the `rustls`
+# feature would pull aws-lc-rs, which needs cmake); roots come from the platform verifier.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+[dev-dependencies]
+tempfile = "3"

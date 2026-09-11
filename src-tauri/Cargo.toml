@@ -14,7 +14,13 @@ name = "bluey_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace]
-members = ["crates/bluey-core", "crates/bluey-storage", "crates/bluey-protocols", "crates/bluey-oauth"]
+members = [
+  "crates/bluey-core",
+  "crates/bluey-storage",
+  "crates/bluey-protocols",
+  "crates/bluey-oauth",
+  "crates/bluey-fingerprints",
+]
 
 [workspace.package]
 edition = "2021"

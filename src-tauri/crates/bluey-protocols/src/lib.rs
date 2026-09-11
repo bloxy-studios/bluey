@@ -26,6 +26,9 @@
 //!   loopback listener's HTTP bits (the runtime half is the `bluey-oauth` crate).
 //! * [`request_shaper`] — the `RequestShaper` trait: a subscription provider's request
 //!   fingerprint as data (headers, system blocks, drift detection), applied last by the adapter.
+//! * [`fingerprints`] — the fingerprints themselves as data: the scrubbed capture format,
+//!   the scrubber, per-provider rules with `VERSION` / `CAPTURED_ON`, the documented
+//!   captures and the drift diff behind `bun run fingerprints:diff`.
 //!
 //! No Tauri, tokio, or network dependencies live here.
 
@@ -34,6 +37,7 @@ pub mod anthropic;
 pub mod azure;
 pub mod clerk;
 pub mod exa;
+pub mod fingerprints;
 pub mod firecrawl;
 pub mod gemini;
 pub mod helper;

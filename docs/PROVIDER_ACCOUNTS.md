@@ -30,8 +30,13 @@ branch, the HUD *Reconnect* / *Use API key instead* recoveries, the runtime flag
 three provider rows flip from *specified* to *built* with PR 3a–3c; until then their profiles are
 placeholders that answer `account.provider_pending`.
 
-`bun run fingerprints:diff <provider>` (PR 2b) and `accounts_probe_fingerprint` (dev) are how
-the two right-hand columns are kept true after every official-client release.
+The tables below are also **data**: `bluey_protocols::fingerprints::{codex, claude_code, antigravity}`
+hold `VERSION` / `CAPTURED_ON`, the comparison rules and the *documented* capture per endpoint
+(generated into `tests/fixtures/fingerprints/<provider>/documented/`). `bun run fingerprints:capture
+<provider>` records the official client through a local proxy, `bun run fingerprints:diff <provider>`
+diffs that capture against the documented fingerprint and the blessed golden (PR 2b), and
+`accounts_probe_fingerprint` (dev) asks the provider whether Bluey's own request is still billed to
+the plan — together they keep the two right-hand columns true after every official-client release.
 
 ## How a subscription account works
 
@@ -232,27 +237,42 @@ reports drift, and before bumping a fingerprint `VERSION`.
 
 1. **Install or upgrade the official client** and record its version (`claude --version`,
    `codex --version`, Antigravity → About).
-2. **Start the capture proxy**: `dev_capture_proxy` (PR 2b; a local HTTP proxy on
-   `127.0.0.1:<port>` that writes every request to `tests/fixtures/fingerprints/raw/`) or
-   mitmproxy.
-3. **Point the client at it** — Claude Code: `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`;
-   Codex CLI and Antigravity: see the provider subsection above for the knob that redirects the
-   *ChatGPT-auth* backend and the Electron proxy setting respectively (VERIFY on the day).
+2. **Start the capture proxy**: `bun run fingerprints:capture <provider>` — a local HTTP proxy on
+   `127.0.0.1:1456` (`--port`) that forwards to the real upstream and writes every exchange,
+   already scrubbed, to `tests/fixtures/fingerprints/<provider>/captures/` (git-ignored). The
+   Antigravity app has no base-URL knob: run mitmproxy / Proxyman with its CA trusted
+   (`HTTPS_PROXY`), export a HAR and run `bun run fingerprints:import-har antigravity <file.har>`.
+3. **Point the client at it** — Claude Code: `ANTHROPIC_BASE_URL=http://127.0.0.1:1456 claude`;
+   Codex CLI: `chatgpt_base_url` in `~/.codex/config.toml` (the *ChatGPT-auth* backend — VERIFY
+   the exact value on the day; the proxy forwards whatever path the CLI sends); Antigravity: the
+   Electron proxy setting (VERIFY on the day).
 4. **Exercise it**: one text turn, one turn with an image, one turn that lists models, and (Claude)
    one turn with a tool call, so the fixture covers every shape the shaper produces.
-5. **Scrub** tokens, account/organisation/project ids, e-mails, device and session ids into
-   stable placeholders (`<ACCESS_TOKEN>`, `<ACCOUNT_UUID>`, …) and save
-   `tests/fixtures/fingerprints/<provider>_<client-version>.json`.
-6. **Diff**: `bun run fingerprints:diff <provider>` prints a header-by-header, field-by-field diff
-   between the fresh capture and what the shipped shaper would send; anything not explained by a
-   per-request id is drift.
-7. **Update** the shaper module, bump `VERSION` and `CAPTURED_ON`, refresh the tables in this
+5. **Scrubbing is automatic** (`bluey_protocols::fingerprints::scrub`): tokens, JWTs, API keys,
+   account / organisation / project ids, e-mails, device and session ids, home directories and
+   the user's own text and images become stable placeholders (`<ACCESS_TOKEN>`, `<UUID>`,
+   `<EMAIL>`, `<TEXT n>`, `<BASE64 n>`, …) before the file is written; the fingerprint blocks
+   (identity, billing header, wrapper fields, the Codex instructions template) are kept verbatim.
+   Read the capture once anyway before blessing it.
+6. **Diff**: `bun run fingerprints:diff <provider>` compares the newest capture header by header
+   and field by field with the *documented* fingerprint (these tables as data) and with the
+   blessed golden. **DRIFT** is anything the tables do not explain — a header or field added,
+   removed or outside its documented format (exit 1); **VERSION** is a value that still matches
+   the documented format — a client version bump — and names the column to update; **INFO** is a
+   difference the rules call informational (model, optional wrappers). `--json` for tooling,
+   `--endpoint <name>`, `--capture <file>`, `--against documented|golden|<file>`.
+7. **Update** the shaper module and the constants in `bluey_protocols::fingerprints::<provider>`
+   (`VERSION`, `CAPTURED_ON`, the documented values and rules), regenerate the documented fixtures
+   (`UPDATE_FIXTURES=1 cargo test -p bluey-protocols fingerprints`), refresh the tables in this
    document (values *and* dates) and the *Status by provider* row.
-8. **Probe** with the real account: `accounts_probe_fingerprint` sends a one-token request and
+8. **Bless**: `bun run fingerprints:bless <provider>` promotes the reviewed capture to
+   `tests/fixtures/fingerprints/<provider>/golden/<endpoint>.json` (committed); later diffs
+   compare against it as well.
+9. **Probe** with the real account: `accounts_probe_fingerprint` sends a one-token request and
    reports whether it was billed to the plan (Claude: no extra-usage 400; ChatGPT: 200 with usage
    headers; Antigravity: 200 on prod).
-9. **PR** with the repo's Why / What / Validation / Not verified here template; the golden fixture,
-   the `VERSION` bump and this document change together.
+10. **PR** with the repo's Why / What / Validation / Not verified here template; the golden fixture,
+    the `VERSION` bump and this document change together.
 
 ## Importing an existing sign-in (read-only)
 
@@ -280,7 +300,7 @@ local credential store, copies the tokens into its own Keychain entry and contin
 | Loopback listener rules (127.0.0.1, one request, 8 KB, 5 s, `state` first) | PR 1 — `bluey_oauth::LoopbackListener` |
 | Consent once per provider; feature flag + Cargo feature | PR 2 — `ConsentDialog` + `experimental.acceptedAccountConsents`; `experimental.subscriptionAccounts` (Settings → AI → Accounts switch); `subscription-accounts` (default on; `AccountsManager::build_enabled`) |
 | A `Connecting` status never survives a restart; a failed sign-in moves the account to the status its error names (`bluey_core::accounts::status_after_error`) | PR 2 — `AccountsManager::load` / `finish_connect` |
-| Fingerprint modules with `VERSION` / `CAPTURED_ON`, golden fixtures, `fingerprints:diff`, `accounts_probe_fingerprint` | PR 2b, PR 3a–3c |
+| Fingerprint modules with `VERSION` / `CAPTURED_ON`, golden fixtures, `fingerprints:diff`, `accounts_probe_fingerprint` | PR 2b — `bluey_protocols::fingerprints::{codex, claude_code, antigravity}` (constants, rules, documented captures → `tests/fixtures/fingerprints/*/documented/`, the diff), the `bluey-fingerprints` harness (`capture`, `import-har`, `diff`, `bless`; captures scrubbed before writing); PR 3a–3c — shapers reading the same constants, real probes, blessed goldens |
 | Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3b (Claude), PR 3a/3c error mappers |
 | Imports read-only | PR 3a–3c |
 
