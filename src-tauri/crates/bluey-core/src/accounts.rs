@@ -8,9 +8,9 @@ use chrono::{DateTime, Utc};
 
 use crate::error::BlueyError;
 use crate::types::{
-    AccountStatus, AiProviderKind, CatalogModel, CatalogSource, ModelRole, ProviderAccount,
-    ProviderModelCatalog, UnavailableReason, ANTIGRAVITY_PROVIDER_ID, CHATGPT_PROVIDER_ID,
-    CLAUDE_PROVIDER_ID,
+    AccountStatus, AiProviderConfig, AiProviderKind, CatalogModel, CatalogSource, ModelAssignment,
+    ModelRole, ModelRoleAssignments, ProviderAccount, ProviderAuthMethod, ProviderModelCatalog,
+    UnavailableReason, ANTIGRAVITY_PROVIDER_ID, CHATGPT_PROVIDER_ID, CLAUDE_PROVIDER_ID,
 };
 
 /// Endpoint / curated catalogs are refreshed after this long.
@@ -180,6 +180,61 @@ pub fn preset_assignments(catalog: &ProviderModelCatalog) -> Vec<(ModelRole, &Ca
                 .map(|model| (*role, model))
         })
         .collect()
+}
+
+/// The provider the router sees for an account (§3.6): enabled while the
+/// accounts layer is on, "has a key" while the account is usable — connected,
+/// or past its rate-limit window. Not `Connected` = keyless = the router's
+/// existing fallback chain reaches the API-key providers.
+pub fn provider_config(
+    account: &ProviderAccount,
+    now: DateTime<Utc>,
+    enabled: bool,
+) -> AiProviderConfig {
+    AiProviderConfig {
+        id: account.provider_id.clone(),
+        kind: account.kind,
+        name: provider_display_name(&account.provider_id)
+            .unwrap_or(account.provider_id.as_str())
+            .to_string(),
+        base_url: String::new(),
+        api_version: None,
+        deployments: None,
+        enabled,
+        has_api_key: enabled && is_usable(account, now),
+        auth_method: ProviderAuthMethod::OauthSubscription,
+    }
+}
+
+/// Point roles at the catalog's suggested models (§3.7). `overwrite` re-points
+/// every role the catalog suggests; otherwise only unassigned roles and roles
+/// that point at this provider with a model the catalog no longer lists.
+/// Never assigns a model the catalog did not return. Returns the roles changed.
+pub fn apply_catalog_presets(
+    assignments: &mut ModelRoleAssignments,
+    catalog: &ProviderModelCatalog,
+    overwrite: bool,
+) -> Vec<ModelRole> {
+    let mut changed = Vec::new();
+    for (role, model) in preset_assignments(catalog) {
+        let current = assignments.get(role);
+        let stale = current.is_some_and(|assignment| {
+            assignment.provider_id == catalog.provider_id
+                && !catalog.models.iter().any(|m| m.id == assignment.model)
+        });
+        if !(overwrite || current.is_none() || stale) {
+            continue;
+        }
+        let next = ModelAssignment {
+            provider_id: catalog.provider_id.clone(),
+            model: model.id.clone(),
+        };
+        if current != Some(&next) {
+            assignments.set(role, Some(next));
+            changed.push(role);
+        }
+    }
+    changed
 }
 
 /// Insert or replace an account (by `account_id`), keeping the list order.
@@ -391,6 +446,72 @@ mod tests {
             "no model claims transcription"
         );
         assert_eq!(pick(ModelRole::Embedding), None);
+    }
+
+    #[test]
+    fn the_router_sees_a_usable_account_as_a_keyed_provider() {
+        let now = at("2026-09-11T12:00:00Z");
+        let connected = provider_config(&account(AccountStatus::Connected), now, true);
+        assert_eq!(connected.id, "chatgpt");
+        assert_eq!(connected.kind, AiProviderKind::ChatgptCodex);
+        assert_eq!(connected.name, "ChatGPT");
+        assert_eq!(connected.auth_method, ProviderAuthMethod::OauthSubscription);
+        assert!(connected.enabled && connected.has_api_key);
+        let expired = provider_config(&account(AccountStatus::NeedsReauth), now, true);
+        assert!(
+            expired.enabled && !expired.has_api_key,
+            "keyless → fallback chain"
+        );
+        let limited = provider_config(
+            &account(AccountStatus::RateLimited {
+                until: "2026-09-11T14:32:00Z".into(),
+                window: None,
+            }),
+            now,
+            true,
+        );
+        assert!(!limited.has_api_key);
+        let off = provider_config(&account(AccountStatus::Connected), now, false);
+        assert!(!off.enabled && !off.has_api_key);
+    }
+
+    #[test]
+    fn catalog_presets_fill_unassigned_and_stale_roles_unless_overwriting() {
+        let catalog = catalog(CatalogSource::Endpoint, "2026-09-11T11:55:00Z");
+        let mut assignments = ModelRoleAssignments {
+            default: Some(ModelAssignment {
+                provider_id: "gemini".into(),
+                model: "gemini-3.8-flash".into(),
+            }),
+            reasoning: Some(ModelAssignment {
+                provider_id: "chatgpt".into(),
+                model: "gpt-retired".into(),
+            }),
+            ..ModelRoleAssignments::default()
+        };
+        let mut changed = apply_catalog_presets(&mut assignments, &catalog, false);
+        changed.sort_by_key(|r| format!("{r:?}"));
+        assert_eq!(
+            changed,
+            vec![ModelRole::Fast, ModelRole::Reasoning, ModelRole::Vision]
+        );
+        assert_eq!(
+            assignments.default.as_ref().unwrap().provider_id,
+            "gemini",
+            "kept"
+        );
+        assert_eq!(
+            assignments.reasoning.as_ref().unwrap().model,
+            "gpt-6-astra",
+            "stale → replaced"
+        );
+        assert_eq!(assignments.fast.as_ref().unwrap().model, "gpt-5.6-luna");
+        assert!(assignments.embedding.is_none(), "no model claims embedding");
+        let again = apply_catalog_presets(&mut assignments, &catalog, false);
+        assert!(again.is_empty(), "idempotent");
+        let overwritten = apply_catalog_presets(&mut assignments, &catalog, true);
+        assert_eq!(overwritten, vec![ModelRole::Default]);
+        assert_eq!(assignments.default.as_ref().unwrap().provider_id, "chatgpt");
     }
 
     #[test]

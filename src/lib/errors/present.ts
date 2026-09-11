@@ -152,6 +152,10 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "No existing sign-in found",
     message: "Bluey found no sign-in of the official app on this Mac. Connect in the browser instead.",
   },
+  "account.browser_open_failed": {
+    title: "Couldn't open the browser",
+    message: "Bluey could not open the sign-in page in your default browser. Try again, or copy the link from the account card.",
+  },
   "account.unknown_provider": {
     title: "Unknown subscription provider",
     message: "Bluey only knows ChatGPT, Claude and Google AI subscriptions.",

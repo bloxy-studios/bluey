@@ -74,8 +74,10 @@ pub struct ShapeContext<'a> {
     pub provider_account_id: Option<&'a str>,
     /// Stable per-install device id (Keychain), for `metadata.user_id`-style fields.
     pub device_id: &'a str,
-    /// One id per Bluey process (session headers).
+    /// One id per conversation (session / thread headers, prompt-cache keys).
     pub session_id: &'a str,
+    /// One id per request (`x-client-request-id`-style headers).
+    pub request_id: &'a str,
     pub model: &'a str,
     pub access_token: Option<&'a str>,
 }
@@ -211,6 +213,7 @@ mod tests {
             provider_account_id: None,
             device_id: "device",
             session_id: "session",
+            request_id: "request",
             model: "m",
             access_token: Some("token"),
         };

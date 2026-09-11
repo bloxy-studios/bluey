@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use bluey_core::error::RecoveryAction;
 use bluey_core::types::{
     AccountConnectOptions, AccountIdentity, AiProviderKind, ConnectFlow, FingerprintProbe,
-    ProviderModelCatalog, ANTIGRAVITY_PROVIDER_ID, CHATGPT_PROVIDER_ID, CLAUDE_PROVIDER_ID,
+    ProviderModelCatalog, ANTIGRAVITY_PROVIDER_ID, CLAUDE_PROVIDER_ID,
 };
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_oauth::TokenSet;
@@ -168,15 +168,26 @@ impl ProviderProfile for PendingProfile {
     }
 }
 
+/// ChatGPT is real since PR 3a — in builds with the `subscription-accounts` feature.
+#[cfg(feature = "subscription-accounts")]
+fn chatgpt_profile() -> Arc<dyn ProviderProfile> {
+    Arc::new(super::chatgpt::ChatgptProfile)
+}
+
+#[cfg(not(feature = "subscription-accounts"))]
+fn chatgpt_profile() -> Arc<dyn ProviderProfile> {
+    Arc::new(PendingProfile {
+        provider_id: bluey_core::types::CHATGPT_PROVIDER_ID,
+        kind: AiProviderKind::ChatgptCodex,
+        display_name: "ChatGPT",
+        lands_in: "a build with the subscription-accounts feature",
+    })
+}
+
 /// The profiles this build ships, in UI order.
 pub fn profiles() -> Vec<Arc<dyn ProviderProfile>> {
     vec![
-        Arc::new(PendingProfile {
-            provider_id: CHATGPT_PROVIDER_ID,
-            kind: AiProviderKind::ChatgptCodex,
-            display_name: "ChatGPT",
-            lands_in: "PR 3a",
-        }),
+        chatgpt_profile(),
         Arc::new(PendingProfile {
             provider_id: CLAUDE_PROVIDER_ID,
             kind: AiProviderKind::ClaudeSubscription,
@@ -210,8 +221,8 @@ mod tests {
                 Some(profile.display_name())
             );
             assert!(
-                profile.fingerprint().is_none(),
-                "pending profiles ship no fingerprint"
+                profile.fingerprint().is_some(),
+                "every profile reports the documented fingerprint its build reproduces"
             );
         }
     }

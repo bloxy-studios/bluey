@@ -16,7 +16,7 @@ fingerprint parity, drift detection, an extra-usage guard and automatic fallback
 | Provider | Credential | Status | Fingerprint `VERSION` / `CAPTURED_ON` | Facts verified | Lands in |
 |---|---|---|---|---|---|
 | Google Gemini, Foundry/Azure, Anthropic, OpenAI-compatible | API key (`provider:<id>:api_key`) | shipped | — | ADR 0007 | — |
-| ChatGPT Free / Plus / Pro | Codex OAuth (`account:<id>:oauth_tokens`) | specified | — / — | 2026-09-11 | PR 3a |
+| ChatGPT Free / Plus / Pro | Codex OAuth (`account:<id>:oauth_tokens`) | **built** (unofficial, experimental) | `codex/0.154.0` / 2026-09-11 (documented, not yet captured from the CLI) | 2026-09-11 | PR 3a |
 | Claude Pro / Max | claude.ai OAuth, Claude Code wire format | specified | — / — (capture first, §4b.1) | 2026-09-11 | PR 3b |
 | Google AI Pro / Ultra | Antigravity OAuth, Cloud Code `v1internal` | specified | — / — | 2026-09-11 | PR 3c |
 
@@ -26,8 +26,9 @@ The **accounts layer** itself landed in PR 2: the mirrored types (`bluey_core::t
 `accounts.changed` / `accounts.catalog` events, `MockTransport` fake accounts with fixture
 catalogs, Settings → AI → Accounts (cards, consent dialog, import button), the onboarding
 branch, the HUD *Reconnect* / *Use API key instead* recoveries, the runtime flag
-`settings.experimental.subscriptionAccounts` and the Cargo feature `subscription-accounts`. The
-three provider rows flip from *specified* to *built* with PR 3a–3c; until then their profiles are
+`settings.experimental.subscriptionAccounts` and the Cargo feature `subscription-accounts`. ChatGPT
+flipped to *built* in PR 3a (`src-tauri/src/accounts/chatgpt.rs`, `src-tauri/src/ai/providers/chatgpt.rs`,
+`bluey_protocols::codex`); Claude and Google AI follow in PR 3b / 3c — until then their profiles are
 placeholders that answer `account.provider_pending`.
 
 The tables below are also **data**: `bluey_protocols::fingerprints::{codex, claude_code, antigravity}`
@@ -92,6 +93,27 @@ official Codex auth docs. Full pass with every file:line:
 | Local store | `~/.codex/auth.json` (0600): `{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token","access_token","refresh_token","account_id"},"last_refresh":"<RFC 3339>"}`; optional keyring mode: macOS Keychain service `Codex Auth`, account `cli|<first 16 hex of sha256(codex_home)>`, same JSON | `login/src/auth/storage.rs:39-65,230-406`; `config/src/types.rs:106-119` | import reads either, copies, never writes back |
 | Capture knob | the CLI honours `HTTPS_PROXY` / system proxy with a custom-CA path; `chatgpt_base_url` in `~/.codex/config.toml` pins the backend base URL | `login/src/auth/default_client.rs:305-310`; Codex auth docs | for the re-capture runbook |
 | Policy | no OpenAI document authorises or prohibits third-party use of the Codex client id; official auth docs are silent; Sam Altman's 2026-05-01 post endorsed using a ChatGPT subscription inside OpenClaw (a third party using this flow) | `developers.openai.com/codex/auth`; press quotes 2026-05-03/04 | engineering input only: kill switch + drift detection |
+
+**What Bluey sends (PR 3a, `bluey_protocols::codex`).** Sign-in: the CLI's six-scope string and
+parameter order, PKCE with a 64-byte verifier, loopback `1455` → `1457` → device code
+(`prefer_device_code` skips the ports). Requests: every header of the *Headers* row from the
+`fingerprints::codex` constants, `User-Agent` ending in `Bluey` where the CLI puts the terminal
+name, no `OpenAI-Beta`; body per the *Body* row with `instructions` = the model's
+`instructions_template` from the catalog and Bluey's own prompt as a `role: "developer"` input
+item (the `""` / short-prompt replay of the `instructions` row is still open — the first real
+probe settles it and may let Bluey drop ~4–5 K prefill tokens), `reasoning.effort` clamped to
+the model's `supported_reasoning_levels` from Bluey's level + latency budget, `text.verbosity`
+`low` for ultra-fast else `medium`, `input_image.detail: "auto"` until PR 4b's hints,
+`prompt_cache_key` = one UUID per Bluey session. Catalog: `client_version` pinned to
+`fingerprints::codex::CLIENT_VERSION`; a 404 or an empty list → `Unavailable{CatalogUnavailable}`.
+Errors: `bluey_protocols::codex::map_error` — 401 → `NeedsReauth`, 403 → `PolicyBlocked`
+(`FingerprintDrift` when the body blames the credential / client), 429 → `RateLimited{until,
+window}` from `resets_at` / `resets_in_seconds` / `x-codex-primary-*` (`usage_not_included` →
+`PolicyBlocked`, `insufficient_quota` → rate-limited without a reset), 400 "unsupported parameter"
+→ `FingerprintDrift`, 404 on `/models` → `CatalogUnavailable`. A test diffs the shaper's output
+against the documented capture (`fingerprints:diff` semantics: no drift). Import copies
+`$CODEX_HOME/auth.json` / `~/.codex/auth.json` without refreshing — the copied session is shared
+with the CLI and refresh-token rotation may later sign one side out.
 
 ### Claude Pro / Max — claude.ai OAuth, Claude Code wire format
 
@@ -301,15 +323,17 @@ local credential store, copies the tokens into its own Keychain entry and contin
 | Consent once per provider; feature flag + Cargo feature | PR 2 — `ConsentDialog` + `experimental.acceptedAccountConsents`; `experimental.subscriptionAccounts` (Settings → AI → Accounts switch); `subscription-accounts` (default on; `AccountsManager::build_enabled`) |
 | A `Connecting` status never survives a restart; a failed sign-in moves the account to the status its error names (`bluey_core::accounts::status_after_error`) | PR 2 — `AccountsManager::load` / `finish_connect` |
 | Fingerprint modules with `VERSION` / `CAPTURED_ON`, golden fixtures, `fingerprints:diff`, `accounts_probe_fingerprint` | PR 2b — `bluey_protocols::fingerprints::{codex, claude_code, antigravity}` (constants, rules, documented captures → `tests/fixtures/fingerprints/*/documented/`, the diff), the `bluey-fingerprints` harness (`capture`, `import-har`, `diff`, `bless`; captures scrubbed before writing); PR 3a–3c — shapers reading the same constants, real probes, blessed goldens |
-| Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3b (Claude), PR 3a/3c error mappers |
-| Imports read-only | PR 3a–3c |
+| Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3a — `bluey_protocols::codex::map_error` + `drift_reason` (403 policy / drift, `usage_not_included`, 400 "unsupported parameter"), `AccountsManager::note_request_error` flips the account and the router falls back (no retry); PR 3b — the Claude extra-usage 400 / bare 429; PR 3c |
+| Imports read-only | PR 3a — ChatGPT reads `auth.json`, never writes, never refreshes at import; PR 3b / 3c |
+| A connected account is a provider to the router only while usable; `NeedsReauth` / `Unavailable` / an active `RateLimited` window = keyless = fallback chain | PR 3a — `bluey_core::accounts::provider_config`, `AiManager::providers` |
+| Catalog presets never assign a model the catalog did not return; they fill unassigned roles after a fetch and re-point stale ones | PR 3a — `bluey_core::accounts::apply_catalog_presets` |
 
 ## Open questions (brief §9) — status
 
 | # | Question | Status on 2026-09-11 |
 |---|---|---|
 | 1 | Claude Code capture (CLI version, auth transport, identity text, billing header, `metadata.user_id`, betas, Stainless headers, `/v1/models` with OAuth, profile endpoint, loopback port rules) | reference implementations read; see the Claude table. Still open until the §4b.1 capture of the owner's CLI (2.1.268): the `cch` algorithm (two references disagree), the Stainless versions bundled in 2.1.268, the six-vs-five scope set, whether the token response carries `account`/`organization`, and the redirect-URI rejection reported in claude-code #93216 (open 2026-09-09) — a possible day-one login blocker. |
-| 2 | OpenAI Codex (client id, authorize URL/scopes, port 1455, device-code contract, ID-token claims, headers, `instructions` validation, `client_version`, 429 headers, image limits) | see the ChatGPT table |
+| 2 | OpenAI Codex (client id, authorize URL/scopes, port 1455, device-code contract, ID-token claims, headers, `instructions` validation, `client_version`, 429 headers, image limits) | built in PR 3a from the ChatGPT table. Still open until the first real sign-in + capture + probe: whether 4-scope tokens also work (Bluey sends six), whether the token response carries `expires_in` (Bluey falls back to the JWT `exp`), the `instructions` replay (template vs `""`), the 200-response usage headers the probe reads, and image byte / pixel limits |
 | 3 | Antigravity (client id/secret, scopes, redirect rules, `loadCodeAssist`/`onboardUser`, wrapper/envelope, header fingerprint, system instruction, model ids per pool, sandbox hosts) | see the Google AI table |
 | 4 | Import paths and formats | see *Importing an existing sign-in* |
 | 5–7 | Gemini image hints, WebP, structured-output cost | `docs/LATENCY.md` |

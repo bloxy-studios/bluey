@@ -74,7 +74,10 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
   committed fixture for secret shapes.
 * **Imports are read-only.** Importing an existing sign-in from Claude Code, Codex CLI or the
   Antigravity app copies tokens into Bluey's own Keychain entry and never writes to `~/.claude`,
-  `~/.codex`, Antigravity's data directory or their Keychain items.
+  `~/.codex`, Antigravity's data directory or their Keychain items. ChatGPT (PR 3a) reads
+  `$CODEX_HOME/auth.json` / `~/.codex/auth.json` and does **not** refresh at import time: OpenAI
+  rotates refresh tokens, so the copied session is shared with the CLI and whichever side
+  refreshes first signs the other out later — the Import button says so.
 * **One consent dialog per provider, once**, before the browser opens: what is sent, whose plan
   limits are used, that the integration is unofficial and may stop working, and what Bluey does
   when it does.

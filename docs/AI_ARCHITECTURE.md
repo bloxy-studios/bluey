@@ -112,8 +112,15 @@ visionRequired, preferredRole)` over the user's role assignments
   (`bluey_core::accounts`) map provider errors to statuses, decide usability and catalog
   freshness, and derive preset roles from a catalog. Not `connected` = keyless for the router;
   `rate_limited` is skipped until `until`. Reserved provider ids `chatgpt`, `claude`,
-  `antigravity` (kinds `chatgpt_codex`, `claude_subscription`, `antigravity_google`); the
-  profiles shipped today are placeholders answering `account.provider_pending` until PR 3a–3c.
+  `antigravity` (kinds `chatgpt_codex`, `claude_subscription`, `antigravity_google`); ChatGPT is real since PR 3a — `accounts/chatgpt.rs` signs in (PKCE loopback 1455 →
+  1457 → device code, or a read-only import of the Codex CLI's `auth.json`), fetches the plan's
+  catalog and refreshes; `ai/providers/chatgpt.rs` streams the Responses API at
+  `chatgpt.com/backend-api/codex` with the account's token, shaped like the Codex CLI by
+  `bluey_protocols::codex::CodexShaper` (instructions = the model's template, Bluey's prompt as a
+  `developer` item; a test diffs the shaper against the documented fingerprint). A connected
+  account is a provider to the router (`has_api_key` = usable); a 401, plan limit or block moves
+  the account's status and the router falls back to the API-key providers. Claude and Google AI
+  profiles are placeholders answering `account.provider_pending` until PR 3b / 3c.
   Switches: `settings.experimental.subscriptionAccounts` (runtime) and the Cargo feature
   `subscription-accounts` (build). The fingerprints themselves are data: `bluey_protocols::fingerprints` holds
   `VERSION` / `CAPTURED_ON`, the comparison rules and the documented capture per provider

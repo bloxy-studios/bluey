@@ -5,15 +5,17 @@
 pub mod providers;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use bluey_core::accounts as account_rules;
 use bluey_core::events::BlueyEvent;
 use bluey_core::presets;
 use bluey_core::router::{self, RoutingInput};
 use bluey_core::types::{
     AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent, ConnectionTestResult,
-    FinishReason, LatencyBudget, ModelRole, ModelSelection, ReasoningLevel, Settings,
+    FinishReason, LatencyBudget, ModelRole, ModelSelection, ProviderAuthMethod, ReasoningLevel,
+    Settings,
 };
 use bluey_core::{now_iso, BlueyError, BlueyResult};
 use bluey_protocols::gemini as gemini_proto;
@@ -21,6 +23,7 @@ use bluey_storage::{AiRequestRecord, AiRequestRepository};
 use tauri::ipc::Channel;
 use tokio_util::sync::CancellationToken;
 
+use crate::accounts::AccountsManager;
 use crate::events::EventBus;
 use crate::secrets::{provider_key, SecretsStore};
 use crate::settings::SettingsManager;
@@ -28,8 +31,8 @@ use crate::state::{DevState, MetricsRecorder, StateHub};
 use crate::storage::Storage;
 pub use providers::EmbedPurpose;
 use providers::{
-    build_provider, AiProvider, AudioFile, ProviderRequest, StreamItem, TranscribeFileOptions,
-    Transcription,
+    build_provider, AiProvider, AudioFile, OAuthCredential, ProviderCredential, ProviderRequest,
+    StreamItem, TranscribeFileOptions, Transcription,
 };
 
 /// Implicit mock provider id (available in developer mode / `dev-tools`).
@@ -56,6 +59,10 @@ pub struct AiManager {
     /// `list_models` results per (provider, role) — the Settings → AI tab asks
     /// once per role row, which would otherwise be seven catalogue fetches.
     model_cache: parking_lot::Mutex<ModelCache>,
+    /// The subscription accounts (ADR 0009), attached once both managers exist:
+    /// connected accounts are providers to the router and lend their tokens
+    /// to the adapters per request.
+    accounts: OnceLock<Arc<AccountsManager>>,
 }
 
 /// `(fetched at, model ids)` per `(provider id, role)`.
@@ -91,7 +98,19 @@ impl AiManager {
             modes,
             active: parking_lot::Mutex::new(HashMap::new()),
             model_cache: parking_lot::Mutex::new(HashMap::new()),
+            accounts: OnceLock::new(),
         }
+    }
+
+    /// Wire the accounts layer in (once, at boot).
+    pub fn attach_accounts(&self, accounts: Arc<AccountsManager>) {
+        let _ = self.accounts.set(accounts);
+    }
+
+    fn accounts(&self) -> BlueyResult<&Arc<AccountsManager>> {
+        self.accounts
+            .get()
+            .ok_or_else(|| BlueyError::internal("the accounts layer is not attached"))
     }
 
     /// Whether the mock provider may be used (dev-tools build or developer mode).
@@ -102,9 +121,17 @@ impl AiManager {
     }
 
     /// Providers visible to the router: the configured ones (has_api_key kept
-    /// fresh by the settings manager) plus the implicit mock provider.
+    /// fresh by the settings manager), the subscription accounts (usable ones
+    /// count as keyed), plus the implicit mock provider.
     pub fn providers(&self) -> Vec<AiProviderConfig> {
         let mut providers = self.settings.get().ai.providers;
+        if let Some(accounts) = self.accounts.get() {
+            for account in accounts.provider_configs() {
+                if !providers.iter().any(|p| p.id == account.id) {
+                    providers.push(account);
+                }
+            }
+        }
         if self.mock_allowed() && !providers.iter().any(|p| p.id == MOCK_PROVIDER_ID) {
             providers.push(AiProviderConfig {
                 id: MOCK_PROVIDER_ID.into(),
@@ -131,13 +158,52 @@ impl AiManager {
     }
 
     async fn adapter_for(&self, config: &AiProviderConfig) -> BlueyResult<Box<dyn AiProvider>> {
-        let key = if config.kind == AiProviderKind::Mock {
-            None
+        let credential = if config.kind == AiProviderKind::Mock {
+            ProviderCredential::None
+        } else if config.auth_method == ProviderAuthMethod::OauthSubscription {
+            // A fresh access token for this one request (single-flight refresh
+            // inside); a dead refresh token surfaces as `account.needs_reauth`.
+            let accounts = self.accounts()?;
+            let tokens = accounts.credential_for(&config.id).await?;
+            ProviderCredential::OAuth(OAuthCredential {
+                access_token: tokens.access_token,
+                account_id: accounts.identity(&config.id).and_then(|i| i.account_id),
+                catalog: accounts.catalog(&config.id),
+            })
         } else {
-            self.secrets.get(&provider_key(&config.id)).await?
+            match self.secrets.get(&provider_key(&config.id)).await? {
+                Some(key) => ProviderCredential::ApiKey(key),
+                None => ProviderCredential::None,
+            }
         };
         let dims = self.settings.get().ai.embedding_dimensions;
-        build_provider(config, key, self.http.clone(), self.dev.clone(), dims)
+        build_provider(
+            config,
+            credential,
+            self.http.clone(),
+            self.dev.clone(),
+            dims,
+        )
+    }
+
+    /// A subscription provider's request outcome moves its account: a 401 to
+    /// `NeedsReauth`, a plan limit to `RateLimited`, a block or drifted
+    /// fingerprint to `Unavailable` — and a success back to `Connected`.
+    async fn note_provider_outcome(&self, provider_id: &str, error: Option<&BlueyError>) {
+        let Some(accounts) = self.accounts.get() else {
+            return;
+        };
+        let is_account = self
+            .providers()
+            .iter()
+            .any(|p| p.id == provider_id && p.auth_method == ProviderAuthMethod::OauthSubscription);
+        if !is_account {
+            return;
+        }
+        match error {
+            Some(error) => accounts.note_request_error(provider_id, error).await,
+            None => accounts.note_request_success(provider_id).await,
+        }
     }
 
     /// Route a request to a provider+model.
@@ -239,6 +305,17 @@ impl AiManager {
             .await;
 
         self.active.lock().remove(&request_id);
+        match &outcome {
+            StreamOutcome::Failed { error } if !error.is_cancelled() => {
+                self.note_provider_outcome(&selection.provider_id, Some(error))
+                    .await
+            }
+            StreamOutcome::Completed { .. } => {
+                self.note_provider_outcome(&selection.provider_id, None)
+                    .await
+            }
+            _ => {}
+        }
 
         let mut record = AiRequestRecord {
             id: request_id.clone(),
@@ -352,6 +429,7 @@ impl AiManager {
             task: request.task,
             latency: request.latency_budget,
             reasoning: request.reasoning,
+            session_id: request.session_id.clone(),
         };
         let mut stream = match adapter.stream(&provider_request, token.clone()).await {
             Ok(stream) => stream,
@@ -584,6 +662,7 @@ impl AiManager {
             task: AiTask::Answer,
             latency: LatencyBudget::UltraFast,
             reasoning: ReasoningLevel::None,
+            session_id: None,
         };
         let started = Instant::now();
         let token = CancellationToken::new();
@@ -593,6 +672,11 @@ impl AiManager {
         })
         .await;
         let latency = started.elapsed().as_millis() as u64;
+        match &result {
+            Ok(Ok(_)) => self.note_provider_outcome(provider_id, None).await,
+            Ok(Err(error)) => self.note_provider_outcome(provider_id, Some(error)).await,
+            Err(_) => {}
+        }
         let outcome = match result {
             Ok(Ok(_text)) => ConnectionTestResult {
                 ok: true,
@@ -641,6 +725,14 @@ impl AiManager {
         if config.kind == AiProviderKind::Mock {
             return Some("mock-default".into());
         }
+        if account_rules::is_subscription_kind(config.kind) {
+            let catalog = self.accounts.get()?.catalog(&config.id)?;
+            let suggested = account_rules::preset_assignments(&catalog)
+                .into_iter()
+                .find(|(role, _)| *role == ModelRole::Default)
+                .map(|(_, model)| model.id.clone());
+            return suggested.or_else(|| catalog.models.first().map(|m| m.id.clone()));
+        }
         presets::by_kind(config.kind)
             .and_then(|preset| preset.model_for(ModelRole::Default))
             .map(str::to_string)
@@ -675,6 +767,11 @@ impl AiManager {
         overwrite: bool,
     ) -> BlueyResult<Settings> {
         let config = self.find_provider(provider_id)?;
+        if account_rules::is_subscription_kind(config.kind) {
+            // Subscription providers have no static preset: their recommended
+            // models come from the account's catalog (§3.7).
+            return self.accounts()?.apply_presets(provider_id, overwrite).await;
+        }
         let mut models = self.settings.get().ai.models;
         let changed = bluey_core::presets::apply_presets(
             &mut models,
