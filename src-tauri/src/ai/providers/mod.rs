@@ -8,6 +8,9 @@ pub mod gemini;
 pub mod mock;
 pub mod openai;
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 use bluey_core::error::RecoveryAction;
 use bluey_core::types::{
     AiMessage, AiProviderConfig, AiProviderKind, AiTask, FinishReason, JsonSchemaSpec,
@@ -70,6 +73,8 @@ pub struct OAuthCredential {
     pub account_id: Option<String>,
     /// The account's cached model catalog (reasoning levels, `list_models`).
     pub catalog: Option<ProviderModelCatalog>,
+    /// Stable per-install device id (64 hex) for `metadata.user_id`-style fields.
+    pub device_id: String,
 }
 
 impl std::fmt::Debug for OAuthCredential {
@@ -78,8 +83,56 @@ impl std::fmt::Debug for OAuthCredential {
             .field("access_token", &"<redacted>")
             .field("account_id", &self.account_id)
             .field("catalog", &self.catalog.as_ref().map(|c| c.models.len()))
+            .field("device_id", &self.device_id)
             .finish()
     }
+}
+
+/// One UUID per Bluey session (subscription providers' `session-id` / `thread-id`
+/// headers and prompt-cache keys), a process-wide one for requests without a session.
+pub(super) fn conversation_id(session_id: Option<&str>) -> String {
+    static PER_SESSION: OnceLock<parking_lot::Mutex<HashMap<String, String>>> = OnceLock::new();
+    static PROCESS: OnceLock<String> = OnceLock::new();
+    match session_id {
+        Some(session) => PER_SESSION
+            .get_or_init(Default::default)
+            .lock()
+            .entry(session.to_string())
+            .or_insert_with(|| uuid::Uuid::new_v4().to_string())
+            .clone(),
+        None => PROCESS
+            .get_or_init(|| uuid::Uuid::new_v4().to_string())
+            .clone(),
+    }
+}
+
+/// Error bodies are read up to this size (provider words, never prompts).
+pub(super) const ERROR_BODY_LIMIT: usize = 16 * 1024;
+
+pub(super) fn header_pairs(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.as_str().to_string(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
+        .collect()
+}
+
+pub(super) async fn read_limited(response: reqwest::Response) -> String {
+    use futures::StreamExt;
+    let mut collected: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(Ok(chunk)) = stream.next().await {
+        let room = ERROR_BODY_LIMIT.saturating_sub(collected.len());
+        collected.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if room == 0 {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&collected).into_owned()
 }
 
 /// What `build_provider` authenticates with.
@@ -176,6 +229,39 @@ fn chatgpt_provider(
     .recoverable(RecoveryAction::UseApiKey))
 }
 
+/// The Claude Pro/Max adapter — the Anthropic adapter in OAuth mode (feature builds).
+#[cfg(feature = "subscription-accounts")]
+fn claude_provider(
+    credential: ProviderCredential,
+    http: reqwest::Client,
+) -> BlueyResult<Box<dyn AiProvider>> {
+    match credential {
+        ProviderCredential::OAuth(oauth) => {
+            Ok(Box::new(anthropic::AnthropicProvider::oauth(http, oauth)))
+        }
+        _ => Err(BlueyError::account(
+            "not_connected",
+            "connect the Claude account in Settings → AI → Accounts first",
+        )
+        .recoverable(RecoveryAction::reconnect_account(
+            bluey_core::types::CLAUDE_PROVIDER_ID,
+            bluey_core::types::CLAUDE_PROVIDER_ID,
+        ))),
+    }
+}
+
+#[cfg(not(feature = "subscription-accounts"))]
+fn claude_provider(
+    _credential: ProviderCredential,
+    _http: reqwest::Client,
+) -> BlueyResult<Box<dyn AiProvider>> {
+    Err(BlueyError::account(
+        "disabled",
+        "this build of Bluey was made without subscription accounts",
+    )
+    .recoverable(RecoveryAction::UseApiKey))
+}
+
 /// Build the adapter for a provider config. `embedding_dimensions` is the
 /// configured MRL size for Gemini embeddings.
 pub fn build_provider(
@@ -189,15 +275,14 @@ pub fn build_provider(
         AiProviderKind::Mock => Ok(Box::new(mock::MockProvider::new(dev))),
         // Served by a subscription account (ADR 0009).
         AiProviderKind::ChatgptCodex => chatgpt_provider(credential, http),
-        // The Claude and Google adapters land in PR 3b / 3c. Until then the
-        // router's fallback chain reaches the API-key providers.
-        AiProviderKind::ClaudeSubscription | AiProviderKind::AntigravityGoogle => {
-            Err(BlueyError::account(
-                "provider_pending",
-                "this provider is served by a subscription account, which this version cannot route yet — use an API-key provider for now",
-            )
-            .recoverable(RecoveryAction::UseApiKey))
-        }
+        AiProviderKind::ClaudeSubscription => claude_provider(credential, http),
+        // The Google adapter lands in PR 3c. Until then the router's fallback
+        // chain reaches the API-key providers.
+        AiProviderKind::AntigravityGoogle => Err(BlueyError::account(
+            "provider_pending",
+            "this provider is served by a subscription account, which this version cannot route yet — use an API-key provider for now",
+        )
+        .recoverable(RecoveryAction::UseApiKey)),
         kind => {
             let api_key = match credential {
                 ProviderCredential::ApiKey(key) => key,
@@ -236,7 +321,9 @@ pub fn build_provider(
                 AiProviderKind::Mock
                 | AiProviderKind::ChatgptCodex
                 | AiProviderKind::ClaudeSubscription
-                | AiProviderKind::AntigravityGoogle => unreachable!("handled above"),
+                | AiProviderKind::AntigravityGoogle => {
+                    unreachable!("handled above")
+                }
             }
         }
     }

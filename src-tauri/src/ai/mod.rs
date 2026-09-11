@@ -169,6 +169,7 @@ impl AiManager {
                 access_token: tokens.access_token,
                 account_id: accounts.identity(&config.id).and_then(|i| i.account_id),
                 catalog: accounts.catalog(&config.id),
+                device_id: accounts.device_id(),
             })
         } else {
             match self.secrets.get(&provider_key(&config.id)).await? {

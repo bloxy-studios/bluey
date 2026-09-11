@@ -17,7 +17,7 @@ fingerprint parity, drift detection, an extra-usage guard and automatic fallback
 |---|---|---|---|---|---|
 | Google Gemini, Foundry/Azure, Anthropic, OpenAI-compatible | API key (`provider:<id>:api_key`) | shipped | — | ADR 0007 | — |
 | ChatGPT Free / Plus / Pro | Codex OAuth (`account:<id>:oauth_tokens`) | **built** (unofficial, experimental) | `codex/0.154.0` / 2026-09-11 (documented, not yet captured from the CLI) | 2026-09-11 | PR 3a |
-| Claude Pro / Max | claude.ai OAuth, Claude Code wire format | specified | — / — (capture first, §4b.1) | 2026-09-11 | PR 3b |
+| Claude Pro / Max | claude.ai OAuth, Claude Code wire format | **built** (unofficial, experimental) | `claude_code/2.1.258` / 2026-09-11 (documented, not yet captured from the CLI — §4b.1) | 2026-09-11 | PR 3b |
 | Google AI Pro / Ultra | Antigravity OAuth, Cloud Code `v1internal` | specified | — / — | 2026-09-11 | PR 3c |
 
 The **accounts layer** itself landed in PR 2: the mirrored types (`bluey_core::types::accounts` ⇄
@@ -28,8 +28,9 @@ catalogs, Settings → AI → Accounts (cards, consent dialog, import button), t
 branch, the HUD *Reconnect* / *Use API key instead* recoveries, the runtime flag
 `settings.experimental.subscriptionAccounts` and the Cargo feature `subscription-accounts`. ChatGPT
 flipped to *built* in PR 3a (`src-tauri/src/accounts/chatgpt.rs`, `src-tauri/src/ai/providers/chatgpt.rs`,
-`bluey_protocols::codex`); Claude and Google AI follow in PR 3b / 3c — until then their profiles are
-placeholders that answer `account.provider_pending`.
+`bluey_protocols::codex`) and Claude in PR 3b (`src-tauri/src/accounts/claude.rs`, the Anthropic adapter's
+OAuth mode, `bluey_protocols::claude_code`); Google AI follows in PR 3c — until then its profile is a
+placeholder that answers `account.provider_pending`.
 
 The tables below are also **data**: `bluey_protocols::fingerprints::{codex, claude_code, antigravity}`
 hold `VERSION` / `CAPTURED_ON`, the comparison rules and the *documented* capture per endpoint
@@ -154,6 +155,37 @@ the golden fixture, not these tables.
 | Local store | macOS Keychain generic password, service `Claude Code-credentials`, account = the macOS username (sometimes `default` / `unknown`; extra entries `Claude Code-credentials-<8hex>` per config dir), payload `{"claudeAiOauth":{"accessToken","refreshToken","expiresAt":<ms>,"scopes":[…],"subscriptionType":"pro"\|"max","rateLimitTier":"default_claude_max_5x","refreshTokenExpiresAt"}}`; fallback `~/.claude/.credentials.json` (0600; `CLAUDE_CONFIG_DIR` overrides); `account_uuid` / e-mail in `~/.claude.json` `oauthAccount` | griffinmartin `keychain.ts`; official `authentication.md`; hermes-agent #83338 | read-only import; `rateLimitTier` in the stored token can lag the org — prefer the profile call |
 | Policy timeline | 2026-01-09 third-party OAuth blocked · 2026-02-19 docs: tokens are for Claude Code / Claude.ai only · **2026-04-04** third-party traffic routed to extra usage (Boris Cherny; "applies to all third-party harnesses") · 2026-04-08 false-positive wave hit the official client · 2026-06-15 Agent SDK monthly credit announced then paused — "third-party app usage still draw[s] from your subscription's usage limits" · legal page: third-party developers "may not … route requests through Free, Pro, or Max plan credentials"; enforcement "without prior notice" | press 2026-04-03/04; support.claude.com 15036540; code.claude.com legal-and-compliance | engineering inputs: fingerprint parity + the extra-usage guard |
 | Capture knob | `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` redirects the real CLI to the capture proxy | official env-vars doc | for the re-capture runbook; the current CLI is 2.1.268 |
+
+**What Bluey sends (PR 3b, `bluey_protocols::claude_code`).** Sign-in: the six-scope authorize URL with
+`code=true`, PKCE, loopback `54545` → any free port → the pasted `code#state` from
+`platform.claude.com` (the *Use device code* option skips the listener); the JSON token exchange with
+the axios-shaped headers; the profile endpoint for plan and account uuid. Requests: every header of the
+*Headers* row from the `fingerprints::claude_code` constants, `Authorization: Bearer` only,
+`POST /v1/messages?beta=true`, `Accept: application/json`; `anthropic-beta` = the seven always-on betas
++ `fallback-credit-2026-06-01` + `extended-cache-ttl-2025-04-11`, plus `effort-2025-11-24` when
+`output_config.effort` is sent and `structured-outputs-2025-12-15` with a JSON-schema format — never
+`context-1m`, and `mid-conversation-system` is not used: **Bluey's own prompt travels as a
+`<system-reminder>` block at the top of the first user turn** (the way Claude Code carries CLAUDE.md),
+so `system[]` holds exactly the billing header and the identity block (`cache_control` ephemeral, 1 h).
+`cc_version` suffix = `SHA256("59cf53e54c78" + text[4] + text[7] + text[20] + version)[:3]`; `cch` =
+`SHA256(first user text)[:5]` — the griffinmartin / hermes reading of the disputed value.
+`metadata.user_id` = `{"device_id", "account_uuid", "session_id"}` with a 64-hex device id persisted in
+the settings table (`accounts:device_id`) and one UUID per Bluey session. `max_tokens` = 128 000 for
+Opus 5 / Sonnet 5 / Fable 5.1, 64 000 otherwise, unless the request set a cap; reasoning *light* /
+*deep* → `thinking: adaptive` + `output_config.effort` (`low`–`max` from level + latency) +
+`context_management`, never for Haiku, never with `temperature`; Fable 5.1 carries
+`fallbacks: [{model: claude-opus-5}]`. Catalog: `GET /v1/models?limit=100` with the OAuth beta, falling
+back to the curated id list (`CatalogSource::Curated`) when the endpoint refuses the token; presets
+`default`/`vision` = newest Sonnet, `reasoning`/`research` = newest Opus, `fast` = newest Haiku.
+**Extra-usage guard** (`claude_code::map_error` / `drift_reason`): a 400 whose message mentions *extra
+usage* → `Unavailable{ExtraUsageBilling}`; a bare 429 without `anthropic-ratelimit-unified-*` headers →
+`Unavailable{FingerprintDrift}`; both stop the account, the router falls back, nothing retries. A 429
+with unified headers → `RateLimited{until, window}` from the rejected window's `-reset` (unix or RFC
+3339) and the representative claim (`5h` / `7d`); 401 → `NeedsReauth`; 403 → `PolicyBlocked`; 529 →
+retry. Import copies the Keychain item `Claude Code-credentials` (accounts `$USER`, `default`,
+`unknown`) or `~/.claude/.credentials.json` plus `~/.claude.json`'s `oauthAccount`, read-only and
+without refreshing (token rotation would sign Claude Code out). The §4b.1 capture of the owner's CLI
+and the probe settle `cch`, the Stainless versions, the scope set and `/v1/models` with OAuth.
 
 ### Google AI Pro / Ultra — Antigravity OAuth, Cloud Code `v1internal`
 
@@ -323,8 +355,8 @@ local credential store, copies the tokens into its own Keychain entry and contin
 | Consent once per provider; feature flag + Cargo feature | PR 2 — `ConsentDialog` + `experimental.acceptedAccountConsents`; `experimental.subscriptionAccounts` (Settings → AI → Accounts switch); `subscription-accounts` (default on; `AccountsManager::build_enabled`) |
 | A `Connecting` status never survives a restart; a failed sign-in moves the account to the status its error names (`bluey_core::accounts::status_after_error`) | PR 2 — `AccountsManager::load` / `finish_connect` |
 | Fingerprint modules with `VERSION` / `CAPTURED_ON`, golden fixtures, `fingerprints:diff`, `accounts_probe_fingerprint` | PR 2b — `bluey_protocols::fingerprints::{codex, claude_code, antigravity}` (constants, rules, documented captures → `tests/fixtures/fingerprints/*/documented/`, the diff), the `bluey-fingerprints` harness (`capture`, `import-har`, `diff`, `bless`; captures scrubbed before writing); PR 3a–3c — shapers reading the same constants, real probes, blessed goldens |
-| Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3a — `bluey_protocols::codex::map_error` + `drift_reason` (403 policy / drift, `usage_not_included`, 400 "unsupported parameter"), `AccountsManager::note_request_error` flips the account and the router falls back (no retry); PR 3b — the Claude extra-usage 400 / bare 429; PR 3c |
-| Imports read-only | PR 3a — ChatGPT reads `auth.json`, never writes, never refreshes at import; PR 3b / 3c |
+| Extra-usage guard; no automatic retry of a drifted fingerprint | PR 3a — `bluey_protocols::codex::map_error` + `drift_reason` (403 policy / drift, `usage_not_included`, 400 "unsupported parameter"), `AccountsManager::note_request_error` flips the account and the router falls back (no retry); PR 3b — `bluey_protocols::claude_code::map_error` / `drift_reason`: the extra-usage 400 → `Unavailable{ExtraUsageBilling}`, a bare 429 without unified headers → `Unavailable{FingerprintDrift}`, both before any schema retry; PR 3c |
+| Imports read-only | PR 3a — ChatGPT reads `auth.json`, never writes, never refreshes at import; PR 3b — Claude reads the Keychain item / `.credentials.json` / `.claude.json` the same way; PR 3c |
 | A connected account is a provider to the router only while usable; `NeedsReauth` / `Unavailable` / an active `RateLimited` window = keyless = fallback chain | PR 3a — `bluey_core::accounts::provider_config`, `AiManager::providers` |
 | Catalog presets never assign a model the catalog did not return; they fill unassigned roles after a fetch and re-point stale ones | PR 3a — `bluey_core::accounts::apply_catalog_presets` |
 
@@ -332,7 +364,7 @@ local credential store, copies the tokens into its own Keychain entry and contin
 
 | # | Question | Status on 2026-09-11 |
 |---|---|---|
-| 1 | Claude Code capture (CLI version, auth transport, identity text, billing header, `metadata.user_id`, betas, Stainless headers, `/v1/models` with OAuth, profile endpoint, loopback port rules) | reference implementations read; see the Claude table. Still open until the §4b.1 capture of the owner's CLI (2.1.268): the `cch` algorithm (two references disagree), the Stainless versions bundled in 2.1.268, the six-vs-five scope set, whether the token response carries `account`/`organization`, and the redirect-URI rejection reported in claude-code #93216 (open 2026-09-09) — a possible day-one login blocker. |
+| 1 | Claude Code capture (CLI version, auth transport, identity text, billing header, `metadata.user_id`, betas, Stainless headers, `/v1/models` with OAuth, profile endpoint, loopback port rules) | built in PR 3b from the Claude table: `cch` = the simple SHA-256 reading, Bluey's prompt as a `<system-reminder>` in the first user turn (no `mid-conversation-system`), curated catalog fallback. Still open until the §4b.1 capture + probe of the owner's CLI (2.1.268): the `cch` algorithm (two references disagree), the Stainless versions bundled in 2.1.268, six-vs-five scopes, whether the token response carries `account`/`organization` (Bluey refetches the profile), `/v1/models` with OAuth, and the redirect-URI rejection in claude-code #93216 (open 2026-09-09) — a possible day-one login blocker the pasted-code flow works around. |
 | 2 | OpenAI Codex (client id, authorize URL/scopes, port 1455, device-code contract, ID-token claims, headers, `instructions` validation, `client_version`, 429 headers, image limits) | built in PR 3a from the ChatGPT table. Still open until the first real sign-in + capture + probe: whether 4-scope tokens also work (Bluey sends six), whether the token response carries `expires_in` (Bluey falls back to the JWT `exp`), the `instructions` replay (template vs `""`), the 200-response usage headers the probe reads, and image byte / pixel limits |
 | 3 | Antigravity (client id/secret, scopes, redirect rules, `loadCodeAssist`/`onboardUser`, wrapper/envelope, header fingerprint, system instruction, model ids per pool, sandbox hosts) | see the Google AI table |
 | 4 | Import paths and formats | see *Importing an existing sign-in* |

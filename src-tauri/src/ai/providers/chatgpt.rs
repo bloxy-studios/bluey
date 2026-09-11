@@ -6,8 +6,6 @@
 //! The pure parts — body, SSE events, error mapping, the shaper — are
 //! `bluey_protocols::codex`; this file is the HTTP around them.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use bluey_core::types::{ModelRole, CHATGPT_PROVIDER_ID};
@@ -20,16 +18,14 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    channel_stream, map_transport_error, AiProvider, ChunkStream, EmbedPurpose, OAuthCredential,
-    ProviderRequest, StreamItem,
+    channel_stream, conversation_id, header_pairs, map_transport_error, read_limited, AiProvider,
+    ChunkStream, EmbedPurpose, OAuthCredential, ProviderRequest, StreamItem,
 };
 use crate::accounts::chatgpt::{client_environment, send_shaped, templates};
 
 /// A stream that goes quiet for this long is reported as stalled.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
-/// Error bodies are read up to this size (they are provider words, never prompts).
-const ERROR_BODY_LIMIT: usize = 16 * 1024;
 
 pub struct ChatgptProvider {
     http: reqwest::Client,
@@ -37,24 +33,6 @@ pub struct ChatgptProvider {
     shaper: codex::CodexShaper,
     /// `https://chatgpt.com/backend-api/codex`; tests point it at a stub.
     base_url: String,
-}
-
-/// One UUID per Bluey session (the CLI's `session-id` / `thread-id` and
-/// `prompt_cache_key`), a process-wide one for requests without a session.
-fn conversation_id(session_id: Option<&str>) -> String {
-    static PER_SESSION: OnceLock<parking_lot::Mutex<HashMap<String, String>>> = OnceLock::new();
-    static PROCESS: OnceLock<String> = OnceLock::new();
-    match session_id {
-        Some(session) => PER_SESSION
-            .get_or_init(Default::default)
-            .lock()
-            .entry(session.to_string())
-            .or_insert_with(|| uuid::Uuid::new_v4().to_string())
-            .clone(),
-        None => PROCESS
-            .get_or_init(|| uuid::Uuid::new_v4().to_string())
-            .clone(),
-    }
 }
 
 impl ChatgptProvider {
@@ -142,31 +120,6 @@ impl ChatgptProvider {
         templates().replace(codex::instructions_templates(&response));
         templates().get(model)
     }
-}
-
-fn header_pairs(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
-    headers
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().to_string(),
-                String::from_utf8_lossy(v.as_bytes()).into_owned(),
-            )
-        })
-        .collect()
-}
-
-async fn read_limited(response: reqwest::Response) -> String {
-    let mut collected: Vec<u8> = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(Ok(chunk)) = stream.next().await {
-        let room = ERROR_BODY_LIMIT.saturating_sub(collected.len());
-        collected.extend_from_slice(&chunk[..chunk.len().min(room)]);
-        if room == 0 {
-            break;
-        }
-    }
-    String::from_utf8_lossy(&collected).into_owned()
 }
 
 #[async_trait::async_trait]
@@ -396,6 +349,7 @@ mod tests {
                 access_token: access_token(),
                 account_id: Some("9d1c250a-e61b-44d9-88ed-5944d1962f5e".into()),
                 catalog: None,
+                device_id: String::new(),
             },
         )
         .with_base_url(base)

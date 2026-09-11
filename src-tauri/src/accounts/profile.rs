@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use bluey_core::error::RecoveryAction;
 use bluey_core::types::{
     AccountConnectOptions, AccountIdentity, AiProviderKind, ConnectFlow, FingerprintProbe,
-    ProviderModelCatalog, ANTIGRAVITY_PROVIDER_ID, CLAUDE_PROVIDER_ID,
+    ProviderModelCatalog, ANTIGRAVITY_PROVIDER_ID,
 };
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_oauth::TokenSet;
@@ -184,16 +184,27 @@ fn chatgpt_profile() -> Arc<dyn ProviderProfile> {
     })
 }
 
+/// Claude is real since PR 3b — in builds with the `subscription-accounts` feature.
+#[cfg(feature = "subscription-accounts")]
+fn claude_profile() -> Arc<dyn ProviderProfile> {
+    Arc::new(super::claude::ClaudeProfile)
+}
+
+#[cfg(not(feature = "subscription-accounts"))]
+fn claude_profile() -> Arc<dyn ProviderProfile> {
+    Arc::new(PendingProfile {
+        provider_id: bluey_core::types::CLAUDE_PROVIDER_ID,
+        kind: AiProviderKind::ClaudeSubscription,
+        display_name: "Claude",
+        lands_in: "a build with the subscription-accounts feature",
+    })
+}
+
 /// The profiles this build ships, in UI order.
 pub fn profiles() -> Vec<Arc<dyn ProviderProfile>> {
     vec![
         chatgpt_profile(),
-        Arc::new(PendingProfile {
-            provider_id: CLAUDE_PROVIDER_ID,
-            kind: AiProviderKind::ClaudeSubscription,
-            display_name: "Claude",
-            lands_in: "PR 3b",
-        }),
+        claude_profile(),
         Arc::new(PendingProfile {
             provider_id: ANTIGRAVITY_PROVIDER_ID,
             kind: AiProviderKind::AntigravityGoogle,
@@ -230,14 +241,14 @@ mod tests {
     #[test]
     fn pending_errors_point_at_the_api_key_path() {
         let profile = PendingProfile {
-            provider_id: CLAUDE_PROVIDER_ID,
-            kind: AiProviderKind::ClaudeSubscription,
-            display_name: "Claude",
-            lands_in: "PR 3b",
+            provider_id: ANTIGRAVITY_PROVIDER_ID,
+            kind: AiProviderKind::AntigravityGoogle,
+            display_name: "Google AI",
+            lands_in: "PR 3c",
         };
         let error = profile.pending();
         assert_eq!(error.code, "account.provider_pending");
-        assert!(error.message.contains("PR 3b"));
+        assert!(error.message.contains("PR 3c"));
         assert_eq!(error.recovery, Some(RecoveryAction::UseApiKey));
         assert!(!error.message.contains("token"));
     }
