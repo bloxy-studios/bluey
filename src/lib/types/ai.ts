@@ -23,8 +23,21 @@ export type AITask =
 export type LatencyBudget = "ultra-fast" | "fast" | "balanced" | "deep";
 export type ReasoningLevel = "none" | "light" | "deep";
 
-/** `google_gemini` is the default provider (ADR 0007); the others are alternates. */
-export type AIProviderKind = "google_gemini" | "azure_foundry" | "anthropic" | "openai_compatible" | "mock";
+/**
+ * `google_gemini` is the default provider (ADR 0007); the others are alternates.
+ * `chatgpt_codex`, `claude_subscription` and `antigravity_google` are served by
+ * subscription accounts rather than API keys (ADR 0009; reserved ids `chatgpt`,
+ * `claude`, `antigravity`).
+ */
+export type AIProviderKind =
+  | "google_gemini"
+  | "azure_foundry"
+  | "anthropic"
+  | "openai_compatible"
+  | "chatgpt_codex"
+  | "claude_subscription"
+  | "antigravity_google"
+  | "mock";
 
 /** What texts are embedded for (documents get `title:` prefixes, queries `task:` prefixes on gemini-embedding-2). */
 export type EmbedPurpose = "document" | "query";
@@ -42,6 +55,8 @@ export interface AIProviderConfig {
   enabled: boolean;
   /** True when a key is stored in the OS keychain (never the key itself). */
   hasApiKey: boolean;
+  /** API key (default when absent) or an OAuth subscription account (ADR 0009). */
+  authMethod?: "api_key" | "oauth_subscription";
 }
 
 export interface ModelAssignment {

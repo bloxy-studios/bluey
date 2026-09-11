@@ -19,8 +19,17 @@ export const PROVIDER_KIND_OPTIONS: Array<{ value: AIProviderKind; label: string
   { value: "openai_compatible", label: "OpenAI-compatible" },
 ];
 
+/** Kinds served by a subscription account (Settings → AI → Accounts), not by an API key. */
+export const SUBSCRIPTION_KIND_LABELS: Partial<Record<AIProviderKind, string>> = {
+  chatgpt_codex: "ChatGPT (subscription)",
+  claude_subscription: "Claude (subscription)",
+  antigravity_google: "Google AI (subscription)",
+};
+
 export function providerKindLabel(kind: AIProviderKind): string {
-  return PROVIDER_KIND_OPTIONS.find((option) => option.value === kind)?.label ?? kind;
+  return (
+    PROVIDER_KIND_OPTIONS.find((option) => option.value === kind)?.label ?? SUBSCRIPTION_KIND_LABELS[kind] ?? kind
+  );
 }
 
 /** Gemini and Anthropic have a fixed public endpoint; Foundry / OpenAI-compatible need one. */

@@ -114,6 +114,48 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "Cloud AI is off",
     message: "Turn Cloud AI back on in Settings → Privacy to let Bluey ask a model.",
   },
+  // Subscription accounts (ADR 0009) — every stop signal names what Bluey did instead.
+  "account.needs_reauth": {
+    title: "Subscription sign-in expired",
+    message: "Reconnect the account to keep using your plan. Bluey uses your API key meanwhile.",
+  },
+  "account.fingerprint_drift": {
+    title: "Provider stopped recognising Bluey",
+    message:
+      "The provider changed how its own app talks to it, so Bluey paused this account rather than bill your extra usage. Your API key is used meanwhile; a fingerprint re-capture fixes it.",
+  },
+  "account.extra_usage_blocked": {
+    title: "Paused to avoid extra-usage charges",
+    message: "The provider started billing requests outside your plan. Bluey stopped and fell back to your API key.",
+  },
+  "account.policy_blocked": {
+    title: "Account blocked by the provider",
+    message: "The provider refused this account. Bluey stopped using it; your API key is used instead.",
+  },
+  "account.catalog_unavailable": {
+    title: "Couldn't load the plan's models",
+    message: "The provider's model list did not answer. Bluey keeps the last catalog it fetched; refresh from the account card later.",
+  },
+  "account.disabled": {
+    title: "Subscription accounts are off",
+    message: "Turn them on in Settings → AI → Accounts, or use an API key.",
+  },
+  "account.denied": {
+    title: "Sign-in not completed",
+    message: "The provider did not finish the sign-in. Try again from the account card.",
+  },
+  "account.not_connected": {
+    title: "Account not connected",
+    message: "Connect the account in Settings → AI → Accounts first.",
+  },
+  "account.import_not_found": {
+    title: "No existing sign-in found",
+    message: "Bluey found no sign-in of the official app on this Mac. Connect in the browser instead.",
+  },
+  "account.unknown_provider": {
+    title: "Unknown subscription provider",
+    message: "Bluey only knows ChatGPT, Claude and Google AI subscriptions.",
+  },
 };
 
 function formatRetry(ms: unknown): string {
@@ -153,6 +195,21 @@ export function describeError(error: BlueyError): { title: string; message: stri
       title: /recording/i.test(error.message) ? "Can't import this file" : "Bluey couldn't do that",
       message: error.message,
     };
+  }
+  if (error.code === "account.rate_limited") {
+    const window = typeof details.window === "string" && details.window ? ` ${details.window}` : "";
+    const until = typeof details.until === "string" ? Date.parse(details.until) : Number.NaN;
+    const resets = Number.isFinite(until)
+      ? ` It resets at ${new Date(until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`
+      : "";
+    return {
+      title: "Plan limit reached",
+      message: `Your subscription's${window} window is used up.${resets} Bluey uses your API key meanwhile.`,
+    };
+  }
+  if (error.code === "account.provider_pending") {
+    // Rust names the provider and the PR that lands it.
+    return { title: "Not available yet", message: error.message };
   }
   const specific = CODE_COPY[error.code];
   if (specific) return specific;
@@ -201,6 +258,22 @@ export function presentError(error: BlueyError, options: ErrorPresenterOptions =
         message,
         actionLabel: "Restart helper",
         action: () => bluey.dev.restartHelper(),
+      };
+    case "reconnect_account":
+      return {
+        title,
+        message,
+        actionLabel: "Reconnect",
+        action: async () => {
+          await bluey.accounts.connect({ providerId: recovery.providerId });
+        },
+      };
+    case "use_api_key":
+      return {
+        title,
+        message,
+        actionLabel: "Use API key instead",
+        action: () => (onOpenSettingsTab ? onOpenSettingsTab("ai") : bluey.window.open({ label: "settings", route: "ai" })),
       };
     case "configure_provider":
       return {

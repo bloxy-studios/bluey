@@ -122,6 +122,14 @@ export interface AdvancedSettings {
   helperRestartOnCrash: boolean;
 }
 
+/** Switches for features that can be turned off without a rebuild (ADR 0009). */
+export interface ExperimentalSettings {
+  /** Show the Accounts section and allow subscription sign-ins (default on). */
+  subscriptionAccounts: boolean;
+  /** Provider ids whose consent dialog was accepted (shown once per provider). */
+  acceptedAccountConsents: string[];
+}
+
 export interface Settings {
   version: number;
   general: GeneralSettings;
@@ -132,6 +140,7 @@ export interface Settings {
   privacy: PrivacySettings;
   shortcuts: ShortcutBinding[];
   advanced: AdvancedSettings;
+  experimental: ExperimentalSettings;
 }
 
 /** Deep partial patch applied by `settings_update`. */

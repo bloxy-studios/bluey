@@ -150,6 +150,26 @@ fn all_events() -> Vec<BlueyEvent> {
             sign_in_pending: false,
             checked_at: crate::now_iso(),
         }),
+        BlueyEvent::AccountsChanged(ProviderAccount {
+            account_id: "chatgpt".into(),
+            provider_id: "chatgpt".into(),
+            kind: AiProviderKind::ChatgptCodex,
+            method: ProviderAuthMethod::OauthSubscription,
+            status: AccountStatus::Disconnected,
+            identity: None,
+            connected_at: None,
+            expires_at: None,
+            catalog_fetched_at: None,
+            fingerprint_version: None,
+            fingerprint_captured_on: None,
+        }),
+        BlueyEvent::AccountsCatalog(ProviderModelCatalog {
+            account_id: "chatgpt".into(),
+            provider_id: "chatgpt".into(),
+            fetched_at: crate::now_iso(),
+            source: CatalogSource::Fixture,
+            models: vec![],
+        }),
         BlueyEvent::HelperStatus {
             running: true,
             version: None,
@@ -263,12 +283,14 @@ fn all_events() -> Vec<BlueyEvent> {
 
 /// Hard-coded copy of EVENT_NAMES from `src/lib/tauri/events.ts`.
 /// Keep in sync with the frontend.
-const EVENT_NAMES: [&str; 46] = [
+const EVENT_NAMES: [&str; 48] = [
     "app.state",
     "app.error",
     "settings.changed",
     "permissions.changed",
     "auth.changed",
+    "accounts.changed",
+    "accounts.catalog",
     "helper.status",
     "screen.changed",
     "screen.captured",

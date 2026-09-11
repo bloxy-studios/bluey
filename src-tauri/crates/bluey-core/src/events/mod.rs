@@ -66,6 +66,11 @@ pub enum BlueyEvent {
     PermissionsChanged(PermissionState),
     /// Sign-in state changed (browser sign-in started / finished, sign-out).
     AuthChanged(AuthStatus),
+    /// `accounts.changed` — a subscription account's status, identity or
+    /// fingerprint changed (ADR 0009).
+    AccountsChanged(crate::types::ProviderAccount),
+    /// `accounts.catalog` — the models a subscription exposes were (re)fetched.
+    AccountsCatalog(crate::types::ProviderModelCatalog),
     /// `helper.status`
     #[serde(rename_all = "camelCase")]
     HelperStatus {
@@ -252,6 +257,8 @@ impl BlueyEvent {
             Self::SettingsChanged(_) => "settings.changed",
             Self::PermissionsChanged(_) => "permissions.changed",
             Self::AuthChanged(_) => "auth.changed",
+            Self::AccountsChanged(_) => "accounts.changed",
+            Self::AccountsCatalog(_) => "accounts.catalog",
             Self::HelperStatus { .. } => "helper.status",
             Self::ScreenChanged { .. } => "screen.changed",
             Self::ScreenCaptured(_) => "screen.captured",

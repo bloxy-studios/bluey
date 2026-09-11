@@ -231,6 +231,13 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         secrets.clone(),
         agent.clone(),
     ));
+    let accounts = Arc::new(crate::accounts::AccountsManager::load(
+        secrets.clone(),
+        storage.clone(),
+        bus.clone(),
+        settings.clone(),
+        http.clone(),
+    )?);
     let auth = Arc::new(AuthManager::load(
         secrets.clone(),
         storage.clone(),
@@ -277,6 +284,7 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         research,
         documents,
         auth,
+        accounts,
         panel: panel.clone(),
         shortcuts,
     });
@@ -336,6 +344,10 @@ async fn finish_boot(app: &AppHandle) {
     let auth_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         auth_handle.state::<AppCore>().auth.restore().await;
+    });
+    let accounts_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        accounts_handle.state::<AppCore>().accounts.restore().await;
     });
     if let Err(e) = core
         .shortcuts

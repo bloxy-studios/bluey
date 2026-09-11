@@ -32,10 +32,24 @@ pub const CLERK_TOKEN_KEY: &str = "auth:clerk:client_token";
 /// OAuth tokens of the browser sign-in (ADR 0008): JSON `{access_token, refresh_token, expires_at, id_token}`.
 pub const CLERK_OAUTH_TOKENS_KEY: &str = "auth:clerk:oauth_tokens";
 
+/// Keychain key of a subscription account's OAuth tokens (ADR 0009): JSON
+/// `{access_token, refresh_token, expires_at, id_token}` (`bluey_oauth::TokenSet`),
+/// read and written only by `AccountsManager`.
+pub fn account_tokens_key(account_id: &str) -> String {
+    format!("account:{account_id}:oauth_tokens")
+}
+
 /// `provider:<id>:api_key` with a non-empty id.
 fn is_provider_api_key(key: &str) -> bool {
     key.strip_prefix("provider:")
         .and_then(|rest| rest.strip_suffix(":api_key"))
+        .is_some_and(|id| !id.is_empty())
+}
+
+/// `account:<id>:oauth_tokens` with a non-empty id — Rust-only, never the WebView.
+fn is_account_tokens_key(key: &str) -> bool {
+    key.strip_prefix("account:")
+        .and_then(|rest| rest.strip_suffix(":oauth_tokens"))
         .is_some_and(|id| !id.is_empty())
 }
 
@@ -87,7 +101,8 @@ impl SecretsStore {
                 | AGENT_ANTHROPIC_KEY
                 | CLERK_TOKEN_KEY
                 | CLERK_OAUTH_TOKENS_KEY
-        ) || is_provider_api_key(key);
+        ) || is_provider_api_key(key)
+            || is_account_tokens_key(key);
         if allowed {
             Ok(())
         } else {
@@ -262,8 +277,12 @@ mod tests {
         assert!(SecretsStore::validate_key(CLERK_TOKEN_KEY).is_ok());
         assert!(SecretsStore::validate_key("provider:gemini:api_key").is_ok());
         assert!(SecretsStore::validate_key(EXA_KEY).is_ok());
-        assert!(SecretsStore::validate_key("account:chatgpt-1:oauth_tokens").is_err());
+        assert!(SecretsStore::validate_key(&account_tokens_key("chatgpt")).is_ok());
+        assert!(SecretsStore::validate_key("account::oauth_tokens").is_err());
+        assert!(SecretsStore::validate_key("account:chatgpt:api_key").is_err());
         assert!(SecretsStore::validate_key("provider::api_key").is_err());
         assert!(SecretsStore::validate_key("random").is_err());
+        // The gate in front of the WebView never admits account tokens.
+        assert!(validate_webview_key(&account_tokens_key("chatgpt")).is_err());
     }
 }

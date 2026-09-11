@@ -2,6 +2,7 @@
 //! `src/lib/types/*.ts` **byte-for-byte on the wire** (camelCase fields, the same
 //! string tags). When you change one side, change the other.
 
+pub mod accounts;
 pub mod ai;
 pub mod app_state;
 pub mod auth;
@@ -15,6 +16,7 @@ pub mod session;
 pub mod settings;
 pub mod transcript;
 
+pub use accounts::*;
 pub use ai::*;
 pub use app_state::*;
 pub use auth::*;

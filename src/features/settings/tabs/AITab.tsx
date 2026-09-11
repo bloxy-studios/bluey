@@ -20,6 +20,7 @@ import {
   type ResponseTone,
 } from "@/lib/types";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { AccountsSection } from "../accounts/AccountsSection";
 import { ProviderCard, ProviderDialog } from "../ProviderCard";
 import {
   draftToDeployments,
@@ -255,6 +256,8 @@ export default function AITab() {
           Switching applies the provider's recommended models to every role.
         </span>
       </div>
+
+      <AccountsSection />
 
       <div className="mt-6 flex items-end justify-between">
         <SectionHeader

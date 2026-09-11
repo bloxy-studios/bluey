@@ -9,7 +9,14 @@ import { GEMINI_PRESET } from "@/lib/ai/provider-presets";
 import { bluey } from "@/lib/tauri/api";
 import { SECRET_KEYS } from "@/lib/tauri/commands";
 import { toBlueyError, type AIProviderConfig, type BlueyError } from "@/lib/types";
+import { useAccountsStore } from "@/stores/accountsStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import {
+  PROVIDER_COPY,
+  SUBSCRIPTION_PROVIDER_ORDER,
+  type ProviderCopy,
+} from "@/features/settings/accounts/account-copy";
+import { ConsentDialog } from "@/features/settings/accounts/ConsentDialog";
 import { providerKeyHelp } from "@/features/settings/provider-form";
 import { SecretKeyField } from "@/features/settings/SecretKeyField";
 import type { StepProps } from "../OnboardingFlow";
@@ -53,9 +60,33 @@ export function ConnectAIStep({ onReady }: StepProps) {
   const otherProviderReady =
     settings?.ai.providers.some((p) => p.kind !== "google_gemini" && p.enabled && p.hasApiKey) ?? false;
 
+  // "Use a subscription I already pay for" (ADR 0009): the same cards as Settings → AI → Accounts.
+  const accounts = useAccountsStore((s) => s.accounts);
+  const connectAccount = useAccountsStore((s) => s.connect);
+  const [showSubscriptions, setShowSubscriptions] = useState(false);
+  const [consentFor, setConsentFor] = useState<ProviderCopy | null>(null);
+  const subscriptionsEnabled = settings?.experimental.subscriptionAccounts ?? false;
+  const connectedAccounts = accounts.filter((a) => a.status.state === "connected");
+  const accountReady = connectedAccounts.length > 0;
+
   useEffect(() => {
-    onReady(hasKey || otherProviderReady || skipped);
-  }, [hasKey, otherProviderReady, skipped, onReady]);
+    onReady(hasKey || otherProviderReady || accountReady || skipped);
+  }, [hasKey, otherProviderReady, accountReady, skipped, onReady]);
+
+  const startAccountConnect = (copy: ProviderCopy) => {
+    const accepted = settings?.experimental.acceptedAccountConsents ?? [];
+    if (accepted.includes(copy.id)) void connectAccount(copy.id);
+    else setConsentFor(copy);
+  };
+
+  const acceptAccountConsent = async (copy: ProviderCopy) => {
+    setConsentFor(null);
+    const accepted = settings?.experimental.acceptedAccountConsents ?? [];
+    const saved = await update({
+      experimental: { acceptedAccountConsents: [...accepted.filter((id) => id !== copy.id), copy.id] },
+    });
+    if (saved) void connectAccount(copy.id);
+  };
 
   // Make sure the reserved Gemini provider exists so the key field has a home.
   useEffect(() => {
@@ -179,6 +210,56 @@ export function ConnectAIStep({ onReady }: StepProps) {
         </div>
         {skipped && !hasKey ? (
           <p className="text-[12.5px] text-fg-subtle">You can add a key later in Settings → AI.</p>
+        ) : null}
+        {subscriptionsEnabled ? (
+          <div className="w-full">
+            {!showSubscriptions && connectedAccounts.length === 0 ? (
+              <Button variant="ghost" size="sm" onClick={() => setShowSubscriptions(true)}>
+                Use a subscription I already pay for
+              </Button>
+            ) : (
+              <div
+                className="flex flex-col gap-2 rounded-card bg-bg-tile p-3 text-left"
+                data-testid="onboarding-subscriptions"
+              >
+                <p className="text-[12.5px] text-fg-muted">
+                  Sign in with ChatGPT, Claude or Google AI. Unofficial — Bluey stops at the first sign of a block
+                  and falls back to an API key.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {SUBSCRIPTION_PROVIDER_ORDER.map((providerId) => {
+                    const copy = PROVIDER_COPY[providerId];
+                    const account = accounts.find((a) => a.providerId === providerId);
+                    const state = account?.status.state ?? "disconnected";
+                    return (
+                      <Button
+                        key={providerId}
+                        variant="secondary"
+                        size="sm"
+                        disabled={state === "connecting" || state === "connected"}
+                        onClick={() => startAccountConnect(copy)}
+                      >
+                        {state === "connecting" ? <Spinner size={11} /> : null}
+                        {state === "connected" ? <CheckCircle2 className="size-3.5 text-success" aria-hidden /> : null}
+                        {copy.name}
+                      </Button>
+                    );
+                  })}
+                </div>
+                {connectedAccounts.map((account) => (
+                  <p key={account.accountId} className="text-[12.5px] text-success">
+                    {PROVIDER_COPY[account.providerId as keyof typeof PROVIDER_COPY]?.name ?? account.providerId} connected
+                    {account.identity?.planLabel ? ` · ${account.identity.planLabel}` : ""}
+                  </p>
+                ))}
+              </div>
+            )}
+            <ConsentDialog
+              provider={consentFor}
+              onCancel={() => setConsentFor(null)}
+              onAccept={(copy) => void acceptAccountConsent(copy)}
+            />
+          </div>
         ) : null}
       </div>
     </StepShell>

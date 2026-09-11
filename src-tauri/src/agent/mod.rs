@@ -507,3 +507,25 @@ fn env_truthy(name: &str) -> bool {
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod env_boundary_tests {
+    use super::*;
+
+    /// ADR 0009: subscription-account tokens never reach a child process. The
+    /// sidecar environment is built from these fixed names plus provider API
+    /// keys; none of them may name an OAuth or account credential.
+    #[test]
+    fn sidecar_env_never_names_account_tokens() {
+        for name in CLAUDE_PASSTHROUGH_ENV
+            .iter()
+            .chain(COMMON_PASSTHROUGH_ENV.iter())
+        {
+            let lower = name.to_ascii_lowercase();
+            assert!(
+                !lower.contains("oauth") && !lower.contains("account"),
+                "{name} would forward account material to the sidecar"
+            );
+        }
+    }
+}

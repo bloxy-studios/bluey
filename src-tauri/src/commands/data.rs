@@ -76,6 +76,10 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
     ] {
         failures.note(key, core.secrets.delete(key).await);
     }
+    // Subscription accounts: tokens, catalogs and statuses (ADR 0009).
+    for (step, error) in core.accounts.reset_all().await {
+        failures.push(&step, error);
+    }
 
     match core.storage.run(bluey_storage::reset_all).await {
         Ok(paths) => crate::platform::remove_files(&paths),

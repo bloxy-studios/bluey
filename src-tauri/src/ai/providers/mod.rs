@@ -119,6 +119,16 @@ pub fn build_provider(
 ) -> BlueyResult<Box<dyn AiProvider>> {
     match config.kind {
         AiProviderKind::Mock => Ok(Box::new(mock::MockProvider::new(dev))),
+        // Served by a subscription account (ADR 0009); the adapters that take a
+        // `CredentialSource::OAuth` land in PR 3a–3c. Until then the router's
+        // fallback chain reaches the API-key providers.
+        AiProviderKind::ChatgptCodex
+        | AiProviderKind::ClaudeSubscription
+        | AiProviderKind::AntigravityGoogle => Err(BlueyError::account(
+            "provider_pending",
+            "this provider is served by a subscription account, which this version cannot route yet — use an API-key provider for now",
+        )
+        .recoverable(RecoveryAction::UseApiKey)),
         kind => {
             let api_key = api_key.ok_or_else(|| {
                 BlueyError::configuration("missing_key", "the provider has no API key configured")
@@ -148,7 +158,10 @@ pub fn build_provider(
                     config.base_url.clone(),
                     api_key,
                 ))),
-                AiProviderKind::Mock => unreachable!(),
+                AiProviderKind::Mock
+                | AiProviderKind::ChatgptCodex
+                | AiProviderKind::ClaudeSubscription
+                | AiProviderKind::AntigravityGoogle => unreachable!("handled above"),
             }
         }
     }

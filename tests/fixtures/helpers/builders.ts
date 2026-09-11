@@ -91,6 +91,10 @@ export function makeSettings(
     },
     shortcuts: [],
     advanced: { logLevel: "info", showDevOverlay: false, helperRestartOnCrash: true },
+    experimental: {
+      subscriptionAccounts: true,
+      acceptedAccountConsents: [],
+    },
   };
 }
 

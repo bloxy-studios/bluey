@@ -132,6 +132,21 @@ pub fn redact(line: &str) -> String {
                 regex::Regex::new(r#"(?i)([?&]key=)[^&\s"']+"#).expect("valid regex"),
                 "$1[redacted]",
             ),
+            // Subscription accounts (ADR 0009): Google access / refresh tokens and the
+            // ChatGPT account id header. `sk-ant-oat…` / `sk-ant-ort…` fall under `sk-` above.
+            (
+                regex::Regex::new(r"ya29\.[A-Za-z0-9._\-]{8,}").expect("valid regex"),
+                "[redacted]",
+            ),
+            (
+                regex::Regex::new(r"1//[A-Za-z0-9._\-]{8,}").expect("valid regex"),
+                "[redacted]",
+            ),
+            (
+                regex::Regex::new(r#"(?i)(chatgpt-account-id["':\s=]+)[A-Za-z0-9._\-]{8,}"#)
+                    .expect("valid regex"),
+                "$1[redacted]",
+            ),
         ]
     });
     let mut out = line.to_string();
@@ -275,5 +290,21 @@ mod tests {
         assert!(!out.contains("eyJhbGciOi.abc-def"));
         assert!(!out.contains("abc123456789"));
         assert!(out.contains("[redacted]"));
+    }
+
+    #[test]
+    fn redacts_subscription_account_tokens() {
+        let line = r#"tokens sk-ant-oat01-AbCdEfGh12345 sk-ant-ort01-ZyXwVu98765 ya29.a0AfH6SMBxyz-123 1//0gabcdefGHIJKL "chatgpt-account-id":"1f2e3d4c-5b6a-4789-9abc-def012345678""#;
+        let out = redact(line);
+        for secret in [
+            "sk-ant-oat01-AbCdEfGh12345",
+            "sk-ant-ort01-ZyXwVu98765",
+            "ya29.a0AfH6SMBxyz-123",
+            "1//0gabcdefGHIJKL",
+            "1f2e3d4c-5b6a-4789-9abc-def012345678",
+        ] {
+            assert!(!out.contains(secret), "{secret} leaked: {out}");
+        }
+        assert!(out.contains(r#""chatgpt-account-id":"[redacted]"#));
     }
 }

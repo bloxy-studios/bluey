@@ -45,9 +45,11 @@ credential source next to API keys: the owner's own ChatGPT, Claude and Google A
 signed in through the vendors' OAuth flows. These invariants hold for every one of them:
 
 * **Tokens are Rust-only.** They live under `account:<account_id>:oauth_tokens`, are read and
-  written only by `AccountsManager`, and never reach the WebView, the logs, SQLite or a child
-  process. The WebView sees `ProviderAccount` — status, plan, e-mail, project id — and nothing
-  else. A test asserts that the research sidecar's `job_env` never contains OAuth material.
+  written only by `AccountsManager` (`src-tauri/src/accounts`), and never reach the WebView, the
+  logs, SQLite or a child process. The WebView sees `ProviderAccount` — status, plan, e-mail,
+  project id — and nothing else; the account list and the model catalogs persisted in the
+  settings table carry no credential. A test asserts that the research sidecar's environment
+  never names OAuth or account material.
 * **The WebView's secret allow-list narrows, it does not widen.** `secrets_set` / `secrets_has` /
   `secrets_delete` accept only the `SECRET_KEYS` of `commands.ts` — `provider:<id>:api_key` and
   the research / agent API keys; `auth:*` and `account:*` are rejected at the command layer

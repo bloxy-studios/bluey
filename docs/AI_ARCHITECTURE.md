@@ -100,6 +100,22 @@ visionRequired, preferredRole)` over the user's role assignments
   - `openai_compatible` — any `/v1/chat/completions` (Bearer auth).
   - `mock` — deterministic streamed answers for development and tests (clearly isolated; only
     selectable when developer mode is on).
+- **Provider accounts** (ADR 0009, `src-tauri/src/accounts`): the owner's ChatGPT, Claude and
+  Google AI subscriptions as credential sources next to API keys. `AccountsManager` owns the
+  account list and catalogs (settings table, no credentials), the tokens (Keychain
+  `account:<id>:oauth_tokens`, Rust-only), a single-flight refresh per account
+  (`bluey_oauth::TokenCache`), the pending sign-in flows and the `accounts.changed` /
+  `accounts.catalog` events; what a provider *is* — OAuth flow, catalog, refresh, revoke, probe —
+  is a `ProviderProfile`, and its request fingerprint a `bluey_protocols::request_shaper::RequestShaper`
+  applied last by the adapter. Statuses: `disconnected` · `connecting{flow}` · `connected` ·
+  `needs_reauth` · `rate_limited{until, window}` · `unavailable{reason}`; the pure rules
+  (`bluey_core::accounts`) map provider errors to statuses, decide usability and catalog
+  freshness, and derive preset roles from a catalog. Not `connected` = keyless for the router;
+  `rate_limited` is skipped until `until`. Reserved provider ids `chatgpt`, `claude`,
+  `antigravity` (kinds `chatgpt_codex`, `claude_subscription`, `antigravity_google`); the
+  profiles shipped today are placeholders answering `account.provider_pending` until PR 3a–3c.
+  Switches: `settings.experimental.subscriptionAccounts` (runtime) and the Cargo feature
+  `subscription-accounts` (build). Facts, consent copy and the runbook: `docs/PROVIDER_ACCOUNTS.md`.
 - **Cancellation**: each request has a `CancellationToken`; `ai_cancel(requestId)` aborts the
   HTTP stream; newer generations cancel older ones.
 - **Metrics**: time to first token, total latency, token usage → `ai_requests` table +

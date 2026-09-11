@@ -17,6 +17,10 @@ import type {
   SessionSummary,
   Settings,
   ShortcutBinding,
+  AccountIdentity,
+  CatalogModel,
+  ProviderAccount,
+  ProviderModelCatalog,
 } from "../../types";
 import { applyPresets, GEMINI_PRESET } from "../../ai/provider-presets";
 
@@ -417,6 +421,10 @@ export function createDefaultSettings(): Settings {
       showDevOverlay: false,
       helperRestartOnCrash: true,
     },
+    experimental: {
+      subscriptionAccounts: true,
+      acceptedAccountConsents: [],
+    },
   };
 }
 
@@ -614,3 +622,141 @@ export const FIXTURE_MODELS_BY_KIND: Record<string, string[]> = {
 };
 
 export const FIXTURE_TIMESTAMP = NOW;
+
+/* ── Subscription accounts (ADR 0009) ───────────────────────────────────── */
+
+/** The three subscription providers as fresh, disconnected account cards. */
+export function createMockAccounts(): ProviderAccount[] {
+  return [
+    {
+      accountId: "chatgpt",
+      providerId: "chatgpt",
+      kind: "chatgpt_codex",
+      method: "oauth_subscription",
+      status: { state: "disconnected" },
+      fingerprintVersion: "codex/0.154.0",
+      fingerprintCapturedOn: "2026-09-11",
+    },
+    {
+      accountId: "claude",
+      providerId: "claude",
+      kind: "claude_subscription",
+      method: "oauth_subscription",
+      status: { state: "disconnected" },
+      fingerprintVersion: "claude_code/2.1.258",
+      fingerprintCapturedOn: "2026-09-11",
+    },
+    {
+      accountId: "antigravity",
+      providerId: "antigravity",
+      kind: "antigravity_google",
+      method: "oauth_subscription",
+      status: { state: "disconnected" },
+      fingerprintVersion: "antigravity/2.12.2",
+      fingerprintCapturedOn: "2026-09-11",
+    },
+  ];
+}
+
+/** Who the mock says is signed in, per provider. */
+export const FIXTURE_ACCOUNT_IDENTITIES: Record<string, AccountIdentity> = {
+  chatgpt: {
+    email: "jordan@example.com",
+    planTier: "plus",
+    planLabel: "ChatGPT Plus",
+    accountId: "1f2e3d4c-5b6a-4789-9abc-def012345678",
+  },
+  claude: {
+    email: "jordan@example.com",
+    displayName: "Jordan Lee",
+    planTier: "default_claude_max_5x",
+    planLabel: "Claude Max 5×",
+    accountId: "org_9a8b7c6d",
+  },
+  antigravity: {
+    email: "jordan@example.com",
+    planTier: "g1-pro",
+    planLabel: "Google AI Pro",
+    projectId: "bluey-owner-4f2a",
+  },
+};
+
+const codexModel = (id: string, label: string, suggestedRoles: CatalogModel["suggestedRoles"]): CatalogModel => ({
+  id,
+  label,
+  capabilities: {
+    vision: true,
+    tools: true,
+    reasoningLevels: ["low", "medium", "high", "xhigh"],
+    streaming: true,
+    contextWindow: 272_000,
+  },
+  suggestedRoles,
+});
+
+const claudeModel = (
+  id: string,
+  label: string,
+  contextWindow: number,
+  suggestedRoles: CatalogModel["suggestedRoles"],
+): CatalogModel => ({
+  id,
+  label,
+  capabilities: { vision: true, tools: true, reasoningLevels: ["low", "medium", "high", "xhigh", "max"], streaming: true, contextWindow },
+  suggestedRoles,
+});
+
+const antigravityModel = (
+  id: string,
+  label: string,
+  reasoningLevels: string[],
+  suggestedRoles: CatalogModel["suggestedRoles"],
+): CatalogModel => ({
+  id,
+  label,
+  capabilities: { vision: true, tools: true, reasoningLevels, streaming: true, contextWindow: 1_048_576 },
+  quotaPool: "antigravity",
+  suggestedRoles,
+});
+
+/**
+ * The models each subscription exposes in the mock — the catalogs
+ * `docs/PROVIDER_ACCOUNTS.md` records for 2026-09-11.
+ */
+export function createFixtureCatalog(accountId: string, fetchedAt: string): ProviderModelCatalog {
+  const models: CatalogModel[] =
+    accountId === "chatgpt"
+      ? [
+          codexModel("gpt-6-astra", "GPT-6 Astra", ["default", "vision", "reasoning", "research"]),
+          codexModel("gpt-5.6-terra", "GPT-5.6 Terra", ["default", "vision"]),
+          codexModel("gpt-5.6-sol", "GPT-5.6 Sol", []),
+          codexModel("gpt-5.6-luna", "GPT-5.6 Luna", ["fast"]),
+          codexModel("gpt-5.5", "GPT-5.5", []),
+        ]
+      : accountId === "claude"
+        ? [
+            claudeModel("claude-sonnet-5", "Claude Sonnet 5", 1_000_000, ["default", "vision"]),
+            claudeModel("claude-opus-5", "Claude Opus 5", 1_000_000, ["reasoning", "research"]),
+            claudeModel("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200_000, ["fast"]),
+            claudeModel("claude-fable-5-1", "Claude Fable 5.1", 1_000_000, []),
+          ]
+        : [
+            antigravityModel("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)", ["low", "medium", "high"], [
+              "default",
+              "vision",
+              "research",
+            ]),
+            antigravityModel("gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", ["minimal", "low", "medium", "high"], ["fast"]),
+            antigravityModel("gemini-pro-agent", "Gemini 3.1 Pro (High)", ["low", "medium", "high"], []),
+            antigravityModel("claude-sonnet-4-6", "Claude Sonnet 4.6", ["low", "medium", "high"], []),
+            antigravityModel("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", ["low", "medium", "high"], ["reasoning"]),
+            antigravityModel("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)", ["medium"], []),
+          ];
+  return {
+    accountId,
+    providerId: accountId,
+    fetchedAt,
+    source: { type: "fixture" },
+    models,
+  };
+}

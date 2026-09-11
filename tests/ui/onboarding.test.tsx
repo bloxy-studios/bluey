@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { OnboardingFlow } from "@/features/onboarding/OnboardingFlow";
@@ -198,5 +198,46 @@ describe("ConnectAIStep", () => {
     await user.type(screen.getByLabelText("Google AI Studio API key"), "AIza-fine{Enter}");
     await screen.findByText("Gemini is connected");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("ConnectAIStep — subscription branch (ADR 0009)", () => {
+  beforeEach(async () => {
+    await setupMockApp();
+  });
+
+  it("offers the three subscriptions, asks for consent once and reports the connected plan", async () => {
+    const user = userEvent.setup();
+    const onReady = vi.fn();
+    render(
+      <TooltipProvider>
+        <ConnectAIStep onReady={onReady} />
+      </TooltipProvider>,
+    );
+    await screen.findByRole("heading", { name: "Connect Gemini" });
+    await user.click(screen.getByRole("button", { name: "Use a subscription I already pay for" }));
+    const panel = screen.getByTestId("onboarding-subscriptions");
+    expect(within(panel).getByRole("button", { name: "ChatGPT" })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Claude" })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Google AI" })).toBeInTheDocument();
+
+    await user.click(within(panel).getByRole("button", { name: "Claude" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Use your Claude subscription with Bluey?")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Continue in browser" }));
+    await waitFor(() => expect(screen.getByText("Claude connected · Claude Max 5×")).toBeInTheDocument());
+    expect(useSettingsStore.getState().settings?.experimental.acceptedAccountConsents).toEqual(["claude"]);
+    expect(onReady).toHaveBeenLastCalledWith(true);
+  });
+
+  it("hides the branch when subscription accounts are switched off", async () => {
+    await useSettingsStore.getState().update({ experimental: { subscriptionAccounts: false } });
+    render(
+      <TooltipProvider>
+        <ConnectAIStep onReady={() => {}} />
+      </TooltipProvider>,
+    );
+    await screen.findByRole("heading", { name: "Connect Gemini" });
+    expect(screen.queryByRole("button", { name: "Use a subscription I already pay for" })).not.toBeInTheDocument();
   });
 });

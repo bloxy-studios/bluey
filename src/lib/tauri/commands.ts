@@ -13,6 +13,7 @@
  */
 
 import type {
+  AccountConnectOptions,
   AIRequest,
   AudioDevice,
   AudioSessionConfig,
@@ -33,6 +34,7 @@ import type {
   DocumentScope,
   FeedbackCategory,
   FeedbackRating,
+  FingerprintProbe,
   LatencyMetrics,
   ModeDraft,
   ModePatch,
@@ -41,6 +43,8 @@ import type {
   ApplicationContext,
   PermissionKind,
   PermissionState,
+  ProviderAccount,
+  ProviderModelCatalog,
   RetrievedChunk,
   RetrievalQuery,
   AddDocumentInput,
@@ -121,6 +125,23 @@ export interface CommandMap {
   auth_clear_session: { args: void; result: AuthStatus };
   /** Open Clerk's hosted Account Portal (profile & security) in the browser. */
   auth_open_account_portal: { args: void; result: void };
+
+  // ── Provider accounts (subscription sign-in, ADR 0009): Rust owns the tokens; the WebView sees status only ─
+  accounts_list: { args: void; result: ProviderAccount[] };
+  /** Start a sign-in with `chatgpt` | `claude` | `antigravity`; completion arrives as `accounts.changed`. */
+  accounts_connect: { args: { providerId: string; options?: AccountConnectOptions }; result: ProviderAccount };
+  /** Import the official client's local sign-in on this Mac (read-only). */
+  accounts_import: { args: { providerId: string }; result: ProviderAccount };
+  accounts_cancel_connect: { args: { accountId: string }; result: ProviderAccount };
+  /** Deliver a pasted `code#state` for a manual-code flow. */
+  accounts_submit_code: { args: { accountId: string; code: string }; result: ProviderAccount };
+  accounts_disconnect: { args: { accountId: string }; result: void };
+  accounts_status: { args: { accountId: string }; result: ProviderAccount };
+  /** The cached catalog, if one was fetched (no network). */
+  accounts_catalog: { args: { accountId: string }; result: ProviderModelCatalog | null };
+  accounts_refresh_catalog: { args: { accountId: string; force?: boolean }; result: ProviderModelCatalog };
+  /** Developer mode: one tiny request, reporting whether the plan paid for it. */
+  accounts_probe_fingerprint: { args: { accountId: string }; result: FingerprintProbe };
 
   // ── Permissions ────────────────────────────────────────────────────────
   permissions_get: { args: void; result: PermissionState };
@@ -340,6 +361,16 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "auth_cancel_sign_in",
   "auth_clear_session",
   "auth_open_account_portal",
+  "accounts_list",
+  "accounts_connect",
+  "accounts_import",
+  "accounts_cancel_connect",
+  "accounts_submit_code",
+  "accounts_disconnect",
+  "accounts_status",
+  "accounts_catalog",
+  "accounts_refresh_catalog",
+  "accounts_probe_fingerprint",
   "permissions_get",
   "permissions_request",
   "permissions_open_settings",

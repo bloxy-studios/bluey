@@ -184,6 +184,7 @@ pub struct AppCore {
     pub research: Arc<crate::research::ResearchManager>,
     pub documents: Arc<crate::documents::DocumentsManager>,
     pub auth: Arc<crate::auth::AuthManager>,
+    pub accounts: Arc<crate::accounts::AccountsManager>,
     pub panel: Arc<crate::overlay::PanelManager>,
     pub shortcuts: Arc<crate::shortcuts::ShortcutManager>,
 }

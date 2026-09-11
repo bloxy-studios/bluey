@@ -37,6 +37,10 @@ import type {
   TranscribeFileResult,
   TranscriptSegment,
   PanelState,
+  AccountStatus,
+  ConnectFlowKind,
+  ProviderAccount,
+  ProviderModelCatalog,
 } from "../../types";
 import { applyPresets, MODEL_ROLES, presetForKind } from "../../ai/provider-presets";
 import { createId } from "../../utils/id";
@@ -55,6 +59,9 @@ import {
   FIXTURE_DISPLAYS,
   FIXTURE_MODELS_BY_KIND,
   FIXTURE_PNG_BASE64,
+  createFixtureCatalog,
+  createMockAccounts,
+  FIXTURE_ACCOUNT_IDENTITIES,
 } from "./fixtures";
 
 const now = () => new Date().toISOString();
@@ -150,6 +157,21 @@ export class MockTransport implements Transport {
   private authUser: AuthUser | null = null;
   private authTokens = false;
   private signInPending = false;
+
+  /* Subscription accounts (ADR 0009): a browser round-trip simulated with a timer. */
+  private accounts: ProviderAccount[] = createMockAccounts();
+  private accountCatalogs = new Map<string, ProviderModelCatalog>();
+  private accountTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pendingManualCodes = new Set<string>();
+  /** How the next `accounts_connect` ends once the simulated browser returns. */
+  nextAccountOutcome: "success" | "denied" | "hang" | "rate_limited" | "fingerprint_drift" | "needs_reauth" =
+    "success";
+  /** Which flow the next `accounts_connect` reports (`manual_code` waits for `accounts_submit_code`). */
+  nextAccountFlow: ConnectFlowKind = "browser";
+  /** Whether `accounts_import` finds an existing sign-in on this "Mac". */
+  nextImportOutcome: "success" | "missing" = "success";
+  /** Every provider id `accounts_disconnect` was called for (tests). */
+  disconnectedAccounts: string[] = [];
 
   private permissions: PermissionState = {
     microphone: "granted",
@@ -261,6 +283,8 @@ export class MockTransport implements Transport {
   dispose(): void {
     if (this.levelTimer) clearInterval(this.levelTimer);
     this.levelTimer = null;
+    this.accountTimers.forEach((timer) => clearTimeout(timer));
+    this.accountTimers.clear();
     this.listeners.clear();
   }
 
@@ -275,6 +299,118 @@ export class MockTransport implements Transport {
       signInPending: this.signInPending,
       checkedAt: now(),
     };
+  }
+
+  private account(accountId: string): ProviderAccount {
+    const account = this.accounts.find((a) => a.accountId === accountId);
+    if (!account) {
+      throw blueyError({ kind: "authentication", code: "account.not_found", message: `no account \`${accountId}\`` });
+    }
+    return account;
+  }
+
+  private setAccount(accountId: string, patch: Partial<ProviderAccount>): ProviderAccount {
+    const next = { ...this.account(accountId), ...patch };
+    this.accounts = this.accounts.map((a) => (a.accountId === accountId ? next : a));
+    this.emit("accounts.changed", next);
+    return next;
+  }
+
+  private ensureAccountsEnabled(): void {
+    if (!this.settings.experimental.subscriptionAccounts) {
+      throw blueyError({
+        kind: "authentication",
+        code: "account.disabled",
+        message: "subscription accounts are switched off in Settings → AI",
+        recoverable: true,
+        recovery: { type: "open_settings", tab: "ai" },
+      });
+    }
+  }
+
+  /** The simulated browser came back: apply `outcome` to a connecting account. */
+  private finishAccountConnect(accountId: string, outcome: MockTransport["nextAccountOutcome"]): void {
+    this.accountTimers.delete(accountId);
+    this.pendingManualCodes.delete(accountId);
+    const account = this.accounts.find((a) => a.accountId === accountId);
+    if (!account || account.status.state !== "connecting") return;
+    const at = now();
+    switch (outcome) {
+      case "success": {
+        const catalog = createFixtureCatalog(accountId, at);
+        this.accountCatalogs.set(accountId, catalog);
+        this.setAccount(accountId, {
+          status: { state: "connected" },
+          identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
+          connectedAt: at,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          catalogFetchedAt: at,
+        });
+        this.emit("accounts.catalog", catalog);
+        return;
+      }
+      case "denied":
+        this.setAccount(accountId, { status: { state: "disconnected" } });
+        this.emit(
+          "app.error",
+          blueyError({
+            kind: "authentication",
+            code: "account.denied",
+            message: "the sign-in was not completed",
+            recoverable: true,
+            recovery: { type: "none" },
+          }),
+        );
+        return;
+      case "rate_limited":
+        this.setAccount(accountId, {
+          status: { state: "rate_limited", until: new Date(Date.now() + 2 * 3_600_000).toISOString(), window: "5h" },
+          identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
+          connectedAt: at,
+        });
+        return;
+      case "fingerprint_drift":
+        this.setAccount(accountId, {
+          status: {
+            state: "unavailable",
+            reason: "fingerprint_drift",
+            detail: "Third-party apps now draw from your extra usage, not your plan limits.",
+          },
+          identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
+        });
+        return;
+      case "needs_reauth":
+        this.setAccount(accountId, { status: { state: "needs_reauth" }, identity: FIXTURE_ACCOUNT_IDENTITIES[accountId] });
+        return;
+      case "hang":
+        return;
+    }
+  }
+
+  private connectFlow(kind: ConnectFlowKind, providerId: string): AccountStatus {
+    const expiresAt = new Date(Date.now() + 600_000).toISOString();
+    switch (kind) {
+      case "device_code":
+        return {
+          state: "connecting",
+          flow: {
+            kind,
+            userCode: "BLUEY-4821",
+            verificationUrl: "https://auth.openai.com/codex/device",
+            expiresAt,
+          },
+        };
+      case "manual_code":
+        return {
+          state: "connecting",
+          flow: { kind, url: `https://mock.${providerId}.example/oauth/authorize?code=true`, expiresAt },
+        };
+      default:
+        return {
+          state: "connecting",
+          flow: { kind: "browser", url: `https://mock.${providerId}.example/oauth/authorize`, expiresAt },
+        };
+    }
   }
 
   private delay(ms: number): Promise<void> {
@@ -734,6 +870,156 @@ export class MockTransport implements Transport {
     },
     auth_open_account_portal: () => {
       this.accountPortalOpens += 1;
+    },
+
+    // Subscription accounts (ADR 0009) — the browser round-trip is a timer, like auth above.
+    accounts_list: () => this.accounts,
+    accounts_status: (args) => this.account(args.accountId),
+    accounts_catalog: (args) => {
+      this.account(args.accountId);
+      return this.accountCatalogs.get(args.accountId) ?? null;
+    },
+    accounts_connect: (args) => {
+      this.ensureAccountsEnabled();
+      const account = this.accounts.find((a) => a.providerId === args.providerId);
+      if (!account) {
+        throw blueyError({
+          kind: "authentication",
+          code: "account.unknown_provider",
+          message: `\`${args.providerId}\` is not a subscription provider`,
+        });
+      }
+      const flow = args.options?.preferDeviceCode ? "device_code" : this.nextAccountFlow;
+      this.nextAccountFlow = "browser";
+      const outcome = this.nextAccountOutcome;
+      this.nextAccountOutcome = "success";
+      const existing = this.accountTimers.get(account.accountId);
+      if (existing) clearTimeout(existing);
+      const connecting = this.setAccount(account.accountId, { status: this.connectFlow(flow, account.providerId) });
+      if (flow === "manual_code") {
+        // Completes when the user pastes the code (`accounts_submit_code`).
+        this.pendingManualCodes.add(account.accountId);
+        return connecting;
+      }
+      if (outcome !== "hang") {
+        this.accountTimers.set(
+          account.accountId,
+          setTimeout(() => this.finishAccountConnect(account.accountId, outcome), Math.max(this.streamDelayMs * 4, 10)),
+        );
+      }
+      return connecting;
+    },
+    accounts_import: (args) => {
+      this.ensureAccountsEnabled();
+      const account = this.accounts.find((a) => a.providerId === args.providerId);
+      if (!account) {
+        throw blueyError({
+          kind: "authentication",
+          code: "account.unknown_provider",
+          message: `\`${args.providerId}\` is not a subscription provider`,
+        });
+      }
+      const outcome = this.nextImportOutcome;
+      this.nextImportOutcome = "success";
+      if (outcome === "missing") {
+        throw blueyError({
+          kind: "authentication",
+          code: "account.import_not_found",
+          message: `no existing ${args.providerId} sign-in was found on this Mac`,
+          recoverable: true,
+          recovery: { type: "none" },
+        });
+      }
+      this.setAccount(account.accountId, { status: this.connectFlow("browser", account.providerId) });
+      this.finishAccountConnect(account.accountId, "success");
+      return this.account(account.accountId);
+    },
+    accounts_cancel_connect: (args) => {
+      const timer = this.accountTimers.get(args.accountId);
+      if (timer) clearTimeout(timer);
+      this.accountTimers.delete(args.accountId);
+      this.pendingManualCodes.delete(args.accountId);
+      const account = this.account(args.accountId);
+      return account.status.state === "connecting"
+        ? this.setAccount(args.accountId, { status: { state: "disconnected" } })
+        : account;
+    },
+    accounts_submit_code: (args) => {
+      if (!this.pendingManualCodes.has(args.accountId)) {
+        throw blueyError({
+          kind: "authentication",
+          code: "account.no_pending_flow",
+          message: "no sign-in is waiting for a code — start again from the account card",
+        });
+      }
+      this.finishAccountConnect(args.accountId, args.code.trim() === "bad" ? "denied" : "success");
+      return this.account(args.accountId);
+    },
+    accounts_disconnect: (args) => {
+      const account = this.account(args.accountId);
+      const timer = this.accountTimers.get(args.accountId);
+      if (timer) clearTimeout(timer);
+      this.accountTimers.delete(args.accountId);
+      this.pendingManualCodes.delete(args.accountId);
+      this.accountCatalogs.delete(args.accountId);
+      this.disconnectedAccounts.push(account.providerId);
+      // Roles that pointed at this provider go back to unassigned.
+      const models = { ...this.settings.ai.models };
+      let changed = false;
+      for (const role of MODEL_ROLES) {
+        if (models[role]?.providerId === account.providerId) {
+          models[role] = null;
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.settings = { ...this.settings, ai: { ...this.settings.ai, models } };
+        this.emitSettings();
+      }
+      this.setAccount(args.accountId, {
+        status: { state: "disconnected" },
+        identity: undefined,
+        connectedAt: undefined,
+        expiresAt: undefined,
+        catalogFetchedAt: undefined,
+      });
+    },
+    accounts_refresh_catalog: (args) => {
+      this.ensureAccountsEnabled();
+      const account = this.account(args.accountId);
+      if (account.status.state !== "connected") {
+        throw blueyError({
+          kind: "authentication",
+          code: "account.not_connected",
+          message: "connect the account before fetching its models",
+        });
+      }
+      const cached = this.accountCatalogs.get(args.accountId);
+      if (cached && !args.force) return cached;
+      const catalog = createFixtureCatalog(args.accountId, now());
+      this.accountCatalogs.set(args.accountId, catalog);
+      this.setAccount(args.accountId, { catalogFetchedAt: catalog.fetchedAt });
+      this.emit("accounts.catalog", catalog);
+      return catalog;
+    },
+    accounts_probe_fingerprint: (args) => {
+      this.ensureAccountsEnabled();
+      const account = this.account(args.accountId);
+      if (account.status.state !== "connected") {
+        throw blueyError({
+          kind: "authentication",
+          code: "account.not_connected",
+          message: "connect the account before probing it",
+        });
+      }
+      return {
+        accountId: args.accountId,
+        ok: true,
+        billedTo: "plan" as const,
+        fingerprintVersion: account.fingerprintVersion,
+        message: "1-token probe billed to the plan",
+        checkedAt: now(),
+      };
     },
 
     // Permissions

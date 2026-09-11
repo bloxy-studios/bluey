@@ -20,6 +20,7 @@
 pub mod error;
 pub mod types;
 
+pub mod accounts;
 pub mod budget;
 pub mod context;
 pub mod events;

@@ -101,3 +101,62 @@ describe("presentError", () => {
     expect(presentError(error({ kind: "network", code: "network.timeout", recovery: { type: "retry" } })).action).toBeUndefined();
   });
 });
+
+describe("subscription accounts (ADR 0009)", () => {
+  it("names what Bluey did instead for every stop signal", () => {
+    const drift = describeError(error({ kind: "authentication", code: "account.fingerprint_drift" }));
+    expect(drift.title).toBe("Provider stopped recognising Bluey");
+    expect(drift.message).toContain("rather than bill your extra usage");
+    expect(drift.message).toContain("API key");
+
+    const extra = describeError(error({ kind: "authentication", code: "account.extra_usage_blocked" }));
+    expect(extra.title).toBe("Paused to avoid extra-usage charges");
+
+    const expired = describeError(error({ kind: "authentication", code: "account.needs_reauth" }));
+    expect(expired.title).toBe("Subscription sign-in expired");
+
+    const pending = describeError(
+      error({ kind: "authentication", code: "account.provider_pending", message: "Claude sign-in is not built into this version of Bluey yet (PR 3b)." }),
+    );
+    expect(pending.title).toBe("Not available yet");
+    expect(pending.message).toContain("PR 3b");
+  });
+
+  it("describes a rate-limited window with its reset time", () => {
+    const limited = describeError(
+      error({
+        kind: "authentication",
+        code: "account.rate_limited",
+        details: { until: new Date(Date.now() + 3_600_000).toISOString(), window: "5h" },
+      }),
+    );
+    expect(limited.title).toBe("Plan limit reached");
+    expect(limited.message).toContain("5h window");
+    expect(limited.message).toMatch(/resets at \d/);
+    expect(limited.message).toContain("API key meanwhile");
+
+    const noReset = describeError(error({ kind: "authentication", code: "account.rate_limited" }));
+    expect(noReset.message).not.toContain("resets at");
+  });
+
+  it("offers Reconnect for an expired account and Use API key instead for an unavailable one", () => {
+    const reconnect = presentError(
+      error({
+        kind: "authentication",
+        code: "account.needs_reauth",
+        recovery: { type: "reconnect_account", accountId: "claude", providerId: "claude" },
+      }),
+    );
+    expect(reconnect.actionLabel).toBe("Reconnect");
+    expect(reconnect.action).toBeTypeOf("function");
+
+    const opened: string[] = [];
+    const useKey = presentError(
+      error({ kind: "authentication", code: "account.fingerprint_drift", recovery: { type: "use_api_key" } }),
+      { onOpenSettingsTab: (tab) => opened.push(tab) },
+    );
+    expect(useKey.actionLabel).toBe("Use API key instead");
+    void useKey.action?.();
+    expect(opened).toEqual(["ai"]);
+  });
+});
