@@ -7,6 +7,7 @@
 //! state hub → helper client → managers → `app.manage(AppCore)` → panel/windows
 //! → tray → shortcuts (async) → initial side effects → `boot_completed`.
 
+pub mod bench;
 pub mod checks;
 pub mod dev;
 pub mod env_import;
@@ -107,6 +108,7 @@ pub fn run(builder: tauri::Builder<Wry>) {
 
 /// Build every manager and hand them to Tauri as managed state.
 fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
+    crate::clock::init();
     // `.env.local` / `.env` come first: `BLUEY_LOG_LEVEL` may live there.
     let env_files = crate::secrets::load_dotenv();
     let paths = Arc::new(AppPaths::resolve()?);
@@ -320,6 +322,8 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
     let boot_handle = handle.clone();
     tauri::async_runtime::spawn(async move {
         finish_boot(&boot_handle).await;
+        // `bun run bench:fastpath`: the app was launched to measure and leave.
+        bench::run_from_env(&boot_handle).await;
     });
 
     hub.transition(AppEvent::BootCompleted { authenticated })?;

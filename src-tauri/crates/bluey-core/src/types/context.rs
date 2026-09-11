@@ -332,6 +332,9 @@ pub struct ContextSnapshot {
     pub user_instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timings: Option<BTreeMap<String, u64>>,
+    /// What the native builder observed on the Rust clock (ADR 0010 §2); the WebView anchors on `reply_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<super::SnapshotTrace>,
 }
 
 /// Mirrors `SnapshotOptions`.

@@ -29,6 +29,7 @@
     "fingerprints:diff": "cargo run -q --manifest-path src-tauri/Cargo.toml -p bluey-fingerprints -- diff",
     "fingerprints:bless": "cargo run -q --manifest-path src-tauri/Cargo.toml -p bluey-fingerprints -- bless",
     "fingerprints:list": "cargo run -q --manifest-path src-tauri/Cargo.toml -p bluey-fingerprints -- list",
+    "bench:fastpath": "bun scripts/bench-fastpath.ts",
     "release": "bash scripts/release.sh"
   },
   "dependencies": {

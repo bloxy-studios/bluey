@@ -2,7 +2,8 @@
 //! embeddings, connection tests, model listing and provider presets.
 
 use bluey_core::types::{
-    AiChunk, AiRequest, ConnectionTestResult, ModelRole, Settings, TranscribeFileResult,
+    AiChunk, AiRequest, ConnectionTestResult, LatencyTrace, ModelRole, Settings, TraceStamps,
+    TranscribeFileResult,
 };
 use bluey_core::BlueyResult;
 use serde::Deserialize;
@@ -21,6 +22,17 @@ pub fn ai_stream(
     on_chunk: Channel<AiChunk>,
 ) -> BlueyResult<()> {
     core.ai.stream(request, on_chunk)
+}
+
+/// The WebView's late stamps of a request's fast-path trace (first paint,
+/// done — ADR 0010 §2); returns the merged trace, `None` for an unknown request.
+#[tauri::command]
+pub async fn ai_report_trace(
+    core: State<'_, AppCore>,
+    request_id: String,
+    stamps: TraceStamps,
+) -> BlueyResult<Option<LatencyTrace>> {
+    Ok(core.ai.report_trace(&request_id, stamps).await)
 }
 
 #[tauri::command]

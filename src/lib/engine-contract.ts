@@ -50,6 +50,8 @@ export interface AskInput {
   sessionNotes?: SessionNote[];
   /** Documents attached to the session (for `SessionContext.documentIds`). */
   sessionDocumentIds?: string[];
+  /** The global shortcut's keydown on Bluey's monotonic clock — the fast-path trace's `tShortcut` (ADR 0010 §2). */
+  triggeredAtMs?: number;
 }
 
 export type EnginePhase = "capturing" | "analyzing" | "thinking" | "streaming" | "done" | "error" | "cancelled";

@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 
 use bluey_core::accounts as account_rules;
 use bluey_core::events::BlueyEvent;
+use bluey_core::latency::{self, RustStamps};
 use bluey_core::presets;
 use bluey_core::router::{self, RoutingInput};
 use bluey_core::types::{
     AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent, ConnectionTestResult,
-    FinishReason, LatencyBudget, ModelRole, ModelSelection, ProviderAuthMethod, ReasoningLevel,
-    Settings,
+    FinishReason, LatencyBudget, LatencyTrace, ModelAssignment, ModelRole, ModelSelection,
+    ProviderAuthMethod, ReasoningLevel, Settings, TraceStamps,
 };
 use bluey_core::{now_iso, BlueyError, BlueyResult};
 use bluey_protocols::gemini as gemini_proto;
@@ -44,6 +45,20 @@ struct ActiveRequest {
     generation: u64,
 }
 
+/// A request's fast-path trace while its two halves are still arriving
+/// (ADR 0010 §2): Rust writes its stamps at stream end, the WebView reports
+/// first paint / done afterwards; whichever comes second updates the row.
+struct TraceEntry {
+    trace: LatencyTrace,
+    /// The `ai_requests` row has been written.
+    persisted: bool,
+    /// Changed since the row was written (or before it was).
+    dirty: bool,
+}
+
+/// Traces kept in memory for late stamps (and the bench).
+const TRACE_BOOK_CAPACITY: usize = 64;
+
 /// The AI orchestrator.
 pub struct AiManager {
     http: reqwest::Client,
@@ -63,6 +78,8 @@ pub struct AiManager {
     /// connected accounts are providers to the router and lend their tokens
     /// to the adapters per request.
     accounts: OnceLock<Arc<AccountsManager>>,
+    /// Recent requests' fast-path traces (newest last).
+    traces: parking_lot::Mutex<Vec<TraceEntry>>,
 }
 
 /// `(fetched at, model ids)` per `(provider id, role)`.
@@ -99,6 +116,7 @@ impl AiManager {
             active: parking_lot::Mutex::new(HashMap::new()),
             model_cache: parking_lot::Mutex::new(HashMap::new()),
             accounts: OnceLock::new(),
+            traces: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -233,12 +251,26 @@ impl AiManager {
         request: AiRequest,
         channel: Channel<AiChunk>,
     ) -> BlueyResult<()> {
+        let (selection, token, received) = self.start(&request)?;
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            this.run_stream(request, selection, channel, token, received)
+                .await;
+        });
+        Ok(())
+    }
+
+    /// Route, supersede older generations of the session, register the request
+    /// as active. Returns the selection, the cancellation token and the arrival
+    /// stamp (the request's `t_request_received` on the monotonic clock).
+    fn start(&self, request: &AiRequest) -> BlueyResult<(ModelSelection, CancellationToken, f64)> {
+        let received = crate::clock::mono_ms();
         self.bus.publish(BlueyEvent::AiRequested {
             request_id: request.request_id.clone(),
             task: request.task,
             session_id: request.session_id.clone(),
         });
-        let selection = match self.select(&request) {
+        let selection = match self.select(request) {
             Ok(selection) => selection,
             Err(error) => {
                 self.publish_failed(&request.request_id, error.clone(), is_primary(request.task));
@@ -272,12 +304,127 @@ impl AiManager {
         if is_primary(request.task) {
             self.hub.transition_soft(AppEvent::ThinkingStarted);
         }
+        Ok((selection, token, received))
+    }
 
-        let this = self.clone();
-        tauri::async_runtime::spawn(async move {
-            this.run_stream(request, selection, channel, token).await;
+    /// Run one request to completion on the caller's task with no WebView
+    /// listening, and return its merged trace (the bench, ADR 0010 §2).
+    pub async fn run_traced(self: &Arc<Self>, request: AiRequest) -> BlueyResult<LatencyTrace> {
+        let request_id = request.request_id.clone();
+        let (selection, token, received) = self.start(&request)?;
+        let sink: Channel<AiChunk> = Channel::new(|_| Ok(()));
+        self.clone()
+            .run_stream(request, selection, sink, token, received)
+            .await;
+        self.trace_of(&request_id)
+            .ok_or_else(|| BlueyError::internal("the traced request left no trace"))
+    }
+
+    /// The trace of a recent request, if still in memory.
+    pub fn trace_of(&self, request_id: &str) -> Option<LatencyTrace> {
+        self.traces
+            .lock()
+            .iter()
+            .find(|entry| entry.trace.request_id == request_id)
+            .map(|entry| entry.trace.clone())
+    }
+
+    /// The model a bench runs on for `provider_id`: the role assignment closest
+    /// to the default role, else the kind's preset (`mock-default` for the mock).
+    pub fn bench_assignment(&self, provider_id: &str) -> BlueyResult<ModelAssignment> {
+        let config = self.find_provider(provider_id)?;
+        let model = self.default_model_for(&config).ok_or_else(|| {
+            BlueyError::configuration(
+                "no_model",
+                format!("assign a model to `{provider_id}` first (Settings → AI)"),
+            )
+        })?;
+        Ok(ModelAssignment {
+            provider_id: provider_id.to_string(),
+            model,
+        })
+    }
+
+    /// Whether `ai.trace` events leave the process: `dev-tools` / debug builds,
+    /// or developer mode.
+    fn traces_enabled(&self) -> bool {
+        cfg!(feature = "dev-tools")
+            || cfg!(debug_assertions)
+            || self.settings.get().general.developer_mode
+    }
+
+    fn publish_trace(&self, trace: &LatencyTrace) {
+        if self.traces_enabled() {
+            self.bus.publish(BlueyEvent::AiTrace(trace.clone()));
+        }
+    }
+
+    /// Remember a freshly merged trace (not yet persisted).
+    fn book_trace(&self, trace: LatencyTrace) {
+        let mut book = self.traces.lock();
+        book.retain(|entry| entry.trace.request_id != trace.request_id);
+        if book.len() >= TRACE_BOOK_CAPACITY {
+            book.remove(0);
+        }
+        book.push(TraceEntry {
+            trace,
+            persisted: false,
+            dirty: false,
         });
-        Ok(())
+    }
+
+    /// The `ai_requests` row for `request_id` was written: flush a late report
+    /// that arrived in between.
+    async fn mark_trace_persisted(&self, request_id: &str) {
+        let pending = {
+            let mut book = self.traces.lock();
+            let Some(entry) = book
+                .iter_mut()
+                .find(|entry| entry.trace.request_id == request_id)
+            else {
+                return;
+            };
+            entry.persisted = true;
+            std::mem::take(&mut entry.dirty).then(|| entry.trace.clone())
+        };
+        if let Some(trace) = pending {
+            self.persist_trace(trace).await;
+        }
+    }
+
+    async fn persist_trace(&self, trace: LatencyTrace) {
+        let storage = self.storage.clone();
+        if let Err(error) = storage
+            .run(move |db| AiRequestRepository::update_trace(db, &trace.request_id, &trace))
+            .await
+        {
+            tracing::debug!(error = %error, "cannot update the request trace");
+        }
+    }
+
+    /// The WebView's late stamps (first paint, done) for a request: merge, persist
+    /// once the row exists, publish `ai.trace`. `None` for a request not in memory.
+    pub async fn report_trace(
+        &self,
+        request_id: &str,
+        stamps: TraceStamps,
+    ) -> Option<LatencyTrace> {
+        let (trace, persisted) = {
+            let mut book = self.traces.lock();
+            let entry = book
+                .iter_mut()
+                .find(|entry| entry.trace.request_id == request_id)?;
+            latency::apply_late_stamps(&mut entry.trace, &stamps);
+            if !entry.persisted {
+                entry.dirty = true;
+            }
+            (entry.trace.clone(), entry.persisted)
+        };
+        if persisted {
+            self.persist_trace(trace.clone()).await;
+        }
+        self.publish_trace(&trace);
+        Some(trace)
     }
 
     async fn run_stream(
@@ -286,10 +433,15 @@ impl AiManager {
         selection: ModelSelection,
         channel: Channel<AiChunk>,
         token: CancellationToken,
+        received: f64,
     ) {
         let request_id = request.request_id.clone();
         let primary = is_primary(request.task);
         let started = Instant::now();
+        let mut rust = RustStamps {
+            request_received: Some(received),
+            ..RustStamps::default()
+        };
 
         let started_chunk = AiChunk::Started {
             request_id: request_id.clone(),
@@ -304,8 +456,9 @@ impl AiManager {
         });
 
         let outcome = self
-            .drive_provider(&request, &selection, &channel, &token, started)
+            .drive_provider(&request, &selection, &channel, &token, started, &mut rust)
             .await;
+        rust.stream_done = Some(crate::clock::mono_ms());
 
         self.active.lock().remove(&request_id);
         match &outcome {
@@ -399,11 +552,26 @@ impl AiManager {
             }
         }
 
+        // The merged fast-path trace (ADR 0010 §2): Rust's stamps plus the
+        // WebView's pre-request offsets; first paint / done arrive by report.
+        let trace = latency::merge(
+            &request_id,
+            request.trace.as_ref(),
+            &rust,
+            Some(&selection.provider_id),
+            Some(&selection.model),
+            record.input_tokens.or(Some(request.context_tokens)),
+        );
+        record.trace = Some(trace.clone());
+        self.book_trace(trace.clone());
+        self.publish_trace(&trace);
+
         let storage = self.storage.clone();
         let _ = storage
             .run(move |db| AiRequestRepository::record(db, &record))
             .await
             .map_err(|e| tracing::warn!(error = %e, "failed to record ai request"));
+        self.mark_trace_persisted(&request_id).await;
     }
 
     async fn drive_provider(
@@ -413,6 +581,7 @@ impl AiManager {
         channel: &Channel<AiChunk>,
         token: &CancellationToken,
         started: Instant,
+        rust: &mut RustStamps,
     ) -> StreamOutcome {
         use futures::StreamExt;
         let config = match self.find_provider(&selection.provider_id) {
@@ -434,8 +603,12 @@ impl AiManager {
             reasoning: request.reasoning,
             session_id: request.session_id.clone(),
         };
+        rust.request_sent = Some(crate::clock::mono_ms());
         let mut stream = match adapter.stream(&provider_request, token.clone()).await {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                rust.response_headers = Some(crate::clock::mono_ms());
+                stream
+            }
             Err(error) if error.is_cancelled() => {
                 return StreamOutcome::Cancelled { ttft_ms: None }
             }
@@ -468,6 +641,7 @@ impl AiManager {
                 Ok(StreamItem::Delta(text)) => {
                     if ttft_ms.is_none() {
                         ttft_ms = Some(started.elapsed().as_millis() as u64);
+                        rust.first_token = Some(crate::clock::mono_ms());
                     }
                     let chunk = AiChunk::Delta {
                         request_id: request.request_id.clone(),

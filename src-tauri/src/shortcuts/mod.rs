@@ -205,8 +205,11 @@ impl ShortcutManager {
 /// Native reaction to a shortcut press. Everything the frontend handles itself
 /// (⌘↵ capture, ⌘⇧↵ prepared response) only gets the event.
 fn trigger(ctx: &TriggerContext, id: ShortcutId) {
-    ctx.bus
-        .publish(BlueyEvent::ShortcutTriggered { id, at: now_iso() });
+    ctx.bus.publish(BlueyEvent::ShortcutTriggered {
+        id,
+        at: now_iso(),
+        mono_ms: crate::clock::mono_ms(),
+    });
     let ctx = ctx.clone();
     tauri::async_runtime::spawn(async move {
         let result: BlueyResult<()> = match id {

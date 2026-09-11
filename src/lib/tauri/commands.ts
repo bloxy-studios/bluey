@@ -36,6 +36,10 @@ import type {
   FeedbackRating,
   FingerprintProbe,
   LatencyMetrics,
+  LatencyTrace,
+  BenchOptions,
+  BenchReport,
+  TraceStamps,
   ModeDraft,
   ModePatch,
   OCRContext,
@@ -196,6 +200,8 @@ export interface CommandMap {
   // ── AI (Rust owns credentials; streams via Channel) ────────────────────
   /** `onChunk` is a `Channel<AIChunk>` — see api.ts. */
   ai_stream: { args: { request: AIRequest; onChunk: unknown }; result: void };
+  /** The WebView's late fast-path stamps (first paint, done); the merged trace, `null` for an unknown request. */
+  ai_report_trace: { args: { requestId: string; stamps: TraceStamps }; result: LatencyTrace | null };
   ai_cancel: { args: { requestId: string }; result: boolean };
   ai_cancel_all: { args: void; result: number };
   /** `purpose` defaults to `document`; queries get the retrieval prompt prefix on gemini-embedding-2. */
@@ -340,6 +346,8 @@ export interface CommandMap {
   dev_simulate: { args: { simulation: DevSimulation }; result: void };
   dev_get_metrics: { args: void; result: LatencyMetrics };
   dev_restart_helper: { args: void; result: void };
+  /** The ⌘↵ fast-path bench (ADR 0010 §2) — developer mode / `dev-tools` builds. */
+  dev_bench_fast_path: { args: { options: BenchOptions }; result: BenchReport };
 }
 
 export type CommandName = keyof CommandMap;
@@ -399,6 +407,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "transcript_clear",
   "context_build_snapshot",
   "ai_stream",
+  "ai_report_trace",
   "ai_cancel",
   "ai_cancel_all",
   "ai_embed",
@@ -484,6 +493,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "dev_simulate",
   "dev_get_metrics",
   "dev_restart_helper",
+  "dev_bench_fast_path",
 ] as const;
 
 /** Secret keys used with `secrets_set` / `secrets_has` (values live in the OS keychain). */

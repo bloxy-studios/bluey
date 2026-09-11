@@ -108,6 +108,8 @@ export const bluey = {
     },
     cancel: call("ai_cancel"),
     cancelAll: callNoArgs("ai_cancel_all"),
+    /** Best-effort: the fast-path trace's first paint / done, after the answer is on screen. */
+    reportTrace: call("ai_report_trace"),
     embed: call("ai_embed"),
     testConnection: call("ai_test_connection"),
     listModels: call("ai_list_models"),
@@ -220,6 +222,7 @@ export const bluey = {
     simulate: call("dev_simulate"),
     getMetrics: callNoArgs("dev_get_metrics"),
     restartHelper: callNoArgs("dev_restart_helper"),
+    benchFastPath: call("dev_bench_fast_path"),
   },
 } as const;
 
