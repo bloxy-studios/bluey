@@ -140,7 +140,10 @@ the DMG. The release verifier therefore explicitly submits the resulting DMG wit
   `<target>/release/bundle/macos/*.app`, `<target>/release/bundle/dmg/*.dmg` and — because
   `bundle.createUpdaterArtifacts` is on — `<target>/release/bundle/macos/*.app.tar.gz` with its
   `.sig` (base64 minisign signature made with `TAURI_SIGNING_PRIVATE_KEY`).
-- Old target bundle directories are removed before building. Exactly **one** app, **one** DMG,
+- Old target bundle directories are removed before building, and the script itself fails when
+  the build leaves no DMG, updater archive or signature — a build cannot look green without its
+  outputs (macOS runs `release.sh` under bash 3.2; the script stays free of 3.2 pitfalls such as
+  empty-array expansion under `set -u`). Exactly **one** app, **one** DMG,
   **one** updater archive and **one** signature are discovered per target. Real DMG basenames are
   preserved, never synthesized from a filename example or used to infer the architecture; the
   updater archive (always `Bluey.app.tar.gz` as Tauri writes it) is staged under the DMG's stem

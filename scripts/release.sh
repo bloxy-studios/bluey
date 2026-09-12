@@ -19,12 +19,11 @@ case "$PUBLISH_RELEASE" in true|false) ;; *) fail 'PUBLISH_RELEASE must be true 
   || fail 'TAURI_SIGNING_PRIVATE_KEY (or TAURI_SIGNING_PRIVATE_KEY_PATH) is required to sign the updater bundle (docs/UPDATES.md › Signing)'
 
 # Nightly builds carry a version above the sources (docs/UPDATES.md); publication builds never override.
+# (macOS ships bash 3.2: no arrays under `set -u`, no `${var,,}`; keep this file 3.2-clean.)
 BUILD_VERSION="${BLUEY_BUILD_VERSION:-}"
-TAURI_CONFIG_ARGS=()
 if [[ -n "$BUILD_VERSION" ]]; then
   [[ "$PUBLISH_RELEASE" == false ]] || fail 'BLUEY_BUILD_VERSION is only allowed for developer/nightly builds'
   python3 scripts/release/nightly.py check-version "$BUILD_VERSION" > /dev/null
-  TAURI_CONFIG_ARGS=(--config "{\"version\":\"$BUILD_VERSION\"}")
 fi
 
 # Credentials and immutable version/tag checks precede installs, toolchains and builds.
@@ -74,7 +73,8 @@ rm -rf "$BUNDLE_DIR"
 export BLUEY_RELEASE_BUN
 BLUEY_RELEASE_BUN="$(command -v bun)"
 SHIM="$(mktemp -d "${TMPDIR:-/tmp}/bluey-release-bun.XXXXXX")"
-trap 'rm -rf "$SHIM"' EXIT
+# The trap must not mask the failing status (bash 3.2 reports the trap's status otherwise).
+trap 'status=$?; rm -rf "$SHIM"; exit "$status"' EXIT
 cp scripts/release/bun-frozen.sh "$SHIM/bun"
 chmod +x "$SHIM/bun"
 export PATH="$SHIM:$PATH"
@@ -106,7 +106,16 @@ fi
 # Config retains hardened runtime + entitlements.plist. No --no-sign/--skip-stapling,
 # no recursive re-signing. Tauri notarizes + staples the app before making the DMG, then
 # writes the signed updater bundle (`Bluey.app.tar.gz` + `.sig`) next to the app.
-bun run tauri build --target "$TARGET" --bundles app,dmg "${TAURI_CONFIG_ARGS[@]}" -- --locked
+if [[ -n "$BUILD_VERSION" ]]; then
+  bun run tauri build --target "$TARGET" --bundles app,dmg --config "{\"version\":\"$BUILD_VERSION\"}" -- --locked
+else
+  bun run tauri build --target "$TARGET" --bundles app,dmg -- --locked
+fi
+
+# A build that exits 0 without its outputs must fail here, never at an upload step.
+for expected in "$BUNDLE_DIR"/dmg/*.dmg "$BUNDLE_DIR"/macos/*.app.tar.gz "$BUNDLE_DIR"/macos/*.app.tar.gz.sig; do
+  [[ -f "$expected" ]] || fail "the build produced no $(basename "$expected") in $BUNDLE_DIR"
+done
 
 # Tests/builds must not have changed dependency locks. There is no install fallback.
 git diff --exit-code -- bun.lock sidecars/agent/bun.lock src-tauri/Cargo.lock

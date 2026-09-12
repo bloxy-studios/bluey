@@ -31,7 +31,17 @@ if [[ "${1:-}" == --version ]]; then printf '%s\\n' "${MOCK_BUN_VERSION:-1.4.2}"
 printf 'bun' >> "$MOCK_LOG"; printf ' [%s]' "$@" >> "$MOCK_LOG"; printf '\\n' >> "$MOCK_LOG"
 if [[ "${1:-}" == install && "${MOCK_FAIL:-}" == install ]]; then exit 19; fi
 if [[ "${1:-} ${2:-}" == 'run typecheck' && "${MOCK_FAIL:-}" == typecheck ]]; then exit 20; fi
-if [[ "${1:-} ${2:-} ${3:-}" == 'run tauri build' && "${MOCK_FAIL:-}" == build ]]; then exit 21; fi
+if [[ "${1:-} ${2:-} ${3:-}" == 'run tauri build' ]]; then
+  [[ "${MOCK_FAIL:-}" != build ]] || exit 21
+  # A real build leaves the DMG and the signed updater bundle; "silent-build" exits 0 without them.
+  if [[ "${MOCK_FAIL:-}" != silent-build ]]; then
+    bundle="src-tauri/target/$TARGET/release/bundle"
+    mkdir -p "$bundle/dmg" "$bundle/macos"
+    printf 'mock' > "$bundle/dmg/Bluey_0.0.0_aarch64.dmg"
+    printf 'mock' > "$bundle/macos/Bluey.app.tar.gz"
+    printf 'mock' > "$bundle/macos/Bluey.app.tar.gz.sig"
+  fi
+fi
 ''')
         self.executable(self.bin / "uname", '#!/usr/bin/env bash\nprintf "Darwin\\n"\n')
         self.executable(self.bin / "git", '#!/usr/bin/env bash\ncase " $* " in *" rev-parse "*) printf "' + COMMIT + '\\n";; esac\n')
@@ -130,6 +140,13 @@ bun install --os darwin --cpu '*'
         self.assertEqual(commands.count("bun [install]"), 1)
         self.assertNotIn("helper", commands)
         self.assertNotIn("[tauri]", commands)
+
+    def test_build_without_outputs_fails_in_the_script_not_at_upload(self):
+        result = self.run_shell(MOCK_FAIL="silent-build")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("produced no", result.stderr)
+        self.assertNotIn("Developer build complete", result.stdout)
+        self.assertIn("[tauri] [build]", self.commands())
 
     def test_failed_checks_never_build(self):
         result = self.run_shell(MOCK_FAIL="typecheck")
