@@ -86,8 +86,11 @@ jobs:
       VITE_CLERK_FRONTEND_API_URL: ${{ vars.VITE_CLERK_FRONTEND_API_URL }}
       BLUEY_CLERK_OAUTH_CLIENT_ID: ${{ vars.BLUEY_CLERK_OAUTH_CLIENT_ID }}
       BLUEY_CLERK_ACCOUNT_PORTAL_URL: ${{ vars.BLUEY_CLERK_ACCOUNT_PORTAL_URL }}
-      # Optional desktop OAuth client value already supported by build.rs; not a release gate.
-      BLUEY_ANTIGRAVITY_CLIENT_SECRET: ${{ needs.prepare.outputs.publish == 'true' && secrets.BLUEY_ANTIGRAVITY_CLIENT_SECRET || '' }}
+      # Optional desktop OAuth client value already supported by build.rs; not a release gate and
+      # not a signing credential: it is public in every shipped app (docs/RELEASING.md), so both
+      # paths bake it — developer builds too, or Google AI sign-in reports "not available in
+      # this build". Store it as a repository secret (an environment secret also works).
+      BLUEY_ANTIGRAVITY_CLIENT_SECRET: ${{ secrets.BLUEY_ANTIGRAVITY_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
         with:
