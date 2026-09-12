@@ -45,6 +45,7 @@ Firecrawl · SQLite (FTS5) · macOS Keychain.
 
 ## Requirements
 macOS 14+ (Apple Silicon or Intel). To build: Xcode Command Line Tools, Bun ≥ 1.2, Rust stable.
+The macOS release pipeline specifically pins **Bun 1.4.2** and requires Python 3.9+.
 
 ## Quick start
 ```bash
@@ -60,7 +61,7 @@ Then press **⌘ \\** to toggle Bluey, **⌘ ↵** to ask about your screen, **�
 | `bun run dev` | UI in a browser with the mock backend (`?window=main|settings|onboarding&dev=1`) |
 | `bun run typecheck` · `bun run lint` · `bun run test` | TypeScript checks and tests |
 | `bun run test:rust` · `bun run check:rust [--darwin]` | Rust tests / type-check for macOS |
-| `bun run tauri:build` · `scripts/release.sh` | production build, signing and notarization |
+| `bun run tauri:build` · `scripts/release.sh` | local production/build-only bundles; [gated release publishing](docs/RELEASING.md) |
 
 ## Default shortcuts
 ⌘ \\ toggle · ⌘ ↵ capture + analyze · ⌘ ⇧ ↵ generate response · ⌘ ⇧ L toggle listening ·

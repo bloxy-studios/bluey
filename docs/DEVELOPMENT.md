@@ -132,8 +132,14 @@ Settings → General → _Developer mode_ (or `?dev=1` in the browser) enables:
 
 ## Release
 
-`scripts/release.sh` — installs, checks, builds both sidecars for the target (the research
-sidecar as the lite Gemini binary unless `RESEARCH_BACKEND=claude`), runs `tauri build`, signs
-and notarizes when `APPLE_SIGNING_IDENTITY`/`APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` are
-present, and prints the `.app`/`.dmg` paths. GitHub Actions definitions for CI and tagged
-releases live in `docs/ci/` (install with `scripts/install-workflows.sh`).
+`scripts/release.sh` retains local build-only `.app`/`.dmg` output and the lite Gemini/full
+Claude sidecar choice. Release builds require **Bun 1.4.2** and frozen root/sidecar installs.
+No-credential builds are developer-only and can never become publication-eligible artifacts.
+The existing helpers build both sidecar architectures; Tauri selects the requested target.
+
+The active `.github/workflows/release.yml` publishes only from existing version tags, after
+complete signing/notarization/native validation of both macOS DMGs. Manual dispatch defaults
+to **build-only**; publication must be explicitly requested with an existing tag. See
+[Releasing](RELEASING.md) for owner credentials, environment/tag protection, manual instructions,
+manifest schema, failure/re-run semantics and the native checks that Linux cannot perform.
+Workflow install copies in `docs/ci/workflows/` are kept in sync with the release workflow.

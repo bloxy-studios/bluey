@@ -37,5 +37,9 @@ src-tauri/target-darwin
 # Fingerprint captures of the official clients (scrubbed, but local by design; goldens are committed)
 tests/fixtures/fingerprints/*/captures/
 
+# Portable release helper bytecode
+__pycache__/
+*.py[cod]
+
 # Rust module directories that collide with generic ignore patterns
 !src-tauri/src/research/
