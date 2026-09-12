@@ -15,7 +15,8 @@ the mode you're in, and prepares concise, useful help before you even ask.
 * **Live transcription** — microphone and system audio (separate channels), on-device Apple
   Speech by default or a cloud realtime provider, speaker labels with honest confidence.
 * **Question & event detection** — questions, coding problems, objections, decisions, action
-  items… detected live and prepared silently; ⌘⇧↵ shows the prepared response instantly.
+  items… detected live. The moment a question is heard, the answer to say streams into the
+  HUD as a suggestion (or waits behind ⌘⇧↵ if you prefer a discreet hint).
 * **Context fusion** — screen + focused UI + transcript + your documents + mode + session
   memory, scored, budgeted and sent to the right model (fast / vision / reasoning / research).
 * **Modes** — General, Interview, Behavioral Interview, Coding Interview, System Design, Case

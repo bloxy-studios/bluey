@@ -57,8 +57,12 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   preserve code, caveats and citations. The length cap keeps the first paragraph and never
   applies to the spoken, written and code shapes. Goal: the minimum text necessary to be useful.
 - **Proactive preparation**: when the classifier detects a likely question with
-  `requiresResponse`, the engine silently prepares and caches a response; ⌘⇧↵ shows it
-  instantly. Results are never auto-displayed.
+  `requiresResponse`, the loop in `src/stores/proactive.ts` calls `engine.prepare()`. With
+  *Show suggestions = Live* (default) it first opens a suggestion turn in the HUD and passes
+  callbacks, so the same pipeline streams the answer into that turn as it is written, persists
+  it like any shown answer, and neither caches nor announces it. With *On request* — or while
+  another answer is already streaming — `prepare()` runs silently, caches the result by event
+  id (5 entries, 3-minute TTL) and emits `response.prepared`; ⌘⇧↵ shows it instantly.
 
 ### Orchestration layer (Rust, `src-tauri/src/ai`)
 

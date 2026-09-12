@@ -172,6 +172,22 @@ describe("AITab", () => {
     await waitFor(() => expect(useSettingsStore.getState().settings?.ai.embeddingDimensions).toBe(1536));
   });
 
+  it("lets the user choose how live suggestions surface", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    const display = await screen.findByLabelText("Show suggestions");
+    expect(display).toHaveValue("live");
+    expect(screen.getByText(/streams into the HUD/)).toBeInTheDocument();
+
+    await user.selectOptions(display, "on_request");
+    await waitFor(() => expect(useSettingsStore.getState().settings?.ai.suggestionDisplay).toBe("on_request"));
+    expect(screen.getByText(/⌘⇧↵ shows it/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("switch", { name: "Prepare answers while listening" }));
+    await waitFor(() => expect(useSettingsStore.getState().settings?.ai.proactivePreparation).toBe(false));
+    expect(screen.getByLabelText("Show suggestions")).toBeDisabled();
+  });
+
   it("shows the Anthropic agent key only for the Claude research backend", async () => {
     const user = userEvent.setup();
     renderTab();

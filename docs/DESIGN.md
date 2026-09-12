@@ -115,7 +115,10 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   that role, and a link "Use <recommended>" when the assignment differs from the preset; an
   "Embedding size" select (768 · 1536 · 3072) appears when embeddings run on Gemini. Research:
   Web search, Deep research agent, **Research backend** (Gemini / Claude — the Anthropic agent
-  key field only for Claude), Exa / Firecrawl keys.
+  key field only for Claude), Exa / Firecrawl keys. **Live suggestions** (between Responses and
+  Research): *Prepare answers while listening* switch and *Show suggestions* select — *Live, as
+  it's written* (default) or *On request (⌘⇧↵)*; the select is disabled while preparation is off
+  and its description spells out the chosen behaviour.
 * **Audio tab**: setting rows Audio source (Microphone only / System audio only / both),
   Microphone (input devices, default marked), Transcription language (Auto-detect + common
   languages), Speaker identification switch, **Transcription provider** select — Gemini Live
@@ -193,13 +196,24 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   *Answer was cut short* banner with Regenerate. A floating 36px
   circular ↓ button appears bottom-right when not scrolled to the end. Bottom toolbar row
   stays as in idle with "New Chat ⌘ R".
+* **Suggestion turn** (an answer Bluey opened itself for a question it heard — the default
+  while listening, *Settings → AI → Show suggestions = Live*): the prompt pill is replaced by a
+  left-aligned provenance line — a small blue `Suggested` chip, then `<speaker> asked
+  “<question>”` (or `Question “…”` when the speaker is unknown) in 13px `fg-muted`, at most
+  two lines. The answer streams in below exactly like a typed ask (*Thinking…* placeholder
+  first, then progressive text), the HUD expands on its own, and the response actions
+  appear when it is done. Nothing to press; ⌘⇧↵ keeps working for a suggestion that had to
+  wait or for generating from the transcript.
 * **States** (label in the left pill): Idle `Bluey · General`, Listening `● Listening`
   (green dot), Capturing `◌ Reading screen`, Thinking `◌ Thinking` (spinner glyph),
   Researching `◌ Researching` while a deep-research job runs inside the ask (the response
   body shows "Researching · Searching the web… (2 lookups)" with an accent "Skip research"
   link that cancels the job and lets the answer continue without it),
-  Preparing `◌ Preparing a suggestion` (proactive loop running), Prepared (blue)
-  `Bluey has a suggestion · ⌘⇧↵`, Update (blue, only while otherwise idle — never over
+  Preparing `◌ Preparing a suggestion` (proactive loop running) and Prepared (blue)
+  `Bluey has a suggestion · ⌘⇧↵` — both only when *Show suggestions* is **On request**, or
+  when a live suggestion had to stay silent because another answer was streaming; with the
+  default **Live** a detected question opens a suggestion turn at once and the pill simply
+  reads `◌ Thinking` while it streams, then returns to `● Listening` — Update (blue, only while otherwise idle — never over
   Listening or Thinking) `Update available · 0.2.0` (click installs) → `◌ Updating… 42%` →
   `Restart to update` (click relaunches; `docs/UPDATES.md`), Error `! <friendly title>` in `danger` + the error's single
   recovery button (`hud-chip` pill: Open Settings / Open System Settings / Retry / Restart

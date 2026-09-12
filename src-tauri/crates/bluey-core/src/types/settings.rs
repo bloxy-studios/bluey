@@ -231,6 +231,9 @@ pub struct AiSettings {
     pub deep_research_enabled: bool,
     pub embeddings_enabled: bool,
     pub proactive_preparation: bool,
+    /// How a prepared answer surfaces while listening; settings stored before it read `live`.
+    #[serde(default)]
+    pub suggestion_display: SuggestionDisplay,
     pub context_token_budget: u32,
     /// Provider id the `.env` import nominated at boot (`BLUEY_AI_PROVIDER`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -259,6 +262,16 @@ pub enum ResearchBackend {
     Claude,
 }
 
+/// Mirrors `SuggestionDisplay` (`"live" | "on_request"`): how a proactively prepared answer
+/// reaches the HUD — streamed into the thread as it is written, or held behind ⌘⇧↵.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionDisplay {
+    #[default]
+    Live,
+    OnRequest,
+}
+
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
@@ -270,6 +283,7 @@ impl Default for AiSettings {
             deep_research_enabled: true,
             embeddings_enabled: false,
             proactive_preparation: true,
+            suggestion_display: SuggestionDisplay::Live,
             context_token_budget: 12_000,
             bootstrap_provider: None,
             embedding_dimensions: DEFAULT_EMBEDDING_DIMENSIONS,
@@ -574,6 +588,26 @@ mod tests {
         assert!(
             patched.updates.automatic,
             "untouched fields keep their value"
+        );
+    }
+
+    #[test]
+    fn settings_stored_before_live_suggestions_stream_them_by_default() {
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        v["ai"].as_object_mut().unwrap().remove("suggestionDisplay");
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s.ai.suggestion_display, SuggestionDisplay::Live);
+        let patched = s
+            .apply_patch(&serde_json::json!({ "ai": { "suggestionDisplay": "on_request" } }))
+            .unwrap();
+        assert_eq!(patched.ai.suggestion_display, SuggestionDisplay::OnRequest);
+        assert!(
+            patched.ai.proactive_preparation,
+            "untouched fields keep their value"
+        );
+        assert_eq!(
+            serde_json::to_value(&patched).unwrap()["ai"]["suggestionDisplay"],
+            "on_request"
         );
     }
 

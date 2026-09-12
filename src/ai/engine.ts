@@ -6,7 +6,9 @@
  *         thinking (request build) → streaming (fence-safe drafts; one retry
  *         with double the budget when the output was cut short) → done
  *         (structured parse with salvage, optimize, persist, events).
- * prepare(): the same pipeline, silent, cached by detected-event id.
+ * prepare(): the same pipeline for a detected question — silent and cached by
+ *         event id for ⌘⇧↵, or streamed live through the caller's callbacks
+ *         (Settings → AI → Show suggestions).
  * classify(): heuristics first, fast-model refinement in the 0.4–0.7 band.
  * summarizeSession(): mode-structured post-session summary.
  *
@@ -175,7 +177,9 @@ interface PipelineOptions {
   requestId: string;
   generation: number;
   scope: string;
+  /** Prepared for later: no persistence, no session events, `response.prepared = true`. */
   silent: boolean;
+  /** Always honoured — a silent preparation simply passes none. */
   callbacks: EngineCallbacks;
   isCancelled(): boolean;
   onStreamHandle(handle: StreamHandle): void;
@@ -199,7 +203,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
   }
 
   function phase(opts: PipelineOptions, value: EnginePhase): void {
-    if (!opts.silent) opts.callbacks.onPhase?.(value, opts.requestId);
+    opts.callbacks.onPhase?.(value, opts.requestId);
   }
 
   // ── Research (best-effort, never fails the ask) ───────────────────────────
@@ -451,7 +455,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
         attempt,
         {
           onDelta: (delta, accumulated) => {
-            if (opts.silent || opts.isCancelled() || isStale(opts.scope, opts.generation)) return;
+            if (opts.isCancelled() || isStale(opts.scope, opts.generation)) return;
             if (!streamingAnnounced) {
               streamingAnnounced = true;
               phase(opts, "streaming");
@@ -652,12 +656,24 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     }
   }
 
-  async function prepare(input: AskInput): Promise<BlueyResponse | null> {
+  /**
+   * Live when the caller wants the finished answer (`onComplete`): drafts stream to it,
+   * the response is persisted like any shown answer and is neither cached nor announced.
+   * Otherwise silent: cached under the event id and announced as `response.prepared`.
+   */
+  async function prepare(input: AskInput, callbacks: EngineCallbacks = {}): Promise<BlueyResponse | null> {
     if (!input.settings.ai.proactivePreparation) return null;
     purgeExpired();
+    const live = callbacks.onComplete !== undefined;
     const key = input.detectedEvent?.id ?? "generic";
     const cached = prepared.get(key);
-    if (cached) return cached.response;
+    if (cached) {
+      if (live) {
+        prepared.delete(key);
+        callbacks.onComplete?.(cached.response);
+      }
+      return cached.response;
+    }
 
     const requestId = `req_${idGen()}`;
     const generation = gate.next(SCOPE_PREPARE);
@@ -665,13 +681,17 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       requestId,
       generation,
       scope: SCOPE_PREPARE,
-      silent: true,
-      callbacks: {},
+      silent: !live,
+      callbacks,
       isCancelled: () => false,
       onStreamHandle: () => {},
     };
     try {
       const response = await runPipeline(input, opts);
+      if (live) {
+        callbacks.onComplete?.(response);
+        return response;
+      }
       purgeExpired();
       prepared.set(key, { response, at: now().getTime() });
       while (prepared.size > PREPARED_CACHE_MAX) {
@@ -688,7 +708,12 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       }
       bus.emit("response.prepared", response);
       return response;
-    } catch {
+    } catch (error) {
+      if (error instanceof CancelledError) {
+        phase(opts, "cancelled");
+        return null;
+      }
+      callbacks.onError?.(toBlueyError(error, "ai"), requestId);
       return null;
     }
   }

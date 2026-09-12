@@ -130,6 +130,10 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     message: "The model's reply wasn't in a form Bluey can show. Regenerate to try again.",
   },
   // In-app updates (docs/UPDATES.md) — the current version keeps running in every case.
+  "ai.prepare_failed": {
+    title: "Couldn't prepare a suggestion",
+    message: "Bluey heard the question but no answer came through. Regenerate to try again.",
+  },
   "update.check_failed": {
     title: "Couldn't check for updates",
     message: "Bluey couldn't reach the update feed. It tries again in a few hours, or use Check now in Settings → General.",

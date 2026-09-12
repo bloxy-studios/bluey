@@ -60,6 +60,19 @@ export interface ScreenSettings {
 /** Which backend the research sidecar runs (`RESEARCH_BACKEND`). */
 export type ResearchBackend = "gemini" | "claude";
 
+/**
+ * How a proactively prepared answer reaches the HUD while listening
+ * (`docs/DESIGN.md › HUD › States`): `live` opens a suggestion turn and streams the
+ * answer into it the moment the question is detected; `on_request` keeps the engine
+ * silent and the HUD only hints "Bluey has a suggestion · ⌘⇧↵".
+ */
+export type SuggestionDisplay = "live" | "on_request";
+export const SUGGESTION_DISPLAYS: readonly SuggestionDisplay[] = ["live", "on_request"];
+export const SUGGESTION_DISPLAY_LABELS: Record<SuggestionDisplay, string> = {
+  live: "Live, as it's written",
+  on_request: "On request (⌘⇧↵)",
+};
+
 export interface AISettings {
   providers: AIProviderConfig[];
   models: ModelRoleAssignments;
@@ -69,6 +82,8 @@ export interface AISettings {
   deepResearchEnabled: boolean;
   embeddingsEnabled: boolean;
   proactivePreparation: boolean;
+  /** Where a prepared answer goes while listening: straight into the HUD, or behind ⌘⇧↵. */
+  suggestionDisplay: SuggestionDisplay;
   /** Max input tokens per request (token budget). */
   contextTokenBudget: number;
   /**

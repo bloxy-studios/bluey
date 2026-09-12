@@ -10,6 +10,7 @@ import { modeById, useModesStore } from "@/stores/modesStore";
 import { useProactiveStore } from "@/stores/proactive";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useTranscriptStore } from "@/stores/transcriptStore";
 
 let currentHandle: EngineHandle | null = null;
 
@@ -93,7 +94,15 @@ export function useAsk() {
       engine.takePrepared() ??
       useChatStore.getState().prepared;
     if (prepared) {
-      useChatStore.getState().showResponse(prepared, prepared.prompt ?? "Suggestion");
+      // Shown as a suggestion turn: the question it answers (and who asked, when known).
+      const detected = preparedEventId
+        ? useTranscriptStore.getState().questions.find((question) => question.id === preparedEventId)
+        : undefined;
+      const question = prepared.prompt ?? detected?.text;
+      useChatStore.getState().showResponse(prepared, {
+        promptLabel: question ?? "Suggestion",
+        suggestion: question ? { question, ...(detected?.speaker ? { speaker: detected.speaker } : {}) } : undefined,
+      });
       useChatStore.getState().setPrepared(null);
       useProactiveStore.getState().consumePrepared();
       return;

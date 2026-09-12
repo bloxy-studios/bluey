@@ -399,6 +399,7 @@ export function createDefaultSettings(): Settings {
       deepResearchEnabled: false,
       embeddingsEnabled: true,
       proactivePreparation: true,
+      suggestionDisplay: "live",
       contextTokenBudget: 24_000,
       bootstrapProvider: "gemini",
       embeddingDimensions: 768,

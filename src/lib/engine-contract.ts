@@ -93,8 +93,15 @@ export interface ClassifyInput {
 export interface ResponseEngine {
   /** Start a request. Any in-flight request for the same window is superseded (never overwritten by stale output). */
   ask(input: AskInput, callbacks?: EngineCallbacks): EngineHandle;
-  /** Silent proactive preparation; result is cached and returned by `takePrepared`. */
-  prepare(input: AskInput): Promise<BlueyResponse | null>;
+  /**
+   * Proactive preparation for a detected question. Silent by default: the result is
+   * cached for `takePrepared` and announced as `response.prepared`. With
+   * `callbacks.onComplete` the answer is *live*: phases, drafts, completion and errors
+   * go to the callbacks, the finished response is handed to `onComplete` and persisted
+   * like any shown answer, and it is neither cached nor announced — the HUD shows it as
+   * it is written.
+   */
+  prepare(input: AskInput, callbacks?: EngineCallbacks): Promise<BlueyResponse | null>;
   /** Pop a prepared response (optionally for a specific detected event id). */
   takePrepared(eventId?: string): BlueyResponse | null;
   /** Lightweight transcript classification (heuristics first, fast model when configured). */

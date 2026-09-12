@@ -125,11 +125,11 @@ describe("HudPanel", () => {
     expect(engine.asks).toHaveLength(0); // took the prepared response, no new ask
   });
 
-  it("prepares a response for a detected question and ⌘⇧↵ takes that exact one", async () => {
+  it("on request: prepares a response for a detected question and ⌘⇧↵ takes that exact one", async () => {
     const mock = await setupMockApp();
     const proactive = new ProactiveFakeEngine();
     setEngine(proactive);
-    await useSettingsStore.getState().update({ ai: { proactivePreparation: true } });
+    await useSettingsStore.getState().update({ ai: { proactivePreparation: true, suggestionDisplay: "on_request" } });
     renderHud();
 
     mock.emit("transcript.final", makeSegment({ text: "Why do you want to work here?" }));
@@ -138,8 +138,40 @@ describe("HudPanel", () => {
     const user = userEvent.setup();
     await user.keyboard("{Meta>}{Shift>}{Enter}{/Shift}{/Meta}");
     await waitFor(() => expect(screen.getByText("Prepared for det-1")).toBeInTheDocument());
+    // Taken responses are shown as suggestions too: who asked, and the question.
+    expect(screen.getByText("Interviewer asked")).toBeInTheDocument();
+    expect(screen.getByText("“Why do you want to work here?”")).toBeInTheDocument();
     expect(proactive.takeCalls[0]).toBe("det-1");
     expect(proactive.asks).toHaveLength(0);
+  });
+
+  it("live: streams a suggestion into the HUD the moment a question is heard", async () => {
+    const mock = await setupMockApp();
+    const proactive = new ProactiveFakeEngine();
+    setEngine(proactive);
+    await useSettingsStore.getState().update({ ai: { proactivePreparation: true } });
+    renderHud();
+    mock.emit("app.state", status({ state: "listening", audioActive: true }));
+    await waitFor(() => expect(screen.getByText("Listening")).toBeInTheDocument());
+
+    proactive.hold = true;
+    mock.emit("transcript.final", makeSegment({ text: "Why do you want to work here?" }));
+    // The turn opens with its provenance and the first words — no chord, no hint pill.
+    await waitFor(() => expect(screen.getByText("Interviewer asked")).toBeInTheDocument());
+    expect(screen.getByText("“Why do you want to work here?”")).toBeInTheDocument();
+    expect(screen.getByText("Suggested")).toBeInTheDocument();
+    expect(screen.getByText("Prepared for")).toBeInTheDocument(); // first streamed draft
+    expect(screen.getByPlaceholderText("Ask follow-up")).toBeInTheDocument(); // expanded layout
+    expect(screen.queryByText(/Bluey has a suggestion/)).not.toBeInTheDocument();
+    expect(screen.getByText("Thinking")).toBeInTheDocument(); // the pill reports the work, not a hint
+
+    proactive.release();
+    await waitFor(() => expect(screen.getByText("Prepared for det-1")).toBeInTheDocument());
+    expect(screen.getByLabelText("Copy answer")).toBeInTheDocument();
+    expect(screen.getByText("Listening")).toBeInTheDocument(); // back to the session state
+    expect(proactive.asks).toHaveLength(0);
+    expect(proactive.takeCalls).toHaveLength(0);
+    expect(useChatStore.getState().prepared).toBeNull();
   });
 
   it("shows the live transcript strip while listening and collapses it to one line", async () => {
