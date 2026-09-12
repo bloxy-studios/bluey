@@ -85,6 +85,7 @@ class PublicationTests(ReleaseFixture):
         self.assertEqual(api.uploads, [])
 
     def test_draft_upload_readback_then_stable_finalization(self):
+        self.set_version("1.2.3")  # stable regardless of the live tree's version
         self.setup_payload()
         api = FakeAPI()
         self.assertEqual(self.run_publish(api), 10)
@@ -100,12 +101,7 @@ class PublicationTests(ReleaseFixture):
         self.assertFalse(any("/git/" in call[1] for call in api.calls))
 
     def test_prerelease_never_becomes_stable_latest(self):
-        version = "1.2.3-rc.1+build.2"
-        for relative in ("package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml"):
-            path = self.root / relative
-            path.write_text(path.read_text().replace('"' + self.version + '"', '"' + version + '"', 1))
-        self.version, self.tag = version, "v" + version
-        self.expected = metadata.provenance(self.tag, COMMIT, "1234", "1")
+        self.set_version("1.2.3-rc.1+build.2")
         self.setup_payload()
         api = FakeAPI()
         self.run_publish(api)
