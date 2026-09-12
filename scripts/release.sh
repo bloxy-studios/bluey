@@ -14,6 +14,19 @@ fail() { printf 'Release build error: %s\n' "$1" >&2; exit 1; }
 PUBLISH_RELEASE="${PUBLISH_RELEASE:-false}"
 case "$PUBLISH_RELEASE" in true|false) ;; *) fail 'PUBLISH_RELEASE must be true or false' ;; esac
 
+# Every build signs its updater bundle (bundle.createUpdaterArtifacts); Tauri refuses to build without the key.
+[[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]] \
+  || fail 'TAURI_SIGNING_PRIVATE_KEY (or TAURI_SIGNING_PRIVATE_KEY_PATH) is required to sign the updater bundle (docs/UPDATES.md › Signing)'
+
+# Nightly builds carry a version above the sources (docs/UPDATES.md); publication builds never override.
+BUILD_VERSION="${BLUEY_BUILD_VERSION:-}"
+TAURI_CONFIG_ARGS=()
+if [[ -n "$BUILD_VERSION" ]]; then
+  [[ "$PUBLISH_RELEASE" == false ]] || fail 'BLUEY_BUILD_VERSION is only allowed for developer/nightly builds'
+  python3 scripts/release/nightly.py check-version "$BUILD_VERSION" > /dev/null
+  TAURI_CONFIG_ARGS=(--config "{\"version\":\"$BUILD_VERSION\"}")
+fi
+
 # Credentials and immutable version/tag checks precede installs, toolchains and builds.
 if [[ "$PUBLISH_RELEASE" == true ]]; then
   python3 scripts/release/release_credentials.py check
@@ -91,8 +104,9 @@ if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   printf '%s\n' 'Developer-only ad-hoc build; NOT eligible for publication.'
 fi
 # Config retains hardened runtime + entitlements.plist. No --no-sign/--skip-stapling,
-# no recursive re-signing. Tauri notarizes + staples the app before making the DMG.
-bun run tauri build --target "$TARGET" --bundles app,dmg -- --locked
+# no recursive re-signing. Tauri notarizes + staples the app before making the DMG, then
+# writes the signed updater bundle (`Bluey.app.tar.gz` + `.sig`) next to the app.
+bun run tauri build --target "$TARGET" --bundles app,dmg "${TAURI_CONFIG_ARGS[@]}" -- --locked
 
 # Tests/builds must not have changed dependency locks. There is no install fallback.
 git diff --exit-code -- bun.lock sidecars/agent/bun.lock src-tauri/Cargo.lock

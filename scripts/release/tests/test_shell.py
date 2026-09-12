@@ -56,7 +56,9 @@ bun install --os darwin --cpu '*'
         self.env.update(PATH=str(self.bin) + os.pathsep + os.environ["PATH"], HOME=str(self.home),
                         TARGET="aarch64-apple-darwin", MOCK_LOG=str(self.log), RUNNER_TEMP=str(self.runner),
                         GITHUB_ACTIONS="true", GITHUB_REPOSITORY="bloxy-studios/bluey", GITHUB_RUN_ID="1234",
-                        GITHUB_RUN_ATTEMPT="1", RELEASE_TAG=self.tag, RELEASE_COMMIT=COMMIT)
+                        GITHUB_RUN_ATTEMPT="1", RELEASE_TAG=self.tag, RELEASE_COMMIT=COMMIT,
+                        TAURI_SIGNING_PRIVATE_KEY="fixture-updater-private-key",
+                        TAURI_SIGNING_PRIVATE_KEY_PASSWORD="fixture-updater-key-password")
 
     def executable(self, path, content):
         path.write_text(content)
@@ -91,8 +93,35 @@ bun install --os darwin --cpu '*'
         self.assertTrue(all("[--frozen-lockfile]" in line for line in installs))
         self.assertIn("[--os] [darwin] [--cpu] [*]", installs[-1])
         self.assertTrue(any("[--target] [aarch64-apple-darwin]" in line and "[--locked]" in line for line in commands))
+        self.assertFalse(any("[--config]" in line for line in commands))
         self.assertFalse((self.runner / "bluey-verified").exists())
         self.assertIn("not a published release", result.stdout)
+
+    def test_missing_updater_signing_key_fails_before_install(self):
+        for environment in ({"TAURI_SIGNING_PRIVATE_KEY": ""},
+                            {"TAURI_SIGNING_PRIVATE_KEY": "", "PUBLISH_RELEASE": "true", **self.credentials()}):
+            with self.subTest(environment=environment):
+                result = self.run_shell(**environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("TAURI_SIGNING_PRIVATE_KEY", result.stderr)
+                self.assertEqual(self.commands(), "")
+        result = self.run_shell(TAURI_SIGNING_PRIVATE_KEY="", TAURI_SIGNING_PRIVATE_KEY_PATH=str(self.base / "updater.key"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nightly_version_override_is_developer_only_and_reaches_tauri(self):
+        result = self.run_shell(BLUEY_BUILD_VERSION="0.1.3-nightly.20260913")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [line for line in self.commands().splitlines() if "[tauri] [build]" in line]
+        self.assertEqual(len(builds), 1)
+        self.assertIn('[--config] [{"version":"0.1.3-nightly.20260913"}]', builds[0])
+        for environment in ({"BLUEY_BUILD_VERSION": "1.2.3"}, {"BLUEY_BUILD_VERSION": "0.1.3-nightly.20260913; touch pwned"},
+                            {"BLUEY_BUILD_VERSION": '0.1.3-nightly.20260913","bundle":{"active":false'},
+                            {"BLUEY_BUILD_VERSION": "0.1.3-nightly.20260913", "PUBLISH_RELEASE": "true", **self.credentials()}):
+            with self.subTest(environment=environment):
+                self.log.unlink(missing_ok=True)
+                result = self.run_shell(**environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.commands(), "")
 
     def test_failed_frozen_install_has_no_fallback(self):
         result = self.run_shell(MOCK_FAIL="install")
@@ -119,6 +148,8 @@ bun install --os darwin --cpu '*'
         self.assertFalse((self.runner / "bluey-verified").exists())
         self.assertNotIn("fixture-cert-password", result.stdout + result.stderr)
         self.assertNotIn("fixture-notary-password", result.stdout + result.stderr)
+        self.assertNotIn("fixture-updater-private-key", result.stdout + result.stderr)
+        self.assertNotIn("fixture-updater-key-password", result.stdout + result.stderr)
 
     def test_existing_verified_directory_refused_before_build(self):
         stale = self.runner / "bluey-verified/mac-arm64"

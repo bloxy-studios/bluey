@@ -2,6 +2,7 @@
 """Fail-closed, stdlib-only metadata boundary for Bluey's macOS releases (Python 3.9+)."""
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -11,14 +12,22 @@ import shutil
 import stat
 import subprocess
 import sys
+import urllib.parse
 
 REPOSITORY = "bloxy-studios/bluey"
 MANIFEST = "bluey-downloads.json"
 CHECKSUMS = "SHA256SUMS"
 RECORD = "verified.json"
+# Tauri's static updater manifest (docs/UPDATES.md): the app reads it from the release.
+UPDATER_FEED = "latest.json"
+UPDATER_SUFFIX = ".app.tar.gz"
+SIGNATURE_SUFFIX = ".app.tar.gz.sig"
 MAX_JSON = 64 * 1024
+MAX_SIGNATURE = 8 * 1024
 TARGETS = {"mac-arm64": "aarch64-apple-darwin", "mac-x64": "x86_64-apple-darwin"}
 ARCHES = {"mac-arm64": "arm64", "mac-x64": "x86_64"}
+# `platforms` keys of the updater feed (`<os>-<arch>` as tauri-plugin-updater reports them).
+PLATFORMS = {"mac-arm64": "darwin-aarch64", "mac-x64": "darwin-x86_64"}
 SEMVER = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -28,6 +37,11 @@ OS_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+){0,2}\Z", re.ASCII)
 SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+ -]{0,199}\Z", re.ASCII)
 SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 COMMIT = re.compile(r"[0-9a-f]{40}\Z", re.ASCII)
+# The `.sig` Tauri writes next to the updater archive: base64 text (the minisign signature).
+SIGNATURE = re.compile(r"[A-Za-z0-9+/=\s]{64,8192}\Z", re.ASCII)
+RFC3339 = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z", re.ASCII)
+# A release the feed may point at: a version tag (`v1.2.3`, `v1.2.3-rc.1+build.2`) or the rolling `nightly` prerelease.
+RELEASE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z", re.ASCII)
 
 
 class ReleaseError(ValueError):
@@ -217,6 +231,88 @@ def installer_entry(target, path, minimum):
             **file_facts(path), "minimumOsVersion": minimum}
 
 
+def now_rfc3339():
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def read_signature(path):
+    """The updater archive's detached signature as Tauri wrote it: base64 text, never binary."""
+    path = regular_file(path)
+    require(path.stat().st_size <= MAX_SIGNATURE, "Oversized updater signature")
+    try:
+        text = path.read_text(encoding="ascii").strip()
+    except (UnicodeDecodeError, ValueError):
+        raise ReleaseError("Updater signature is not ASCII text") from None
+    require(SIGNATURE.fullmatch(text) is not None, "Updater signature is not base64 text")
+    return text
+
+
+def updater_entry(target, archive, signature):
+    """The updater bundle Tauri built for `target` (`<name>.app.tar.gz`) and its `<name>.app.tar.gz.sig`."""
+    require(target in TARGETS, "Unsupported macOS target")
+    archive, signature = Path(archive), Path(signature)
+    name = safe_name(archive.name, UPDATER_SUFFIX)
+    require(signature.name == name + ".sig", "Signature file must sit next to its archive as <archive>.sig")
+    return {"target": target, "platform": PLATFORMS[target], "asset": name, **file_facts(archive),
+            "signature": read_signature(signature)}
+
+
+def validate_updater(entry):
+    require(isinstance(entry, dict) and set(entry) == {"target", "platform", "asset", "bytes", "sha256", "signature"},
+            "Unexpected updater fields")
+    require(entry["target"] in TARGETS and entry["platform"] == PLATFORMS[entry["target"]], "Unsupported updater target/platform")
+    safe_name(entry["asset"], UPDATER_SUFFIX)
+    require(type(entry["bytes"]) is int and 0 < entry["bytes"] <= 2**53 - 1, "Invalid updater byte size")
+    require(isinstance(entry["sha256"], str) and SHA256.fullmatch(entry["sha256"]) is not None, "Invalid SHA256")
+    require(isinstance(entry["signature"], str) and SIGNATURE.fullmatch(entry["signature"]) is not None
+            and entry["signature"] == entry["signature"].strip(), "Invalid updater signature")
+
+
+def asset_url(release_ref, name):
+    require(isinstance(release_ref, str) and RELEASE_REF.fullmatch(release_ref) is not None, "Unsafe release reference")
+    return (f"https://github.com/{REPOSITORY}/releases/download/"
+            f"{urllib.parse.quote(release_ref, safe='')}/{urllib.parse.quote(safe_name(name), safe='')}")
+
+
+def updater_feed(version, release_ref, entries, published_at, notes=None):
+    """Tauri's static updater manifest (`latest.json`): one `platforms` entry per macOS target."""
+    version_tag(version)
+    require(isinstance(published_at, str) and RFC3339.fullmatch(published_at) is not None, "Feed pub_date must be RFC 3339")
+    platforms = {}
+    for entry in entries:
+        validate_updater(entry)
+        require(entry["platform"] not in platforms, "Duplicated updater platform")
+        platforms[entry["platform"]] = {"signature": entry["signature"], "url": asset_url(release_ref, entry["asset"])}
+    require(set(platforms) == set(PLATFORMS.values()), "Both macOS updater bundles are required")
+    if notes is None:
+        notes = f"Bluey {version} — https://github.com/{REPOSITORY}/releases/tag/{urllib.parse.quote(release_ref, safe='')}"
+    require(isinstance(notes, str) and 0 < len(notes) <= 4000 and "\x00" not in notes, "Invalid feed notes")
+    return {"version": version, "notes": notes, "pub_date": published_at, "platforms": platforms}
+
+
+def validate_feed(data, version, release_ref, entries):
+    require(isinstance(data, dict) and set(data) == {"version", "notes", "pub_date", "platforms"}, "Unexpected feed fields")
+    expected = updater_feed(version, release_ref, entries, data.get("pub_date") if isinstance(data.get("pub_date"), str) else "",
+                            data.get("notes") if isinstance(data.get("notes"), str) else None)
+    require(data == expected, "Updater feed does not match the verified bundles")
+    return data
+
+
+def feed_assets(data):
+    """Asset basenames the feed points at, in `PLATFORMS` order."""
+    require(isinstance(data, dict) and isinstance(data.get("platforms"), dict), "Invalid updater feed")
+    names = []
+    for platform in PLATFORMS.values():
+        entry = data["platforms"].get(platform)
+        require(isinstance(entry, dict) and isinstance(entry.get("url"), str), "Feed platform missing")
+        prefix = f"https://github.com/{REPOSITORY}/releases/download/"
+        require(entry["url"].startswith(prefix), "Feed URL outside the canonical repository")
+        parts = entry["url"][len(prefix):].split("/")
+        require(len(parts) == 2, "Unexpected feed URL shape")
+        names.append(safe_name(urllib.parse.unquote(parts[1]), UPDATER_SUFFIX))
+    return names
+
+
 def validate_installer(entry):
     require(isinstance(entry, dict) and set(entry) == {"target", "format", "asset", "bytes", "sha256", "minimumOsVersion"},
             "Unexpected installer fields")
@@ -245,6 +341,7 @@ def validate_manifest(data):
 
 
 def discover_bundle(root, target):
+    """The one app, DMG, updater archive and signature Tauri built for `target`."""
     require(target in TARGETS, "Unsupported macOS target")
     base = Path(root) / "src-tauri/target" / TARGETS[target] / "release/bundle"
     apps, dmgs = list((base / "macos").glob("*.app")), list((base / "dmg").glob("*.dmg"))
@@ -253,18 +350,33 @@ def discover_bundle(root, target):
     safe_name(apps[0].name, ".app")
     regular_file(dmgs[0])
     safe_name(dmgs[0].name, ".dmg")
-    return apps[0].resolve(), dmgs[0].resolve()
+    archives = [p for p in (base / "macos").glob("*" + UPDATER_SUFFIX) if p.name.endswith(UPDATER_SUFFIX)]
+    signatures = list((base / "macos").glob("*" + SIGNATURE_SUFFIX))
+    require(len(archives) == 1 and len(signatures) == 1,
+            "Expected exactly one updater archive and one signature for target "
+            "(bundle.createUpdaterArtifacts with TAURI_SIGNING_PRIVATE_KEY set)")
+    regular_file(archives[0])
+    safe_name(archives[0].name, UPDATER_SUFFIX)
+    require(signatures[0].name == archives[0].name + ".sig", "Updater signature does not belong to the archive")
+    read_signature(signatures[0])
+    return apps[0].resolve(), dmgs[0].resolve(), archives[0].resolve(), signatures[0].resolve()
 
 
-def validate_record(data, expected, target, source, dmg):
-    require(isinstance(data, dict) and set(data) == {"schemaVersion", "provenance", "version", "installer", "verification"},
+def updater_name_for(dmg_name):
+    """The release name of a target's updater bundle: the DMG's stem (`Bluey_1.2.3_aarch64`) + `.app.tar.gz`."""
+    stem = safe_name(dmg_name, ".dmg")[: -len(".dmg")]
+    return safe_name(stem + UPDATER_SUFFIX, UPDATER_SUFFIX)
+
+
+def validate_record(data, expected, target, source, dmg, archive=None, signature=None):
+    require(isinstance(data, dict) and set(data) == {"schemaVersion", "provenance", "version", "installer", "updater", "verification"},
             "Unexpected verification record fields")
     require(type(data["schemaVersion"]) is int and data["schemaVersion"] == 1, "Wrong verification schema")
     require(data["provenance"] == expected, "Artifact provenance/run attempt mismatch")
     require(data["version"] == source["version"], "Artifact version mismatch")
     required_checks = {"appCodesign": True, "appGatekeeper": True, "appStaple": True,
                        "dmgCodesign": True, "dmgGatekeeper": True, "dmgStaple": True,
-                       "mountedApp": True, "architecture": ARCHES[target]}
+                       "mountedApp": True, "updaterApp": True, "architecture": ARCHES[target]}
     checks = data["verification"]
     require(isinstance(checks, dict) and checks == required_checks
             and all(type(checks[key]) is type(value) for key, value in required_checks.items()),
@@ -272,33 +384,46 @@ def validate_record(data, expected, target, source, dmg):
     validate_installer(data["installer"])
     actual = installer_entry(target, dmg, source["minimumOsVersion"])
     require(data["installer"] == actual, "Installer differs from verified bytes/metadata")
-    return actual
+    validate_updater(data["updater"])
+    require(data["updater"]["target"] == target, "Updater bundle belongs to another target")
+    if archive is not None:
+        require(data["updater"] == updater_entry(target, archive, signature), "Updater bundle differs from verified bytes/metadata")
+    return actual, data["updater"]
 
 
-def assemble(root, incoming, output, expected):
+def assemble(root, incoming, output, expected, published_at=None):
     source = source_metadata(root, expected["tag"])
     incoming, output = Path(incoming), Path(output)
     require(incoming.is_dir() and not incoming.is_symlink(), "Missing artifact directory")
     require({p.name for p in incoming.iterdir()} == set(TARGETS), "Expected exactly both current-attempt matrix artifacts")
-    entries, files = [], []
+    entries, updaters, files = [], [], []
     for target in TARGETS:
         directory = incoming / target
         require(directory.is_dir() and not directory.is_symlink(), "Invalid target artifact directory")
         data = read_json(directory / RECORD)
         validate_installer(data.get("installer"))
+        validate_updater(data.get("updater"))
         dmg = directory / data["installer"]["asset"]
-        require({p.name for p in directory.iterdir()} == {RECORD, dmg.name}, "Unexpected artifact contents")
-        entries.append(validate_record(data, expected, target, source, dmg))
-        files.append(dmg)
+        archive = directory / data["updater"]["asset"]
+        signature = directory / (archive.name + ".sig")
+        require({p.name for p in directory.iterdir()} == {RECORD, dmg.name, archive.name, signature.name},
+                "Unexpected artifact contents")
+        installer, updater = validate_record(data, expected, target, source, dmg, archive, signature)
+        entries.append(installer)
+        updaters.append(updater)
+        files.extend([dmg, archive, signature])
     manifest = validate_manifest({"schemaVersion": 1, "version": source["version"],
                                   "tag": expected["tag"], "repository": REPOSITORY, "installers": entries})
+    feed = updater_feed(source["version"], expected["tag"], updaters, published_at or now_rfc3339())
     # All inputs pass before an output directory or manifest can become eligible.
     output.mkdir(parents=True, exist_ok=False)
     try:
         for path in files:
             shutil.copyfile(path, output / path.name)
         write_json(output / MANIFEST, manifest)
+        write_json(output / UPDATER_FEED, feed)
         content = "".join(f"{entry['sha256']}  {entry['asset']}\n" for entry in entries)
+        content += "".join(f"{entry['sha256']}  {entry['asset']}\n" for entry in updaters)
         with (output / CHECKSUMS).open("x", encoding="utf-8") as stream:
             stream.write(content)
         validate_payload(root, output, expected["tag"])
@@ -308,22 +433,49 @@ def assemble(root, incoming, output, expected):
     return manifest
 
 
+def payload_updaters(directory, feed):
+    """Re-derive the updater entries from the payload files the feed points at."""
+    directory = Path(directory)
+    entries = []
+    for target, name in zip(PLATFORMS, feed_assets(feed)):
+        entries.append(updater_entry(target, directory / name, directory / (name + ".sig")))
+    return entries
+
+
 def validate_payload(root, directory, tag):
     source = source_metadata(root, tag)
     directory = Path(directory)
     data = validate_manifest(read_json(directory / MANIFEST))
     require(data["tag"] == tag and data["version"] == source["version"], "Payload version/tag mismatch")
-    expected_names = {MANIFEST, CHECKSUMS}
+    expected_names = {MANIFEST, CHECKSUMS, UPDATER_FEED}
     for entry in data["installers"]:
         actual = installer_entry(entry["target"], directory / entry["asset"], source["minimumOsVersion"])
         require(actual == entry, "Payload bytes do not match manifest")
         expected_names.add(entry["asset"])
+    feed = read_json(directory / UPDATER_FEED)
+    updaters = payload_updaters(directory, feed)
+    validate_feed(feed, source["version"], tag, updaters)
+    for entry in updaters:
+        expected_names.update({entry["asset"], entry["asset"] + ".sig"})
     require({p.name for p in directory.iterdir()} == expected_names, "Unexpected release payload files")
     checksum_file = regular_file(directory / CHECKSUMS)
     require(checksum_file.stat().st_size <= MAX_JSON, "Oversized checksums file")
     expected_sums = "".join(f"{entry['sha256']}  {entry['asset']}\n" for entry in data["installers"])
+    expected_sums += "".join(f"{entry['sha256']}  {entry['asset']}\n" for entry in updaters)
     require(checksum_file.read_text(encoding="utf-8") == expected_sums, "SHA256SUMS does not match manifest")
     return data
+
+
+def payload_upload_order(directory, data):
+    """Release upload order: DMGs, updater archives, signatures, SHA256SUMS, the updater feed, then the site manifest last."""
+    directory = Path(directory)
+    feed = read_json(directory / UPDATER_FEED)
+    archives = feed_assets(feed)
+    files = [directory / entry["asset"] for entry in data["installers"]]
+    files += [directory / name for name in archives]
+    files += [directory / (name + ".sig") for name in archives]
+    files += [directory / CHECKSUMS, directory / UPDATER_FEED, directory / MANIFEST]
+    return files
 
 
 def main():
@@ -353,7 +505,7 @@ def main():
     else:
         expected = provenance(args.tag, args.commit, args.run_id, args.run_attempt)
         assemble(args.root, args.incoming, args.output, expected)
-        print("Validated complete macOS installer pair; manifest and SHA256SUMS written.")
+        print("Validated complete macOS installer pair; manifest, updater feed and SHA256SUMS written.")
 
 
 if __name__ == "__main__":

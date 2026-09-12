@@ -81,6 +81,11 @@ jobs:
       APPLE_ID: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_ID || '' }}
       APPLE_PASSWORD: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_PASSWORD || '' }}
       APPLE_TEAM_ID: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_TEAM_ID || '' }}
+      # The in-app updater bundle (`Bluey.app.tar.gz` + `.sig`) is minisign-signed on BOTH paths —
+      # developer builds too — so these are repository secrets, not macos-release environment
+      # secrets (docs/UPDATES.md › Signing). Apple identity and updater key are independent.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       # Public build-time settings only. Never put provider keys or Clerk secrets here.
       VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
       VITE_CLERK_FRONTEND_API_URL: ${{ vars.VITE_CLERK_FRONTEND_API_URL }}
@@ -136,11 +141,13 @@ jobs:
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    name: Re-verify complete pair, upload draft, then publish
+    name: Re-verify complete pair, upload draft (installers, updater bundles, feed), then publish
     needs: [prepare, build]
     if: success() && needs.prepare.outputs.publish == 'true'
     runs-on: macos-14

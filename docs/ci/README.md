@@ -30,13 +30,30 @@ Tag pushes, or manual `publish=true` + an **existing** `release_tag`, use a sepa
 publication path: all six signing/notarization secrets required before toolchain/build;
 version/tag/commit consistency; real Apple signature/notarization/staple/Gatekeeper checks on
 the app and DMG; complete current-run/current-attempt artifact pair; independent native
-re-verification after download; actual `bluey-downloads.json` + `SHA256SUMS`; create a new
-**draft**, upload/read back all four assets, then finalize stable or prerelease. Existing
-drafts/published releases are never overwritten and tags are never created or forced.
+re-verification after download (DMGs and the updater bundles' apps); actual
+`bluey-downloads.json` + `latest.json` + `SHA256SUMS`; create a new **draft**, upload/read back
+all nine assets (two DMGs, two signed `.app.tar.gz` updater bundles + `.sig`, checksums, feed,
+manifest — the feed after the bundles, the manifest last), then finalize stable or prerelease.
+Existing drafts/published releases are never overwritten and tags are never created or forced.
+
+Both paths sign the updater bundle with the repository secrets `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`;
+developer artifacts include the archive and signature so a developer build can be tried through
+the updater against a test feed.
 
 Default permissions are `contents: read`; only the final publish job has `contents: write`.
 No release job executes on pull requests. The separate `release-scripts` CI job runs Python
 stdlib tests and Bash syntax checks without secrets, including on PRs.
+
+## `nightly.yml` — 03:00 UTC daily (or manual dispatch with `force`)
+
+The **Nightly** update channel ([docs/UPDATES.md](../UPDATES.md)). `plan` (ubuntu, read-only)
+skips the night unless `main` moved since the commit recorded in the `nightly` release body;
+`build` runs the developer path of `scripts/release.sh` on both macOS targets with
+`BLUEY_BUILD_VERSION=X.Y.(Z+1)-nightly.YYYYMMDD` (ad-hoc Apple signature, no Apple secrets,
+minisign-signed updater bundle); `publish` (the only `contents: write` job) force-moves the
+`nightly` tag, replaces the rolling prerelease's assets with the feed uploaded last, and prunes
+the previous night's bundles. It never creates, moves or deletes a `v*` tag or touches a
+versioned release, and always keeps `make_latest=false`.
 
 See [the complete owner release runbook](../RELEASING.md) for protected environment/tag setup,
 required secrets, public Clerk variables, optional desktop OAuth value, manual dispatch,

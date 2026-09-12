@@ -1,0 +1,140 @@
+name: Nightly
+
+# The Nightly update channel (docs/UPDATES.md): every night `main` changed, build both macOS
+# targets on the developer path with a version above the sources (`X.Y.(Z+1)-nightly.YYYYMMDD`)
+# and replace the rolling `nightly` prerelease's assets and updater feed. Version tags and their
+# releases are never touched here; `release.yml` owns those.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if main has not changed since the last nightly"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One nightly at a time; never cancel one mid-upload.
+concurrency:
+  group: bluey-nightly
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Skip unless main changed; compute the nightly version
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      version: ${{ steps.plan.outputs.version }}
+      commit: ${{ steps.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Portable release safety tests
+        run: python3 -m unittest discover -s scripts/release/tests -v
+      - name: Compare main with the last nightly's recorded commit
+        id: plan
+        env:
+          INPUT_FORCE: ${{ inputs.force || false }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/nightly.py plan --root "$GITHUB_WORKSPACE"
+
+  build:
+    name: macOS ${{ matrix.download_target }} nightly
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: macos-14
+    # Developer path: ad-hoc Apple signature (no Apple secrets), minisign-signed updater bundle.
+    environment: macos-build
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            download_target: mac-arm64
+          - target: x86_64-apple-darwin
+            download_target: mac-x64
+    env:
+      TARGET: ${{ matrix.target }}
+      PUBLISH_RELEASE: "false"
+      RESEARCH_BACKEND: gemini
+      BLUEY_BUILD_VERSION: ${{ needs.plan.outputs.version }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Public build-time settings only, identical to release.yml.
+      VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
+      VITE_CLERK_FRONTEND_API_URL: ${{ vars.VITE_CLERK_FRONTEND_API_URL }}
+      BLUEY_CLERK_OAUTH_CLIENT_ID: ${{ vars.BLUEY_CLERK_OAUTH_CLIENT_ID }}
+      BLUEY_CLERK_ACCOUNT_PORTAL_URL: ${{ vars.BLUEY_CLERK_ACCOUNT_PORTAL_URL }}
+      BLUEY_ANTIGRAVITY_CLIENT_SECRET: ${{ secrets.BLUEY_ANTIGRAVITY_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+      - name: Developer build carrying the nightly version
+        run: bash scripts/release.sh
+      - name: Upload the nightly bundles for the publisher
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ matrix.download_target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  publish:
+    name: Move the nightly tag and replace the rolling prerelease's assets
+    needs: [plan, build]
+    if: success() && needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      NIGHTLY_VERSION: ${{ needs.plan.outputs.version }}
+      NIGHTLY_COMMIT: ${{ needs.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-mac-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: incoming/mac-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-mac-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: incoming/mac-x64
+      - name: Replace assets (feed uploaded last), then remove the previous nightly's bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/nightly.py publish --root "$GITHUB_WORKSPACE" --incoming incoming --version "$NIGHTLY_VERSION" --commit "$NIGHTLY_COMMIT" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"

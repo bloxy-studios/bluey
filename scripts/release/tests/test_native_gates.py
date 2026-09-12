@@ -1,18 +1,20 @@
 """Bounded Apple-command mocks exercise failure propagation, NOT native trust acceptance."""
 
+import io
 import json
 import os
 from pathlib import Path
 import plistlib
 import shutil
 import sys
+import tarfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release_metadata as metadata
 import verify_macos as native
-from test_metadata import COMMIT, ReleaseFixture, SOURCE_ROOT
+from test_metadata import COMMIT, ReleaseFixture, SOURCE_ROOT, signature_text
 
 TEAM = "ABCDEFGHIJ"
 
@@ -32,6 +34,11 @@ class NativeGateTests(ReleaseFixture):
         self.dmg = self.bundle / "dmg/Actually discovered signed ARM.dmg"
         self.dmg.parent.mkdir(parents=True)
         self.dmg.write_bytes(b"MOCK ONLY NOT A REAL DMG")
+        # Tauri writes the updater bundle next to the app under the product name, whatever the target.
+        self.archive = self.bundle / "macos" / (self.source["productName"] + metadata.UPDATER_SUFFIX)
+        self.write_archive(self.archive, self.app)
+        self.archive_signature = self.archive.with_name(self.archive.name + ".sig")
+        self.archive_signature.write_text(signature_text("native fixture") + "\n")
         self.destination = self.base / "verified/mac-arm64"
         self.calls = []
         self.fail = None
@@ -51,6 +58,14 @@ class NativeGateTests(ReleaseFixture):
         info = {"CFBundleIdentifier": self.source["identifier"], "CFBundleShortVersionString": self.source["version"],
                 "LSMinimumSystemVersion": self.source["minimumOsVersion"], "CFBundleExecutable": "bluey"}
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
+
+    def write_archive(self, path, app, arcname=None, extra=()):
+        with tarfile.open(path, "w:gz") as tar:
+            tar.add(app, arcname=arcname or app.name)
+            for name, content in extra:
+                info = tarfile.TarInfo(name)
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
 
     def apple(self, *args):
         self.calls.append(args)
@@ -85,9 +100,17 @@ class NativeGateTests(ReleaseFixture):
         self.assertEqual(record["verification"], native.verification("mac-arm64"))
         self.assertTrue(any("attach" in args for args in self.calls))
         self.assertTrue(any("detach" in args for args in self.calls))
-        self.assertEqual(sum("stapler" in args and "validate" in args for args in self.calls), 3)
+        # Built app, DMG, mounted app and the app inside the updater archive.
+        self.assertEqual(sum("stapler" in args and "validate" in args for args in self.calls), 4)
         self.assertTrue(any("notarytool" in args and "submit" in args for args in self.calls))
         self.assertFalse(any("--force" in args for args in self.calls))
+        self.assertTrue(any("bluey-updater-verify-" in str(arg) for args in self.calls for arg in args))
+        # The updater bundle is staged under the DMG's name so each target's archive has its own asset name.
+        self.assertEqual(record["updater"]["asset"], "Actually discovered signed ARM.app.tar.gz")
+        self.assertEqual(record["updater"]["signature"], signature_text("native fixture"))
+        self.assertEqual((self.destination / record["updater"]["asset"]).read_bytes(), self.archive.read_bytes())
+        self.assertEqual({p.name for p in self.destination.iterdir()},
+                         {metadata.RECORD, self.dmg.name, record["updater"]["asset"], record["updater"]["asset"] + ".sig"})
 
     def test_every_native_failure_prevents_eligible_record(self):
         failures = [lambda a: Path(a[0]).name == "codesign" and "--verify" in a,
@@ -98,7 +121,8 @@ class NativeGateTests(ReleaseFixture):
                     lambda a: Path(a[0]).name == "hdiutil" and "verify" in a,
                     lambda a: "attach" in a,
                     lambda a: "detach" in a,
-                    lambda a: Path(a[0]).name == "codesign" and "/mount/" in a[-1]]
+                    lambda a: Path(a[0]).name == "codesign" and "/mount/" in a[-1],
+                    lambda a: any("bluey-updater-verify-" in str(x) for x in a)]
         for index, failure in enumerate(failures):
             self.fail = failure
             with self.subTest(failure=index), self.assertRaises(metadata.ReleaseError):
@@ -160,6 +184,31 @@ class NativeGateTests(ReleaseFixture):
         (self.dmg.parent / "second.dmg").write_bytes(b"another")
         with self.assertRaises(metadata.ReleaseError):
             metadata.discover_bundle(self.root, "mac-arm64")
+
+    def test_updater_archive_gates(self):
+        self.archive_signature.unlink()
+        with self.assertRaises(metadata.ReleaseError):
+            metadata.discover_bundle(self.root, "mac-arm64")
+        self.archive_signature.write_text(signature_text("native fixture"))
+        cases = {"escaping-member": lambda: self.write_archive(self.archive, self.app, extra=[("../evil", b"x")]),
+                 "absolute-member": lambda: self.write_archive(self.archive, self.app, extra=[("/tmp/evil", b"x")]),
+                 "two-top-level": lambda: self.write_archive(self.archive, self.app, extra=[("README", b"x")]),
+                 "renamed-not-app": lambda: self.write_archive(self.archive, self.app, arcname="Bluey"),
+                 "not-gzip": lambda: self.archive.write_bytes(b"not a tarball"),
+                 "binary-signature": lambda: self.archive_signature.write_bytes(b"\x00\xff" * 64),
+                 "second-archive": lambda: (self.archive.parent / "Other.app.tar.gz").write_bytes(b"x"),
+                 "foreign-signature-name": lambda: self.archive_signature.rename(self.archive.parent / "Other.app.tar.gz.sig")}
+        for case, mutate in cases.items():
+            with self.subTest(case=case):
+                mutate()
+                self.calls = []
+                with self.assertRaises(metadata.ReleaseError):
+                    self.stage()
+                self.assertFalse(self.destination.exists())
+                for stray in self.archive.parent.glob("Other.*"):
+                    stray.unlink()
+                self.write_archive(self.archive, self.app)
+                self.archive_signature.write_text(signature_text("native fixture"))
 
 
 if __name__ == "__main__":

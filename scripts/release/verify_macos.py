@@ -10,11 +10,18 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 
-from release_metadata import (ARCHES, RECORD, ReleaseError, checked_tag, discover_bundle,
-                              installer_entry, provenance, regular_file, require, safe_name,
-                              source_metadata, validate_installer, validate_payload, write_json)
+from release_metadata import (ARCHES, RECORD, UPDATER_FEED, ReleaseError, checked_tag, discover_bundle,
+                              installer_entry, payload_updaters, provenance, read_json, read_signature,
+                              regular_file, require, safe_name, source_metadata, updater_entry,
+                              updater_name_for, validate_installer, validate_payload, validate_updater,
+                              write_json)
+
+# An updater archive is the signed app; a bigger one is not something Tauri built here.
+MAX_ARCHIVE_MEMBERS = 20000
+MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 
 CODESIGN = "/usr/bin/codesign"
 SPCTL = "/usr/sbin/spctl"
@@ -135,10 +142,51 @@ def notarize_dmg(dmg):
     apple(XCRUN, "stapler", "staple", str(dmg))
 
 
+def safe_members(archive):
+    """Members of the updater tarball, refused unless every one stays inside the extraction root."""
+    members = []
+    total = 0
+    for member in archive:
+        name = member.name
+        parts = Path(name).parts
+        require(name and not name.startswith("/") and ".." not in parts and not Path(name).is_absolute(),
+                "Updater archive member escapes the extraction root")
+        require(member.isfile() or member.isdir() or member.issym(), "Updater archive contains an unsupported member type")
+        if member.issym():
+            link = Path(member.linkname)
+            require(not link.is_absolute() and ".." not in link.parts, "Updater archive symlink escapes the bundle")
+        total += max(member.size, 0)
+        members.append(member)
+        require(len(members) <= MAX_ARCHIVE_MEMBERS and total <= MAX_ARCHIVE_BYTES, "Updater archive is implausibly large")
+    return members
+
+
+def check_archive(root, archive, signature, target, team, source):
+    """The bundle users actually install through the updater: extract it and run the app checks on it."""
+    read_signature(signature)
+    archive = regular_file(archive)
+    with tempfile.TemporaryDirectory(prefix="bluey-updater-verify-") as temporary:
+        destination = Path(temporary).resolve() / "extract"
+        destination.mkdir()
+        try:
+            with tarfile.open(archive, "r:gz") as tar:
+                members = safe_members(tar)
+                if hasattr(tarfile, "data_filter"):
+                    tar.extractall(destination, members=members, filter="data")
+                else:
+                    tar.extractall(destination, members=members)
+        except (tarfile.TarError, OSError, ValueError):
+            raise ReleaseError("Updater archive is not a readable gzip tarball") from None
+        apps = [p for p in destination.iterdir() if p.suffix == ".app"]
+        require(len(apps) == 1 and {p.name for p in destination.iterdir()} == {apps[0].name},
+                "Updater archive must contain exactly the application bundle")
+        check_app(root, apps[0], target, team, source)
+
+
 def verification(target):
     return {"appCodesign": True, "appGatekeeper": True, "appStaple": True,
             "dmgCodesign": True, "dmgGatekeeper": True, "dmgStaple": True,
-            "mountedApp": True, "architecture": ARCHES[target]}
+            "mountedApp": True, "updaterApp": True, "architecture": ARCHES[target]}
 
 
 def stage(root, target, expected, destination, team):
@@ -146,11 +194,12 @@ def stage(root, target, expected, destination, team):
     require(re.fullmatch(r"[A-Z0-9]{10}", team) is not None, "Invalid release team ID")
     checked_tag(root, expected["tag"], expected["commit"])
     source = source_metadata(root, expected["tag"])
-    app, dmg = discover_bundle(root, target)
+    app, dmg, archive, signature = discover_bundle(root, target)
     # No staging/eligible record exists until every expensive native check passes.
     check_app(root, app, target, team, source)
     notarize_dmg(dmg)
     check_dmg(root, dmg, target, team, source)
+    check_archive(root, archive, signature, target, team, source)
     destination = Path(destination)
     require(not destination.exists(), "Refusing to reuse an existing verified artifact directory")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -161,9 +210,19 @@ def stage(root, target, expected, destination, team):
         entry = installer_entry(target, copy, source["minimumOsVersion"])
         require(entry == installer_entry(target, dmg, source["minimumOsVersion"]), "DMG changed during staging")
         validate_installer(entry)
+        # Tauri names the archive `Bluey.app.tar.gz` for every target; the release needs one name per target.
+        archive_copy = temporary / updater_name_for(dmg.name)
+        signature_copy = temporary / (archive_copy.name + ".sig")
+        shutil.copyfile(archive, archive_copy)
+        shutil.copyfile(signature, signature_copy)
+        updater = updater_entry(target, archive_copy, signature_copy)
+        original = updater_entry(target, archive, signature)
+        require({k: v for k, v in updater.items() if k != "asset"} == {k: v for k, v in original.items() if k != "asset"},
+                "Updater bundle changed during staging")
+        validate_updater(updater)
         write_json(temporary / RECORD, {"schemaVersion": 1, "provenance": expected,
                                       "version": source["version"], "installer": entry,
-                                      "verification": verification(target)})
+                                      "updater": updater, "verification": verification(target)})
         # Rename the complete directory in one step; failed builds never leave a marker.
         temporary.rename(destination)
 
@@ -175,6 +234,9 @@ def check_native_payload(root, directory, tag, team):
     data = validate_payload(root, directory, tag)
     for entry in data["installers"]:
         check_dmg(root, Path(directory) / entry["asset"], entry["target"], team, source)
+    for entry in payload_updaters(directory, read_json(Path(directory) / UPDATER_FEED)):
+        check_archive(root, Path(directory) / entry["asset"], Path(directory) / (entry["asset"] + ".sig"),
+                      entry["target"], team, source)
 
 
 def main():
@@ -196,11 +258,11 @@ def main():
         require(args.target and args.output and args.commit and args.run_id and args.run_attempt, "Missing staging context")
         expected = provenance(args.tag, args.commit, args.run_id, args.run_attempt)
         stage(args.root, args.target, expected, args.output, team)
-        print("Native app + DMG checks passed; current-attempt verified installer staged.")
+        print("Native app, DMG and updater-bundle checks passed; current-attempt verified installer staged.")
     else:
         require(args.directory is not None, "--directory is required")
         check_native_payload(args.root, args.directory, args.tag, team)
-        print("Downloaded DMGs and their embedded apps passed independent native re-verification.")
+        print("Downloaded DMGs, updater bundles and their embedded apps passed independent native re-verification.")
 
 
 if __name__ == "__main__":

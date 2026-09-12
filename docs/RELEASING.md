@@ -1,9 +1,11 @@
 # macOS releases
 
 This is the owner runbook for `.github/workflows/release.yml`. The workflow supports
-**macOS Apple silicon and Intel only**, as two DMGs. It does not implement a Windows/Linux
-port, updater feed, universal binary or automatic release from a branch. Nothing in the local
-implementation/review runs creates a tag, invokes a cloud build or publishes a release.
+**macOS Apple silicon and Intel only**, as two DMGs plus the two minisign-signed in-app updater
+bundles and their `latest.json` feed (`docs/UPDATES.md`). It does not implement a Windows/Linux
+port or a universal binary. The only release built from a branch is the rolling `nightly`
+prerelease (`nightly.yml`, see *Updater artifacts*), which never touches a version tag. Nothing
+in the local implementation/review runs creates a tag, invokes a cloud build or publishes a release.
 
 ## Two deliberately separate paths
 
@@ -53,6 +55,11 @@ that is an internal, gated Actions path, not a shortcut to publish arbitrary fil
 5. Configure the intended public Clerk identifiers in environment/repository **variables**
    (next section), then perform native acceptance on owner-controlled Macs. This change was
    implemented/tested on Linux and is **not evidence of a working native release**.
+6. Store the updater signing key as the **repository** secrets `TAURI_SIGNING_PRIVATE_KEY` and
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (every build path — publication, developer, nightly —
+   signs its updater bundle, so an environment-scoped copy is not enough) and keep an offline
+   backup: a lost key strands every installed app on its current version (`docs/UPDATES.md ›
+   Signing`). The public key lives in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 
 | Required environment secret | Purpose |
 | --- | --- |
@@ -130,10 +137,14 @@ the DMG. The release verifier therefore explicitly submits the resulting DMG wit
 `xcrun notarytool --wait`, requires JSON `status=Accepted`, and staples it.
 
 - `CARGO_TARGET_DIR` is explicitly `src-tauri/target`; per-target outputs are under
-  `<target>/release/bundle/macos/*.app` and `<target>/release/bundle/dmg/*.dmg`.
-- Old target bundle directories are removed before building. Exactly **one** app and **one**
-  DMG are discovered per target. Real DMG basenames are preserved, never synthesized from
-  a filename example or used to infer the architecture.
+  `<target>/release/bundle/macos/*.app`, `<target>/release/bundle/dmg/*.dmg` and — because
+  `bundle.createUpdaterArtifacts` is on — `<target>/release/bundle/macos/*.app.tar.gz` with its
+  `.sig` (base64 minisign signature made with `TAURI_SIGNING_PRIVATE_KEY`).
+- Old target bundle directories are removed before building. Exactly **one** app, **one** DMG,
+  **one** updater archive and **one** signature are discovered per target. Real DMG basenames are
+  preserved, never synthesized from a filename example or used to infer the architecture; the
+  updater archive (always `Bluey.app.tar.gz` as Tauri writes it) is staged under the DMG's stem
+  (`Bluey_1.2.3_aarch64.app.tar.gz`) so the two targets' bundles have distinct asset names.
 - `build-helper.sh` and `build-agent.sh` actually build **both architectures** unless given
   `host`; they do **not** honor `TARGET` as a build selector. The release script retains this
   existing chain; Tauri selects `binaries/bluey-helper-<target>` and `bluey-agent-<target>`.
@@ -148,7 +159,50 @@ the DMG. The release verifier therefore explicitly submits the resulting DMG wit
   full variant's `--os darwin --cpu '*'`. No fallback install exists. Tauri's Cargo build uses
   `--locked`, and lock drift after checks/build fails before staging.
 - Automatic `tauri.macos.conf.*`/`TAURI_CONFIG` overrides, changed signing paths, disabled
-  hardened runtime/stapling or unreviewed external-bin layouts fail closed.
+  hardened runtime/stapling or unreviewed external-bin layouts fail closed. The single permitted
+  `--config` override is the nightly version (`BLUEY_BUILD_VERSION`, strictly
+  `X.Y.Z-nightly.YYYYMMDD`), and only on the developer path — `PUBLISH_RELEASE=true` refuses it.
+
+## Updater artifacts
+
+Every release carries what the in-app updater needs (`docs/UPDATES.md`):
+
+- `Bluey_<version>_aarch64.app.tar.gz` + `.sig` and `Bluey_<version>_x64.app.tar.gz` + `.sig`:
+  the signed app bundles Tauri built, verified exactly like the DMG's embedded app — the
+  verifier extracts each archive (members must stay inside the bundle; exactly one `*.app`)
+  and runs the same signature/notarization/entitlement/architecture checks (`updaterApp`).
+- `latest.json`: Tauri's static feed — `version`, `notes`, `pub_date` (RFC 3339), and
+  `platforms.darwin-aarch64` / `platforms.darwin-x86_64` each with the archive's
+  `https://github.com/bloxy-studios/bluey/releases/download/<tag>/<asset>` URL and its
+  signature text. It is generated from the verified bundles (never hand-written), validated
+  against them again before upload, and uploaded **after** the archives so it never points at
+  an asset that does not exist yet. `SHA256SUMS` covers the DMGs and the archives.
+
+The **Latest** channel reads `releases/latest/download/latest.json`, which GitHub resolves to the
+newest non-prerelease release; publishing a stable release therefore updates every installed app
+on that channel. The **Nightly** channel reads the rolling `nightly` prerelease, maintained by
+`.github/workflows/nightly.yml` (mirror in `docs/ci/workflows/`):
+
+1. `plan` (ubuntu, read-only) runs the portable tests, refuses any ref but `main`, computes
+   `X.Y.(Z+1)-nightly.YYYYMMDD` from the sources, and reads the last nightly's commit from the
+   marker `<!-- bluey-nightly commit=… version=… -->` in the release body. Unchanged `main`
+   skips the night unless dispatched with `force`.
+2. `build` (macos-14 matrix, `macos-build` environment): the ordinary developer path of
+   `scripts/release.sh` — ad-hoc Apple signature, **no Apple secrets**, minisign-signed updater
+   bundle — with `BLUEY_BUILD_VERSION` overriding the version. Nightlies are therefore
+   unsigned/un-notarized builds until Apple credentials exist; the release body says so.
+3. `publish` (ubuntu, the only `contents: write` job): creates the `nightly` prerelease on the
+   first run, otherwise force-moves the `nightly` tag to the built commit; deletes and re-uploads
+   `SHA256SUMS`/`latest.json` (and same-day reruns' bundles), uploads the DMGs, archives and
+   signatures, reads every stored asset back, uploads the feed **last**, then removes the previous
+   night's bundles and rewrites the body/marker. `make_latest` is always `false`, so a nightly
+   never becomes the Latest channel's release. The `v*` tag ruleset does not cover `nightly`;
+   that tag is *meant* to move.
+
+Local developer builds need the key too: `export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/bluey-updater.key)"`
+(and its password) from the owner's backup, or a throwaway pair from `bun run tauri signer generate`
+for builds that will never feed real installs. Without either, `scripts/release.sh` stops before
+installing anything.
 
 ## Publication transaction and installer contract
 
@@ -164,8 +218,10 @@ the DMG. The release verifier therefore explicitly submits the resulting DMG wit
    runtime, source entitlements, sidecar signatures and architectures. Run actual
    `codesign --verify --deep --strict`, `xcrun stapler validate`, and `spctl --assess`.
 5. Notarize/staple the signed DMG, verify its signature/container/Gatekeeper/staple, mount it
-   read-only, and repeat app/sidecar checks on the **embedded app actually distributed**.
-   Only after all checks does an atomic directory rename expose DMG + `verified.json`.
+   read-only, and repeat app/sidecar checks on the **embedded app actually distributed**; then
+   extract the updater archive and repeat them on **the app the updater will install**.
+   Only after all checks does an atomic directory rename expose DMG, updater archive + `.sig`
+   and `verified.json`.
 6. After **both matrix jobs succeed**, download only the exact two artifacts named with the
    current `github.run_id` **and `github.run_attempt`**. No wildcard, cross-run or developer
    artifact is accepted. Validate the provenance record and recompute sizes/SHA-256. The
@@ -173,21 +229,25 @@ the DMG. The release verifier therefore explicitly submits the resulting DMG wit
    In the publish job, repeat native DMG + embedded-app verification independently after
    artifact transport. Hashes detect changes; Apple trust checks do not by themselves prove
    correspondence to a source commit. Protect workflow/runner/maintainer access accordingly.
-7. Generate `bluey-downloads.json` (UTF-8, ≤64 KiB) and `SHA256SUMS` from the actual installers.
-   Require exactly `mac-arm64` + `mac-x64`, both `dmg`, unique safe basenames, positive integer
-   sizes, lowercase SHA-256, and minimum OS from source/verified app metadata. The manifest has
-   exactly `schemaVersion: 1`, `version`, `tag`, `repository: "bloxy-studios/bluey"`, `installers`;
-   each installer has `target`, `format`, `asset`, `bytes`, `sha256`, `minimumOsVersion`.
-   There are no manifest download URLs and no source ZIP fallback. `SHA256SUMS` covers both DMGs.
-8. Recheck remote tag/no existing release, create **one new DRAFT**, upload both DMGs, checksums
-   and manifest, and download/hash each stored asset back. Recheck the draft's identity and
-   exact asset set/state/size before a single final stable/prerelease PATCH. No overwrite,
-   `--clobber`, DELETE, resume of another draft, or force-tag action is implemented.
+7. Generate `bluey-downloads.json` (UTF-8, ≤64 KiB), `latest.json` and `SHA256SUMS` from the
+   actual installers and updater bundles. Require exactly `mac-arm64` + `mac-x64`, both `dmg`,
+   unique safe basenames, positive integer sizes, lowercase SHA-256, and minimum OS from
+   source/verified app metadata. The manifest has exactly `schemaVersion: 1`, `version`, `tag`,
+   `repository: "bloxy-studios/bluey"`, `installers`; each installer has `target`, `format`,
+   `asset`, `bytes`, `sha256`, `minimumOsVersion`. There are no manifest download URLs and no
+   source ZIP fallback. `SHA256SUMS` covers both DMGs and both updater archives; `latest.json`
+   is described under *Updater artifacts*.
+8. Recheck remote tag/no existing release, create **one new DRAFT**, upload both DMGs, both
+   updater archives and signatures, checksums, the updater feed and finally the manifest, and
+   download/hash each stored asset back. Recheck the draft's identity and exact asset set/state/
+   size before a single final stable/prerelease PATCH. No overwrite, `--clobber`, DELETE, resume
+   of another draft, or force-tag action is implemented on this path.
 
-The downloadable release consists of exactly four assets: two DMGs, `SHA256SUMS` and
-`bluey-downloads.json`. The site matches real asset names, sizes and uploaded state to the
-manifest; examples are never authoritative filenames. Developer Actions artifacts and
-`verified.json` are not site-facing release assets.
+The downloadable release consists of exactly nine assets: two DMGs, two `.app.tar.gz` updater
+bundles with their two `.sig` files, `SHA256SUMS`, `latest.json` and `bluey-downloads.json`. The
+site matches real asset names, sizes and uploaded state to the manifest; examples are never
+authoritative filenames. Developer Actions artifacts and `verified.json` are not site-facing
+release assets.
 
 ## Manual owner release procedure
 

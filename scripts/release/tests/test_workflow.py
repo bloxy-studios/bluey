@@ -68,8 +68,10 @@ class WorkflowInputTests(unittest.TestCase):
 
 class WorkflowWiringTests(unittest.TestCase):
     def test_documented_install_copy_cannot_restore_unsafe_workflow(self):
-        self.assertEqual((SOURCE_ROOT / ".github/workflows/release.yml").read_bytes(),
-                         (SOURCE_ROOT / "docs/ci/workflows/release.yml").read_bytes())
+        for name in ("release.yml", "nightly.yml"):
+            with self.subTest(workflow=name):
+                self.assertEqual((SOURCE_ROOT / ".github/workflows" / name).read_bytes(),
+                                 (SOURCE_ROOT / "docs/ci/workflows" / name).read_bytes())
 
     def test_release_permissions_triggers_and_artifact_scope(self):
         content = (SOURCE_ROOT / ".github/workflows/release.yml").read_text()
@@ -85,6 +87,34 @@ class WorkflowWiringTests(unittest.TestCase):
         for target in ("mac-arm64", "mac-x64"):
             self.assertIn("name: verified-" + target + "-${{ github.run_id }}-${{ github.run_attempt }}", content)
         self.assertNotIn("merge-multiple", content.replace("# No wildcard, other workflow/run, merge-multiple, cached or previous-attempt inputs.", ""))
+        self.assertNotIn("--clobber", content)
+        # Every build signs its updater bundle; developer artifacts carry the archive + signature too.
+        self.assertIn("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}", content)
+        self.assertIn("TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}", content)
+        self.assertIn("release/bundle/macos/*.app.tar.gz\n", content)
+        self.assertIn("release/bundle/macos/*.app.tar.gz.sig\n", content)
+
+    def test_nightly_workflow_wiring(self):
+        content = (SOURCE_ROOT / ".github/workflows/nightly.yml").read_text()
+        self.assertIn("permissions:\n  contents: read", content)
+        self.assertEqual(content.count("contents: write"), 1)
+        self.assertIn('cron: "0 3 * * *"', content)
+        self.assertIn("workflow_dispatch", content)
+        self.assertNotIn("pull_request", content)
+        self.assertNotIn("continue-on-error", content)
+        self.assertIn('bun-version: "1.4.2"', content)
+        self.assertIn("cancel-in-progress: false", content)
+        self.assertIn("if: needs.plan.outputs.build == 'true'", content)
+        self.assertIn("    needs: [plan, build]", content)
+        self.assertIn('PUBLISH_RELEASE: "false"', content)
+        self.assertIn("BLUEY_BUILD_VERSION: ${{ needs.plan.outputs.version }}", content)
+        self.assertIn("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}", content)
+        self.assertNotIn("APPLE_", content)
+        self.assertIn("scripts/release/nightly.py plan", content)
+        self.assertIn("scripts/release/nightly.py publish", content)
+        for target in ("mac-arm64", "mac-x64"):
+            self.assertIn("name: nightly-" + target + "-${{ github.run_id }}-${{ github.run_attempt }}", content)
+        self.assertNotIn("merge-multiple", content)
         self.assertNotIn("--clobber", content)
 
 
