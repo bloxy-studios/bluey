@@ -12,8 +12,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from release_metadata import (CHECKSUMS, MANIFEST, REPOSITORY, ReleaseError, checked_tag,
-                              file_facts, provenance, require, source_metadata,
+from release_metadata import (CHECKSUMS, MANIFEST, REPOSITORY, UPDATER_FEED, ReleaseError, checked_tag,
+                              file_facts, payload_upload_order, provenance, require, source_metadata,
                               validate_commit, validate_payload, version_tag)
 from verify_macos import check_native_payload
 
@@ -58,6 +58,8 @@ class GitHub:
             with opener.open(request, timeout=60) as response:
                 content = response.read(8 * 1024 * 1024 + 1)
             require(len(content) <= 8 * 1024 * 1024, "Oversized GitHub API response")
+            if not content.strip():
+                return None  # 204 No Content (asset deletion)
             return json.loads(content)
         except urllib.error.HTTPError as error:
             raise APIError(error.code) from None
@@ -162,9 +164,12 @@ def preflight(root, tag, output=None, check_api=True):
 def publish(api, root, directory, tag, commit, run_id, run_attempt):
     context(root, tag, commit)
     payload = validate_payload(root, directory, tag)
-    verified_facts = {entry["asset"]: {"bytes": entry["bytes"], "sha256": entry["sha256"]}
-                      for entry in payload["installers"]}
-    verified_facts.update({name: file_facts(Path(directory) / name) for name in (CHECKSUMS, MANIFEST)})
+    # DMGs, updater archives + signatures, SHA256SUMS, the updater feed and the site manifest (last).
+    files = payload_upload_order(directory, payload)
+    verified_facts = {path.name: file_facts(path) for path in files}
+    for entry in payload["installers"]:
+        require(verified_facts[entry["asset"]] == {"bytes": entry["bytes"], "sha256": entry["sha256"]},
+                "Payload bytes do not match manifest")
     expected = provenance(tag, commit, run_id, run_attempt)
     no_existing_release(api, tag, commit)
     # An invocation of this publisher cannot bypass native gates by providing a
@@ -173,7 +178,8 @@ def publish(api, root, directory, tag, commit, run_id, run_attempt):
     is_prerelease = version_tag(tag)[1]
     marker = f"bluey-release run={expected['runId']} attempt={expected['runAttempt']} commit={commit}"
     body = (f"Bluey {payload['version']} for macOS. Both DMGs are Developer ID signed and notarized.\n\n"
-            f"Installer metadata: `{MANIFEST}`. SHA-256 checksums: `{CHECKSUMS}`.\n\n"
+            f"Installer metadata: `{MANIFEST}`. SHA-256 checksums: `{CHECKSUMS}`. "
+            f"In-app updater feed: `{UPDATER_FEED}` with the signed `.app.tar.gz` bundles (docs/UPDATES.md).\n\n"
             f"<!-- {marker} -->")
     draft = api.call("POST", PREFIX + "/releases", {"tag_name": tag, "target_commitish": commit,
                        "name": "Bluey " + payload["version"], "body": body,
@@ -182,8 +188,6 @@ def publish(api, root, directory, tag, commit, run_id, run_attempt):
     require(type(release_id) is int and release_id > 0, "Invalid draft release ID")
     require(draft.get("draft") is True and draft.get("tag_name") == tag and draft.get("body") == body,
             "Unexpected created draft; refusing to upload")
-    files = [Path(directory) / entry["asset"] for entry in payload["installers"]]
-    files += [Path(directory) / CHECKSUMS, Path(directory) / MANIFEST]
     uploaded = {}
     # Deliberately no --clobber, DELETE, resume, automatic upload retry or tag creation.
     # Failure/timeout anywhere below leaves this draft unpublished for human inspection.

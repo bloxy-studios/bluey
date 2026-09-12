@@ -1,5 +1,6 @@
 """Portable fixtures only: these tests never claim native signing/notarization."""
 
+import base64
 import copy
 import hashlib
 import json
@@ -19,6 +20,12 @@ from verify_macos import verification
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
 COMMIT = "a" * 40
 TAG = "v0.1.0"
+PUBLISHED_AT = "2026-09-13T03:00:00Z"
+
+
+def signature_text(name):
+    """A base64 stand-in for the minisign `.sig` Tauri writes next to an updater archive."""
+    return base64.b64encode(("portable fixture signature, not minisign: " + name).encode() * 2).decode()
 
 
 def fixture_root(root):
@@ -60,20 +67,25 @@ class ReleaseFixture(unittest.TestCase):
     def pair(self):
         source = metadata.source_metadata(self.root, self.tag)
         # Deliberately not Tauri example names: basename must come from actual files.
-        for target, name, content in [("mac-arm64", "Bluey actual ARM + signed.dmg", b"arm installer fixture"),
-                                       ("mac-x64", "Bluey actual Intel.dmg", b"intel installer fixture")]:
+        for target, name, content in [("mac-arm64", "Bluey actual ARM + signed", b"arm installer fixture"),
+                                       ("mac-x64", "Bluey actual Intel", b"intel installer fixture")]:
             directory = self.incoming / target
             directory.mkdir(parents=True)
-            dmg = directory / name
+            dmg = directory / (name + ".dmg")
             dmg.write_bytes(content)
+            archive = directory / (name + metadata.UPDATER_SUFFIX)
+            archive.write_bytes(b"updater archive fixture for " + content)
+            signature = directory / (archive.name + ".sig")
+            signature.write_text(signature_text(name) + "\n")
             metadata.write_json(directory / metadata.RECORD, {
                 "schemaVersion": 1, "provenance": self.expected, "version": self.version,
                 "installer": metadata.installer_entry(target, dmg, source["minimumOsVersion"]),
+                "updater": metadata.updater_entry(target, archive, signature),
                 "verification": verification(target)})
         return self.incoming
 
     def assemble(self):
-        return metadata.assemble(self.root, self.incoming, self.output, self.expected)
+        return metadata.assemble(self.root, self.incoming, self.output, self.expected, PUBLISHED_AT)
 
 
 class SourceAndTagTests(ReleaseFixture):
@@ -163,10 +175,25 @@ class ManifestTests(ReleaseFixture):
             self.assertEqual(entry["bytes"], len(raw))
             self.assertEqual(entry["sha256"], hashlib.sha256(raw).hexdigest())
         self.assertEqual(metadata.validate_payload(self.root, self.output, self.tag), data)
+        # The updater feed is Tauri's format, points only at this release's own assets by their real names.
+        feed = metadata.read_json(self.output / metadata.UPDATER_FEED)
+        self.assertEqual(set(feed), {"version", "notes", "pub_date", "platforms"})
+        self.assertEqual((feed["version"], feed["pub_date"]), (self.version, PUBLISHED_AT))
+        self.assertEqual(set(feed["platforms"]), {"darwin-aarch64", "darwin-x86_64"})
+        arm = feed["platforms"]["darwin-aarch64"]
+        self.assertEqual(arm["url"], "https://github.com/bloxy-studios/bluey/releases/download/"
+                         + self.tag + "/Bluey%20actual%20ARM%20%2B%20signed.app.tar.gz")
+        self.assertEqual(arm["signature"], signature_text("Bluey actual ARM + signed"))
+        self.assertEqual(len((self.output / metadata.CHECKSUMS).read_text().splitlines()), 4)
+        self.assertEqual(len(list(self.output.iterdir())), 9)
+        self.assertEqual([p.name for p in metadata.payload_upload_order(self.output, data)][-3:],
+                         [metadata.CHECKSUMS, metadata.UPDATER_FEED, metadata.MANIFEST])
 
     def test_missing_empty_extra_duplicate_and_wrong_provenance_fail_before_output(self):
         cases = ["missing", "empty", "extra-file", "extra-target", "duplicate-name", "duplicate-target", "wrong-attempt",
-                 "wrong-run", "wrong-commit", "wrong-repo", "unsigned", "bad-check-type", "bad-bytes", "tampered", "wrong-minimum"]
+                 "wrong-run", "wrong-commit", "wrong-repo", "unsigned", "bad-check-type", "bad-bytes", "tampered", "wrong-minimum",
+                 "missing-signature", "tampered-archive", "swapped-signature", "binary-signature", "wrong-updater-target",
+                 "unverified-updater"]
         for case in cases:
             with self.subTest(case=case):
                 self.pair()
@@ -189,7 +216,7 @@ class ManifestTests(ReleaseFixture):
                     replace_json(intel / metadata.RECORD, lambda value: value["installer"].update(asset=name))
                 elif case == "duplicate-target":
                     replace_json(record, lambda value: value["installer"].update(target="mac-x64"))
-                elif case.startswith("wrong-") and case != "wrong-minimum":
+                elif case in ("wrong-attempt", "wrong-run", "wrong-commit", "wrong-repo"):
                     field, value = {"wrong-attempt": ("runAttempt", "2"), "wrong-run": ("runId", "5678"),
                                     "wrong-commit": ("commit", "b" * 40), "wrong-repo": ("repository", "attacker/repo")}[case]
                     replace_json(record, lambda data: data["provenance"].update({field: value}))
@@ -203,10 +230,67 @@ class ManifestTests(ReleaseFixture):
                     next(arm.glob("*.dmg")).write_bytes(b"changed after verification")
                 elif case == "wrong-minimum":
                     replace_json(record, lambda data: data["installer"].update(minimumOsVersion="11.0"))
+                elif case == "missing-signature":
+                    next(arm.glob("*.sig")).unlink()
+                elif case == "tampered-archive":
+                    next(arm.glob("*" + metadata.UPDATER_SUFFIX)).write_bytes(b"replaced after verification")
+                elif case == "swapped-signature":
+                    next(arm.glob("*.sig")).write_text(signature_text("someone else"))
+                elif case == "binary-signature":
+                    next(arm.glob("*.sig")).write_bytes(b"\x00\xff" * 64)
+                elif case == "wrong-updater-target":
+                    replace_json(record, lambda data: data["updater"].update(target="mac-x64", platform="darwin-x86_64"))
+                elif case == "unverified-updater":
+                    replace_json(record, lambda data: data["verification"].update(updaterApp=False))
                 with self.assertRaises(metadata.ReleaseError):
                     self.assemble()
                 self.assertFalse(self.output.exists())
                 shutil.rmtree(self.incoming)
+
+    def test_updater_feed_contract(self):
+        self.pair()
+        self.assemble()
+        feed = metadata.read_json(self.output / metadata.UPDATER_FEED)
+        updaters = metadata.payload_updaters(self.output, feed)
+        self.assertEqual([entry["target"] for entry in updaters], ["mac-arm64", "mac-x64"])
+        self.assertEqual(metadata.validate_feed(feed, self.version, self.tag, updaters), feed)
+        for mutation in (lambda x: x.update(version="9.9.9"), lambda x: x.update(pub_date="yesterday"),
+                         lambda x: x.update(extra=True), lambda x: x.pop("notes"),
+                         lambda x: x["platforms"].pop("darwin-x86_64"),
+                         lambda x: x["platforms"].update({"linux-x86_64": x["platforms"]["darwin-x86_64"]}),
+                         lambda x: x["platforms"]["darwin-aarch64"].update(url="https://evil.test/Bluey.app.tar.gz"),
+                         lambda x: x["platforms"]["darwin-aarch64"].update(
+                             url=x["platforms"]["darwin-x86_64"]["url"]),
+                         lambda x: x["platforms"]["darwin-aarch64"].update(signature=signature_text("other"))):
+            modified = copy.deepcopy(feed)
+            mutation(modified)
+            with self.assertRaises(metadata.ReleaseError):
+                metadata.validate_feed(modified, self.version, self.tag, updaters)
+        with self.assertRaises(metadata.ReleaseError):
+            metadata.updater_feed(self.version, self.tag, updaters[:1], PUBLISHED_AT)
+        with self.assertRaises(metadata.ReleaseError):
+            metadata.updater_feed(self.version, self.tag, updaters + updaters[:1], PUBLISHED_AT)
+        with self.assertRaises(metadata.ReleaseError):
+            metadata.updater_feed(self.version, self.tag, updaters, "2026-09-13 03:00")
+        for ref in ("../x", "v1.2.3/evil", "-flag", "nightly x", "", "v1.2.3\n"):
+            with self.subTest(ref=ref), self.assertRaises(metadata.ReleaseError):
+                metadata.asset_url(ref, "Bluey.app.tar.gz")
+        self.assertEqual(metadata.asset_url("nightly", "Bluey_0.1.3-nightly.20260913_aarch64.app.tar.gz"),
+                         "https://github.com/bloxy-studios/bluey/releases/download/nightly/"
+                         "Bluey_0.1.3-nightly.20260913_aarch64.app.tar.gz")
+        self.assertEqual(metadata.updater_name_for("Bluey_0.1.2_aarch64.dmg"), "Bluey_0.1.2_aarch64.app.tar.gz")
+
+    def test_signature_files_must_be_bounded_base64_text(self):
+        path = self.base / "x.sig"
+        for content in (b"\x00\xff" * 64, b"short", b"A" * (8 * 1024 + 1), "ünïcode".encode() * 20,
+                        b"has spaces inside but also $ shell characters, so it is not base64 text at all"):
+            path.write_bytes(content)
+            with self.subTest(content=content[:12]), self.assertRaises(metadata.ReleaseError):
+                metadata.read_signature(path)
+        path.write_text(signature_text("ok") + "\n")
+        self.assertEqual(metadata.read_signature(path), signature_text("ok"))
+        with self.assertRaises(metadata.ReleaseError):
+            metadata.updater_entry("mac-arm64", self.base / "Bluey.app.tar.gz", self.base / "other.sig")
 
     def test_unsafe_names_rejected(self):
         for name in ("../a.dmg", "-option.dmg", "a#label.dmg", "a\nb.dmg", "a%20b.dmg", "a\\b.dmg", "a..b.dmg", "a.dmg ", "é.dmg", "file.zip"):

@@ -94,8 +94,10 @@ class PublicationTests(ReleaseFixture):
         self.assertIs(api.calls[-1][2]["draft"], False)
         self.assertIs(api.calls[-1][2]["prerelease"], False)
         self.assertEqual(api.calls[-1][2]["make_latest"], "legacy")
-        self.assertEqual(len(api.uploads), 4)
-        self.assertEqual(api.uploads[-1], metadata.MANIFEST)
+        # Two DMGs, two updater archives, two signatures, SHA256SUMS, the updater feed, the site manifest last.
+        self.assertEqual(len(api.uploads), 9)
+        self.assertTrue(all(name.endswith(".dmg") for name in api.uploads[:2]))
+        self.assertEqual(api.uploads[-3:], [metadata.CHECKSUMS, metadata.UPDATER_FEED, metadata.MANIFEST])
         self.assertEqual(set(api.uploads), {p.name for p in self.output.iterdir()})
         self.assertNotIn("DELETE", [call[0] for call in api.calls])
         self.assertFalse(any("/git/" in call[1] for call in api.calls))
