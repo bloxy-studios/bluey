@@ -95,6 +95,7 @@ export function makeSettings(
       subscriptionAccounts: true,
       acceptedAccountConsents: [],
     },
+    updates: { channel: "latest", automatic: true },
   };
 }
 

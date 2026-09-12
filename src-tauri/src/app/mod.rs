@@ -40,6 +40,7 @@ use crate::shortcuts::ShortcutManager;
 use crate::sidecar::HelperClient;
 use crate::state::{AppCore, DevState, MetricsRecorder, StateHub};
 use crate::storage::{AppPaths, Storage};
+use crate::updates::UpdatesManager;
 
 /// The initialised logging stack (level switching from Settings → Advanced).
 static LOGGING: OnceLock<Logging> = OnceLock::new();
@@ -66,6 +67,7 @@ pub fn run(builder: tauri::Builder<Wry>) {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -263,6 +265,11 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         panel.clone(),
         audio.clone(),
     ));
+    let updates = Arc::new(UpdatesManager::new(
+        handle.clone(),
+        bus.clone(),
+        settings.clone(),
+    ));
 
     let authenticated = !auth.auth_required() || auth.has_stored_session();
     let onboarding_completed = settings.get().general.onboarding_completed;
@@ -291,8 +298,11 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         accounts,
         panel: panel.clone(),
         shortcuts,
+        updates: updates.clone(),
     });
     events::spawn_forwarder(handle.clone(), bus.clone());
+    // In-app updates: first check 30 s after launch, then every 6 h (release builds only).
+    updates.start_background();
 
     // `bluey://auth/callback` — the browser hands the sign-in back to us
     // (ADR 0008). Also picks up a link the app was *launched* with.

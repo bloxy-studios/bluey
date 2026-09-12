@@ -41,6 +41,11 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
         crate::platform::set_autostart(&core.panel.app_handle(), new.general.launch_at_login);
     }
 
+    // In-app updates: a new channel re-checks; automatic on installs a waiting update.
+    if old.updates != new.updates {
+        core.updates.on_settings_changed(&old.updates, &new.updates);
+    }
+
     // Observation mode.
     if old.screen.observation != new.screen.observation
         || old.screen.observation_interval_ms != new.screen.observation_interval_ms

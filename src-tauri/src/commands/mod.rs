@@ -24,3 +24,4 @@ pub mod responses;
 pub mod sessions;
 pub mod settings;
 pub mod shortcuts;
+pub mod updates;

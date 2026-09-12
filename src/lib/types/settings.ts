@@ -3,6 +3,7 @@
 import type { AIProviderConfig, ModelRoleAssignments } from "./ai";
 import type { ResponseLength, ResponseTone } from "./mode";
 import type { TranscriptionProviderKind } from "./transcript";
+import type { UpdateChannel } from "./updates";
 
 export type Theme = "system" | "dark" | "light";
 export type PanelDensity = "compact" | "comfortable";
@@ -130,6 +131,14 @@ export interface ExperimentalSettings {
   acceptedAccountConsents: string[];
 }
 
+/** In-app updates (docs/UPDATES.md). */
+export interface UpdatesSettings {
+  /** Release channel the build follows. */
+  channel: UpdateChannel;
+  /** Download and install in the background; Bluey then only asks to relaunch. Default on. */
+  automatic: boolean;
+}
+
 export interface Settings {
   version: number;
   general: GeneralSettings;
@@ -141,6 +150,7 @@ export interface Settings {
   shortcuts: ShortcutBinding[];
   advanced: AdvancedSettings;
   experimental: ExperimentalSettings;
+  updates: UpdatesSettings;
 }
 
 /** Deep partial patch applied by `settings_update`. */

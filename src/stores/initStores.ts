@@ -20,6 +20,7 @@ import { useResearchStore } from "./researchStore";
 import { useSessionStore } from "./sessionStore";
 import { useSettingsStore } from "./settingsStore";
 import { useTranscriptStore } from "./transcriptStore";
+import { useUpdatesStore } from "./updatesStore";
 
 let disposers: Unlisten[] = [];
 
@@ -39,6 +40,7 @@ export async function initStores(): Promise<void> {
     eventBus.on("auth.changed", (status) => useAuthStore.getState().applyStatus(status)),
     eventBus.on("accounts.changed", (account) => useAccountsStore.getState().applyAccount(account)),
     eventBus.on("accounts.catalog", (catalog) => useAccountsStore.getState().applyCatalog(catalog)),
+    eventBus.on("update.status", (status) => useUpdatesStore.getState().applyRemote(status)),
     eventBus.on("panel.state", (state) => usePanelStore.getState().applyRemote(state)),
 
     eventBus.on("session.started", (session) => useSessionStore.getState().setActive(session)),
@@ -74,6 +76,7 @@ export async function initStores(): Promise<void> {
     usePermissionsStore.getState().load(),
     usePanelStore.getState().load(),
     useSessionStore.getState().load(),
+    useUpdatesStore.getState().load(),
   ]);
 }
 
@@ -96,6 +99,7 @@ export function resetStoresForTest(): void {
   usePermissionsStore.setState({ permissions: null });
   useDevStore.setState({ metrics: null, logs: [] });
   useResearchStore.setState({ active: null });
+  useUpdatesStore.setState({ status: null, busy: false });
   resetProactiveForTest();
   resetHudUiForTest();
 }

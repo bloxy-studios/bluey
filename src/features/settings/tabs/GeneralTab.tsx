@@ -1,4 +1,16 @@
-import { Globe, LayoutGrid, LogOut, Power, RotateCcw, Rocket, Tag, TerminalSquare } from "lucide-react";
+import {
+  Download,
+  GitBranch,
+  Globe,
+  LayoutGrid,
+  LogOut,
+  Power,
+  RefreshCw,
+  RotateCcw,
+  Rocket,
+  Tag,
+  TerminalSquare,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
@@ -10,8 +22,11 @@ import { Switch } from "@/components/ui/Switch";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { signOutEverywhere } from "@/lib/auth/auth-actions";
 import { bluey } from "@/lib/tauri/api";
+import { UPDATE_CHANNELS, UPDATE_CHANNEL_LABELS, type UpdateChannel } from "@/lib/types";
+import { describeUpdateStatus, primaryUpdateAction } from "@/lib/updates/describe";
 import { useModesStore } from "@/stores/modesStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useUpdatesStore } from "@/stores/updatesStore";
 
 const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Japanese", "Korean", "Chinese"];
 
@@ -19,6 +34,15 @@ export default function GeneralTab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const modes = useModesStore((s) => s.modes);
+  const updateStatus = useUpdatesStore((s) => s.status);
+  const updatesBusy = useUpdatesStore((s) => s.busy);
+  const primary = primaryUpdateAction(updateStatus, updatesBusy);
+  const runPrimaryUpdateAction = () => {
+    const updates = useUpdatesStore.getState();
+    if (primary.action === "check") void updates.check();
+    else if (primary.action === "install") void updates.install();
+    else if (primary.action === "relaunch") void updates.relaunch();
+  };
 
   const [name, setName] = useState(settings?.general.blueyName ?? "Bluey");
   useEffect(() => {
@@ -69,6 +93,43 @@ export default function GeneralTab() {
           aria-label="Developer mode"
           checked={general.developerMode}
           onCheckedChange={(checked) => void update({ general: { developerMode: checked } })}
+        />
+      </SettingRow>
+
+      <SectionHeader title="Updates" description="Keep Bluey current" />
+
+      <SettingRow
+        icon={RefreshCw}
+        title={`Bluey ${updateStatus?.currentVersion ?? ""}`.trim()}
+        description={describeUpdateStatus(updateStatus)}
+      >
+        <Button disabled={primary.disabled} onClick={runPrimaryUpdateAction}>
+          {primary.label}
+        </Button>
+      </SettingRow>
+
+      <SettingRow
+        icon={GitBranch}
+        title="Update channel"
+        description="Latest is the stable release. Nightly follows main every night it changes and can break."
+      >
+        <Select
+          aria-label="Update channel"
+          value={settings.updates.channel}
+          onChange={(e) => void update({ updates: { channel: e.target.value as UpdateChannel } })}
+          options={UPDATE_CHANNELS.map((channel) => ({ value: channel, label: UPDATE_CHANNEL_LABELS[channel] }))}
+        />
+      </SettingRow>
+
+      <SettingRow
+        icon={Download}
+        title="Automatic updates"
+        description="Download and install in the background; Bluey asks before relaunching."
+      >
+        <Switch
+          aria-label="Automatic updates"
+          checked={settings.updates.automatic}
+          onCheckedChange={(checked) => void update({ updates: { automatic: checked } })}
         />
       </SettingRow>
 

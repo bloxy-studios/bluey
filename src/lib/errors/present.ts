@@ -129,6 +129,23 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "Couldn't read the answer",
     message: "The model's reply wasn't in a form Bluey can show. Regenerate to try again.",
   },
+  // In-app updates (docs/UPDATES.md) — the current version keeps running in every case.
+  "update.check_failed": {
+    title: "Couldn't check for updates",
+    message: "Bluey couldn't reach the update feed. It tries again in a few hours, or use Check now in Settings → General.",
+  },
+  "update.install_failed": {
+    title: "Update couldn't be installed",
+    message: "The download or install failed and the current version keeps running. Try again from Settings → General → Updates.",
+  },
+  "update.unsupported": {
+    title: "Updates aren't available in this build",
+    message: "Development builds don't update themselves. Install a release from the download page.",
+  },
+  "update.nothing_pending": {
+    title: "Nothing to install",
+    message: "No update has been found yet. Use Check now in Settings → General → Updates.",
+  },
   "privacy.cloud_ai_disabled": {
     title: "Cloud AI is off",
     message: "Turn Cloud AI back on in Settings → Privacy to let Bluey ask a model.",

@@ -122,6 +122,10 @@ type Handlers = {
 };
 
 import type { BenchOptions, BenchReport, LatencyTrace } from "@/lib/types/latency";
+import type { UpdateStatus } from "@/lib/types/updates";
+
+/** What the mock's in-app updater believes it runs; the update it "finds" is one minor ahead. */
+const MOCK_APP_VERSION = "0.1.0-dev";
 
 /** The mock's monotonic clock (ms since the transport module loaded) — stands in for Rust's. */
 const MONO_ORIGIN = Date.now();
@@ -210,6 +214,14 @@ export class MockTransport implements Transport {
 
   // ── state ──
   private settings: Settings = createDefaultSettings();
+  /** In-app updater (channel / automatic are read from `settings.updates` on every read). */
+  private updateState: UpdateStatus = {
+    phase: "idle",
+    currentVersion: MOCK_APP_VERSION,
+    channel: "latest",
+    automatic: true,
+    supported: true,
+  };
   private modes: BlueyMode[] = createBuiltInModes();
   private sessions: Session[];
   private events: SessionEvent[];
@@ -364,6 +376,68 @@ export class MockTransport implements Transport {
   }
 
   /* ── helpers ─────────────────────────────────────────────────────────── */
+
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, this.streamDelayMs === 0 ? 0 : ms));
+  }
+
+  private updateStatus(): UpdateStatus {
+    return {
+      ...this.updateState,
+      channel: this.settings.updates.channel,
+      automatic: this.settings.updates.automatic,
+    };
+  }
+
+  private setUpdateState(patch: Partial<UpdateStatus>): UpdateStatus {
+    this.updateState = { ...this.updateState, ...patch };
+    const status = this.updateStatus();
+    this.emit("update.status", status);
+    return status;
+  }
+
+  private async mockUpdateCheck(): Promise<UpdateStatus> {
+    if (this.updateState.phase === "checking" || this.updateState.phase === "downloading") return this.updateStatus();
+    this.setUpdateState({ phase: "checking", error: undefined, progress: undefined });
+    await this.pause(300);
+    const channel = this.settings.updates.channel;
+    const version = channel === "nightly" ? "0.2.0-nightly.20260913" : "0.2.0";
+    const status = this.setUpdateState({
+      phase: "available",
+      available: { version, channel, notes: `Bluey ${version} — mock release notes.`, publishedAt: now() },
+      lastCheckedAt: now(),
+    });
+    return this.settings.updates.automatic ? this.mockUpdateInstall() : status;
+  }
+
+  private async mockUpdateInstall(): Promise<UpdateStatus> {
+    if (this.updateState.phase === "ready") return this.updateStatus();
+    if (!this.updateState.available) {
+      throw blueyError({
+        kind: "internal",
+        code: "update.nothing_pending",
+        message: "no update has been found yet — check for updates first",
+      });
+    }
+    const total = 38_000_000;
+    for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+      this.setUpdateState({ phase: "downloading", progress: { downloaded: Math.round(total * fraction), total } });
+      await this.pause(120);
+    }
+    return this.setUpdateState({ phase: "ready", progress: undefined });
+  }
+
+  private mockUpdateRelaunch(): void {
+    const installed = this.updateState.available?.version;
+    if (this.updateState.phase !== "ready" || !installed) {
+      throw blueyError({
+        kind: "internal",
+        code: "update.nothing_pending",
+        message: "no installed update is waiting for a relaunch",
+      });
+    }
+    this.setUpdateState({ phase: "idle", currentVersion: installed, available: undefined, progress: undefined });
+  }
 
   private authStatus(): AuthStatus {
     return {
@@ -852,6 +926,13 @@ export class MockTransport implements Transport {
   /* ── Command handlers (exhaustive over CommandMap) ───────────────────── */
 
   private readonly handlers: Handlers = {
+    // In-app updates — the mock always finds the next version so the pill and
+    // the Settings section can be exercised end to end (check → available →
+    // download → ready → "relaunch" adopts the version).
+    updates_get_status: () => this.updateStatus(),
+    updates_check: () => this.mockUpdateCheck(),
+    updates_install: () => this.mockUpdateInstall(),
+    updates_relaunch: () => this.mockUpdateRelaunch(),
     // App
     app_get_status: () => this.status,
     app_pause: () => this.setAppState({ state: "paused", resumeState: this.status.state }),

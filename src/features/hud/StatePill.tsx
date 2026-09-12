@@ -11,6 +11,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { modeById, useModesStore } from "@/stores/modesStore";
 import { useProactiveStore } from "@/stores/proactive";
 import { useResearchStore } from "@/stores/researchStore";
+import { useUpdatesStore } from "@/stores/updatesStore";
 import { derivePill } from "./state-pill";
 
 export interface StatePillProps {
@@ -34,12 +35,41 @@ export function StatePill({ onRetry }: StatePillProps = {}) {
   const prepared = useChatStore((s) => s.prepared);
   const preparing = useProactiveStore((s) => s.preparingEventId !== null);
   const researching = useResearchStore((s) => s.active?.message ?? null);
+  const update = useUpdatesStore((s) => s.status);
   const modes = useModesStore((s) => s.modes);
   const modeName = modeById(modes, status?.modeId)?.name ?? "General";
 
-  const pill = derivePill(status, phase, prepared !== null, modeName, { preparing, researching });
+  const pill = derivePill(status, phase, prepared !== null, modeName, { preparing, researching, update });
 
   switch (pill.kind) {
+    case "update": {
+      // Available → Install; ready → relaunch; downloading is informational.
+      const act =
+        pill.phase === "ready"
+          ? () => void useUpdatesStore.getState().relaunch()
+          : pill.phase === "available"
+            ? () => void useUpdatesStore.getState().install()
+            : null;
+      return (
+        <button
+          type="button"
+          className="flex min-w-0 shrink items-center disabled:cursor-default"
+          onClick={act ?? undefined}
+          disabled={!act}
+          aria-label={pill.label}
+          title={pill.label}
+        >
+          <Pill
+            variant="accent"
+            interactive={act !== null}
+            className="min-w-0 motion-safe:animate-fade-in"
+          >
+            {pill.phase === "downloading" ? <Spinner size={11} /> : null}
+            <span className="truncate">{pill.label}</span>
+          </Pill>
+        </button>
+      );
+    }
     case "researching":
       return (
         <Pill variant="hud" className="min-w-0" title={pill.message}>

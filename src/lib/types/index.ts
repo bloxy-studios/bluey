@@ -13,3 +13,4 @@ export * from "./auth";
 export * from "./accounts";
 export * from "./dev";
 export * from "./latency";
+export * from "./updates";

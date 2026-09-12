@@ -33,6 +33,12 @@ export const bluey = {
     runSetupChecks: callNoArgs("app_run_setup_checks"),
     quit: callNoArgs("app_quit"),
   },
+  updates: {
+    getStatus: callNoArgs("updates_get_status"),
+    check: callNoArgs("updates_check"),
+    install: callNoArgs("updates_install"),
+    relaunch: callNoArgs("updates_relaunch"),
+  },
   auth: {
     getStatus: callNoArgs("auth_get_status"),
     beginSignIn: callNoArgs("auth_begin_sign_in"),
