@@ -1,7 +1,7 @@
 {
   "name": "bluey",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Bluey — a real-time AI desktop context copilot for macOS (Tauri v2)",
   "scripts": {
