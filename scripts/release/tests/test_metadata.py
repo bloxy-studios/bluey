@@ -45,6 +45,18 @@ class ReleaseFixture(unittest.TestCase):
         self.expected = metadata.provenance(self.tag, COMMIT, "1234", "1")
         self.incoming, self.output = self.base / "incoming", self.base / "payload"
 
+    def set_version(self, version):
+        """Rewrite the fixture's three root sources to `version` (stable or prerelease).
+
+        The fixture starts from the live repository's sources, so tests that assert a
+        stable or a prerelease outcome must pin the version they test instead of
+        assuming what the checked-out tree currently says."""
+        for relative in ("package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml"):
+            path = self.root / relative
+            path.write_text(path.read_text().replace('"' + self.version + '"', '"' + version + '"', 1))
+        self.version, self.tag = version, "v" + version
+        self.expected = metadata.provenance(self.tag, COMMIT, "1234", "1")
+
     def pair(self):
         source = metadata.source_metadata(self.root, self.tag)
         # Deliberately not Tauri example names: basename must come from actual files.
