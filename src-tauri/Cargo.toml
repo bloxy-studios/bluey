@@ -1,6 +1,6 @@
 [package]
 name = "bluey"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 description = "Bluey — a real-time AI desktop context copilot for macOS"
 authors = ["Bluey contributors"]
 edition = "2021"
