@@ -5,58 +5,173 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
+      publish:
+        description: "Publish a signed/notarized release from an EXISTING version tag (false = developer build only)"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Required only for publish: exact existing tag, e.g. v0.1.0; never an arbitrary branch/ref"
+        type: string
+        default: ""
       research_backend:
-        description: "Research sidecar backend baked into the build (gemini = lite binary, claude = full binary with the embedded Claude CLI)"
+        description: "Research sidecar backend (gemini = lite; claude = embedded Claude CLI)"
         type: choice
         options: [gemini, claude]
         default: gemini
 
+permissions:
+  contents: read
+
+# Push and manual publish for the SAME tag serialize. Never cancel a release mid-upload.
+concurrency:
+  group: bluey-release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: Build, sign and notarize (macOS)
-    runs-on: macos-14
-    strategy:
-      matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
-    env:
-      TARGET: ${{ matrix.target }}
-      RESEARCH_BACKEND: ${{ inputs.research_backend || 'gemini' }}
-      # Optional — scripts/release.sh skips signing/notarization when these are empty
-      # (ad-hoc signed build, not distributable). Mapped to env so steps can test them.
-      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+  prepare:
+    name: Validate request, source versions and existing tag
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
+      commit: ${{ steps.plan.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Portable release safety tests
+        run: python3 -m unittest discover -s scripts/release/tests -v
+      - name: Resolve build-only or immutable-tag publication
+        id: plan
+        env:
+          INPUT_PUBLISH: ${{ inputs.publish || false }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/workflow_plan.py
+
+  build:
+    name: macOS ${{ matrix.download_target }}
+    needs: prepare
+    runs-on: macos-14
+    # Configure macos-release with required reviewers and version-tag deployment rules.
+    # Build-only dispatch receives no signing/OAuth secrets and never publishes.
+    environment: ${{ needs.prepare.outputs.publish == 'true' && 'macos-release' || 'macos-build' }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            download_target: mac-arm64
+          - target: x86_64-apple-darwin
+            download_target: mac-x64
+    env:
+      TARGET: ${{ matrix.target }}
+      PUBLISH_RELEASE: ${{ needs.prepare.outputs.publish }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      RESEARCH_BACKEND: ${{ inputs.research_backend || 'gemini' }}
+      APPLE_CERTIFICATE_P12: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_CERTIFICATE_P12 || '' }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+      APPLE_SIGNING_IDENTITY: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+      APPLE_ID: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_ID || '' }}
+      APPLE_PASSWORD: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_PASSWORD || '' }}
+      APPLE_TEAM_ID: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_TEAM_ID || '' }}
+      # Public build-time settings only. Never put provider keys or Clerk secrets here.
+      VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
+      VITE_CLERK_FRONTEND_API_URL: ${{ vars.VITE_CLERK_FRONTEND_API_URL }}
+      BLUEY_CLERK_OAUTH_CLIENT_ID: ${{ vars.BLUEY_CLERK_OAUTH_CLIENT_ID }}
+      BLUEY_CLERK_ACCOUNT_PORTAL_URL: ${{ vars.BLUEY_CLERK_ACCOUNT_PORTAL_URL }}
+      # Optional desktop OAuth client value already supported by build.rs; not a release gate.
+      BLUEY_ANTIGRAVITY_CLIENT_SECRET: ${{ needs.prepare.outputs.publish == 'true' && secrets.BLUEY_ANTIGRAVITY_CLIENT_SECRET || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fail before toolchain setup/build if any publishing credential or tag is wrong
+        if: needs.prepare.outputs.publish == 'true'
+        run: |
+          python3 scripts/release/release_credentials.py check
+          python3 scripts/release/release_metadata.py version --root "$GITHUB_WORKSPACE" --tag "$RELEASE_TAG" --check-tag --commit "$RELEASE_COMMIT"
+          python3 scripts/release/release_credentials.py import --state "$RUNNER_TEMP/bluey-signing"
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.4.2"
       - uses: dtolnay/rust-toolchain@stable
         with:
+          components: rustfmt, clippy
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-      - name: Import signing certificate
-        if: ${{ env.APPLE_CERTIFICATE_P12 != '' }}
-        run: |
-          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
-          security create-keychain -p "" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "" "$KEYCHAIN"
-          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-      - name: Release build
+      # No cross-run build cache on the signing path.
+      - name: Build, then native trust gates (publication) or build-only (developer)
         run: bash scripts/release.sh
-      - uses: actions/upload-artifact@v4
+      - name: Remove imported keychain and restore original search list
+        if: always() && needs.prepare.outputs.publish == 'true'
+        run: python3 scripts/release/release_credentials.py cleanup --state "$RUNNER_TEMP/bluey-signing"
+      - name: Upload only fully verified current-attempt installer
+        if: success() && needs.prepare.outputs.publish == 'true'
+        uses: actions/upload-artifact@v4
         with:
-          name: bluey-${{ matrix.target }}
+          name: verified-${{ matrix.download_target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bluey-verified/${{ matrix.download_target }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload developer-only bundles (never consumed by publish)
+        if: success() && needs.prepare.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: developer-${{ matrix.download_target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
           if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Re-verify complete pair, upload draft, then publish
+    needs: [prepare, build]
+    if: success() && needs.prepare.outputs.publish == 'true'
+    runs-on: macos-14
+    environment: macos-release
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # No wildcard, other workflow/run, merge-multiple, cached or previous-attempt inputs.
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-mac-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: incoming/mac-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-mac-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: incoming/mac-x64
+      - name: Validate provenance, versions, actual bytes and exact target pair
+        run: |
+          python3 scripts/release/release_metadata.py version --root "$GITHUB_WORKSPACE" --tag "$RELEASE_TAG" --check-tag --commit "$RELEASE_COMMIT"
+          python3 scripts/release/release_metadata.py assemble --root "$GITHUB_WORKSPACE" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --incoming incoming --output release-assets
+      - name: Native re-verification, then draft upload/readback and stable or prerelease finalization
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/publish_release.py publish --root "$GITHUB_WORKSPACE" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --directory release-assets

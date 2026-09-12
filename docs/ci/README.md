@@ -1,8 +1,9 @@
 # CI / release workflows
 
-The GitHub Actions definitions live here instead of `.github/workflows/` because the
-integration token that pushes Bluey's pull requests does not carry the `workflow` scope
-(GitHub rejects such pushes with 403). A maintainer installs them once:
+The active definitions are in `.github/workflows/`. Install copies remain under
+`docs/ci/workflows/` for maintainers whose integration token lacks GitHub's `workflow` scope.
+The release copy must match the active workflow (a portable test enforces this), so installing
+it cannot silently restore the old ungated build-only workflow. Review any copied CI changes:
 
 ```bash
 bash scripts/install-workflows.sh     # copies docs/ci/workflows/*.yml → .github/workflows/
@@ -21,16 +22,23 @@ The Rust job does not link anything for macOS — see `docs/DEVELOPMENT.md` › 
 
 ## `release.yml` — tags `v*` (or manual dispatch)
 
-Runs `scripts/release.sh` per target (`aarch64-apple-darwin`, `x86_64-apple-darwin`) on macos-14
-and uploads the `.dmg` / `.app` bundles as artifacts.
+Runs the macOS arm64/x64 matrix with **Bun 1.4.2**, frozen installs and the existing helper/
+agent chain. Default manual dispatch remains `publish=false` (developer `.app`/`.dmg`
+artifacts only), retaining `research_backend=gemini|claude`.
 
-- `research_backend` (dispatch input, default `gemini`) selects the sidecar variant baked into
-  the build: **lite** (Gemini function calling over `@google/genai`, no embedded Claude CLI) or
-  **full** (`RESEARCH_BACKEND=claude`, embeds the Claude CLI).
-- Signing / notarization are optional and driven by secrets: `APPLE_CERTIFICATE_P12` (base64
-  `.p12`) + `APPLE_CERTIFICATE_PASSWORD` to import the identity, `APPLE_SIGNING_IDENTITY`,
-  and `APPLE_ID` + `APPLE_PASSWORD` (app-specific) + `APPLE_TEAM_ID` for notarization. Without
-  them the build is ad-hoc signed and not distributable.
+Tag pushes, or manual `publish=true` + an **existing** `release_tag`, use a separate strict
+publication path: all six signing/notarization secrets required before toolchain/build;
+version/tag/commit consistency; real Apple signature/notarization/staple/Gatekeeper checks on
+the app and DMG; complete current-run/current-attempt artifact pair; independent native
+re-verification after download; actual `bluey-downloads.json` + `SHA256SUMS`; create a new
+**draft**, upload/read back all four assets, then finalize stable or prerelease. Existing
+drafts/published releases are never overwritten and tags are never created or forced.
 
-No API keys are needed in CI: nothing talks to a provider during the build or the tests
-(the Gemini smoke tests in `docs/TESTING.md` are a manual, keyed step).
+Default permissions are `contents: read`; only the final publish job has `contents: write`.
+No release job executes on pull requests. The separate `release-scripts` CI job runs Python
+stdlib tests and Bash syntax checks without secrets, including on PRs.
+
+See [the complete owner release runbook](../RELEASING.md) for protected environment/tag setup,
+required secrets, public Clerk variables, optional desktop OAuth value, manual dispatch,
+re-run/partial-draft handling and the native validation boundary. No provider API keys are
+needed in CI tests; manual keyed smoke tests remain in `docs/TESTING.md`.
