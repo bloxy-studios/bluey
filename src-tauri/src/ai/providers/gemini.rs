@@ -353,7 +353,13 @@ impl AiProvider for GeminiProvider {
         let body = proto::build_generate_body(&proto::GenerateBodyOptions {
             model: &request.model,
             messages: &request.messages,
-            max_output_tokens: request.max_output_tokens,
+            // 3.x counts thinking tokens against the output budget; without the
+            // allowance a structured answer can end in MAX_TOKENS before the JSON
+            // envelope is complete (docs/AI_ARCHITECTURE.md › Output budgets).
+            max_output_tokens: proto::max_output_tokens_with_thinking(
+                request.max_output_tokens,
+                thinking,
+            ),
             temperature: request.temperature,
             output_schema: request.output_schema.as_ref(),
             thinking_level: thinking,

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { Spinner } from "@/components/ui/Spinner";
+import { truncatedAnswerError } from "@/lib/errors/answers";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { useChatStore, type ChatTurn } from "@/stores/chatStore";
 import { useResearchStore } from "@/stores/researchStore";
@@ -65,6 +66,9 @@ function Turn({ turn, isLast, onRegenerate }: { turn: ChatTurn; isLast: boolean;
       ) : turn.response ? (
         <>
           <ResponseView response={turn.response} streaming={streaming} />
+          {turn.response.truncated && turn.status === "done" ? (
+            <ErrorBanner error={truncatedAnswerError()} onRetry={onRegenerate} compact />
+          ) : null}
           {turn.status === "done" && isLast ? (
             <ResponseActions response={turn.response} onRegenerate={onRegenerate} />
           ) : null}

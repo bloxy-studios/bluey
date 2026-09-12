@@ -374,6 +374,7 @@ mod tests {
             metrics: None,
             feedback: None,
             prepared: None,
+            truncated: None,
             created_at: "2026-09-07T09:15:04.000Z".into(),
         }];
         let notes = vec![SessionNote {

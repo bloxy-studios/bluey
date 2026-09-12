@@ -170,3 +170,162 @@ describe("mentionsExternalInfo", () => {
     expect(mentionsExternalInfo("the 2019 report we shipped", NOW)).toBe(false);
   });
 });
+
+describe("classifyIntent answer shapes", () => {
+  const ocr = (text: string) => ({
+    blocks: [],
+    text,
+    level: "fast" as const,
+    languages: ["en"],
+    durationMs: 1,
+  });
+  const screen = { width: 1600, height: 1000, frameId: "f1" };
+  const shapeFor = (instruction: string) =>
+    classifyIntent({ instruction, snapshot: makeSnapshot(), mode: makeMode(), now: NOW }).answerShape;
+
+  it("detects a multiple-choice question from its wording", () => {
+    expect(shapeFor("Which of the following is true about TCP?")).toBe("choice");
+    expect(shapeFor("Select the correct answer: what does DNS resolve?")).toBe("choice");
+    expect(shapeFor("Which statement best describes a closure?")).toBe("choice");
+  });
+
+  it("detects a multiple-choice question from lettered options on screen (⌘↵, no typed question)", () => {
+    const intent = classifyIntent({
+      snapshot: makeSnapshot({
+        screen,
+        ocr: ocr(
+          "Question 3 of 20\nWhat does HTTP stand for?\nA. HyperText Transfer Protocol\nB. High Transfer Text Process\nC. Hyperlink Text Transport\nD. None of the above",
+        ),
+      }),
+      mode: makeMode(),
+      trigger: "shortcut_capture",
+      now: NOW,
+    });
+    expect(intent.answerShape).toBe("choice");
+    expect(intent.task).toBe("answer");
+  });
+
+  it("keeps a multiple-choice question about code an answer, not a coding task", () => {
+    const intent = classifyIntent({
+      snapshot: makeSnapshot({
+        screen,
+        ocr: ocr(
+          [
+            "Which of the following calls returns the indices of the two numbers?",
+            "A) twoSum(nums, target)",
+            "B) sum(nums)",
+            "C) indexOf(target)",
+            "function twoSum(nums, target) {",
+            "  const seen = new Map();",
+            "}",
+          ].join("\n"),
+        ),
+      }),
+      mode: makeMode(),
+      trigger: "shortcut_capture",
+      now: NOW,
+    });
+    expect(intent.answerShape).toBe("choice");
+    expect(intent.task).toBe("answer");
+    expect(intent.schemaId).toBe("answer");
+  });
+
+  it("detects a comparison from two labelled responses on screen", () => {
+    const intent = classifyIntent({
+      snapshot: makeSnapshot({
+        screen,
+        ocr: ocr(
+          "Response A\nThe capital of Australia is Sydney.\n\nResponse B\nThe capital of Australia is Canberra.\n\nWhich response is better?",
+        ),
+      }),
+      mode: makeMode(),
+      trigger: "shortcut_capture",
+      now: NOW,
+    });
+    expect(intent.answerShape).toBe("compare");
+    expect(shapeFor("Compare these two answers and tell me which is stronger")).toBe("compare");
+    expect(shapeFor("Which one is better for this, Kafka or RabbitMQ?")).toBe("compare");
+  });
+
+  it("detects yes/no, fill-in and calculation shapes", () => {
+    expect(shapeFor("Is a binary search tree always balanced?")).toBe("boolean");
+    expect(shapeFor("True or false: TCP guarantees ordering.")).toBe("boolean");
+    expect(shapeFor("Fill in the blank: a ____ join returns only matching rows.")).toBe("fill_in");
+    expect(shapeFor("What is the total if 12 servers cost $340 each?")).toBe("calculation");
+  });
+
+  it("does not read a how/why question opening with an auxiliary as yes/no", () => {
+    expect(shapeFor("Can you explain how a mutex works?")).toBe("explain");
+    expect(shapeFor("Why is my query slow?")).toBe("explain");
+  });
+
+  it("uses the spoken shape for detected questions and suggestion modes — unless it is a pick", () => {
+    const interview = makeMode({ id: "interview", responseSchema: "suggested-response" });
+    const spoken = classifyIntent({
+      snapshot: makeSnapshot(),
+      mode: interview,
+      detectedEvent: eventFor("behavioral_question", "Tell me about a time you led a team through a hard deadline."),
+      trigger: "detected_event",
+      now: NOW,
+    });
+    expect(spoken.answerShape).toBe("spoken");
+    const pick = classifyIntent({
+      snapshot: makeSnapshot(),
+      mode: interview,
+      detectedEvent: eventFor("technical_question", "Which one is better here, Kafka or RabbitMQ?"),
+      trigger: "detected_event",
+      now: NOW,
+    });
+    expect(pick.answerShape).toBe("compare");
+    const generate = classifyIntent({ snapshot: makeSnapshot(), mode: makeMode(), trigger: "shortcut_generate", now: NOW });
+    expect(generate.answerShape).toBe("spoken");
+  });
+
+  it("derives code, design and summary shapes from the task", () => {
+    const coding = classifyIntent({
+      snapshot: makeSnapshot({
+        screen,
+        ocr: ocr(
+          "Example 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\nConstraints:\n2 <= nums.length <= 10^4\nfunction twoSum(nums, target) {",
+        ),
+      }),
+      mode: makeMode(),
+      now: NOW,
+    });
+    expect(coding.answerShape).toBe("code");
+    expect(shapeFor("How would you design a rate limiter for our public API?")).toBe("design");
+    expect(shapeFor("Summarize what we covered so far")).toBe("summary");
+  });
+
+  it("detects the written shape and defaults open questions to explain or a short answer", () => {
+    expect(shapeFor("Write a reply to this email declining politely")).toBe("written");
+    expect(shapeFor("What port does Postgres listen on?")).toBe("short_answer");
+    expect(shapeFor("Explain the difference between a process and a thread")).toBe("explain");
+    expect(shapeFor("")).toBe("explain");
+  });
+});
+
+describe("classifyIntent for questions heard live", () => {
+  it("answers a detected interview question as speech, never as research, at the mode's latency", () => {
+    const intent = classifyIntent({
+      snapshot: makeSnapshot(),
+      mode: makeMode({ id: "interview", responseSchema: "suggested-response", preferredLatency: "ultra-fast" }),
+      detectedEvent: eventFor("question", "Why do you want to leave your current role?"),
+      trigger: "detected_event",
+      now: NOW,
+    });
+    expect(intent.task).toBe("answer");
+    expect(intent.latency).toBe("ultra-fast");
+    expect(intent.answerShape).toBe("spoken");
+    // The same words typed into the HUD still take the research path.
+    expect(
+      classifyIntent({
+        snapshot: makeSnapshot(),
+        mode: makeMode(),
+        instruction: "What is the latest news about our current competitor?",
+        trigger: "typed",
+        now: NOW,
+      }).task,
+    ).toBe("research");
+  });
+});

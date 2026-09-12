@@ -191,7 +191,7 @@ const MODE_SEEDS: ModeSeed[] = [
 
 Use the job description, resume, notes, and any attached files as ground truth when available. Do not fabricate experience, credentials, companies, numbers, or project details. If context is missing, give me an answer structure that I can quickly fill in.
 
-For behavioral questions, help me choose a strong example and shape it with situation, task, action, and result. For technical or role-specific questions, explain the concept clearly, state tradeoffs, and answer at the right depth for an interview.`,
+For behavioral questions, answer with my strongest matching example shaped as situation, task, action, result. For technical or role-specific questions, give the answer first, then the trade-offs, at interview depth.`,
   },
   {
     id: "behavioral-interview",
@@ -209,17 +209,15 @@ Keep answers speakable in under two minutes. Never invent employers, dates, metr
   {
     id: "coding-interview",
     name: "Coding Interview",
-    description: "Restate the problem, find the approach, then write clean, correct code.",
+    description: "The working solution first, then the approach, complexity and edge cases.",
     icon: "code",
     group: "Looking for work",
     schema: "coding",
     latency: "balanced",
     context: ["screen", "accessibility", "transcript"],
-    instructions: `I am in a coding interview. Help me solve the problem while explaining my thinking clearly to the interviewer.
+    instructions: `I am in a coding interview. Give me the working solution first — in the language on my screen, matching any visible signature exactly — then the approach in a few lines, the time and space complexity, and the edge cases the code handles.
 
-First help me restate the problem, identify inputs and outputs, clarify constraints, and surface edge cases. If the prompt is ambiguous, suggest the best clarification questions before jumping into code.
-
-Guide me toward a correct approach, then improve it if there is a more efficient algorithm. Explain the tradeoffs between brute force and optimized solutions, including time and space complexity.`,
+If the problem is ambiguous, solve the most reasonable reading and state the assumption in one line. On follow-ups, change only what changes.`,
   },
   {
     id: "system-design",

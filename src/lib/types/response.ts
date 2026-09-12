@@ -71,6 +71,12 @@ export interface BlueyResponse {
   feedback?: ResponseFeedback;
   /** True when this response was prepared proactively and not yet shown. */
   prepared?: boolean;
+  /**
+   * True when the output budget cut the answer short (after the engine's one
+   * retry with double the room): `content` is what could be salvaged and the
+   * HUD shows "Answer was cut short" with Regenerate under it.
+   */
+  truncated?: boolean;
   createdAt: string;
 }
 
@@ -84,4 +90,6 @@ export interface StructuredModelOutput {
   diagram?: string;
   confidence?: number;
   citations?: Array<Omit<Citation, "id">>;
+  /** True when the envelope was incomplete and `content` was read out of the partial JSON. */
+  salvaged?: boolean;
 }

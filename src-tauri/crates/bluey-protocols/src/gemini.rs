@@ -158,6 +158,31 @@ impl ThinkingLevel {
             Self::High => "high",
         }
     }
+
+    /// Output tokens to add on top of the caller's budget when this level is
+    /// sent. Gemini 3.x counts thinking tokens against `maxOutputTokens`, so
+    /// a budget sized for the visible answer alone ends in `MAX_TOKENS` with
+    /// the answer cut short — or, for structured output, never started. Rough
+    /// per-level allowances; the engine's retry with double the budget covers
+    /// the tail.
+    pub fn output_allowance(&self) -> u32 {
+        match self {
+            Self::Minimal => 256,
+            Self::Low => 512,
+            Self::Medium => 1024,
+            Self::High => 2048,
+        }
+    }
+}
+
+/// The `maxOutputTokens` to send: the caller's budget plus the thinking
+/// allowance of the level being sent (nothing extra for pre-3 models, which
+/// keep `thinkingBudget` semantics and no explicit level).
+pub fn max_output_tokens_with_thinking(
+    budget: Option<u32>,
+    level: Option<ThinkingLevel>,
+) -> Option<u32> {
+    budget.map(|max| max.saturating_add(level.map_or(0, |level| level.output_allowance())))
 }
 
 /// Bluey's thinking policy for Gemini 3.x (`None` for older models, which use
@@ -1595,6 +1620,32 @@ mod tests {
         assert_eq!(
             body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "high"
+        );
+    }
+
+    #[test]
+    fn the_output_budget_grows_by_the_thinking_allowance() {
+        assert_eq!(
+            max_output_tokens_with_thinking(Some(1200), Some(ThinkingLevel::Low)),
+            Some(1712)
+        );
+        assert_eq!(
+            max_output_tokens_with_thinking(Some(1200), Some(ThinkingLevel::Medium)),
+            Some(2224)
+        );
+        assert_eq!(
+            max_output_tokens_with_thinking(Some(1200), Some(ThinkingLevel::High)),
+            Some(3248)
+        );
+        assert_eq!(
+            max_output_tokens_with_thinking(Some(1200), None),
+            Some(1200),
+            "pre-3 models: the budget is sent as-is"
+        );
+        assert_eq!(
+            max_output_tokens_with_thinking(None, Some(ThinkingLevel::High)),
+            None,
+            "no budget stays no budget"
         );
     }
 

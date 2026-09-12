@@ -4,12 +4,14 @@
  * Guarantees:
  *  - fenced code blocks are preserved verbatim (never reflowed or trimmed)
  *  - factual caveats and citations are preserved
- *  - filler openers are stripped, duplicate paragraphs removed
- *  - length capped by style (concise ≈ 120 words of prose, code excluded)
+ *  - filler openers and question-restating first sentences are stripped,
+ *    duplicate paragraphs removed
+ *  - length capped by style (concise ≈ 120 words of prose, code excluded) —
+ *    never for spoken, written or code shapes, never the first paragraph
  *  - `title` derived when missing; `code` populated for coding responses
  */
 
-import type { BlueyMode, BlueyResponse, CodeBlock, ResponseStyle } from "@/lib/types";
+import type { AnswerShape, BlueyMode, BlueyResponse, CodeBlock, ResponseStyle } from "@/lib/types";
 
 const FILLER_OPENERS = [
   /^certainly[!,.]?\s*/i,
@@ -23,6 +25,23 @@ const FILLER_OPENERS = [
   /^here(?:'s| is) (?:the|your|a|an) [^\n.:!]{0,40}?[:!]\s*/i,
   /^as an ai(?: language model)?,?\s*/i,
 ];
+
+/**
+ * Whole first sentences that restate the question or narrate the approach
+ * instead of answering ("The question is asking about…", "Let's break this
+ * down.", "Looking at the screen, …"). Each pattern ends at the sentence's
+ * punctuation; a sentence is only removed when an answer remains after it.
+ */
+const RESTATEMENT_OPENERS = [
+  /^(?:the|this|your) (?:question|prompt|task|problem|screen|screenshot|image|code|snippet|passage|text|error)(?: here| above| shown| below)? (?:is asking|asks|is about|shows|displays|describes|presents|wants|requires|refers to|relates to)\b[^.!?\n]*[.!?:]\s*/i,
+  /^(?:you(?:'re| are) (?:asking|looking at|being asked)|you want to know|you asked|you'?d like to know)\b[^.!?\n]*[.!?:]\s*/i,
+  // Approach preambles end at their first comma or colon ("Looking at the screen, …").
+  /^(?:to answer (?:this|your|the) question|to solve this|in order to answer|looking at (?:the|this|your) (?:screen|question|code|image|problem|options|error)|based on (?:the|your|this) (?:screen|screenshot|image|question|context|information provided))\b[^.!?,:\n]*[,.:!]\s*/i,
+  /^(?:let'?s|let me) (?:break|walk|look|take|start|dive|begin|see|analy[sz]e|think|go)\b[^.!?\n]*[.!?:]\s*/i,
+  /^i(?:'ll| will| can)(?: help| explain| walk| break)\b[^.!?\n]*[.!?:]\s*/i,
+];
+
+const MIN_WORDS_AFTER_STRIP = 3;
 
 const CAVEAT_MARKERS =
   /\b(note:|caveat|important:|warning:|as of |i'?m not (fully )?(sure|certain)|may (be|have) (changed|outdated)|not (fully )?verified|double[- ]check|according to)\b/i;
@@ -100,6 +119,22 @@ export function dedupeAdjacentSentences(paragraph: string): string {
   return kept.join(" ");
 }
 
+function countWords(text: string): number {
+  return text.split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+function recapitalize(text: string): string {
+  if (text.length > 0 && /[a-z]/.test(text[0] ?? "")) {
+    return (text[0] ?? "").toUpperCase() + text.slice(1);
+  }
+  return text;
+}
+
+/**
+ * Strip filler openers ("Sure!", "Great question!") and restating first
+ * sentences ("The question is asking…"). A restatement is only removed when
+ * at least a few words of answer remain; the text is never stripped to nothing.
+ */
 export function stripFillerOpeners(text: string): string {
   let result = text.trimStart();
   let changed = true;
@@ -113,15 +148,19 @@ export function stripFillerOpeners(text: string): string {
       }
     }
   }
-  // Re-capitalize after stripping an opener mid-sentence.
-  if (result.length > 0 && /[a-z]/.test(result[0] ?? "")) {
-    result = (result[0] ?? "").toUpperCase() + result.slice(1);
+  changed = true;
+  while (changed) {
+    changed = false;
+    for (const pattern of RESTATEMENT_OPENERS) {
+      const next = result.replace(pattern, "").trimStart();
+      if (next !== result && countWords(next) >= MIN_WORDS_AFTER_STRIP) {
+        result = next;
+        changed = true;
+      }
+    }
   }
-  return result;
-}
-
-function countWords(text: string): number {
-  return text.split(/\s+/).filter((w) => w.length > 0).length;
+  // Re-capitalize after stripping an opener mid-sentence.
+  return recapitalize(result);
 }
 
 const LENGTH_WORD_CAPS: Record<ResponseStyle["length"], number> = {
@@ -130,14 +169,17 @@ const LENGTH_WORD_CAPS: Record<ResponseStyle["length"], number> = {
   detailed: 900,
 };
 
+/** Shapes whose text is the deliverable itself — cutting them mid-way would destroy it. */
+const UNCAPPED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>(["spoken", "written", "code"]);
+
 function mustKeepParagraph(paragraph: string): boolean {
   return CAVEAT_MARKERS.test(paragraph) || CITATION_MARKER.test(paragraph);
 }
 
 /**
- * Cap prose length at a word budget, keeping whole paragraphs. Paragraphs
- * containing caveats or citations are always kept; code is never counted or
- * touched.
+ * Cap prose length at a word budget, keeping whole paragraphs. The first
+ * paragraph (the answer) is always kept; paragraphs containing caveats or
+ * citations are always kept; code is never counted or touched.
  */
 export function capProse(pieces: Piece[], maxWords: number): Piece[] {
   let words = 0;
@@ -182,6 +224,8 @@ export function deriveTitle(content: string, prompt?: string): string | undefine
 export interface OptimizeOptions {
   style: ResponseStyle;
   mode: BlueyMode;
+  /** The detected answer shape; spoken, written and code answers are never length-capped. */
+  shape?: AnswerShape;
 }
 
 /** Clean and normalize a final response. Pure — returns a new object. */
@@ -203,9 +247,11 @@ export function optimizeResponse(response: BlueyResponse, opts: OptimizeOptions)
     }
   }
 
-  // Cap prose length by style — never when the payload is primarily code.
+  // Cap prose length by style — never when the payload is primarily code, and
+  // never for the shapes whose text is the deliverable (spoken, written, code).
   const cap = LENGTH_WORD_CAPS[opts.style.length];
-  if (!(hasCode && opts.style.length === "concise")) {
+  const uncapped = (hasCode && opts.style.length === "concise") || (opts.shape !== undefined && UNCAPPED_SHAPES.has(opts.shape));
+  if (!uncapped) {
     cleaned = capProse(cleaned, cap);
   }
 

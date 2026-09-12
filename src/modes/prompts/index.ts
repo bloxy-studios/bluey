@@ -1,7 +1,14 @@
 /**
- * ModePrompt fragments: per-schema shaping instructions appended to the mode's
- * own `systemInstructions`. All prompt strings live here — never inline them
- * in the builder.
+ * ModePrompt fragments: per-schema FIELD instructions appended to the mode's
+ * own `systemInstructions`. A fragment says which fields to fill and which
+ * section titles exist — never how to sound: voice and content come from the
+ * response contract (`src/ai/prompts/system.ts`) and the mode's instructions.
+ *
+ * Every double-quoted string in a fragment is a section title and must be one
+ * of `SECTION_TITLES[schemaId]` (`src/modes/schemas.ts`) — the provider-side
+ * schema is a closed enum, so a title the fragment invents would be rejected
+ * or silently dropped. `tests/unit/modes/prompts.test.ts` enforces this. All
+ * prompt strings live here — never inline them in the builder.
  */
 
 import type { ResponseSchemaId } from "@/lib/types";
@@ -11,99 +18,79 @@ export interface ModePrompt {
   fragment: string;
 }
 
-const NEVER_FABRICATE =
-  "Never fabricate facts, experience, metrics or citations. If the context does not contain something, say so briefly instead of inventing it.";
-
 export const MODE_PROMPTS: Record<ResponseSchemaId, ModePrompt> = {
   answer: {
     schemaId: "answer",
     fragment: [
-      "Answer the question directly in the first sentence, then add only the detail that earns its place.",
-      "Prefer short paragraphs and tight lists over walls of text.",
-      NEVER_FABRICATE,
+      "Fields: `content` is the answer — markdown, answer first, ready to read or paste.",
+      "Leave `sections` empty unless the answer has genuinely separate named parts.",
     ].join(" "),
   },
   "suggested-response": {
     schemaId: "suggested-response",
     fragment: [
-      "Draft exactly what the user should SAY next, in their voice, first person, ready to speak aloud.",
-      "No stage directions, no 'you could say'. It must sound natural when read verbatim.",
-      'Optionally add short sections titled "Why it works" and "Key point".',
-      NEVER_FABRICATE,
+      "Fields: `content` is exactly what I say next — the words themselves, nothing around them.",
+      'Optional `sections`, one line each: "Why it works" and "Key point".',
     ].join(" "),
   },
   behavioral: {
     schemaId: "behavioral",
     fragment: [
-      "Draft a spoken answer to the behavioral question grounded ONLY in the user's real background from the provided context.",
-      "Structure it internally as STAR (situation, task, action, result) but keep the delivery natural and conversational — never label the STAR parts out loud.",
-      'Return sections titled "Suggested answer", "Story used" (which experience it draws on) and "Key point".',
-      NEVER_FABRICATE,
+      "Fields: `content` is the spoken answer — STAR-shaped inside (situation, task, action, result) with no labels showing, drawn only from my real background in the context; never label the STAR parts out loud.",
+      '`sections`, one line each: "Story used" (the experience it draws on) and "Key point" (the one thing to land). Do not repeat the spoken answer in a section.',
     ].join(" "),
   },
   coding: {
     schemaId: "coding",
     fragment: [
-      "Solve the coding problem visible in the context.",
-      'Return sections titled "Approach", "Solution" (kind "code" with the language set), "Complexity" and "Edge cases".',
-      "Also set the top-level `code` field to the full working solution. State time/space complexity explicitly.",
-      "If the problem statement is incomplete, solve the most reasonable interpretation and say what you assumed.",
-      NEVER_FABRICATE,
+      "Fields: `content` opens with the approach in two to five lines, then the complete runnable solution in a fenced block with the language tag.",
+      "`code` is that same full solution with `language` set (infer it from the visible editor or judge; never truncate or elide code).",
+      '`sections`: "Complexity" (time and space, one line each with the reason) and "Edge cases" (the inputs that break naive solutions and how the code handles them).',
+      "If the statement is incomplete, solve the most reasonable reading and state the assumption in one line.",
     ].join(" "),
   },
   "system-design": {
     schemaId: "system-design",
     fragment: [
-      "Work the system design question like a strong senior engineer at a whiteboard.",
-      'Return sections in this order: "Requirements", "Capacity estimates", "High-level design", "Data model", "Deep dive", "Trade-offs".',
-      "Optionally include a `diagram` field with a Mermaid graph of the high-level architecture.",
-      "Quantify estimates (QPS, storage, bandwidth) with visible arithmetic.",
-      NEVER_FABRICATE,
+      "Fields: `content` is the headline design in a few lines — the shape of the system and the two decisions that matter most.",
+      '`sections` in this order: "Requirements", "Capacity estimates" (arithmetic visible), "High-level design", "Data model", "Deep dive", "Trade-offs".',
+      "Optional `diagram`: a Mermaid graph of the high-level design.",
     ].join(" "),
   },
   case: {
     schemaId: "case",
     fragment: [
-      "Coach the user through the case interview.",
-      'Return sections titled "Clarify", "Framework", "Analyze", "Calculate" (kind "calculation" with visible arithmetic), "Synthesize" and "Recommend".',
-      "Be hypothesis-driven and quantitative; round numbers the way a candidate would out loud.",
-      NEVER_FABRICATE,
+      "Fields: `content` is the recommendation or the next thing I say in the case, answer first.",
+      '`sections` only for the stages in play right now: "Clarify", "Framework", "Analyze", "Calculate" (kind `calculation`: assumptions, then steps, then the result), "Synthesize", "Recommend".',
     ].join(" "),
   },
   sales: {
     schemaId: "sales",
     fragment: [
-      "Help the user advance the deal in this live conversation.",
-      'Return sections titled "Suggested response" (first person, ready to say), "Why it works" and "Optional follow-up".',
-      "Acknowledge objections honestly — never dismiss them, never over-promise, never invent product claims.",
-      NEVER_FABRICATE,
+      "Fields: `content` is exactly what I say to the prospect next.",
+      '`sections`, one line each: "Why it works" and "Optional follow-up" (one question). Do not repeat the spoken line in a section.',
     ].join(" "),
   },
   recruiting: {
     schemaId: "recruiting",
     fragment: [
-      "Support the user as the recruiter/interviewer in this conversation.",
-      'Return sections titled "Suggested response" (first person, ready to say), "Screening notes" (signals heard so far) and "Next step".',
-      "Stay factual about the role using the job description context; flag mismatches neutrally.",
-      NEVER_FABRICATE,
+      "Fields: `content` is what I say to the candidate next, or the next screening question to ask.",
+      '`sections`: "Screening notes" (signals heard so far, one line each) and "Next step".',
     ].join(" "),
   },
   meeting: {
     schemaId: "meeting",
     fragment: [
-      "During a live meeting, surface only what matters right now.",
-      'For live updates use sections titled "Important", "Decision detected", "Action item detected" and "Question detected" — include only the ones that apply.',
-      'For a post-meeting summary use sections titled "Summary", "Decisions", "Action items" (with owner and deadline when stated) and "Open questions".',
-      NEVER_FABRICATE,
+      "Fields: `content` carries the callout or the recap itself.",
+      'Live callouts as `sections` titled "Important", "Decision detected", "Action item detected" (task — owner — deadline) and "Question detected" — only the ones that apply.',
+      'A recap as `sections` titled "Summary", "Decisions", "Action items" (owner and deadline when stated) and "Open questions".',
     ].join(" "),
   },
   lecture: {
     schemaId: "lecture",
     fragment: [
-      "Turn the lecture content into crisp study material.",
-      'Return sections titled "Concept", "Definition", "Example", "Notes" and "Questions" (good questions to ask or expect on an exam) — include the ones that apply.',
-      "Define terms precisely; keep examples concrete and small.",
-      NEVER_FABRICATE,
+      "Fields: `content` is the explanation or the notes asked for.",
+      '`sections` from "Concept", "Definition", "Example", "Notes" and "Questions" (likely exam questions, each with a brief model answer) — only the ones that apply.',
     ].join(" "),
   },
 };

@@ -184,7 +184,13 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   button (■ in circle) while streaming or ↵ when idle. Body scrolls: the user's prompt as a
   right-aligned grey pill ("Assist" / the question, `rgba(255,255,255,.12)` radius 12,
   padding 10px 16px), then the response in 15px/1.55 `fg` with markdown (bullets, inline
-  code on `#1e1e1e`, code blocks with header bar: language + Copy). A floating 36px
+  code on `#1e1e1e`, code blocks with header bar: language + Copy). Sections of an answer or
+  suggestion render as plain headed blocks (11px uppercase `fg-subtle` label + body) — only
+  `code` / `diagram` / `table` / `calculation` sections, and every section of a code or
+  system-design response, keep the collapsible chrome. A response is never shown as raw JSON:
+  an envelope Bluey could not read renders the *Couldn't read the answer* banner in place of
+  the body, and an answer the output budget cut short shows its salvaged text followed by an
+  *Answer was cut short* banner with Regenerate. A floating 36px
   circular ↓ button appears bottom-right when not scrolled to the end. Bottom toolbar row
   stays as in idle with "New Chat ⌘ R".
 * **States** (label in the left pill): Idle `Bluey · General`, Listening `● Listening`

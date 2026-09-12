@@ -5,8 +5,10 @@
  *  - STRICT provider schemas (zod → JSON Schema via `z.toJSONSchema`) that
  *    guide the model's structured output;
  *  - a TOLERANT parser that accepts what actually comes back: fences stripped,
- *    trailing commas repaired, and a plain-text fallback so the user always
- *    gets an answer.
+ *    trailing commas repaired, double-encoded envelopes unwrapped, a cut-off
+ *    envelope salvaged from its streamed `content`, and a plain-text fallback
+ *    for prose — but never raw JSON: an envelope with nothing readable in it
+ *    parses to null so the engine can show a failure state instead.
  */
 
 import * as z from "zod";
@@ -16,6 +18,11 @@ import type {
   ResponseType,
   StructuredModelOutput,
 } from "@/lib/types";
+import {
+  extractCompleteStringField,
+  extractPartialStringField,
+  looksLikeStructuredJson,
+} from "@/lib/utils/partial-json";
 
 // ── zod building blocks ─────────────────────────────────────────────────────
 
@@ -276,11 +283,55 @@ function coerceCitations(raw: unknown[] | undefined): StructuredModelOutput["cit
   return citations.length > 0 ? citations : undefined;
 }
 
+/** Read a parsed envelope object; null when it holds nothing showable. */
+function fromEnvelope(schemaId: ResponseSchemaId, json: object): StructuredModelOutput | null {
+  const parsed = tolerantOutput.safeParse(json);
+  if (!parsed.success) return null;
+  const data = parsed.data;
+  const responseType = RESPONSE_TYPES.includes(data.responseType as ResponseType)
+    ? (data.responseType as ResponseType)
+    : RESPONSE_TYPE_FOR_SCHEMA[schemaId];
+  const sections = coerceSections(data.sections);
+  let content =
+    data.content && data.content.length > 0
+      ? data.content
+      : (sections ?? []).map((s) => `## ${s.title}\n${s.content}`).join("\n\n");
+
+  // `content` that is itself an envelope (a double-encoded reply): unwrap it,
+  // or salvage its own `content`; a JSON string is never handed to the HUD.
+  let salvaged = false;
+  if (looksLikeStructuredJson(content)) {
+    const inner = tryParseJson(stripWrappingFence(content));
+    if (inner !== null && typeof inner === "object") return fromEnvelope(schemaId, inner);
+    const innerContent = extractPartialStringField(stripWrappingFence(content), "content")?.trim();
+    if (!innerContent) return null;
+    content = innerContent;
+    salvaged = true;
+  }
+
+  if (content.length === 0 && !sections) return null;
+  return {
+    responseType,
+    title: data.title,
+    content,
+    sections,
+    code: coerceCode(data.code),
+    diagram: data.diagram,
+    confidence:
+      typeof data.confidence === "number" ? Math.min(1, Math.max(0, data.confidence)) : undefined,
+    citations: coerceCitations(data.citations),
+    ...(salvaged ? { salvaged } : {}),
+  };
+}
+
 /**
  * Parse model output into a `StructuredModelOutput`. Tolerant by design:
  * strips code fences, repairs trailing commas, extracts an embedded JSON
- * object, and falls back to `{ responseType: "answer", content: text }`.
- * Returns null only for empty output.
+ * object, unwraps a double-encoded envelope, and — when the envelope was cut
+ * off or malformed — salvages the streamed `content` (and a complete `title`).
+ * Prose that was never JSON falls back to `{ responseType: "answer", content }`.
+ * Returns null for empty output and for an envelope with nothing readable in
+ * it: raw JSON is never returned as content.
  */
 export function parseStructuredOutput(
   schemaId: ResponseSchemaId,
@@ -289,35 +340,29 @@ export function parseStructuredOutput(
   if (text.trim().length === 0) return null;
 
   const unfenced = stripWrappingFence(text);
-  const json = tryParseJson(unfenced);
+  let json = tryParseJson(unfenced);
+  // The whole reply as one JSON string holding the envelope.
+  if (typeof json === "string" && looksLikeStructuredJson(json)) {
+    json = tryParseJson(stripWrappingFence(json));
+  }
   if (json !== null && typeof json === "object") {
-    const parsed = tolerantOutput.safeParse(json);
-    if (parsed.success) {
-      const data = parsed.data;
-      const responseType = RESPONSE_TYPES.includes(data.responseType as ResponseType)
-        ? (data.responseType as ResponseType)
-        : RESPONSE_TYPE_FOR_SCHEMA[schemaId];
-      const sections = coerceSections(data.sections);
-      const content =
-        data.content && data.content.length > 0
-          ? data.content
-          : (sections ?? []).map((s) => `## ${s.title}\n${s.content}`).join("\n\n");
-      if (content.length > 0 || sections) {
-        return {
-          responseType,
-          title: data.title,
-          content,
-          sections,
-          code: coerceCode(data.code),
-          diagram: data.diagram,
-          confidence:
-            typeof data.confidence === "number"
-              ? Math.min(1, Math.max(0, data.confidence))
-              : undefined,
-          citations: coerceCitations(data.citations),
-        };
-      }
-    }
+    const parsed = fromEnvelope(schemaId, json);
+    if (parsed) return parsed;
+    if (looksLikeStructuredJson(unfenced)) return null;
+  }
+
+  if (looksLikeStructuredJson(unfenced)) {
+    // Cut off by the budget or malformed past repair: the `content` string
+    // streamed before the break is the answer so far.
+    const content = extractPartialStringField(unfenced, "content")?.trim();
+    if (!content) return null;
+    const title = extractCompleteStringField(unfenced, "title")?.trim();
+    return {
+      responseType: RESPONSE_TYPE_FOR_SCHEMA[schemaId],
+      ...(title ? { title } : {}),
+      content,
+      salvaged: true,
+    };
   }
 
   return { responseType: "answer", content: text.trim() };

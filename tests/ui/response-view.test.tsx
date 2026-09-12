@@ -101,3 +101,52 @@ describe("ResponseActions", () => {
     expect(onRegenerate).toHaveBeenCalledOnce();
   });
 });
+
+describe("ResponseView never renders JSON", () => {
+  beforeEach(async () => {
+    await setupMockApp();
+  });
+
+  it("shows the unreadable-answer state instead of a JSON envelope", () => {
+    render(
+      <ResponseView
+        response={makeResponse({ title: "Pick", content: '{"responseType":"answer","title":"Pick","content":"B"}' })}
+      />,
+    );
+    expect(screen.queryByText(/responseType/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the answer");
+  });
+
+  it("renders answer sections as headed blocks and keeps code sections collapsible", () => {
+    render(
+      <ResponseView
+        response={makeResponse({
+          type: "answer",
+          content: "B.",
+          sections: [
+            { id: "s1", title: "Why it wins", content: "The index covers the predicate." },
+            { id: "s2", title: "Solution", kind: "code", language: "sql", content: "CREATE INDEX idx ON users(email);" },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 3, name: "Why it wins" })).toBeInTheDocument();
+    expect(screen.getByText("The index covers the predicate.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Why it wins/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Solution/ })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("keeps code responses' sections collapsible", () => {
+    render(
+      <ResponseView
+        response={makeResponse({
+          type: "code",
+          content: "Use a hash map.",
+          sections: [{ id: "s1", title: "Complexity", content: "O(n) time, O(n) space." }],
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Complexity/ })).toBeInTheDocument();
+  });
+});

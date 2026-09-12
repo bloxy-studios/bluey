@@ -21,6 +21,26 @@ export type AITask =
   | "deep_reasoning"
   | "embedding";
 
+/**
+ * The shape the answer should take — detected from the question and the
+ * screen (`classifyIntent`), rendered as the `Shape:` line after `Task:` and
+ * used for output budgets. Orthogonal to `AITask` (what kind of work) and to
+ * the response schema (which fields come back). Never sent to Rust.
+ */
+export type AnswerShape =
+  | "choice" // multiple choice: the option, one clause of why
+  | "boolean" // yes/no, true/false
+  | "fill_in" // fill in the blank
+  | "calculation" // the result, then the working
+  | "compare" // which of two is better and why
+  | "short_answer" // one to three sentences
+  | "explain" // answer first, then the reasons or steps
+  | "spoken" // exactly what to say, first person
+  | "written" // the text to send or submit
+  | "code" // the working solution
+  | "design" // a system design with its trade-offs
+  | "summary"; // the points themselves
+
 export type LatencyBudget = "ultra-fast" | "fast" | "balanced" | "deep";
 export type ReasoningLevel = "none" | "light" | "deep";
 

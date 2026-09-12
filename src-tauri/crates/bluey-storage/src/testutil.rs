@@ -118,6 +118,7 @@ pub(crate) fn response(session_id: Option<&str>, content: &str) -> BlueyResponse
         metrics: None,
         feedback: None,
         prepared: None,
+        truncated: None,
         created_at: now_iso(),
     }
 }

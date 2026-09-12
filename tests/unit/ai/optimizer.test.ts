@@ -130,3 +130,47 @@ describe("helpers", () => {
     expect(title?.endsWith("…")).toBe(true);
   });
 });
+
+describe("answer-first cleanup", () => {
+  it("strips a first sentence that restates the question or narrates the approach", () => {
+    expect(
+      stripFillerOpeners(
+        "The question is asking about the time complexity of binary search. It is O(log n) because the range halves each step.",
+      ),
+    ).toBe("It is O(log n) because the range halves each step.");
+    expect(stripFillerOpeners("Let's break this down. B is correct because the index covers the predicate.")).toBe(
+      "B is correct because the index covers the predicate.",
+    );
+    expect(stripFillerOpeners("Looking at the screen, the error is a missing semicolon on line 12.")).toBe(
+      "The error is a missing semicolon on line 12.",
+    );
+    expect(stripFillerOpeners("Sure! To answer your question: yes, the call is idempotent.")).toBe(
+      "Yes, the call is idempotent.",
+    );
+  });
+
+  it("never strips a restatement when no answer would remain", () => {
+    expect(stripFillerOpeners("The question is asking about caching.")).toBe("The question is asking about caching.");
+    expect(stripFillerOpeners("Let's break this down. Done.")).toBe("Let's break this down. Done.");
+  });
+
+  it("does not cap spoken or written answers, whatever the style", () => {
+    const paragraphs = Array.from({ length: 20 }, (_, i) =>
+      `Spoken paragraph ${i} carries exactly ten words to the total count.`,
+    ).join("\n\n");
+    const capped = optimizeResponse(response(paragraphs, { type: "suggestion" }), {
+      style: STYLE_CONCISE,
+      mode: makeMode(),
+      shape: "explain",
+    });
+    const spoken = optimizeResponse(response(paragraphs, { type: "suggestion" }), {
+      style: STYLE_CONCISE,
+      mode: makeMode(),
+      shape: "spoken",
+    });
+    const words = (text: string) => text.split(/\s+/).filter((w) => w.length > 0).length;
+    expect(words(capped.content)).toBeLessThanOrEqual(135);
+    expect(words(spoken.content)).toBe(words(paragraphs));
+    expect(spoken.content).toContain("Spoken paragraph 19");
+  });
+});

@@ -5,8 +5,8 @@
  * - `CodeFenceBuffer` withholds an unterminated fenced code block from drafts
  *   until the closing fence arrives (spec §80) while exposing plain text
  *   progressively.
- * - `extractPartialStringField` pulls a growing `content` field out of a
- *   partially-streamed JSON structured output.
+ * - `extractPartialStringField` (from `lib/utils/partial-json`) pulls a
+ *   growing `content` field out of a partially-streamed JSON structured output.
  */
 
 import type { AIChunk, AIRequest, BlueyError, ModelSelection } from "@/lib/types";
@@ -73,50 +73,9 @@ export class CodeFenceBuffer {
 
 // ── Partial structured output ───────────────────────────────────────────────
 
-const UNESCAPES: Record<string, string> = {
-  n: "\n",
-  t: "\t",
-  r: "\r",
-  b: "\b",
-  f: "\f",
-  '"': '"',
-  "\\": "\\",
-  "/": "/",
-};
-
-/**
- * Extract a string field's (possibly incomplete) value from partial JSON.
- * Returns null when the field has not started streaming yet.
- */
-export function extractPartialStringField(text: string, field = "content"): string | null {
-  const marker = text.match(new RegExp(`"${field}"\\s*:\\s*"`));
-  if (!marker || marker.index === undefined) return null;
-  let out = "";
-  let i = marker.index + marker[0].length;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === undefined) break;
-    if (ch === "\\") {
-      const next = text[i + 1];
-      if (next === undefined) break; // escape split across deltas — wait
-      if (next === "u") {
-        const hex = text.slice(i + 2, i + 6);
-        if (hex.length < 4) break;
-        const code = Number.parseInt(hex, 16);
-        if (!Number.isNaN(code)) out += String.fromCharCode(code);
-        i += 6;
-        continue;
-      }
-      out += UNESCAPES[next] ?? next;
-      i += 2;
-      continue;
-    }
-    if (ch === '"') break;
-    out += ch;
-    i += 1;
-  }
-  return out;
-}
+// The scanner lives in `src/lib/utils/partial-json.ts` so the tolerant parser
+// and the HUD can share it; re-exported here for the stream layer's callers.
+export { extractPartialStringField } from "@/lib/utils/partial-json";
 
 // ── Stream driver ───────────────────────────────────────────────────────────
 
