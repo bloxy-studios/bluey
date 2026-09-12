@@ -12,6 +12,8 @@ import { bluey } from "@/lib/tauri/api";
 import { SECRET_KEYS } from "@/lib/tauri/commands";
 import {
   isSubscriptionKind,
+  SUGGESTION_DISPLAYS,
+  SUGGESTION_DISPLAY_LABELS,
   toBlueyError,
   type AIProviderConfig,
   type ModelRole,
@@ -19,6 +21,7 @@ import {
   type ResearchBackend,
   type ResponseLength,
   type ResponseTone,
+  type SuggestionDisplay,
 } from "@/lib/types";
 import { useAccountsStore } from "@/stores/accountsStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -356,6 +359,43 @@ export default function AITab() {
             { value: "direct", label: "Direct" },
           ]}
         />
+      </div>
+
+      <SectionHeader title="Live suggestions" description="Answers to the questions Bluey hears while listening" />
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between py-1">
+          <div>
+            <div className="text-[14px] font-medium text-fg">Prepare answers while listening</div>
+            <div className="text-[13px] text-fg-muted">
+              Detect questions in the live transcript and write the answer before you ask.
+            </div>
+          </div>
+          <Switch
+            aria-label="Prepare answers while listening"
+            checked={ai.proactivePreparation}
+            onCheckedChange={(v) => void update({ ai: { proactivePreparation: v } })}
+          />
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <div>
+            <div className="text-[14px] font-medium text-fg">Show suggestions</div>
+            <div className="text-[13px] text-fg-muted">
+              {ai.suggestionDisplay === "live"
+                ? "The answer streams into the HUD the moment a question is heard."
+                : "The HUD only hints “Bluey has a suggestion”; ⌘⇧↵ shows it."}
+            </div>
+          </div>
+          <Select
+            aria-label="Show suggestions"
+            value={ai.suggestionDisplay}
+            disabled={!ai.proactivePreparation}
+            onChange={(e) => void update({ ai: { suggestionDisplay: e.target.value as SuggestionDisplay } })}
+            options={SUGGESTION_DISPLAYS.map((display) => ({
+              value: display,
+              label: SUGGESTION_DISPLAY_LABELS[display],
+            }))}
+          />
+        </div>
       </div>
 
       <SectionHeader title="Research" description="Optional web research during answers" />

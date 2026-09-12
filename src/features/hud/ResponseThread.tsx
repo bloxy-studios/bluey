@@ -2,10 +2,11 @@ import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { Pill } from "@/components/ui/Pill";
 import { Spinner } from "@/components/ui/Spinner";
 import { truncatedAnswerError } from "@/lib/errors/answers";
 import { eventBus } from "@/lib/tauri/event-bus";
-import { useChatStore, type ChatTurn } from "@/stores/chatStore";
+import { useChatStore, type ChatTurn, type SuggestionMeta } from "@/stores/chatStore";
 import { useResearchStore } from "@/stores/researchStore";
 import { ResponseActions } from "./ResponseActions";
 import { ResponseView } from "./ResponseView";
@@ -55,12 +56,32 @@ function PromptPill({ label }: { label: string }) {
   );
 }
 
+/**
+ * Provenance of a suggestion Bluey opened itself — left-aligned, unlike the user's
+ * own prompt: who asked, and the question the answer below is for.
+ */
+function SuggestionHeader({ suggestion }: { suggestion: SuggestionMeta }) {
+  return (
+    <div className="flex items-start gap-2 text-[13px] leading-snug" data-testid="suggestion-header">
+      <Pill size="sm" variant="accent" className="mt-px shrink-0">
+        Suggested
+      </Pill>
+      <p className="m-0 line-clamp-2 min-w-0 text-fg-muted">
+        <span className="font-medium text-fg-subtle">
+          {suggestion.speaker ? `${suggestion.speaker} asked` : "Question"}
+        </span>{" "}
+        <span className="italic">“{suggestion.question}”</span>
+      </p>
+    </div>
+  );
+}
+
 function Turn({ turn, isLast, onRegenerate }: { turn: ChatTurn; isLast: boolean; onRegenerate: () => void }) {
   const streaming = turn.status === "streaming";
 
   return (
     <div className="flex flex-col gap-3">
-      <PromptPill label={turn.promptLabel} />
+      {turn.suggestion ? <SuggestionHeader suggestion={turn.suggestion} /> : <PromptPill label={turn.promptLabel} />}
       {turn.error ? (
         <ErrorBanner error={turn.error} onRetry={onRegenerate} compact />
       ) : turn.response ? (

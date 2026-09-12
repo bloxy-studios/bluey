@@ -74,6 +74,7 @@ export function makeSettings(
       deepResearchEnabled: false,
       embeddingsEnabled: false,
       proactivePreparation: true,
+      suggestionDisplay: "live",
       contextTokenBudget: 8000,
       embeddingDimensions: 768,
       researchBackend: "gemini",

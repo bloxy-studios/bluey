@@ -182,7 +182,9 @@ export class FakeEngine implements ResponseEngine {
 /**
  * Engine double for the proactive loop: segments ending in "?" classify as a
  * question (emitting `question.detected` like the real engine), and `prepare`
- * emits `response.prepared`. `hold` keeps `prepare` pending until `release()`.
+ * either streams live through the callbacks (phase, a first draft, completion)
+ * or, without them, emits `response.prepared`. `hold` keeps `prepare` pending
+ * until `release()`.
  */
 export class ProactiveFakeEngine extends FakeEngine {
   classified: ClassifyInput[] = [];
@@ -207,19 +209,29 @@ export class ProactiveFakeEngine extends FakeEngine {
     return event;
   }
 
-  override async prepare(input: AskInput): Promise<BlueyResponse | null> {
+  override async prepare(input: AskInput, callbacks: EngineCallbacks = {}): Promise<BlueyResponse | null> {
     this.prepared.push(input);
-    if (this.hold) {
-      await new Promise<void>((resolve) => {
-        this.pending.push(resolve);
-      });
-    }
     const response = makeResponse({
       id: `prep-${input.detectedEvent?.id ?? "generic"}`,
       prompt: input.detectedEvent?.text,
       content: `Prepared for ${input.detectedEvent?.id ?? "generic"}`,
       prepared: true,
     });
+    const live = callbacks.onComplete !== undefined;
+    if (live) {
+      callbacks.onPhase?.("streaming", "req-prepare");
+      callbacks.onDraft?.({ ...response, content: "Prepared for" });
+    }
+    if (this.hold) {
+      await new Promise<void>((resolve) => {
+        this.pending.push(resolve);
+      });
+    }
+    if (live) {
+      // A live suggestion is handed to the caller and never announced.
+      callbacks.onComplete?.(response);
+      return response;
+    }
     this.preparedQueue.push(response);
     eventBus.emit("response.prepared", response);
     return response;
