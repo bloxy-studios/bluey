@@ -120,6 +120,15 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
   },
   "network.timeout": { title: "Request timed out", message: "The provider took too long to answer. Try again." },
   "ai.invalid_request": REQUEST_REJECTED,
+  // The reply never became an answer (`src/lib/errors/answers.ts`); regenerating is the recovery.
+  "ai.truncated": {
+    title: "Answer was cut short",
+    message: "The model ran out of room before finishing, even with extra space. Regenerate for the full answer.",
+  },
+  "ai.unreadable_output": {
+    title: "Couldn't read the answer",
+    message: "The model's reply wasn't in a form Bluey can show. Regenerate to try again.",
+  },
   "privacy.cloud_ai_disabled": {
     title: "Cloud AI is off",
     message: "Turn Cloud AI back on in Settings → Privacy to let Bluey ask a model.",

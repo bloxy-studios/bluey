@@ -154,8 +154,10 @@ describe("parseStructuredOutput tolerance", () => {
     expect(parsed?.confidence).toBeUndefined();
     expect(parsed?.citations).toEqual([{ title: "Docs", url: "https://x.test" }]);
 
+    // An envelope whose every field is null holds nothing to show: it is a failure state
+    // (the engine raises `ai.unreadable_output`), never the JSON text as the answer.
     const nulls = parseStructuredOutput("answer", '{"responseType":"answer","content":null,"sections":null,"code":null}');
-    expect(nulls).toEqual({ responseType: "answer", content: '{"responseType":"answer","content":null,"sections":null,"code":null}' });
+    expect(nulls).toBeNull();
   });
 });
 
@@ -173,5 +175,60 @@ describe("parse helpers", () => {
   it("parseJsonLoose combines all repairs", () => {
     expect(parseJsonLoose('```json\n{"a":1,}\n```')).toEqual({ a: 1 });
     expect(parseJsonLoose("not json")).toBeNull();
+  });
+});
+
+describe("parseStructuredOutput never yields raw JSON", () => {
+  it("salvages the content of an envelope cut off by the output budget", () => {
+    const cut =
+      '{"responseType":"answer","title":"Pick","content":"B — the index is on email, so the planner can seek.\\nSecond line","sections":[{"title":"Wh';
+    const parsed = parseStructuredOutput("answer", cut);
+    expect(parsed?.content).toBe("B — the index is on email, so the planner can seek.\nSecond line");
+    expect(parsed?.title).toBe("Pick");
+    expect(parsed?.salvaged).toBe(true);
+    expect(parsed?.responseType).toBe("answer");
+  });
+
+  it("salvages a fenced, cut-off envelope, takes the schema's response type and skips an incomplete title", () => {
+    const cut = '```json\n{"responseType":"suggestion","content":"I led the migration","title":"Unfini';
+    const parsed = parseStructuredOutput("suggested-response", cut);
+    expect(parsed?.content).toBe("I led the migration");
+    expect(parsed?.title).toBeUndefined();
+    expect(parsed?.responseType).toBe("suggestion");
+  });
+
+  it("returns null for an envelope with nothing readable in it", () => {
+    expect(parseStructuredOutput("answer", '{"responseType":"answer","title":"x","sections":[')).toBeNull();
+    expect(parseStructuredOutput("answer", '{"responseType":"answer","title":"x","content":""}')).toBeNull();
+    expect(parseStructuredOutput("answer", '{"responseType":"answer","content":null}')).toBeNull();
+  });
+
+  it("unwraps a double-encoded envelope — as the whole reply or inside content", () => {
+    const inner = { responseType: "answer", content: "Yes — it is idempotent." };
+    expect(parseStructuredOutput("answer", JSON.stringify(JSON.stringify(inner)))?.content).toBe(
+      "Yes — it is idempotent.",
+    );
+    const wrapped = { responseType: "answer", title: "Idempotency", content: JSON.stringify(inner) };
+    const parsed = parseStructuredOutput("answer", JSON.stringify(wrapped));
+    expect(parsed?.content).toBe("Yes — it is idempotent.");
+    expect(parsed?.salvaged).toBeUndefined();
+  });
+
+  it("salvages content that is itself a cut-off envelope", () => {
+    const wrapped = { responseType: "answer", content: '{"responseType":"answer","content":"No — the cache is' };
+    expect(parseStructuredOutput("answer", JSON.stringify(wrapped))).toMatchObject({
+      content: "No — the cache is",
+      salvaged: true,
+    });
+  });
+
+  it("still passes prose that was never JSON through as a plain answer", () => {
+    expect(parseStructuredOutput("answer", "B — the composite index covers the predicate.")).toEqual({
+      responseType: "answer",
+      content: "B — the composite index covers the predicate.",
+    });
+    expect(parseStructuredOutput("answer", "{not our envelope} but an answer")?.content).toBe(
+      "{not our envelope} but an answer",
+    );
   });
 });

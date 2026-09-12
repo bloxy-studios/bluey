@@ -144,5 +144,9 @@ pub struct BlueyResponse {
     pub feedback: Option<ResponseFeedback>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared: Option<bool>,
+    /// The output budget cut the answer short (after the engine's one retry
+    /// with double the room); `content` is what could be salvaged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
     pub created_at: String,
 }

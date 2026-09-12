@@ -156,7 +156,8 @@ describe("capture → context → request → response", () => {
     expect(userText).toContain("### On screen (OCR)");
     expect(userText).toContain("Two Sum");
     expect(userText).toContain("### Recent conversation (You / Speaker)");
-    expect(userText).toContain("Task: Explain or solve what is on the screen");
+    expect(userText).toContain("Task: Solve or answer what is on the screen");
+    expect(userText).toContain("Shape: code");
 
     // Phases in order.
     expect(phases).toEqual(["capturing", "analyzing", "thinking", "streaming", "done"]);

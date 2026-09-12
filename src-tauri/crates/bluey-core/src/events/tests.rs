@@ -67,6 +67,7 @@ fn response() -> BlueyResponse {
         metrics: None,
         feedback: None,
         prepared: None,
+        truncated: None,
         created_at: crate::now_iso(),
     }
 }

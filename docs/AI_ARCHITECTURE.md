@@ -19,16 +19,43 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   transcript / OCR / focused UI > JD / resume > old transcript. Over budget → compress (tail for
   transcript, head for OCR), summarize, drop lowest score; never blindly truncate from the end.
 - **Intent classification** (`src/context/relevance.ts`): chooses the `AITask`, whether vision
-  is required, reasoning depth and latency budget, and the response schema.
-- **Prompt architecture** (`src/ai/prompt-builder.ts`, `src/ai/prompts/*`): separate parts —
-  system · mode · style · context · task · output schema. No giant strings elsewhere.
+  is required, reasoning depth and latency budget, the response schema — and the **answer
+  shape** (`AnswerShape`: `choice`, `boolean`, `fill_in`, `calculation`, `compare`,
+  `short_answer`, `explain`, `spoken`, `written`, `code`, `design`, `summary`). Assessment
+  shapes read off the question or the screen beat task-derived shapes, which beat the shapes
+  the trigger and mode imply; the detection table is in `MODE_SYSTEM.md › Answer shapes`. A
+  multiple-choice or compare question about code keeps the `answer` task and schema.
+- **Prompt architecture** (`src/ai/prompt-builder.ts`, `src/ai/prompts/*`,
+  `src/modes/prompts/*`): separate parts — system (identity + safety + the **response
+  contract**) · mode (judgment) + schema fragment (fields and section titles only) · style
+  (ceilings) · context · task line + shape line · output schema. Precedence: contract and mode
+  own voice and content, style only caps, the schema never changes the voice
+  (`MODE_SYSTEM.md › Voice and precedence`). No giant strings elsewhere.
 - **Structured output** (`src/modes/schemas.ts`): zod schemas → JSON Schema per response type;
   providers that support JSON schema use it natively, others are prompted and parsed tolerantly.
-- **Streaming** (`src/ai/stream.ts`): drafts render progressively; unterminated code fences are
-  buffered so malformed code is never shown as final.
+  The parser never yields raw JSON: fences are stripped, trailing commas repaired, an embedded
+  object extracted, a double-encoded envelope unwrapped (as the whole reply or inside `content`),
+  a cut-off envelope salvaged from its streamed `content` (`salvaged: true`, complete `title`
+  kept), prose passed through as a plain answer — and an envelope with nothing readable in it
+  parses to `null`, which the engine turns into `ai.unreadable_output` (Regenerate).
+- **Streaming** (`src/ai/stream.ts`, `src/lib/utils/partial-json.ts`): drafts render
+  progressively; unterminated code fences are buffered so malformed code is never shown as final;
+  the partial-JSON scanner behind structured drafts is shared with the parser and the HUD guard.
+- **Output budgets** (`src/ai/request.ts`): `maxOutputTokens` = the style's length (600 / 1200 /
+  2400) raised to the task floor (coding 1600, system_design 2400, summarization 1600, research
+  1200) and to the shape floor (pick / yes-no / blank / calculation / short answer 400, compare /
+  explain 600, spoken / written 700, code 2000, design 3000, summary 1600), plus 200 for the JSON
+  envelope when a schema is sent — never below the pre-shape values. A `finishReason: "length"`
+  is retried **once** with double the budget (request id `<id>_r2`, same generation, no trace);
+  whatever finishes is parsed with salvage and marked `truncated: true` (the HUD shows the text
+  plus *Answer was cut short* with Regenerate), and nothing readable becomes `ai.truncated`.
+  Gemini 3.x adds a thinking allowance on top in Rust (orchestration layer below).
 - **Generations** (`src/ai/generations.ts`): stale-response protection (ADR 0005).
-- **Optimizer** (`src/ai/optimizer.ts`): remove repetition/filler, respect length & tone,
-  preserve code, caveats and citations. Goal: the minimum text necessary to be useful.
+- **Optimizer** (`src/ai/optimizer.ts`): remove repetition, filler openers and first sentences
+  that restate the question or narrate the approach ("The question is asking…", "Let's break
+  this down.", "Looking at the screen, …" — only when an answer remains), respect length & tone,
+  preserve code, caveats and citations. The length cap keeps the first paragraph and never
+  applies to the spoken, written and code shapes. Goal: the minimum text necessary to be useful.
 - **Proactive preparation**: when the classifier detects a likely question with
   `requiresResponse`, the engine silently prepares and caches a response; ⌘⇧↵ shows it
   instantly. Results are never auto-displayed.
@@ -63,7 +90,11 @@ visionRequired, preferredRole)` over the user's role assignments
     `minimal` on the models that accept it (3.5/3.6 Flash, the Flash-Lite line, the 3 Flash
     preview; else `low`); `answer`/`vision` at `fast` → `low`; everything else `medium`. The
     level is always sent explicitly because server defaults differ per model (Flash-Lite
-    defaults to `minimal`). Known limitation: assistant turns replayed as history carry no
+    defaults to `minimal`). 3.x counts thinking tokens against `maxOutputTokens`, so the adapter
+    sends the WebView's budget plus a per-level allowance
+    (`ThinkingLevel::output_allowance`: minimal 256 · low 512 · medium 1024 · high 2048,
+    `max_output_tokens_with_thinking`); a structured answer that still ends in `MAX_TOKENS` goes
+    through the engine's retry (*Output budgets* above). Known limitation: assistant turns replayed as history carry no
     `thoughtSignature` (accepted because the chat path sends no tools; reasoning continuity
     across turns is not preserved). Embeddings via `batchEmbedContents` on
     `gemini-embedding-2`, MRL-truncated to `ai.embeddingDimensions` (768 default), with the

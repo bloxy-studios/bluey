@@ -3,10 +3,13 @@ import { lazy, Suspense, useState, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { Spinner } from "@/components/ui/Spinner";
-import type { BlueyResponse, ResponseSection } from "@/lib/types";
+import { unreadableAnswerError } from "@/lib/errors/answers";
+import type { BlueyResponse, ResponseSection, ResponseType } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { openExternal } from "@/lib/utils/open-external";
+import { looksLikeStructuredJson } from "@/lib/utils/partial-json";
 import { CodeBlock } from "./CodeBlock";
 import { splitStreamingMarkdown } from "./markdown";
 
@@ -51,6 +54,28 @@ function Markdown({ content }: { content: string }) {
   );
 }
 
+/**
+ * Response types whose sections are part of the answer the user reads or
+ * says — rendered as plain headed blocks, not collapsed away. Code, design and
+ * artefact-heavy kinds keep the collapsible chrome.
+ */
+const PLAIN_SECTION_TYPES: ReadonlySet<ResponseType> = new Set<ResponseType>(["answer", "suggestion", "research", "summary"]);
+const COLLAPSIBLE_KINDS: ReadonlySet<NonNullable<ResponseSection["kind"]>> = new Set(["code", "diagram", "table", "calculation"]);
+
+function isCollapsible(responseType: ResponseType, section: ResponseSection): boolean {
+  if (!PLAIN_SECTION_TYPES.has(responseType)) return true;
+  return section.kind !== undefined && COLLAPSIBLE_KINDS.has(section.kind);
+}
+
+function HeadedSection({ section }: { section: ResponseSection }) {
+  return (
+    <section className="mt-3" data-testid="headed-section">
+      <h3 className="mb-1 mt-0 text-[11px] font-medium uppercase tracking-wide text-fg-subtle">{section.title}</h3>
+      <Markdown content={section.content} />
+    </section>
+  );
+}
+
 function CollapsibleSection({ section }: { section: ResponseSection }) {
   const [open, setOpen] = useState(!section.collapsed);
   return (
@@ -88,17 +113,30 @@ export interface ResponseViewProps {
   className?: string;
 }
 
-/** Renders a BlueyResponse: markdown body, sections, code, diagram, citations. */
+/**
+ * Renders a BlueyResponse: markdown body, sections, code, diagram, citations.
+ * Content that is (or was meant to be) a JSON envelope is never rendered —
+ * the engine's parser should have unwrapped or salvaged it; if raw JSON still
+ * arrives here, the user sees the "couldn't read the answer" state instead.
+ */
 export function ResponseView({ response, streaming, className }: ResponseViewProps) {
   const { renderable, pendingCode } = streaming
     ? splitStreamingMarkdown(response.content)
     : { renderable: response.content, pendingCode: false };
+  const jsonLike = looksLikeStructuredJson(renderable);
+  const unreadable = jsonLike && !streaming;
 
   return (
     <div className={cn("response-body selectable motion-safe:animate-fade-in", className)}>
-      {response.title ? <h2 className="mb-2 mt-0 text-[16px] font-semibold leading-snug">{response.title}</h2> : null}
+      {response.title && !unreadable ? (
+        <h2 className="mb-2 mt-0 text-[16px] font-semibold leading-snug">{response.title}</h2>
+      ) : null}
 
-      <Markdown content={renderable} />
+      {unreadable ? (
+        <ErrorBanner error={unreadableAnswerError()} compact />
+      ) : jsonLike ? null : (
+        <Markdown content={renderable} />
+      )}
 
       {pendingCode ? (
         <div className="my-3 flex items-center gap-2 rounded-[10px] border border-hud-border bg-[#0d0d0d] px-3.5 py-3 text-[13px] text-fg-muted">
@@ -123,7 +161,13 @@ export function ResponseView({ response, streaming, className }: ResponseViewPro
         </Suspense>
       ) : null}
 
-      {response.sections?.map((section) => <CollapsibleSection key={section.id} section={section} />)}
+      {response.sections?.map((section) =>
+        isCollapsible(response.type, section) ? (
+          <CollapsibleSection key={section.id} section={section} />
+        ) : (
+          <HeadedSection key={section.id} section={section} />
+        ),
+      )}
 
       {response.citations && response.citations.length > 0 ? (
         <div className="mt-4 border-t border-hud-border pt-3">

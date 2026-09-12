@@ -1,14 +1,16 @@
 /**
  * PromptBuilder: composes the final `AIMessage[]` from separate parts —
- * system (identity + safety), mode (instructions + schema fragment), style,
- * context (rendered `ContextItem`s with provenance labels), task, and the
- * output-format instruction. All prompt strings live in `src/ai/prompts/`.
+ * system (identity + safety + response contract), mode (instructions +
+ * schema fragment), style, context (rendered `ContextItem`s with provenance
+ * labels), task + answer shape, and the output-format instruction. All
+ * prompt strings live in `src/ai/prompts/` and `src/modes/prompts/`.
  */
 
 import type { AskTrigger } from "@/lib/engine-contract";
 import type {
   AIContentPart,
   AIMessage,
+  AnswerShape,
   BlueyMode,
   ContextItem,
   ContextSource,
@@ -21,8 +23,10 @@ import { modePromptFor } from "@/modes/prompts";
 import {
   CONTEXT_PREAMBLE,
   PLAIN_OUTPUT_BLOCK,
+  RESPONSE_CONTRACT,
   SECTION_LABELS,
   SECTION_ORDER,
+  answerShapeLine,
   identityBlock,
   outputLanguageLine,
   structuredOutputBlock,
@@ -43,6 +47,8 @@ export interface PromptBuilderParts {
   items: ContextItem[];
   instruction?: string;
   detectedEvent?: DetectedEvent;
+  /** The detected answer shape; rendered as the `Shape:` line under `Task:`. */
+  answerShape?: AnswerShape;
   /** JSON schema spec when structured output is requested. */
   outputSchema?: JsonSchemaSpec;
   /** Base64 screen image when the request needs vision. */
@@ -56,10 +62,10 @@ export interface PromptBuilderParts {
 export class PromptBuilder {
   constructor(private readonly parts: PromptBuilderParts) {}
 
-  /** System message: identity + safety + mode + style + output format. */
+  /** System message: identity + safety + response contract + mode + style + output format. */
   renderSystem(): string {
     const { mode, style, schemaId, outputSchema, outputLanguage, blueyName } = this.parts;
-    const blocks: string[] = [identityBlock(blueyName)];
+    const blocks: string[] = [identityBlock(blueyName), RESPONSE_CONTRACT];
 
     const modeInstructions = mode.systemInstructions.trim();
     const fragment = modePromptFor(schemaId).fragment;
@@ -101,9 +107,11 @@ export class PromptBuilder {
     return sections.join("\n\n");
   }
 
-  /** Trigger-specific task instruction. */
+  /** Trigger-specific task instruction, followed by the answer-shape line when one was detected. */
   renderTask(): string {
-    return taskLineFor(this.parts.trigger);
+    const task = taskLineFor(this.parts.trigger);
+    const shape = this.parts.answerShape;
+    return shape ? `${task}\n${answerShapeLine(shape)}` : task;
   }
 
   /** Full message array for the provider (+ inline image when vision). */

@@ -3,8 +3,9 @@
  * `ResponseEngine` (src/lib/engine-contract.ts).
  *
  * ask():  capturing → analyzing (retrieval + fusion + budget + intent) →
- *         thinking (request build) → streaming (fence-safe drafts) → done
- *         (structured parse, optimize, persist, events).
+ *         thinking (request build) → streaming (fence-safe drafts; one retry
+ *         with double the budget when the output was cut short) → done
+ *         (structured parse with salvage, optimize, persist, events).
  * prepare(): the same pipeline, silent, cached by detected-event id.
  * classify(): heuristics first, fast-model refinement in the 0.4–0.7 band.
  * summarizeSession(): mode-structured post-session summary.
@@ -23,6 +24,7 @@ import type {
   ResponseEngine,
   SummarizeInput,
 } from "@/lib/engine-contract";
+import { truncatedAnswerError, unreadableAnswerError } from "@/lib/errors/answers";
 import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
 import {
@@ -355,11 +357,12 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       snapshot,
       mode: input.mode,
       detectedEvent: input.detectedEvent,
+      trigger: input.trigger,
       now,
     });
 
     const style = effectiveStyle(input.mode, input.settings);
-    const headroom = maxOutputTokensFor(style.length, intent.task);
+    const headroom = maxOutputTokensFor(style.length, intent.task, intent.answerShape, true);
     const budget = allocateBudget(items, defaultContextBudget(input.settings, headroom));
     const contextAssemblyMs = now().getTime() - startedAt;
     checkAlive(opts);
@@ -383,6 +386,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       items: budget.included,
       instruction: input.instruction,
       detectedEvent: input.detectedEvent,
+      answerShape: intent.answerShape,
       outputSchema,
       visionImage,
       omittedNote: budget.omittedNote,
@@ -419,7 +423,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       createdAt: now().toISOString(),
     };
 
-    const fenceBuffer = new CodeFenceBuffer();
+    let fenceBuffer = new CodeFenceBuffer();
     let lastDraftLength = -1;
     let streamingAnnounced = false;
 
@@ -439,37 +443,61 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       streamInvokedMs,
     };
 
-    const handle = streamRequest(
-      request,
-      {
-        onDelta: (delta, accumulated) => {
-          if (opts.silent || opts.isCancelled() || isStale(opts.scope, opts.generation)) return;
-          if (!streamingAnnounced) {
-            streamingAnnounced = true;
-            phase(opts, "streaming");
-          }
-          fenceBuffer.push(delta);
-          const draftContent = request.outputSchema
-            ? visibleWithHeldFences(extractPartialStringField(accumulated, "content") ?? "")
-            : fenceBuffer.visible();
-          if (draftContent.length > lastDraftLength) {
-            lastDraftLength = draftContent.length;
-            opts.callbacks.onDraft?.({ ...baseResponse, content: draftContent });
-            if (!firstPaintScheduled) {
-              firstPaintScheduled = true;
-              afterNextPaint(() => {
-                if (firstPaintMs === undefined) firstPaintMs = perfNow() - anchorTs;
-              });
+    // One streaming attempt; drafts restart when a retry replaces the first one.
+    const streamOnce = (attempt: AIRequest): StreamHandle => {
+      fenceBuffer = new CodeFenceBuffer();
+      lastDraftLength = -1;
+      const handle = streamRequest(
+        attempt,
+        {
+          onDelta: (delta, accumulated) => {
+            if (opts.silent || opts.isCancelled() || isStale(opts.scope, opts.generation)) return;
+            if (!streamingAnnounced) {
+              streamingAnnounced = true;
+              phase(opts, "streaming");
             }
-          }
+            fenceBuffer.push(delta);
+            const draftContent = attempt.outputSchema
+              ? visibleWithHeldFences(extractPartialStringField(accumulated, "content") ?? "")
+              : fenceBuffer.visible();
+            if (draftContent.length > lastDraftLength) {
+              lastDraftLength = draftContent.length;
+              opts.callbacks.onDraft?.({ ...baseResponse, content: draftContent });
+              if (!firstPaintScheduled) {
+                firstPaintScheduled = true;
+                afterNextPaint(() => {
+                  if (firstPaintMs === undefined) firstPaintMs = perfNow() - anchorTs;
+                });
+              }
+            }
+          },
         },
-      },
-      api,
-      () => now().getTime(),
-    );
-    opts.onStreamHandle(handle);
+        api,
+        () => now().getTime(),
+      );
+      opts.onStreamHandle(handle);
+      return handle;
+    };
 
-    const outcome: StreamOutcome = await handle.done;
+    let outcome: StreamOutcome = await streamOnce(request).done;
+
+    // The output budget cut the answer short (`finishReason: "length"`): one
+    // retry with twice the room. Whatever finishes is then salvaged and
+    // marked `truncated` — a half answer is never shown as raw JSON.
+    let truncated = false;
+    if (outcome.finishReason === "length") {
+      checkAlive(opts);
+      const { trace: _trace, ...untraced } = request;
+      const retry = await streamOnce({
+        ...untraced,
+        requestId: `${opts.requestId}_r2`,
+        maxOutputTokens: (request.maxOutputTokens ?? headroom) * 2,
+      }).done;
+      if (retry.finishReason === "cancelled") throw new CancelledError();
+      // An errored retry keeps the first attempt's text.
+      if (retry.finishReason !== "error" && retry.text.trim().length > 0) outcome = retry;
+      truncated = outcome.finishReason === "length";
+    }
     const doneMs = perfNow() - anchorTs;
     if (api.ai.reportTrace) {
       // Best-effort: the late half of the trace; never delays the answer.
@@ -495,9 +523,13 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
 
     // Phase: done ───────────────────────────────────────────────────────────
     phase(opts, "done");
-    const parsed =
-      parseStructuredOutput(intent.schemaId, outcome.text) ??
-      ({ responseType: intent.responseType, content: "" } as StructuredModelOutput);
+    const parsed: StructuredModelOutput | null = parseStructuredOutput(intent.schemaId, outcome.text);
+    if (!parsed) {
+      // Nothing showable — an empty reply, or an envelope with no readable
+      // content in it. Raw JSON never reaches the HUD: this is a failure state
+      // with Regenerate as the recovery.
+      throw truncated ? truncatedAnswerError() : unreadableAnswerError();
+    }
     const parserFellBack =
       parsed.responseType === "answer" &&
       parsed.sections === undefined &&
@@ -522,8 +554,9 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       citations: mergeCitations(parsed, research),
       metrics,
       createdAt: now().toISOString(),
+      ...(truncated ? { truncated: true } : {}),
     };
-    response = optimizeResponse(response, { style, mode: input.mode });
+    response = optimizeResponse(response, { style, mode: input.mode, shape: intent.answerShape });
     if (opts.silent) response.prepared = true;
 
     // Persist + events (best-effort; the response is already usable).
