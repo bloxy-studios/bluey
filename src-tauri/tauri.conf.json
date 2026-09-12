@@ -107,6 +107,12 @@
           "bluey"
         ]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRCQkRBN0FGQUEzMUU4RkEKUldUNjZER3FyNmU5UzJpblJQUzlLZWFBdDI2V1NDaWR4emdiT1FpOE9QVEN5RzdoalQ3cHNnTnkK",
+      "endpoints": [
+        "https://github.com/bloxy-studios/bluey/releases/latest/download/latest.json"
+      ]
     }
   }
 }

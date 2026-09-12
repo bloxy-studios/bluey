@@ -31,6 +31,9 @@ the mode you're in, and prepares concise, useful help before you even ask.
   stored; Privacy display mode (platform content protection); one-click disable; real deletion.
 * **Native macOS feel** — NSPanel HUD across Spaces and fullscreen apps, menu bar item,
   configurable global shortcuts, Retina/multi-display aware, dark/light, reduced motion.
+* **Self-updating** — signed in-app updates on a **Latest** (stable) or **Nightly** channel,
+  automatic by default: Bluey downloads and installs in the background and asks to relaunch
+  (`docs/UPDATES.md`).
 
 Bluey is a personal tool: **no billing, subscriptions or teams of its own** — you bring your own
 AI provider keys or, where supported, your own AI subscriptions. Sign-in uses Clerk, in your browser.

@@ -16,6 +16,7 @@ pub mod response;
 pub mod session;
 pub mod settings;
 pub mod transcript;
+pub mod updates;
 
 pub use accounts::*;
 pub use ai::*;
@@ -31,3 +32,4 @@ pub use response::*;
 pub use session::*;
 pub use settings::*;
 pub use transcript::*;
+pub use updates::*;

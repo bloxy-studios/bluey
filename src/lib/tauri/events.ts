@@ -36,6 +36,7 @@ import type {
   ShortcutId,
   TranscriptSegment,
   AudioDevice,
+  UpdateStatus,
 } from "../types";
 
 export interface EventMap {
@@ -50,6 +51,8 @@ export interface EventMap {
   "accounts.changed": ProviderAccount;
   /** The models a subscription exposes were (re)fetched. */
   "accounts.catalog": ProviderModelCatalog;
+  /** The in-app updater moved (checking / available / downloading / ready / error) — the full status each time. */
+  "update.status": UpdateStatus;
   "helper.status": { running: boolean; version?: string; restarted?: boolean; error?: BlueyError };
 
   // screen
@@ -135,6 +138,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "auth.changed",
   "accounts.changed",
   "accounts.catalog",
+  "update.status",
   "helper.status",
   "screen.changed",
   "screen.captured",

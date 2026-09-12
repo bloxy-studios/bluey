@@ -171,6 +171,12 @@ fn all_events() -> Vec<BlueyEvent> {
             source: CatalogSource::Fixture,
             models: vec![],
         }),
+        BlueyEvent::UpdateStatus(UpdateStatus::idle(
+            "0.1.1",
+            UpdateChannel::Latest,
+            true,
+            true,
+        )),
         BlueyEvent::HelperStatus {
             running: true,
             version: None,
@@ -286,7 +292,7 @@ fn all_events() -> Vec<BlueyEvent> {
 
 /// Hard-coded copy of EVENT_NAMES from `src/lib/tauri/events.ts`.
 /// Keep in sync with the frontend.
-const EVENT_NAMES: [&str; 49] = [
+const EVENT_NAMES: [&str; 50] = [
     "app.state",
     "app.error",
     "settings.changed",
@@ -294,6 +300,7 @@ const EVENT_NAMES: [&str; 49] = [
     "auth.changed",
     "accounts.changed",
     "accounts.catalog",
+    "update.status",
     "helper.status",
     "screen.changed",
     "screen.captured",

@@ -187,6 +187,7 @@ pub struct AppCore {
     pub accounts: Arc<crate::accounts::AccountsManager>,
     pub panel: Arc<crate::overlay::PanelManager>,
     pub shortcuts: Arc<crate::shortcuts::ShortcutManager>,
+    pub updates: Arc<crate::updates::UpdatesManager>,
 }
 
 impl AppCore {

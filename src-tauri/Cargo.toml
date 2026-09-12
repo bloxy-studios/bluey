@@ -88,6 +88,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
 
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "stream", "native-tls", "http2"] }
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }

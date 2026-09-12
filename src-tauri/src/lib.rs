@@ -33,6 +33,7 @@ pub mod sidecar;
 pub mod state;
 pub mod storage;
 pub mod transcription;
+pub mod updates;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,6 +47,11 @@ pub fn run() {
         commands::app::app_get_dev_info,
         commands::app::app_run_setup_checks,
         commands::app::app_quit,
+        // In-app updates (docs/UPDATES.md)
+        commands::updates::updates_get_status,
+        commands::updates::updates_check,
+        commands::updates::updates_install,
+        commands::updates::updates_relaunch,
         // Auth (browser sign-in, ADR 0008)
         commands::auth::auth_get_status,
         commands::auth::auth_begin_sign_in,

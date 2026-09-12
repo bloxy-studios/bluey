@@ -199,7 +199,9 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   body shows "Researching · Searching the web… (2 lookups)" with an accent "Skip research"
   link that cancels the job and lets the answer continue without it),
   Preparing `◌ Preparing a suggestion` (proactive loop running), Prepared (blue)
-  `Bluey has a suggestion · ⌘⇧↵`, Error `! <friendly title>` in `danger` + the error's single
+  `Bluey has a suggestion · ⌘⇧↵`, Update (blue, only while otherwise idle — never over
+  Listening or Thinking) `Update available · 0.2.0` (click installs) → `◌ Updating… 42%` →
+  `Restart to update` (click relaunches; `docs/UPDATES.md`), Error `! <friendly title>` in `danger` + the error's single
   recovery button (`hud-chip` pill: Open Settings / Open System Settings / Retry / Restart
   helper / Sign in) + a 24px × dismiss that returns the state machine to ready. Streaming
   text appears progressively; code blocks are buffered until their closing fence.

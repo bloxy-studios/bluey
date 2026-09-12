@@ -401,6 +401,27 @@ impl Default for ExperimentalSettings {
     }
 }
 
+/// Mirrors `UpdatesSettings` — in-app updates (docs/UPDATES.md).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatesSettings {
+    /// Release channel the build follows: stable releases, or the nightly
+    /// prerelease built from `main`.
+    pub channel: super::updates::UpdateChannel,
+    /// Download and install in the background as soon as an update is found;
+    /// the HUD then only asks for a relaunch. Default on.
+    pub automatic: bool,
+}
+
+impl Default for UpdatesSettings {
+    fn default() -> Self {
+        Self {
+            channel: super::updates::UpdateChannel::Latest,
+            automatic: true,
+        }
+    }
+}
+
 /// Mirrors `Settings`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,6 +438,9 @@ pub struct Settings {
     /// Absent in settings stored before ADR 0009 → defaults.
     #[serde(default)]
     pub experimental: ExperimentalSettings,
+    /// Absent in settings stored before in-app updates → defaults (Latest, automatic).
+    #[serde(default)]
+    pub updates: UpdatesSettings,
 }
 
 impl Default for Settings {
@@ -432,6 +456,7 @@ impl Default for Settings {
             shortcuts: crate::shortcuts::default_bindings(),
             advanced: AdvancedSettings::default(),
             experimental: ExperimentalSettings::default(),
+            updates: UpdatesSettings::default(),
         }
     }
 }
@@ -529,6 +554,27 @@ mod tests {
         assert_eq!(v["privacy"]["storeRawAudio"], "never");
         assert_eq!(v["screen"]["captureTarget"], "display");
         assert!(v["shortcuts"].as_array().unwrap().len() == 12);
+        assert_eq!(v["updates"]["channel"], "latest");
+        assert_eq!(v["updates"]["automatic"], true);
+    }
+
+    #[test]
+    fn settings_stored_before_in_app_updates_read_the_update_defaults() {
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        v.as_object_mut().unwrap().remove("updates");
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s.updates, UpdatesSettings::default());
+        let patched = s
+            .apply_patch(&serde_json::json!({ "updates": { "channel": "nightly" } }))
+            .unwrap();
+        assert_eq!(
+            patched.updates.channel,
+            super::super::updates::UpdateChannel::Nightly
+        );
+        assert!(
+            patched.updates.automatic,
+            "untouched fields keep their value"
+        );
     }
 
     #[test]

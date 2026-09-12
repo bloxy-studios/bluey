@@ -423,6 +423,10 @@ export function createDefaultSettings(): Settings {
       subscriptionAccounts: true,
       acceptedAccountConsents: [],
     },
+    updates: {
+      channel: "latest",
+      automatic: true,
+    },
   };
 }
 

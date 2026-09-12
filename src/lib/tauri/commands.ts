@@ -77,6 +77,7 @@ import type {
   TranscribeFileResult,
   TranscriptSegment,
   WindowContext,
+  UpdateStatus,
 } from "../types";
 
 import type { HudMenuRequest } from "./hud-menu-types";
@@ -119,6 +120,15 @@ export interface CommandMap {
   app_get_dev_info: { args: void; result: DevInfo };
   app_run_setup_checks: { args: void; result: SetupCheck[] };
   app_quit: { args: void; result: void };
+
+  // ── In-app updates (Rust owns the cycle; transitions arrive as `update.status`, docs/UPDATES.md) ─
+  updates_get_status: { args: void; result: UpdateStatus };
+  /** Check the current channel's feed now; with automatic updates on this also downloads + installs. */
+  updates_check: { args: void; result: UpdateStatus };
+  /** Download, verify and install the update the last check found. */
+  updates_install: { args: void; result: UpdateStatus };
+  /** Restart into an installed update (`phase === "ready"`). Never resolves on success. */
+  updates_relaunch: { args: void; result: void };
 
   // ── Auth (browser sign-in: Rust owns the OAuth flow and the tokens, ADR 0008) ─
   auth_get_status: { args: void; result: AuthStatus };
@@ -364,6 +374,10 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "app_get_dev_info",
   "app_run_setup_checks",
   "app_quit",
+  "updates_get_status",
+  "updates_check",
+  "updates_install",
+  "updates_relaunch",
   "auth_get_status",
   "auth_begin_sign_in",
   "auth_cancel_sign_in",

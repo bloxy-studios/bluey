@@ -71,6 +71,9 @@ pub enum BlueyEvent {
     AccountsChanged(crate::types::ProviderAccount),
     /// `accounts.catalog` — the models a subscription exposes were (re)fetched.
     AccountsCatalog(crate::types::ProviderModelCatalog),
+    /// `update.status` — the in-app updater moved (checking, available,
+    /// downloading, ready, error); the full status every time (docs/UPDATES.md).
+    UpdateStatus(crate::types::UpdateStatus),
     /// `helper.status`
     #[serde(rename_all = "camelCase")]
     HelperStatus {
@@ -266,6 +269,7 @@ impl BlueyEvent {
             Self::AuthChanged(_) => "auth.changed",
             Self::AccountsChanged(_) => "accounts.changed",
             Self::AccountsCatalog(_) => "accounts.catalog",
+            Self::UpdateStatus(_) => "update.status",
             Self::HelperStatus { .. } => "helper.status",
             Self::ScreenChanged { .. } => "screen.changed",
             Self::ScreenCaptured(_) => "screen.captured",
