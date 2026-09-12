@@ -394,7 +394,7 @@ local credential store, copies the tokens into its own Keychain entry and contin
 | Invariant (`docs/SECURITY.md`) | Enforced by |
 |---|---|
 | `secrets_set` / `secrets_has` / `secrets_delete` accept only the WebView's `SECRET_KEYS` (`provider:<id>:api_key` plus the research / agent API keys); `auth:*` and `account:*` rejected at the command layer | PR 1 — `secrets::validate_webview_key` (+ tests on both layers) |
-| `data_reset_all` collects failures instead of aborting (and deletes `account:*` once they exist) | PR 1 — `ResetFailures` / `reset_incomplete`; the `account:*` keys join the list in PR 2 |
+| `data_reset_all` collects failures instead of aborting (and deletes `account:*` once they exist) | PR 1 — `ResetFailures` / `storage.reset_incomplete`; the `account:*` keys join the list in PR 2 |
 | One OAuth engine (PKCE, loopback, manual paste, device code, single-flight refresh); Clerk unchanged | PR 1 — `bluey-oauth` crate (runtime) + `bluey_protocols::oauth` (pure), host-run `#[tokio::test]`s |
 | Tokens Rust-only (`account:<id>:oauth_tokens`, read and written by `AccountsManager` only); WebView sees `ProviderAccount` only; the sidecar env never names account material (test) | PR 2 — `secrets::account_tokens_key`, `AccountsManager`, `agent::env_boundary_tests` |
 | Redaction of `chatgpt-account-id`, `sk-ant-oat`, `sk-ant-ort`, `ya29.`, `1//` | PR 2 — `logging::redact` (+ test) |

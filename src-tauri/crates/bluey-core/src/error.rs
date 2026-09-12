@@ -277,6 +277,45 @@ mod tests {
         let back: BlueyError = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         assert_eq!(e, back);
     }
+
+    /// The kind constructors own the `<kind>.` prefix; callers pass the bare
+    /// code (`storage("reset_incomplete", …)` is `storage.reset_incomplete` on
+    /// the wire). The WebView's copy table (`src/lib/errors/present.ts`) is
+    /// keyed by the prefixed form.
+    #[test]
+    fn kind_constructors_prefix_the_code_with_the_kind() {
+        let cases = [
+            (
+                BlueyError::storage("reset_incomplete", "m"),
+                BlueyErrorKind::Storage,
+                "storage.reset_incomplete",
+            ),
+            (
+                BlueyError::ai("invalid_request", "m"),
+                BlueyErrorKind::Ai,
+                "ai.invalid_request",
+            ),
+            (
+                BlueyError::authentication("expired", "m"),
+                BlueyErrorKind::Authentication,
+                "auth.expired",
+            ),
+            (
+                BlueyError::internal("m"),
+                BlueyErrorKind::Internal,
+                "internal.unexpected",
+            ),
+            (
+                BlueyError::invalid_params("m"),
+                BlueyErrorKind::Internal,
+                "internal.invalid_params",
+            ),
+        ];
+        for (error, kind, code) in cases {
+            assert_eq!(error.kind, kind, "{code}");
+            assert_eq!(error.code, code);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -95,8 +95,8 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
   limits are used, that the integration is unofficial and may stop working, and what Bluey does
   when it does.
 * `data_reset_all` runs every step even when one fails and reports the failures together
-  (`reset_incomplete`, with the steps in `details`); it deletes `account:*` entries too once they
-  exist.
+  (`storage.reset_incomplete`, with the steps in `details`); it deletes `account:*` entries too
+  once they exist.
 
 ## Fast path and prefetch (ADR 0010)
 

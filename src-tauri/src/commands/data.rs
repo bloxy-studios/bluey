@@ -47,8 +47,8 @@ pub async fn data_clear_ai_cache(core: State<'_, AppCore>) -> BlueyResult<u64> {
 ///
 /// Every step runs even when an earlier one fails — one stuck Keychain entry
 /// must not leave sessions, documents or settings in place — and the failures
-/// are reported together at the end (`reset_incomplete`, with the steps in
-/// `details`).
+/// are reported together at the end (`storage.reset_incomplete`, with the
+/// steps in `details`).
 #[tauri::command]
 pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
     if core.audio.is_running() {
@@ -200,12 +200,17 @@ mod tests {
         );
         failures.push("database", BlueyError::internal("locked"));
         let error = failures.into_result().unwrap_err();
-        assert_eq!(error.code, "reset_incomplete");
+        // `BlueyError::storage` prefixes the kind, like every other constructor
+        // (`ai.…`, `auth.…`): the code the WebView sees is `storage.reset_incomplete`.
+        assert_eq!(error.code, "storage.reset_incomplete");
+        assert_eq!(error.kind, bluey_core::BlueyErrorKind::Storage);
         assert!(error.message.contains("2 step(s) failed"));
         assert!(error.message.contains("provider key gemini, database"));
         let details = error.details.expect("steps are listed in details");
         assert_eq!(details[0]["step"], "provider key gemini");
-        assert_eq!(details[0]["code"], "keychain");
+        // Each detail carries the step's full wire code, prefix included.
+        assert_eq!(details[0]["code"], "storage.keychain");
         assert_eq!(details[1]["step"], "database");
+        assert_eq!(details[1]["code"], "internal.unexpected");
     }
 }
