@@ -83,9 +83,13 @@ sign-in unconfigured; verify the installed app's sign-in before approving a rele
 `BLUEY_ANTIGRAVITY_CLIENT_SECRET` is **optional**. The existing `src-tauri/build.rs` supports
 baking this desktop OAuth client value into the binary; it is not a user/provider API key and
 cannot be kept confidential once compiled into a desktop app. If the owner elects to supply
-it, use the matching environment secret. The release scripts never print it or require it.
-If absent, the relevant Google subscription-account connection may remain unavailable; do not
-block a macOS release or invent a value for it. No Gemini/Anthropic/OpenAI keys, Clerk secret
+it, store it as a **repository** secret (or in both the `macos-build` and `macos-release`
+environments): unlike the signing values, the workflow passes it to **both** paths, so developer
+build-only bundles bake it as well — otherwise the shipped app's Google AI card reports that this
+build cannot sign in. It is not a signing credential and its presence never gates publication.
+The release scripts never print it or require it. If absent, the relevant Google
+subscription-account connection may remain unavailable; do not block a macOS release or invent a
+value for it. No Gemini/Anthropic/OpenAI keys, Clerk secret
 keys or other user credentials are required for builds/tests. No `.env` was read or changed
 as part of this release-workflow implementation.
 
