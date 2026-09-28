@@ -53,8 +53,11 @@ with the reason.
   (`provider:gemini:api_key`); it appears only in the WebSocket URL query and is redacted from
   every log line. A key refused at the WebSocket handshake (HTTP 401/403) or in-band
   (`UNAUTHENTICATED`, `PERMISSION_DENIED`) ends the session with `config.api_key_invalid`;
-  `INVALID_ARGUMENT`/`NOT_FOUND` → `config.model_not_found`; server errors and closes reconnect
-  with exponential backoff and give up after five without transcript progress. Audio never
+  `INVALID_ARGUMENT`/`NOT_FOUND` → `config.model_not_found`. A lost connection is re-opened
+  with exponential backoff (0.5 s doubling, capped at 8 s) until it succeeds, listening stops,
+  or the service rejects the configuration; sends time out after 5 s and a watchdog reconnects
+  when speech went out but nothing came back for 15 s (a half-open socket). Five server
+  closes/errors without transcript progress end the provider session. Audio never
   back-pressures capture: a chunk that does not fit the worker's buffer is dropped. Live uses
   the service's SMART mode (imported recordings are verbatim). Settings → Audio → *Gemini Live
   (cloud)*; the Live model follows the transcription role when it is a `*-transcribe-live`
@@ -106,6 +109,9 @@ segment is fed to the classifier (`question.detected`).
 Permission revoked → session stops with `BlueyError{kind: permission}` and a repair flow. Device
 lost → automatic re-route, else `audio.error{device_lost}`. A cloud provider that cannot start
 (no key, unsupported model, mock outside developer mode) falls back to Apple Speech with a
-non-fatal `audio.error{stt_fallback}` naming the reason; a provider that fails mid-session
-reports `audio.error` for that source and the other source keeps going (there is no automatic
-re-route to Apple mid-session yet). Apple Speech itself unavailable → `speech_unavailable`.
+non-fatal `audio.error{stt_fallback}` naming the reason. Mid-session, a connection outage is
+announced once as `audio.error{stt_degraded}` (also `AudioStatus.error`, cleared when transcripts
+flow again) while the provider reconnects (Gemini Live and Voice Live share the policy above);
+a provider session that gives up is re-opened on the next chunk after a 10 s cool-down, and a
+configuration error (key rejected, model not found, unsupported) moves listening to Apple
+Speech with `stt_fallback`. The other source keeps going throughout. Apple Speech itself unavailable → `speech_unavailable`.

@@ -116,6 +116,10 @@ describe("describeError", () => {
       message: "Cloud transcription isn't available right now, so Bluey is transcribing on-device.",
     });
   });
+
+  it("explains a cloud transcription outage as reconnecting, not a dead end", () => {
+    expect(describeError(error({ kind: "audio", code: "audio.stt_degraded" })).title).toBe("Reconnecting transcription");
+  });
 });
 
 describe("presentError", () => {

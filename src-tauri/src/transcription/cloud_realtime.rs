@@ -10,17 +10,19 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bluey_core::error::RecoveryAction;
 use bluey_core::types::TranscriptionProviderKind;
-use bluey_core::{BlueyError, BlueyResult};
+use bluey_core::{BlueyError, BlueyErrorKind, BlueyResult};
 use bluey_protocols::azure;
 use bluey_protocols::realtime::{self, RealtimeEvent};
 use bluey_protocols::voice_live::{self, TranscriptionTransport};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
+use super::reconnect::{is_fatal, reopen, Command, Outage, Reopened, Watchdog, SEND_TIMEOUT};
 use super::{
     session_closed, EventSink, PcmChunk, SessionOptions, TranscriptionEvent, TranscriptionProvider,
     TranscriptionSession,
@@ -28,7 +30,50 @@ use super::{
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// A send that stalls (a half-open socket) fails like a closed one.
+async fn send(socket: &mut Socket, value: serde_json::Value) -> BlueyResult<()> {
+    let sent = socket.send(Message::Text(value.to_string().into()));
+    match tokio::time::timeout(SEND_TIMEOUT, sent).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(BlueyError::network(
+            "stream",
+            "the Voice Live socket closed",
+        )),
+        Err(_) => Err(BlueyError::network(
+            "timeout",
+            "the Voice Live socket stalled",
+        )),
+    }
+}
+
+/// Map the HTTP status of a rejected WebSocket upgrade. A refused key or a
+/// wrong resource/deployment is configuration (never retried in a loop).
+pub fn map_http_status(status: u16) -> BlueyError {
+    match status {
+        401 | 403 => BlueyError::new(
+            BlueyErrorKind::Configuration,
+            "config.api_key_invalid",
+            "Foundry rejected the API key for live transcription",
+        )
+        .recoverable(RecoveryAction::ConfigureProvider),
+        404 => BlueyError::new(
+            BlueyErrorKind::Configuration,
+            "config.model_not_found",
+            "the Voice Live endpoint or model was not found for this resource",
+        )
+        .recoverable(RecoveryAction::ConfigureProvider),
+        other => BlueyError::network(
+            "connect",
+            format!("Foundry Voice Live refused the connection (HTTP {other})"),
+        ),
+    }
+}
+
 const MAX_CONNECT_ATTEMPTS: u32 = 3;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Server-caused reconnects (errors, closes) tolerated without any transcript
+/// progress in between; the audio manager re-opens the source after that.
+const MAX_RECONNECTS_WITHOUT_PROGRESS: u32 = 5;
 const COMMAND_BUFFER: usize = 256;
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
@@ -85,11 +130,6 @@ impl TranscriptionProvider for CloudRealtimeProvider {
     }
 }
 
-enum Command {
-    Audio(PcmChunk),
-    Close,
-}
-
 struct RealtimeSession {
     tx: mpsc::Sender<Command>,
     task: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -142,27 +182,30 @@ impl Worker {
                 BlueyError::configuration("invalid_key", "the API key contains invalid characters")
             })?;
             request.headers_mut().insert("api-key", key);
-            match connect_async(request).await {
-                Ok((mut socket, _)) => {
+            match tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request)).await {
+                Ok(Ok((mut socket, _))) => {
                     let update = voice_live::session_update_transcription_only(
                         &self.options.model,
                         self.options.language.as_deref(),
                     );
-                    socket
-                        .send(Message::Text(update.to_string().into()))
-                        .await
-                        .map_err(|_| {
-                            BlueyError::network("stream", "the Voice Live socket closed")
-                        })?;
+                    send(&mut socket, update).await?;
                     tracing::info!(source = ?self.options.source, model = %self.options.model, "voice live transcription session ready");
                     return Ok(socket);
                 }
-                Err(error) => {
-                    tracing::warn!(attempt, error = %error, "voice live connect failed");
-                    if attempt < MAX_CONNECT_ATTEMPTS {
-                        tokio::time::sleep(Duration::from_millis(400 * u64::from(attempt))).await;
+                Ok(Err(tungstenite::Error::Http(response))) => {
+                    let error = map_http_status(response.status().as_u16());
+                    tracing::warn!(attempt, error = %error, "voice live handshake rejected");
+                    if is_fatal(&error) {
+                        return Err(error);
                     }
                 }
+                Ok(Err(error)) => {
+                    tracing::warn!(attempt, error = %error, "voice live connect failed");
+                }
+                Err(_) => tracing::warn!(attempt, "voice live connect timed out"),
+            }
+            if attempt < MAX_CONNECT_ATTEMPTS {
+                tokio::time::sleep(Duration::from_millis(400 * u64::from(attempt))).await;
             }
         }
         Err(BlueyError::network(
@@ -182,28 +225,38 @@ impl Worker {
     }
 
     async fn run(self, mut rx: mpsc::Receiver<Command>) {
-        let mut socket = match self.connect().await {
-            Ok(socket) => socket,
-            Err(error) => return self.fail(error).await,
+        let mut outage = Outage::new(self.options.source, self.sink.clone());
+        let mut socket = match reopen(&mut rx, &mut outage, 0, || self.connect()).await {
+            Reopened::Open(socket) => socket,
+            Reopened::Closed => return,
+            Reopened::Fatal(error) => return self.fail(error).await,
         };
+        let mut watchdog = Watchdog::default();
         // Reconnects since the last transcript event (a healthy session resets it).
         let mut reconnects = 0u32;
         // Voice Live deltas are increments; the interim shown to the user is the
         // accumulated utterance, keyed by item id.
         let mut partial: Option<(Option<String>, String)> = None;
         loop {
-            let mut reconnect = false;
+            // `Some(counted)`: reconnect; a stall is not counted (see gemini_live).
+            let mut reconnect = None;
             tokio::select! {
                 command = rx.recv() => match command {
                     None | Some(Command::Close) => break,
                     Some(Command::Audio(chunk)) => {
                         let frame = realtime::append_audio(&chunk.base64);
-                        if socket.send(Message::Text(frame.to_string().into())).await.is_err() {
-                            reconnect = true;
+                        if send(&mut socket, frame).await.is_err() {
+                            reconnect = Some(true);
+                        } else if chunk.is_speech {
+                            watchdog.sent_speech();
                         }
                     }
                 },
-                message = socket.next() => match message {
+                message = socket.next() => {
+                    if matches!(message, Some(Ok(_))) {
+                        watchdog.heard();
+                    }
+                    match message {
                     Some(Ok(Message::Text(text))) => match realtime::parse_event(&text) {
                         RealtimeEvent::Delta { item_id, text } => {
                             reconnects = 0;
@@ -238,18 +291,26 @@ impl Worker {
                     },
                     Some(Ok(Message::Close(_))) | None => {
                         tracing::info!("voice live socket closed by the server; reconnecting");
-                        reconnect = true;
+                        reconnect = Some(true);
                     }
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
                         tracing::warn!(error = %error, "voice live socket error");
-                        reconnect = true;
+                        reconnect = Some(true);
+                    }
                     }
                 },
+                () = watchdog.expired() => {
+                    tracing::warn!(source = ?self.options.source, "voice live stopped answering; reconnecting");
+                    reconnect = Some(false);
+                }
             }
-            if reconnect {
+            let Some(counted) = reconnect else { continue };
+            let mut attempt = 0;
+            if counted {
                 reconnects += 1;
-                if reconnects > MAX_CONNECT_ATTEMPTS {
+                if reconnects > MAX_RECONNECTS_WITHOUT_PROGRESS {
+                    // The manager re-opens the source after a cool-down.
                     return self
                         .fail(BlueyError::network(
                             "stream",
@@ -257,12 +318,17 @@ impl Worker {
                         ))
                         .await;
                 }
-                tokio::time::sleep(Duration::from_millis(400 * u64::from(reconnects))).await;
-                match self.connect().await {
-                    Ok(fresh) => socket = fresh,
-                    Err(error) => return self.fail(error).await,
-                }
+                attempt = reconnects;
             }
+            partial = None;
+            watchdog = Watchdog::default();
+            // Until the service is back (or the session closes); audio in the
+            // meantime is lost.
+            socket = match reopen(&mut rx, &mut outage, attempt, || self.connect()).await {
+                Reopened::Open(fresh) => fresh,
+                Reopened::Closed => return,
+                Reopened::Fatal(error) => return self.fail(error).await,
+            };
         }
         // Closing: give the service a moment to flush the last utterance.
         let deadline = tokio::time::Instant::now() + DRAIN_GRACE;

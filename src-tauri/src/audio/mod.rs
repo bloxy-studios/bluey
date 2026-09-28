@@ -23,7 +23,7 @@ use bluey_core::types::{
     AudioSessionConfigPatch, AudioSessionState, AudioSource, AudioSourcePreference, AudioStatus,
     TranscriptSegment, TranscriptionProviderKind,
 };
-use bluey_core::{new_id, now_iso, BlueyError, BlueyResult};
+use bluey_core::{new_id, now_iso, BlueyError, BlueyErrorKind, BlueyResult};
 use bluey_protocols::helper::{DevicesResult, HelperEvent, TranscriptAssembler, WireTranscript};
 use bluey_protocols::voice_live::{self, TranscriptionTransport};
 use bluey_storage::TranscriptRepository;
@@ -46,6 +46,7 @@ use crate::transcription::{
 };
 
 mod ring;
+mod stt_health;
 
 use ring::{RingScope, TranscriptRing};
 
@@ -116,7 +117,7 @@ struct ActiveStt {
     /// Sources whose provider session is being opened (chunks meanwhile are dropped).
     opening: HashSet<AudioSource>,
     sessions: HashMap<AudioSource, Box<dyn TranscriptionSession>>,
-    failed: HashSet<AudioSource>,
+    health: stt_health::SttHealth,
     sink: transcription::EventSink,
     pump: tauri::async_runtime::JoinHandle<()>,
 }
@@ -132,13 +133,13 @@ struct ChunkTiming {
 /// Claim the start slot under the status lock. Only the claimant goes on to
 /// start the helper; a start racing it (native shortcut + HUD, double click)
 /// gets the current status back instead.
-fn claim_start(status: &parking_lot::Mutex<AudioStatus>) -> Result<(), AudioStatus> {
+fn claim_start(status: &parking_lot::Mutex<AudioStatus>) -> Result<(), Box<AudioStatus>> {
     let mut status = status.lock();
     if matches!(
         status.state,
         AudioSessionState::Starting | AudioSessionState::Running | AudioSessionState::Paused
     ) {
-        return Err(status.clone());
+        return Err(Box::new(status.clone()));
     }
     status.state = AudioSessionState::Starting;
     status.error = None;
@@ -347,7 +348,7 @@ impl AudioManager {
         // Claimed before the first await, so a duplicate toggle cannot start
         // the helper twice (and then tear down the winner's transcription).
         if let Err(current) = claim_start(&self.status) {
-            return Ok(current);
+            return Ok(*current);
         }
         self.start_claimed(config).await
     }
@@ -401,7 +402,7 @@ impl AudioManager {
                     language,
                     opening: HashSet::new(),
                     sessions: HashMap::new(),
-                    failed: HashSet::new(),
+                    health: stt_health::SttHealth::default(),
                     sink: tx,
                     pump,
                 });
@@ -641,7 +642,7 @@ impl AudioManager {
 
     /// Forward one PCM chunk to the provider session for its source (opening
     /// the session on first use). Audio bytes are never retained.
-    async fn forward_pcm(&self, chunk: PcmChunk) {
+    async fn forward_pcm(self: &Arc<Self>, chunk: PcmChunk) {
         {
             let mut times = self.chunk_times.lock();
             let timing = times.entry(chunk.source).or_default();
@@ -657,7 +658,9 @@ impl AudioManager {
         let (provider, options, sink) = {
             let mut guard = self.stt.lock().await;
             let Some(stt) = guard.as_mut() else { return };
-            if stt.failed.contains(&source) || stt.opening.contains(&source) {
+            if stt.opening.contains(&source)
+                || !stt.health.may_forward(source, std::time::Instant::now())
+            {
                 return;
             }
             if let Some(session) = stt.sessions.get(&source) {
@@ -693,10 +696,7 @@ impl AudioManager {
                             }
                             stt.sessions.insert(source, session);
                         }
-                        Err(error) => {
-                            stt.failed.insert(source);
-                            self.bus.publish(BlueyEvent::AudioError(error));
-                        }
+                        Err(error) => self.on_stt_failed(stt, source, error),
                     }
                     None
                 }
@@ -710,24 +710,90 @@ impl AudioManager {
     }
 
     /// Provider events → transcript segments (same assembler as the Apple path).
-    async fn on_stt_event(&self, event: TranscriptionEvent) {
+    async fn on_stt_event(self: &Arc<Self>, event: TranscriptionEvent) {
         match event {
             TranscriptionEvent::Interim { source, text } => {
+                self.stt_healthy(source).await;
                 self.on_cloud_text(source, text, None, false).await
             }
             TranscriptionEvent::Final {
                 source,
                 text,
                 language,
-            } => self.on_cloud_text(source, text, language, true).await,
-            TranscriptionEvent::Failed { source, error } => {
-                tracing::warn!(?source, error = %error, "cloud transcription failed");
-                if let Some(stt) = self.stt.lock().await.as_mut() {
-                    stt.failed.insert(source);
-                    stt.sessions.remove(&source);
+            } => {
+                self.stt_healthy(source).await;
+                self.on_cloud_text(source, text, language, true).await
+            }
+            TranscriptionEvent::Degraded { source, error } => {
+                tracing::warn!(?source, error = %error, "cloud transcription lost its connection; reconnecting");
+                let announce = self
+                    .stt
+                    .lock()
+                    .await
+                    .as_mut()
+                    .is_some_and(|stt| stt.health.degraded(source));
+                if announce {
+                    self.announce_stt_degraded();
                 }
-                self.status.lock().error = Some(error.clone());
-                self.bus.publish(BlueyEvent::AudioError(error));
+            }
+            TranscriptionEvent::Recovered { source } => self.stt_healthy(source).await,
+            TranscriptionEvent::Failed { source, error } => {
+                if let Some(stt) = self.stt.lock().await.as_mut() {
+                    self.on_stt_failed(stt, source, error);
+                }
+            }
+        }
+    }
+
+    /// A provider session for `source` ended. Configuration the provider
+    /// cannot run with moves listening to Apple Speech (retrying a bad key
+    /// would only fail again); anything else is re-opened after a cool-down,
+    /// announced once per outage.
+    fn on_stt_failed(
+        self: &Arc<Self>,
+        stt: &mut ActiveStt,
+        source: AudioSource,
+        error: BlueyError,
+    ) {
+        tracing::warn!(?source, error = %error, "cloud transcription failed");
+        stt.sessions.remove(&source);
+        let announce = stt.health.failed(source, std::time::Instant::now());
+        if matches!(
+            error.kind,
+            BlueyErrorKind::Configuration | BlueyErrorKind::NotSupported
+        ) {
+            let reason = error.message.clone();
+            self.status.lock().error = Some(error.clone());
+            self.bus.publish(BlueyEvent::AudioError(error));
+            self.fall_back_to_apple(reason);
+        } else if announce {
+            self.announce_stt_degraded();
+        }
+    }
+
+    fn announce_stt_degraded(&self) {
+        let error = stt_health::degraded_error();
+        self.status.lock().error = Some(error.clone());
+        self.bus.publish(BlueyEvent::AudioError(error));
+    }
+
+    /// Transcripts flow for `source` again: clear the outage notice once no
+    /// source is degraded.
+    async fn stt_healthy(&self, source: AudioSource) {
+        let ended = self
+            .stt
+            .lock()
+            .await
+            .as_mut()
+            .is_some_and(|stt| stt.health.healthy(source));
+        if ended {
+            let mut status = self.status.lock();
+            if status
+                .error
+                .as_ref()
+                .is_some_and(|e| e.code == stt_health::DEGRADED_CODE)
+            {
+                status.error = None;
             }
         }
     }

@@ -109,6 +109,11 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "Using Apple Speech",
     message: "Cloud transcription isn't available right now, so Bluey is transcribing on-device.",
   },
+  // Cloud speech-to-text lost its connection; it reconnects on its own.
+  "audio.stt_degraded": {
+    title: "Reconnecting transcription",
+    message: "Bluey lost its connection to cloud transcription and is reconnecting. Speech in the meantime isn't transcribed.",
+  },
   "config.http_401": { title: "Credentials rejected", message: "The provider rejected the API key (HTTP 401)." },
   "config.http_403": {
     title: "Access denied",
