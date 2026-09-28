@@ -17,14 +17,15 @@
  */
 
 import * as z from "zod";
-import type {
-  AskInput,
-  ClassifyInput,
-  EngineCallbacks,
-  EngineHandle,
-  EnginePhase,
-  ResponseEngine,
-  SummarizeInput,
+import {
+  PREPARED_TTL_MS,
+  type AskInput,
+  type ClassifyInput,
+  type EngineCallbacks,
+  type EngineHandle,
+  type EnginePhase,
+  type ResponseEngine,
+  type SummarizeInput,
 } from "@/lib/engine-contract";
 import { truncatedAnswerError, unreadableAnswerError } from "@/lib/errors/answers";
 import { bluey } from "@/lib/tauri/api";
@@ -138,7 +139,7 @@ const SCOPE_PREPARE = "prepare";
 const SCOPE_LIVE = "live";
 
 export const PREPARED_CACHE_MAX = 5;
-export const PREPARED_TTL_MS = 3 * 60 * 1000;
+export { PREPARED_TTL_MS };
 
 interface PreparedEntry {
   response: BlueyResponse;

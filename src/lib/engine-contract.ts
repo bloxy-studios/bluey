@@ -54,6 +54,12 @@ export interface AskInput {
   triggeredAtMs?: number;
 }
 
+/**
+ * How long a prepared answer stays usable: after that the question is long gone, so the
+ * engine cache, the chat store's `prepared` (and its hint) and a deferred question expire.
+ */
+export const PREPARED_TTL_MS = 3 * 60 * 1000;
+
 export type EnginePhase = "capturing" | "analyzing" | "thinking" | "streaming" | "done" | "error" | "cancelled";
 
 export interface EngineCallbacks {

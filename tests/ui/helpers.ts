@@ -205,6 +205,8 @@ export class FakeEngine implements ResponseEngine {
 export class ProactiveFakeEngine extends FakeEngine {
   classified: ClassifyInput[] = [];
   prepared: AskInput[] = [];
+  /** Request ids of live preparations cancelled through their handle. */
+  cancelledPrepares: string[] = [];
   hold = false;
   private pending: Array<() => void> = [];
 
@@ -234,14 +236,32 @@ export class ProactiveFakeEngine extends FakeEngine {
       prepared: true,
     });
     const live = callbacks.onComplete !== undefined;
+    // Like the real engine: a live preparation can be cancelled through its handle, and a
+    // cancelled one is neither completed nor announced.
+    let cancelled = false;
+    let wake: (() => void) | undefined;
+    const requestId = `req-prepare-${this.prepared.length}`;
+    callbacks.onHandle?.({
+      requestId,
+      cancel: async () => {
+        cancelled = true;
+        this.cancelledPrepares.push(requestId);
+        wake?.();
+      },
+    });
     if (live) {
-      callbacks.onPhase?.("streaming", "req-prepare");
+      callbacks.onPhase?.("streaming", requestId);
       callbacks.onDraft?.({ ...response, content: "Prepared for" });
     }
     if (this.hold) {
       await new Promise<void>((resolve) => {
+        wake = resolve;
         this.pending.push(resolve);
       });
+    }
+    if (cancelled) {
+      callbacks.onPhase?.("cancelled", requestId);
+      return null;
     }
     if (live) {
       // A live suggestion is handed to the caller and never announced.

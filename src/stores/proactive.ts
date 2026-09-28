@@ -27,15 +27,16 @@
 
 import { create } from "zustand";
 
-import type { EngineCallbacks, EnginePhase } from "@/lib/engine-contract";
+import { PREPARED_TTL_MS, type CancelHandle, type EngineCallbacks, type EnginePhase } from "@/lib/engine-contract";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { getTransport, type Unlisten } from "@/lib/tauri/transport";
 import type { BlueyError, DetectedEvent, Settings, TranscriptSegment } from "@/lib/types";
 import { recentSegments } from "@/transcript/window";
 import { useAppStore } from "./appStore";
-import { shownResponse, useChatStore, type SuggestionMeta } from "./chatStore";
+import { completedResponses, shownResponse, useChatStore, type SuggestionMeta } from "./chatStore";
 import { getEngine } from "./engine";
 import { modeById, useModesStore } from "./modesStore";
+import { usePanelStore } from "./panelStore";
 import { useSessionStore } from "./sessionStore";
 import { useSettingsStore } from "./settingsStore";
 import { useTranscriptStore } from "./transcriptStore";
@@ -92,6 +93,29 @@ export function canShowLive(settings: Settings | null, phase: EnginePhase | null
   return settings?.ai.suggestionDisplay === "live" && (phase === null || !BUSY_PHASES.has(phase));
 }
 
+/** The live suggestion streaming into the thread right now, if any. */
+let liveHandle: CancelHandle | null = null;
+
+/**
+ * End the live suggestion (Esc, Stop, a manual ask, a prepared answer shown over it):
+ * its stream stops and nothing it produced is saved (LIVE-001).
+ */
+export async function cancelLiveSuggestion(): Promise<void> {
+  const handle = liveHandle;
+  liveHandle = null;
+  if (!handle) return;
+  try {
+    await handle.cancel();
+  } catch (error) {
+    console.warn("[proactive] cancel failed", error);
+  }
+}
+
+/** Unknown (not loaded yet) counts as visible, so nothing is dropped at boot. */
+function hudVisible(): boolean {
+  return usePanelStore.getState().state?.visible ?? true;
+}
+
 function isHudWindow(): boolean {
   try {
     return getTransport().currentWindowLabel() === "main";
@@ -135,6 +159,8 @@ function liveCallbacks(generation: number, event: DetectedEvent): EngineCallback
 export function startProactiveLoop(): Unlisten {
   const seen = new Set<string>();
   let queued: DetectedEvent | null = null;
+  /** The newest question detected while the HUD was hidden (live display only). */
+  let deferred: { event: DetectedEvent; at: number } | null = null;
   let busy = false;
 
   const remember = (id: string) => {
@@ -159,10 +185,21 @@ export function startProactiveLoop(): Unlisten {
       let callbacks: EngineCallbacks | undefined;
       if (live) {
         const suggestion: SuggestionMeta = { question: event.text, ...(event.speaker ? { speaker: event.speaker } : {}) };
-        generation = chat.begin(event.text, event.text, { phase: "thinking", suggestion });
+        generation = chat.begin(event.text, event.text, {
+          phase: "thinking",
+          suggestion,
+          request: { trigger: "detected_event", detectedEvent: event, promptLabel: event.text, captureScreen: false },
+        });
         useProactiveStore.getState().setLive(event.id);
-        callbacks = liveCallbacks(generation, event);
+        callbacks = {
+          ...liveCallbacks(generation, event),
+          onHandle: (handle) => {
+            liveHandle = handle;
+          },
+        };
       }
+      // The suggestion continues the thread: it sees the answers already given (LIVE-014).
+      const previous = completedResponses(chat.turns);
       const response = await getEngine().prepare(
         {
           trigger: "detected_event",
@@ -171,6 +208,7 @@ export function startProactiveLoop(): Unlisten {
           mode,
           session: sessionState.active,
           settings,
+          previousResponses: previous.length > 0 ? previous : undefined,
           sessionEvents:
             sessionState.active && sessionState.events.length > 0 ? sessionState.events : undefined,
         },
@@ -188,6 +226,7 @@ export function startProactiveLoop(): Unlisten {
       console.warn("[proactive] prepare failed", error);
     } finally {
       busy = false;
+      liveHandle = null;
       useProactiveStore.getState().setPreparing(null);
       useProactiveStore.getState().setLive(null);
       const next = queued;
@@ -196,16 +235,49 @@ export function startProactiveLoop(): Unlisten {
     }
   };
 
-  const onDetected = (event: DetectedEvent): void => {
-    if (!isHudWindow() || !proactiveEnabled() || !event.requiresResponse) return;
-    if (seen.has(event.id)) return;
-    remember(event.id);
+  const schedule = (event: DetectedEvent): void => {
     if (busy) {
       queued = event; // newest question wins; a stale one is not worth preparing
       return;
     }
     void prepareFor(event);
   };
+
+  const onDetected = (event: DetectedEvent): void => {
+    if (!isHudWindow() || !proactiveEnabled() || !event.requiresResponse) return;
+    if (seen.has(event.id)) return;
+    remember(event.id);
+    if (useSettingsStore.getState().settings?.ai.suggestionDisplay === "live" && !hudVisible()) {
+      // No billed live turn streams into a hidden HUD: keep the newest question and
+      // prepare it once the HUD is shown, while it is still fresh (LIVE-012).
+      deferred = { event, at: Date.now() };
+      return;
+    }
+    schedule(event);
+  };
+
+  const offPanel = usePanelStore.subscribe((state, previous) => {
+    if (!state.state?.visible || previous.state?.visible === true || !deferred) return;
+    const { event, at } = deferred;
+    deferred = null;
+    if (Date.now() - at <= PREPARED_TTL_MS && proactiveEnabled()) schedule(event);
+  });
+
+  const offApp = useAppStore.subscribe((state, previous) => {
+    const now = state.status;
+    const before = previous.status;
+    // Stop listening: a question still waiting is no longer worth answering (LIVE-017).
+    if (before?.audioActive && now && !now.audioActive) {
+      queued = null;
+      deferred = null;
+    }
+    // Answers prepared for the previous mode were written for it: drop them (MODE-012).
+    if (before && now && before.modeId !== now.modeId) {
+      getEngine().clearPrepared();
+      useChatStore.getState().setPrepared(null);
+      useProactiveStore.getState().setPrepared(null);
+    }
+  });
 
   const onFinal = async (segment: TranscriptSegment): Promise<void> => {
     if (!isHudWindow() || !proactiveEnabled()) return;
@@ -231,11 +303,15 @@ export function startProactiveLoop(): Unlisten {
   return () => {
     offFinal();
     offDetected();
+    offPanel();
+    offApp();
     queued = null;
+    deferred = null;
   };
 }
 
 /** Test helper. */
 export function resetProactiveForTest(): void {
+  liveHandle = null;
   useProactiveStore.setState({ preparedEventId: null, preparingEventId: null, liveEventId: null });
 }
