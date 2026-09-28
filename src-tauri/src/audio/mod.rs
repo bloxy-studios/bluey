@@ -119,6 +119,42 @@ struct ChunkTiming {
     last_end_ms: u64,
 }
 
+/// Claim the start slot under the status lock. Only the claimant goes on to
+/// start the helper; a start racing it (native shortcut + HUD, double click)
+/// gets the current status back instead.
+fn claim_start(status: &parking_lot::Mutex<AudioStatus>) -> Result<(), AudioStatus> {
+    let mut status = status.lock();
+    if matches!(
+        status.state,
+        AudioSessionState::Starting | AudioSessionState::Running | AudioSessionState::Paused
+    ) {
+        return Err(status.clone());
+    }
+    status.state = AudioSessionState::Starting;
+    status.error = None;
+    Ok(())
+}
+
+/// What a failed helper `audio.start` needs before it is reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartRecovery {
+    /// The helper still runs a session Rust lost track of: stop it and start
+    /// once more.
+    StopAndRetry,
+    /// The helper may still finish starting after the timeout and keep the
+    /// microphone open: stop it (best effort) and report the error.
+    StopHelper,
+    Report,
+}
+
+fn start_recovery(error: &BlueyError) -> StartRecovery {
+    match error.code.as_str() {
+        "audio.audio_already_running" => StartRecovery::StopAndRetry,
+        "sidecar.timeout" => StartRecovery::StopHelper,
+        _ => StartRecovery::Report,
+    }
+}
+
 /// Build the helper `audio.start` params from a session config.
 pub fn helper_start_params(config: &AudioSessionConfig, route: TranscriptionRoute) -> Value {
     let mut sources = Vec::new();
@@ -258,13 +294,21 @@ impl AudioManager {
                 "enable the microphone or system audio first",
             ));
         }
+        // Claimed before the first await, so a duplicate toggle cannot start
+        // the helper twice (and then tear down the winner's transcription).
+        if let Err(current) = claim_start(&self.status) {
+            return Ok(current);
+        }
+        self.start_claimed(config).await
+    }
+
+    /// The body of [`Self::start`] once the start slot is claimed.
+    async fn start_claimed(
+        self: &Arc<Self>,
+        config: AudioSessionConfig,
+    ) -> BlueyResult<AudioStatus> {
         let cloud = self.cloud_provider(&config).await;
         let (route, fallback) = route_for(config.transcription.provider, cloud.is_some());
-        {
-            let mut status = self.status.lock();
-            status.state = AudioSessionState::Starting;
-            status.error = None;
-        }
         let params = helper_start_params(&config, route);
         // Reset per-session state and install the cloud transcription sink
         // *before* the helper starts capturing, so the first PCM chunks are not
@@ -300,7 +344,7 @@ impl AudioManager {
                 });
             }
         }
-        let value = match self.helper.call("audio.start", params).await {
+        let value = match self.start_helper_audio(params).await {
             Ok(value) => value,
             Err(error) => {
                 self.close_stt().await;
@@ -352,6 +396,36 @@ impl AudioManager {
             )));
         }
         Ok(status)
+    }
+
+    /// `audio.start` on the helper, reconciling a helper session Rust lost
+    /// track of (an earlier start that timed out here but finished there).
+    async fn start_helper_audio(self: &Arc<Self>, params: Value) -> BlueyResult<Value> {
+        let error = match self.helper.call("audio.start", params.clone()).await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        match start_recovery(&error) {
+            StartRecovery::StopAndRetry => {
+                tracing::info!("the helper was still capturing; restarting its audio session");
+                self.stop_helper_audio().await;
+                self.helper.call("audio.start", params).await
+            }
+            StartRecovery::StopHelper => {
+                self.stop_helper_audio().await;
+                Err(error)
+            }
+            StartRecovery::Report => Err(error),
+        }
+    }
+
+    /// Best-effort `audio.stop` (the helper may be gone).
+    async fn stop_helper_audio(&self) {
+        if self.helper.is_running() {
+            if let Err(e) = self.helper.request("audio.stop", json!({})).await {
+                tracing::debug!(error = %e, "audio.stop failed (helper may be gone)");
+            }
+        }
     }
 
     /// Build the cloud transcription provider for the configured kind, or
@@ -584,11 +658,7 @@ impl AudioManager {
 
     /// Stop listening (and end the auto-started session).
     pub async fn stop(&self) -> BlueyResult<AudioStatus> {
-        if self.helper.is_running() {
-            if let Err(e) = self.helper.request("audio.stop", json!({})).await {
-                tracing::debug!(error = %e, "audio.stop failed (helper may be gone)");
-            }
-        }
+        self.stop_helper_audio().await;
         self.close_stt().await;
         let status = self.mark_stopped(None);
         if self.auto_session.swap(false, Ordering::SeqCst) {
@@ -812,6 +882,15 @@ impl AudioManager {
                 device,
             } => {
                 let mut status = self.status.lock();
+                // A late event of a start that was already given up on.
+                if !matches!(
+                    status.state,
+                    AudioSessionState::Starting
+                        | AudioSessionState::Running
+                        | AudioSessionState::Paused
+                ) {
+                    return;
+                }
                 status.microphone_active = microphone;
                 status.system_audio_active = system_audio;
                 if device.is_some() {
@@ -1005,6 +1084,61 @@ mod tests {
             route_for(TranscriptionProviderKind::Mock, false).0,
             TranscriptionRoute::Apple
         );
+    }
+
+    #[test]
+    fn only_one_concurrent_start_claims_the_slot() {
+        let status = Arc::new(parking_lot::Mutex::new(AudioStatus::default()));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let claims: Vec<_> = (0..8)
+            .map(|_| {
+                let status = status.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claim_start(&status).is_ok()
+                })
+            })
+            .collect();
+        let won = claims
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(won, 1, "exactly one start reaches the helper");
+        assert_eq!(status.lock().state, AudioSessionState::Starting);
+        // A duplicate toggle while running gets the running status back.
+        status.lock().state = AudioSessionState::Running;
+        assert_eq!(
+            claim_start(&status).unwrap_err().state,
+            AudioSessionState::Running
+        );
+        // A stopped or failed session can be started again.
+        for state in [AudioSessionState::Stopped, AudioSessionState::Error] {
+            status.lock().state = state;
+            assert!(claim_start(&status).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_failed_helper_start_is_reconciled_with_the_helper() {
+        let timeout = BlueyError::sidecar("timeout", "helper call `audio.start` timed out");
+        assert_eq!(start_recovery(&timeout), StartRecovery::StopHelper);
+        let already = jsonl_audio_error("audio_already_running");
+        assert_eq!(start_recovery(&already), StartRecovery::StopAndRetry);
+        let denied = BlueyError::audio("engine_start_failed", "no");
+        assert_eq!(start_recovery(&denied), StartRecovery::Report);
+    }
+
+    /// An `audio.*` error as the helper reports it on the wire.
+    fn jsonl_audio_error(code: &str) -> BlueyError {
+        bluey_protocols::jsonl::WireError {
+            code: code.into(),
+            message: "m".into(),
+            kind: Some("audio".into()),
+            details: None,
+        }
+        .into_bluey()
     }
 
     #[test]
