@@ -1,6 +1,7 @@
 //! Chunk retrieval: FTS5 `bm25` keyword search, cosine-similarity semantic
 //! search over stored embeddings, or a 50/50 hybrid (`Auto`), with scope- and
-//! kind-aware boosting. Scores are normalized to `0..=1`.
+//! kind-aware boosting — plus `Leading`, which lists the first chunks of every
+//! document in scope without matching. Scores are normalized to `0..=1`.
 
 use std::collections::HashMap;
 
@@ -18,6 +19,24 @@ use crate::repositories::DocumentRepository;
 
 /// Default number of chunks returned when the query has no `limit`.
 const DEFAULT_LIMIT: usize = 8;
+
+/// Raw cosine similarity below which a chunk is unrelated to the query.
+/// Modern embedding models put unrelated text around 0.0–0.2, and the
+/// `(cos+1)/2` mapping would otherwise score it ~0.5–0.6.
+const SEMANTIC_MIN_COSINE: f32 = 0.25;
+
+/// Score of a `Leading` chunk: included because of what it is, not because
+/// it matched, so it sits below any real match.
+const LEADING_SCORE: f32 = 0.5;
+
+/// Smallest raw bm25 rank (sign-flipped) that counts as a real keyword match.
+/// FTS5 floors a term's IDF to 1e-6 when it occurs in half or more of all
+/// chunks, so a best rank below this means no matched term discriminates.
+const MIN_KEYWORD_RANK: f64 = 1e-3;
+
+/// Flat score for keyword matches below [`MIN_KEYWORD_RANK`]: weak, instead
+/// of normalized up to 1.0 by the best (equally weak) row.
+const WEAK_KEYWORD_SCORE: f32 = 0.25;
 
 /// Cosine similarity in `-1..=1`; `0.0` for empty or mismatched vectors.
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -57,10 +76,18 @@ struct Candidate {
 /// document-kind relevance table keyed off the query intent (candidate-style
 /// questions boost resume/CV/skills/experience docs; role-style questions boost
 /// job/role descriptions). `query.kinds` acts as a hard filter.
+///
+/// `Leading` ignores the query text: it returns the first `limit` chunks in
+/// document order (session, then mode, then global documents; newest document
+/// first), each scored [`LEADING_SCORE`].
+///
+/// `embedding_model` is the `providerId/model` tag of `query_embedding`; when
+/// given, only chunks embedded by that model are compared.
 pub fn retrieve(
     db: &Database,
     query: &RetrievalQuery,
     query_embedding: Option<&[f32]>,
+    embedding_model: Option<&str>,
 ) -> Result<Vec<RetrievedChunk>, BlueyError> {
     let strategy = query.strategy.unwrap_or_default();
     let limit = query
@@ -69,6 +96,10 @@ pub fn retrieve(
         .filter(|l| *l > 0)
         .unwrap_or(DEFAULT_LIMIT);
     let kinds = query.kinds.as_deref();
+
+    if strategy == RetrievalStrategy::Leading {
+        return leading_chunks(db, &query.scopes, kinds, limit);
+    }
 
     let mut candidates: HashMap<String, Candidate> = HashMap::new();
 
@@ -92,7 +123,9 @@ pub fn retrieve(
         RetrievalStrategy::Auto | RetrievalStrategy::Semantic
     ) {
         if let Some(embedding) = query_embedding {
-            for (chunk, score) in semantic_candidates(db, embedding, &query.scopes, kinds)? {
+            let embedded =
+                semantic_candidates(db, embedding, embedding_model, &query.scopes, kinds)?;
+            for (chunk, score) in embedded {
                 candidates
                     .entry(chunk.chunk_id.clone())
                     .and_modify(|c| c.semantic = Some(score))
@@ -114,6 +147,7 @@ pub fn retrieve(
             let base = match strategy {
                 RetrievalStrategy::Keyword => c.keyword.unwrap_or(0.0),
                 RetrievalStrategy::Semantic => c.semantic.unwrap_or(0.0),
+                RetrievalStrategy::Leading => unreachable!("handled before matching"),
                 RetrievalStrategy::Auto => {
                     if has_semantic {
                         0.5 * c.keyword.unwrap_or(0.0) + 0.5 * c.semantic.unwrap_or(0.0)
@@ -200,11 +234,11 @@ fn keyword_candidates(
 
     // bm25() is more-negative-is-better; flip the sign and normalize by the best.
     let best = rows.iter().map(|r| -r.6).fold(0.0f64, f64::max);
-    if best <= 0.0 {
-        // All ranks zero (or no rows) — give surviving matches a flat mid score.
+    if best < MIN_KEYWORD_RANK {
+        // No matched term discriminates (or no rows): a flat weak score.
         return rows
             .into_iter()
-            .map(|row| build_chunk(row).map(|c| (c, 0.5)))
+            .map(|row| build_chunk(row).map(|c| (c, WEAK_KEYWORD_SCORE)))
             .collect();
     }
     rows.into_iter()
@@ -237,14 +271,16 @@ fn build_chunk(
     })
 }
 
-/// Cosine similarity candidates over stored embeddings, mapped from `-1..1` to `0..1`.
+/// Cosine similarity candidates over stored embeddings, mapped from `-1..1` to
+/// `0..1`. Chunks below [`SEMANTIC_MIN_COSINE`] are unrelated and dropped.
 fn semantic_candidates(
     db: &Database,
     query_embedding: &[f32],
+    embedding_model: Option<&str>,
     scopes: &[ScopeRef],
     kinds: Option<&[DocumentKind]>,
 ) -> Result<Vec<(RetrievedChunk, f32)>, BlueyError> {
-    let embedded = DocumentRepository::chunks_with_embeddings(db, scopes, kinds)?;
+    let embedded = DocumentRepository::chunks_with_embeddings(db, scopes, kinds, embedding_model)?;
     let mut out = Vec::new();
     for chunk in embedded {
         // Vectors from another model / MRL size live in a different space: skip
@@ -253,6 +289,9 @@ fn semantic_candidates(
             continue;
         }
         let similarity = cosine(query_embedding, &chunk.embedding);
+        if similarity < SEMANTIC_MIN_COSINE {
+            continue;
+        }
         let score = ((similarity + 1.0) / 2.0).clamp(0.0, 1.0);
         out.push((
             RetrievedChunk {
@@ -268,6 +307,59 @@ fn semantic_candidates(
         ));
     }
     Ok(out)
+}
+
+/// The first `limit` chunks in document order: session, mode, then global
+/// documents, newest document first, chunks in position order.
+fn leading_chunks(
+    db: &Database,
+    scopes: &[ScopeRef],
+    kinds: Option<&[DocumentKind]>,
+    limit: usize,
+) -> Result<Vec<RetrievedChunk>, BlueyError> {
+    let (scope_sql, scope_params) = scope_filter_sql(scopes)?;
+    let (kind_sql, kind_params) = kind_filter_sql(kinds)?;
+    type RawRow = (String, String, String, String, String, String, f64);
+    let rows: Vec<RawRow> = db.with_conn(|conn| {
+        let sql = format!(
+            "SELECT c.id, c.document_id, d.title, d.kind, d.scope, c.content, 0.0
+               FROM document_chunks c
+               JOIN documents d ON d.id = c.document_id
+              WHERE d.index_status = 'indexed'
+                AND {scope_sql} AND {kind_sql}
+              ORDER BY CASE d.scope WHEN 'session' THEN 0 WHEN 'mode' THEN 1 ELSE 2 END,
+                       d.updated_at DESC, d.id, c.chunk_index
+              LIMIT {limit}"
+        );
+        let mut stmt = conn.prepare(&sql).sql()?;
+        let params: Vec<&str> = scope_params
+            .iter()
+            .chain(&kind_params)
+            .map(String::as_str)
+            .collect();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params), |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })
+            .sql()?;
+        rows.collect::<Result<Vec<_>, _>>().sql()
+    })?;
+    rows.into_iter()
+        .map(|row| {
+            build_chunk(row).map(|chunk| RetrievedChunk {
+                score: LEADING_SCORE,
+                ..chunk
+            })
+        })
+        .collect()
 }
 
 // ── Boosting ────────────────────────────────────────────────────────────────
@@ -418,7 +510,7 @@ mod tests {
             limit: None,
             strategy: Some(RetrievalStrategy::Keyword),
         };
-        let hits = retrieve(&db, &query, None).unwrap();
+        let hits = retrieve(&db, &query, None, None).unwrap();
         assert!(!hits.is_empty());
         assert_eq!(
             hits[0].document_id, resume_id,
@@ -435,6 +527,7 @@ mod tests {
                 query: "the of and".into(),
                 ..query.clone()
             },
+            None,
             None,
         )
         .unwrap();
@@ -456,7 +549,7 @@ mod tests {
             limit: Some(4),
             strategy: Some(RetrievalStrategy::Keyword),
         };
-        let hits = retrieve(&db, &query, None).unwrap();
+        let hits = retrieve(&db, &query, None, None).unwrap();
         assert!(!hits.is_empty());
         assert!(hits.iter().all(|h| h.document_id == jd_id));
     }
@@ -475,7 +568,7 @@ mod tests {
             limit: None,
             strategy: Some(RetrievalStrategy::Keyword),
         };
-        let hits = retrieve(&db, &query, None).unwrap();
+        let hits = retrieve(&db, &query, None, None).unwrap();
         assert!(!hits.is_empty());
         assert!(hits.iter().all(|h| h.scope == DocumentScope::Mode));
     }
@@ -498,15 +591,21 @@ mod tests {
             limit: Some(2),
             strategy: Some(RetrievalStrategy::Semantic),
         };
-        let hits = retrieve(&db, &semantic_query, Some(&[1.0, 0.0])).unwrap();
-        assert_eq!(hits.len(), 2);
+        let hits = retrieve(&db, &semantic_query, Some(&[1.0, 0.0]), None).unwrap();
+        assert_eq!(hits.len(), 1, "the orthogonal JD is unrelated: {hits:#?}");
         assert_eq!(hits[0].document_id, resume_id);
-        assert!(hits[0].score > hits[1].score);
+        assert!(hits.iter().all(|h| h.document_id != jd_id));
+        // A query unrelated to every chunk returns nothing, not a ranked list.
+        assert!(retrieve(&db, &semantic_query, Some(&[-1.0, -1.0]), None)
+            .unwrap()
+            .is_empty());
 
         // Semantic without an embedding yields nothing.
-        assert!(retrieve(&db, &semantic_query, None).unwrap().is_empty());
+        assert!(retrieve(&db, &semantic_query, None, None)
+            .unwrap()
+            .is_empty());
         // Vectors from another embedding size are skipped, not scored at zero.
-        assert!(retrieve(&db, &semantic_query, Some(&[1.0, 0.0, 0.0]))
+        assert!(retrieve(&db, &semantic_query, Some(&[1.0, 0.0, 0.0]), None)
             .unwrap()
             .is_empty());
 
@@ -518,7 +617,7 @@ mod tests {
             limit: Some(3),
             strategy: None, // Auto
         };
-        let hits = retrieve(&db, &auto_query, Some(&[1.0, 0.0])).unwrap();
+        let hits = retrieve(&db, &auto_query, Some(&[1.0, 0.0]), None).unwrap();
         assert!(!hits.is_empty());
         assert_eq!(hits[0].document_id, resume_id);
         assert!(
@@ -561,7 +660,7 @@ mod tests {
             limit: None,
             strategy: Some(RetrievalStrategy::Keyword),
         };
-        let hits = retrieve(&db, &query, None).unwrap();
+        let hits = retrieve(&db, &query, None, None).unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(
             hits[0].document_id, resume.id,
@@ -569,6 +668,148 @@ mod tests {
         );
         assert!(hits[0].score > hits[1].score);
         let _ = notes;
+    }
+
+    #[test]
+    fn keyword_matches_without_a_discriminating_term_stay_weak() {
+        let db = testutil::db();
+        // One chunk in the whole index: every term occurs in all chunks.
+        add_document(
+            &db,
+            &testutil::doc_input(
+                DocumentKind::Notes,
+                DocumentScope::Global,
+                None,
+                "Quarterly planning notes about the billing migration.",
+            ),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        let query = RetrievalQuery {
+            query: "billing".into(),
+            scopes: vec![],
+            kinds: None,
+            limit: None,
+            strategy: Some(RetrievalStrategy::Keyword),
+        };
+        let hits = retrieve(&db, &query, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].score, WEAK_KEYWORD_SCORE,
+            "not normalized up to 1.0"
+        );
+
+        // Once the term is rare in the index, the best match scores 1.0.
+        for text in [
+            "Team offsite agenda and travel.",
+            "Hiring loop feedback template.",
+            "Incident review for the search outage.",
+        ] {
+            add_document(
+                &db,
+                &testutil::doc_input(DocumentKind::Notes, DocumentScope::Global, None, text),
+                |_| unreachable!(),
+            )
+            .unwrap();
+        }
+        let hits = retrieve(&db, &query, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].score, 1.0);
+    }
+
+    #[test]
+    fn leading_returns_first_chunks_in_scope_order_without_matching() {
+        let db = testutil::db();
+        let paragraphs: Vec<String> = (0..30)
+            .map(|i| format!("Section {i}. Led the payments platform rewrite across {i} regions, owning reliability, hiring and the on-call rotation for the billing services."))
+            .collect();
+        let resume = add_document(
+            &db,
+            &testutil::doc_input(
+                DocumentKind::Resume,
+                DocumentScope::Global,
+                None,
+                &paragraphs.join("\n\n"),
+            ),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        let resume_chunks =
+            crate::repositories::DocumentRepository::chunks(&db, &resume.id).unwrap();
+        assert!(resume_chunks.len() > 2, "fixture must span several chunks");
+        let session_pi = add_document(
+            &db,
+            &testutil::doc_input(
+                DocumentKind::PersonalInstructions,
+                DocumentScope::Session,
+                Some("ses_1"),
+                "Answer in British English.",
+            ),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        let global_pi = add_document(
+            &db,
+            &testutil::doc_input(
+                DocumentKind::PersonalInstructions,
+                DocumentScope::Global,
+                None,
+                "Keep answers under thirty seconds.",
+            ),
+            |_| unreachable!(),
+        )
+        .unwrap();
+
+        // No word overlap with the résumé: keyword finds nothing…
+        let keyword = RetrievalQuery {
+            query: "tell me about yourself".into(),
+            scopes: vec![],
+            kinds: Some(vec![DocumentKind::Resume]),
+            limit: Some(2),
+            strategy: Some(RetrievalStrategy::Keyword),
+        };
+        assert!(retrieve(&db, &keyword, None, None).unwrap().is_empty());
+        // …while `Leading` returns the first chunks in document order.
+        let leading = RetrievalQuery {
+            strategy: Some(RetrievalStrategy::Leading),
+            ..keyword
+        };
+        let hits = retrieve(&db, &leading, Some(&[1.0, 0.0]), None).unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.chunk_id.as_str()).collect();
+        let expected: Vec<&str> = resume_chunks[..2].iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, expected);
+        assert!(hits.iter().all(|h| h.score == LEADING_SCORE));
+
+        // Scope order: session before global; out-of-scope sessions excluded.
+        let instructions = RetrievalQuery {
+            query: String::new(),
+            scopes: vec![
+                ScopeRef {
+                    scope: DocumentScope::Session,
+                    scope_id: Some("ses_1".into()),
+                },
+                ScopeRef {
+                    scope: DocumentScope::Global,
+                    scope_id: None,
+                },
+            ],
+            kinds: Some(vec![DocumentKind::PersonalInstructions]),
+            limit: Some(6),
+            strategy: Some(RetrievalStrategy::Leading),
+        };
+        let hits = retrieve(&db, &instructions, None, None).unwrap();
+        let docs: Vec<&str> = hits.iter().map(|h| h.document_id.as_str()).collect();
+        assert_eq!(docs, vec![session_pi.id.as_str(), global_pi.id.as_str()]);
+        let other_session = RetrievalQuery {
+            scopes: vec![ScopeRef {
+                scope: DocumentScope::Session,
+                scope_id: Some("ses_2".into()),
+            }],
+            ..instructions
+        };
+        assert!(retrieve(&db, &other_session, None, None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
