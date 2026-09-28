@@ -706,7 +706,18 @@ export class MockTransport implements Transport {
       },
       timings: { capture: 84, ocr: 128, accessibility: 22, assembly: 41 },
     };
-    if (opts.includeScreen) {
+    // Like Rust: a failed capture keeps the rest of the snapshot and says why.
+    const screenDenied = opts.includeScreen && this.permissions.screenRecording === "denied";
+    if (screenDenied) {
+      snapshot.warnings = [
+        {
+          kind: "screen_unavailable",
+          code: "permission.screen_recording",
+          message: "Screen Recording permission is not granted.",
+          recovery: { type: "open_system_settings", pane: "screenRecording" },
+        },
+      ];
+    } else if (opts.includeScreen) {
       snapshot.screen = {
         image: opts.inlineImage ? FIXTURE_PNG_BASE64 : undefined,
         mimeType: "image/png",
@@ -716,7 +727,7 @@ export class MockTransport implements Transport {
         frameId: createId("frame"),
       };
     }
-    if (opts.includeOcr) {
+    if (opts.includeOcr && !screenDenied) {
       snapshot.ocr = {
         blocks: [
           {

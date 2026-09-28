@@ -8,6 +8,7 @@ import type { SnapshotTrace } from "./latency";
 import type { DocumentKind, DocumentScope } from "./documents";
 import type { BlueyMode, ResponseStyle } from "./mode";
 import type { CodeBlock } from "./response";
+import type { RecoveryAction } from "./errors";
 import type { SessionEvent } from "./session";
 import type { TranscriptSegment } from "./transcript";
 
@@ -180,14 +181,21 @@ export interface ConversationTurn {
   createdAt: string;
 }
 
-/** Why part of the snapshot is missing (mirrors `SnapshotWarning`). */
-export type SnapshotWarningKind = "screen_unavailable";
+/**
+ * Why part of the snapshot is missing (mirrors `SnapshotWarningKind`):
+ * `screen_unavailable` — the capture failed (the rest of the context is kept);
+ * `ocr_pending` — OCR missed its soft deadline and finishes in the background,
+ * so the screenshot has to stand in for the screen text.
+ */
+export type SnapshotWarningKind = "screen_unavailable" | "ocr_pending";
 
 export interface SnapshotWarning {
   kind: SnapshotWarningKind;
-  /** The `BlueyError` code of the underlying failure (e.g. `PERMISSION_DENIED`). */
+  /** The `BlueyError` code of the underlying failure (e.g. `permission.screen_recording`). */
   code: string;
   message: string;
+  /** The fix the UI can offer (e.g. open the Screen Recording pane). */
+  recovery?: RecoveryAction;
 }
 
 export interface ContextSnapshot {
