@@ -7,10 +7,6 @@ use bluey_core::{now_iso, BlueyError, BlueyResult};
 use bluey_storage::{ModeRepository, UsageStats};
 use tauri::State;
 
-use crate::secrets::{
-    provider_key, AGENT_ANTHROPIC_KEY, CLERK_OAUTH_TOKENS_KEY, CLERK_TOKEN_KEY, EXA_KEY,
-    FIRECRAWL_KEY,
-};
 use crate::state::AppCore;
 
 #[tauri::command]
@@ -59,22 +55,16 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
 
     failures.note("sessions", core.sessions.delete_all().await.map(|_| ()));
 
-    // Keychain entries first (while the provider list is still known).
-    let providers = core.settings.get().ai.providers;
-    for provider in &providers {
-        failures.note(
-            &format!("provider key {}", provider.id),
-            core.secrets.delete(&provider_key(&provider.id)).await,
-        );
-    }
-    for key in [
-        EXA_KEY,
-        FIRECRAWL_KEY,
-        AGENT_ANTHROPIC_KEY,
-        CLERK_TOKEN_KEY,
-        CLERK_OAUTH_TOKENS_KEY,
-    ] {
-        failures.note(key, core.secrets.delete(key).await);
+    // Every Keychain item of Bluey's service, found by an attribute-only
+    // enumeration: keys of providers removed long ago go too, and nothing is
+    // decrypted (ADR 0011).
+    match core.secrets.delete_all().await {
+        Ok(failed) => {
+            for (account, error) in failed {
+                failures.push(&format!("keychain item {account}"), error);
+            }
+        }
+        Err(error) => failures.push("keychain", error),
     }
     // Subscription accounts: tokens, catalogs and statuses (ADR 0009).
     for (step, error) in core.accounts.reset_all().await {
