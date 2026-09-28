@@ -73,15 +73,25 @@ pub enum TranscriptionRoute {
     Pcm,
 }
 
-/// Decide how a configured provider is served. `cloud_ready` says whether a
-/// provider session can actually be opened (key + model present); when it
-/// cannot, the route falls back to Apple with a human-readable reason.
+/// Why a cloud provider is not used while Privacy → Cloud AI is off.
+pub const CLOUD_AI_OFF_REASON: &str = "Cloud AI is turned off in Settings → Privacy";
+
+/// Decide how a configured provider is served. `cloud_allowed` is the Privacy
+/// → Cloud AI switch; `cloud_ready` says whether a provider session can
+/// actually be opened (key + model present). When a cloud provider may not or
+/// cannot run, the route falls back to Apple with a human-readable reason.
 pub fn route_for(
     provider: TranscriptionProviderKind,
+    cloud_allowed: bool,
     cloud_ready: bool,
 ) -> (TranscriptionRoute, Option<&'static str>) {
     match provider {
         TranscriptionProviderKind::Apple => (TranscriptionRoute::Apple, None),
+        TranscriptionProviderKind::GeminiLive | TranscriptionProviderKind::CloudRealtime
+            if !cloud_allowed =>
+        {
+            (TranscriptionRoute::Apple, Some(CLOUD_AI_OFF_REASON))
+        }
         _ if cloud_ready => (TranscriptionRoute::Pcm, None),
         TranscriptionProviderKind::GeminiLive => (
             TranscriptionRoute::Apple,
@@ -308,7 +318,12 @@ impl AudioManager {
         config: AudioSessionConfig,
     ) -> BlueyResult<AudioStatus> {
         let cloud = self.cloud_provider(&config).await;
-        let (route, fallback) = route_for(config.transcription.provider, cloud.is_some());
+        let cloud_allowed = self.settings.get().privacy.cloud_ai_enabled;
+        let (route, fallback) = route_for(
+            config.transcription.provider,
+            cloud_allowed,
+            cloud.is_some(),
+        );
         let params = helper_start_params(&config, route);
         // Reset per-session state and install the cloud transcription sink
         // *before* the helper starts capturing, so the first PCM chunks are not
@@ -398,6 +413,64 @@ impl AudioManager {
         Ok(status)
     }
 
+    /// Move a live cloud session onto on-device Apple Speech (Privacy → Cloud
+    /// AI turned off, or the provider rejected its configuration): the helper
+    /// restarts capture with transcription on; the session and its timeline
+    /// continue. A no-op unless listening on a cloud route.
+    pub fn fall_back_to_apple(self: &Arc<Self>, reason: impl Into<String>) {
+        let reason = reason.into();
+        let this = self.clone();
+        // Spawned: this may be called from the transcription pump, which
+        // `close_stt` waits for.
+        tauri::async_runtime::spawn(async move { this.reroute_to_apple(reason).await });
+    }
+
+    async fn reroute_to_apple(self: &Arc<Self>, reason: String) {
+        let (config, was_paused) = {
+            let mut status = self.status.lock();
+            let on_cloud = matches!(
+                status.provider,
+                Some(
+                    TranscriptionProviderKind::GeminiLive
+                        | TranscriptionProviderKind::CloudRealtime
+                )
+            );
+            let live = matches!(
+                status.state,
+                AudioSessionState::Running | AudioSessionState::Paused
+            );
+            let Some(mut config) = self.config.lock().clone() else {
+                return;
+            };
+            if !live || !on_cloud {
+                return;
+            }
+            let was_paused = status.state == AudioSessionState::Paused;
+            // Owning the helper session now: its `audio.stopped{requested}`
+            // is not a user stop.
+            status.state = AudioSessionState::Starting;
+            config.transcription.provider = TranscriptionProviderKind::Apple;
+            (config, was_paused)
+        };
+        tracing::info!("moving live transcription to on-device Apple Speech");
+        self.stop_helper_audio().await;
+        self.close_stt().await;
+        match self.start_claimed(config).await {
+            Ok(_) => {
+                self.bus.publish(BlueyEvent::AudioError(BlueyError::audio(
+                    "stt_fallback",
+                    format!("{reason}; using on-device Apple Speech"),
+                )));
+                if was_paused {
+                    let _ = self.pause().await;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "could not restart listening on Apple Speech");
+            }
+        }
+    }
+
     /// `audio.start` on the helper, reconciling a helper session Rust lost
     /// track of (an earlier start that timed out here but finished there).
     async fn start_helper_audio(self: &Arc<Self>, params: Value) -> BlueyResult<Value> {
@@ -429,8 +502,9 @@ impl AudioManager {
     }
 
     /// Build the cloud transcription provider for the configured kind, or
-    /// `None` when it cannot run (no key / model / developer mode). Returns the
-    /// provider and the model id to open sessions with.
+    /// `None` when it cannot run (no key / model / developer mode, or Privacy
+    /// → Cloud AI off: no audio leaves the Mac then). Returns the provider and
+    /// the model id to open sessions with.
     async fn cloud_provider(
         &self,
         config: &AudioSessionConfig,
@@ -439,6 +513,11 @@ impl AudioManager {
         let assignment = settings.ai.models.transcription.clone();
         match config.transcription.provider {
             TranscriptionProviderKind::Apple => None,
+            TranscriptionProviderKind::GeminiLive | TranscriptionProviderKind::CloudRealtime
+                if !settings.privacy.cloud_ai_enabled =>
+            {
+                None
+            }
             TranscriptionProviderKind::Mock => {
                 let allowed = cfg!(feature = "dev-tools")
                     || cfg!(debug_assertions)
@@ -898,7 +977,12 @@ impl AudioManager {
                 }
             }
             HelperEvent::AudioStopped { reason } => {
-                if !self.is_running() {
+                // While `Starting`, a (re)start owns the helper session and
+                // its own `audio.stop` is expected.
+                if !matches!(
+                    self.status().state,
+                    AudioSessionState::Running | AudioSessionState::Paused
+                ) {
                     return;
                 }
                 let error = match reason.as_str() {
@@ -1063,26 +1147,49 @@ mod tests {
     #[test]
     fn cloud_providers_route_to_pcm_when_ready_and_fall_back_to_apple_otherwise() {
         assert_eq!(
-            route_for(TranscriptionProviderKind::Apple, true),
+            route_for(TranscriptionProviderKind::Apple, true, true),
             (TranscriptionRoute::Apple, None)
         );
         assert_eq!(
-            route_for(TranscriptionProviderKind::GeminiLive, true),
+            route_for(TranscriptionProviderKind::GeminiLive, true, true),
             (TranscriptionRoute::Pcm, None)
         );
         assert_eq!(
-            route_for(TranscriptionProviderKind::CloudRealtime, true),
+            route_for(TranscriptionProviderKind::CloudRealtime, true, true),
             (TranscriptionRoute::Pcm, None)
         );
-        let (route, reason) = route_for(TranscriptionProviderKind::GeminiLive, false);
+        let (route, reason) = route_for(TranscriptionProviderKind::GeminiLive, true, false);
         assert_eq!(route, TranscriptionRoute::Apple);
         assert!(reason.unwrap().contains("Google AI Studio key"));
-        let (route, reason) = route_for(TranscriptionProviderKind::CloudRealtime, false);
+        let (route, reason) = route_for(TranscriptionProviderKind::CloudRealtime, true, false);
         assert_eq!(route, TranscriptionRoute::Apple);
         assert!(reason.is_some());
         assert_eq!(
-            route_for(TranscriptionProviderKind::Mock, false).0,
+            route_for(TranscriptionProviderKind::Mock, true, false).0,
             TranscriptionRoute::Apple
+        );
+    }
+
+    #[test]
+    fn cloud_ai_off_keeps_live_audio_on_the_mac() {
+        for provider in [
+            TranscriptionProviderKind::GeminiLive,
+            TranscriptionProviderKind::CloudRealtime,
+        ] {
+            // Even with a stored key the audio never takes the cloud route.
+            assert_eq!(
+                route_for(provider, false, true),
+                (TranscriptionRoute::Apple, Some(CLOUD_AI_OFF_REASON))
+            );
+        }
+        // Local routes are unaffected by the switch.
+        assert_eq!(
+            route_for(TranscriptionProviderKind::Apple, false, false),
+            (TranscriptionRoute::Apple, None)
+        );
+        assert_eq!(
+            route_for(TranscriptionProviderKind::Mock, false, true),
+            (TranscriptionRoute::Pcm, None)
         );
     }
 

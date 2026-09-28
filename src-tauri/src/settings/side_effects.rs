@@ -36,6 +36,12 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
         }
     }
 
+    // Privacy: Cloud AI off → live transcription leaves the cloud route.
+    if old.privacy.cloud_ai_enabled && !new.privacy.cloud_ai_enabled {
+        core.audio
+            .fall_back_to_apple(crate::audio::CLOUD_AI_OFF_REASON);
+    }
+
     // Launch at login.
     if old.general.launch_at_login != new.general.launch_at_login {
         crate::platform::set_autostart(&core.panel.app_handle(), new.general.launch_at_login);
