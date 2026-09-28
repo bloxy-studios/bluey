@@ -63,12 +63,17 @@ pub async fn sessions_search(
 
 #[tauri::command]
 pub async fn sessions_delete(core: State<'_, AppCore>, id: String) -> BlueyResult<()> {
-    core.sessions.delete(id).await
+    core.sessions.delete(id.clone()).await?;
+    // The in-memory transcript ring must not keep what was just deleted.
+    core.audio.forget_session(&id);
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn sessions_delete_all(core: State<'_, AppCore>) -> BlueyResult<u64> {
-    core.sessions.delete_all().await
+    let count = core.sessions.delete_all().await?;
+    core.audio.forget_all_sessions();
+    Ok(count)
 }
 
 #[tauri::command]

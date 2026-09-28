@@ -11,8 +11,8 @@
 //! A cloud provider without a usable key falls back to Apple with a non-fatal
 //! `audio.error{code: stt_fallback}` so listening never silently fails.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,6 +44,10 @@ use crate::transcription::mock::MockTranscriptionProvider;
 use crate::transcription::{
     self, PcmChunk, SessionOptions, TranscriptionEvent, TranscriptionProvider, TranscriptionSession,
 };
+
+mod ring;
+
+use ring::{RingScope, TranscriptRing};
 
 /// Helper capture sample rate (mono PCM16).
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -157,7 +161,9 @@ pub struct AudioManager {
     chunk_times: parking_lot::Mutex<HashMap<AudioSource, ChunkTiming>>,
     status: parking_lot::Mutex<AudioStatus>,
     config: parking_lot::Mutex<Option<AudioSessionConfig>>,
-    ring: parking_lot::Mutex<VecDeque<TranscriptSegment>>,
+    ring: parking_lot::Mutex<TranscriptRing>,
+    /// The listening run the ring files new finals under (bumped by `start`).
+    run_id: AtomicU64,
     partials: parking_lot::Mutex<HashMap<AudioSource, TranscriptSegment>>,
     assembler: parking_lot::Mutex<TranscriptAssembler>,
     /// The session was started by `audio_start` and ends with it.
@@ -190,7 +196,8 @@ impl AudioManager {
             chunk_times: parking_lot::Mutex::new(HashMap::new()),
             status: parking_lot::Mutex::new(AudioStatus::default()),
             config: parking_lot::Mutex::new(None),
-            ring: parking_lot::Mutex::new(VecDeque::with_capacity(RING_CAPACITY)),
+            ring: parking_lot::Mutex::new(TranscriptRing::new(RING_CAPACITY)),
+            run_id: AtomicU64::new(0),
             partials: parking_lot::Mutex::new(HashMap::new()),
             assembler: parking_lot::Mutex::new(TranscriptAssembler::new()),
             auto_session: AtomicBool::new(false),
@@ -265,6 +272,9 @@ impl AudioManager {
         self.assembler.lock().reset();
         self.partials.lock().clear();
         self.chunk_times.lock().clear();
+        // Finals of earlier runs stay in the ring (the transcript view may
+        // still list them) but are out of this run's context scope.
+        self.run_id.fetch_add(1, Ordering::SeqCst);
         *self.config.lock() = Some(config.clone());
         if route == TranscriptionRoute::Pcm {
             if let Some((provider, model)) = cloud {
@@ -667,18 +677,19 @@ impl AudioManager {
 
     // ── Transcript access ──────────────────────────────────────────────────
 
-    /// Finals from the last `window_seconds` (relative to the newest segment),
-    /// oldest first — the context snapshot's transcript.
+    /// Finals from the last `window_seconds`, oldest first — the context
+    /// snapshot's transcript. While listening only the current run counts;
+    /// otherwise only the active session's finals (none without a session).
     pub fn recent(&self, window_seconds: u32) -> Vec<TranscriptSegment> {
-        let ring = self.ring.lock();
-        let Some(last_end) = ring.back().map(|s| s.end_time) else {
-            return Vec::new();
+        let scope = if self.is_running() {
+            RingScope::Run(self.run_id.load(Ordering::SeqCst))
+        } else {
+            match self.sessions.active_id() {
+                Some(id) => RingScope::Session(id),
+                None => RingScope::Nothing,
+            }
         };
-        let cutoff = last_end.saturating_sub(u64::from(window_seconds) * 1_000);
-        ring.iter()
-            .filter(|s| s.end_time >= cutoff)
-            .cloned()
-            .collect()
+        self.ring.lock().recent(&scope, window_seconds)
     }
 
     /// Stored segments (or the in-memory ring when transcripts are not persisted).
@@ -696,24 +707,10 @@ impl AudioManager {
                 })
                 .await;
         }
-        let ring = self.ring.lock();
-        let mut segments: Vec<TranscriptSegment> = ring
-            .iter()
-            .filter(|s| {
-                session_id
-                    .as_deref()
-                    .is_none_or(|id| s.session_id.as_deref() == Some(id))
-            })
-            .filter(|s| since_ms.is_none_or(|since| s.start_time >= since))
-            .cloned()
-            .collect();
-        if let Some(limit) = limit {
-            let keep = limit as usize;
-            if segments.len() > keep {
-                segments.drain(..segments.len() - keep);
-            }
-        }
-        Ok(segments)
+        Ok(self
+            .ring
+            .lock()
+            .list(session_id.as_deref(), since_ms, limit))
     }
 
     /// Delete stored segments (one session or everything) and clear the ring.
@@ -726,7 +723,7 @@ impl AudioManager {
         {
             let mut ring = self.ring.lock();
             match &session_id {
-                Some(id) => ring.retain(|s| s.session_id.as_deref() != Some(id.as_str())),
+                Some(id) => ring.forget_session(id),
                 None => ring.clear(),
             }
         }
@@ -734,6 +731,22 @@ impl AudioManager {
         self.bus
             .publish(BlueyEvent::TranscriptCleared { session_id });
         Ok(removed)
+    }
+
+    /// A session was deleted: its finals leave the in-memory ring too (the
+    /// database rows went with the session).
+    pub fn forget_session(&self, session_id: &str) {
+        self.ring.lock().forget_session(session_id);
+        self.bus.publish(BlueyEvent::TranscriptCleared {
+            session_id: Some(session_id.to_string()),
+        });
+    }
+
+    /// Every session was deleted.
+    pub fn forget_all_sessions(&self) {
+        self.ring.lock().forget_all_sessions();
+        self.bus
+            .publish(BlueyEvent::TranscriptCleared { session_id: None });
     }
 
     /// Developer mode: inject a finalized segment as if it had been heard.
@@ -746,8 +759,8 @@ impl AudioManager {
         let start = self
             .ring
             .lock()
-            .back()
-            .map(|s| s.end_time + 800)
+            .last_end_of_run(self.run_id.load(Ordering::SeqCst))
+            .map(|end| end + 800)
             .unwrap_or(0);
         let segment = TranscriptSegment {
             id: new_id("seg"),
@@ -909,13 +922,9 @@ impl AudioManager {
     }
 
     async fn commit_final(&self, segment: TranscriptSegment) {
-        {
-            let mut ring = self.ring.lock();
-            if ring.len() >= RING_CAPACITY {
-                ring.pop_front();
-            }
-            ring.push_back(segment.clone());
-        }
+        self.ring
+            .lock()
+            .push(self.run_id.load(Ordering::SeqCst), segment.clone());
         if self.settings.get().privacy.store_transcripts && segment.session_id.is_some() {
             let stored = segment.clone();
             let result = self
