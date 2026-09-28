@@ -82,6 +82,39 @@ describe("truncated output", () => {
     expect(result?.truncated).toBeUndefined();
   });
 
+  it("keeps the cut draft on screen until the retry outgrows it (LIVE-015)", async () => {
+    let call = 0;
+    fake.setAIScript((request, emit) => {
+      call += 1;
+      if (call === 1) {
+        emit({ type: "delta", requestId: request.requestId, text: CUT });
+        emit({ type: "completed", requestId: request.requestId, finishReason: "length", totalMs: 10 });
+        return;
+      }
+      const head = FULL.slice(0, FULL.indexOf("B —") + 3);
+      emit({ type: "delta", requestId: request.requestId, text: head });
+      emit({ type: "delta", requestId: request.requestId, text: FULL.slice(head.length) });
+      emit({ type: "completed", requestId: request.requestId, finishReason: "stop", totalMs: 10 });
+    });
+    const drafts: string[] = [];
+    const engine = createResponseEngine({ now: () => new Date("2026-09-12T10:00:00.000Z") });
+    const handle = engine.ask(
+      {
+        trigger: "typed",
+        instruction: "Which index should I add?",
+        captureScreen: false,
+        snapshot: makeSnapshot(),
+        mode: makeMode(),
+        settings: makeSettings(),
+      },
+      { onDraft: (draft) => drafts.push(draft.content) },
+    );
+    await handle.done;
+    const lengths = drafts.map((draft) => draft.length);
+    expect(lengths).toEqual([...lengths].sort((a, b) => a - b));
+    expect(drafts.at(-1)).toContain("covers the predicate");
+  });
+
   it("salvages the streamed content and marks the answer truncated when the retry is cut too", async () => {
     const { result, errors, requests } = await ask([{ text: CUT, finish: "length" }]);
     expect(errors).toEqual([]);

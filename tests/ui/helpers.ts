@@ -166,6 +166,22 @@ export class FakeEngine implements ResponseEngine {
     return this.preparedQueue.shift() ?? null;
   }
 
+  clearPreparedCalls = 0;
+
+  clearPrepared(): void {
+    this.clearPreparedCalls += 1;
+    this.preparedQueue = [];
+  }
+
+  /** Answers persisted because they were shown (prepared/cached ones). */
+  committed: BlueyResponse[] = [];
+
+  async commitShown(response: BlueyResponse): Promise<BlueyResponse> {
+    const { prepared: _prepared, ...shown } = response;
+    this.committed.push(shown);
+    return shown;
+  }
+
   async classify(_input: ClassifyInput): Promise<DetectedEvent | null> {
     return null;
   }
