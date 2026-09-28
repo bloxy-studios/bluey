@@ -43,8 +43,7 @@ export const MODE_PROMPTS: Record<ResponseSchemaId, ModePrompt> = {
   coding: {
     schemaId: "coding",
     fragment: [
-      "Fields: `content` opens with the approach in two to five lines, then the complete runnable solution in a fenced block with the language tag.",
-      "`code` is that same full solution with `language` set (infer it from the visible editor or judge; never truncate or elide code).",
+      "Fields: `content` opens with the complete runnable solution in a fenced block with the language tag (infer it from the visible editor or judge; never truncate or elide code), then the approach in at most two lines.",
       '`sections`: "Complexity" (time and space, one line each with the reason) and "Edge cases" (the inputs that break naive solutions and how the code handles them).',
       "If the statement is incomplete, solve the most reasonable reading and state the assumption in one line.",
     ].join(" "),

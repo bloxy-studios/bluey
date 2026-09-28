@@ -37,12 +37,6 @@ function sectionSchema(titles?: readonly string[]) {
   });
 }
 
-const codeBlockSchema = z.object({
-  language: z.string(),
-  code: z.string(),
-  filename: z.string().optional(),
-});
-
 const citationSchema = z.object({
   title: z.string(),
   url: z.string(),
@@ -52,19 +46,24 @@ const citationSchema = z.object({
 interface SchemaShapeOptions {
   responseType: ResponseType;
   sectionTitles?: readonly string[];
-  includeCode?: boolean;
   includeDiagram?: boolean;
 }
 
+/**
+ * No `code` field: the solution lives once, fenced, in `content` and the
+ * optimizer derives `code` from its first fence — asking for a copy made the
+ * model write it twice, and strict providers stream keys sorted, so `code`
+ * came before `content` (AI-001). No numeric bounds on `confidence` either:
+ * Anthropic structured outputs reject them and the parser clamps (PROV-003).
+ */
 function structuredSchema(opts: SchemaShapeOptions) {
   return z.object({
     responseType: z.literal(opts.responseType),
     title: z.string().optional(),
     content: z.string(),
     sections: z.array(sectionSchema(opts.sectionTitles)).optional(),
-    ...(opts.includeCode ? { code: codeBlockSchema.optional() } : {}),
     ...(opts.includeDiagram ? { diagram: z.string().optional() } : {}),
-    confidence: z.number().min(0).max(1).optional(),
+    confidence: z.number().optional(),
     citations: z.array(citationSchema).optional(),
   });
 }
@@ -122,7 +121,6 @@ const ZOD_SCHEMAS: Record<ResponseSchemaId, z.ZodType> = {
   coding: structuredSchema({
     responseType: "code",
     sectionTitles: SECTION_TITLES.coding,
-    includeCode: true,
   }),
   "system-design": structuredSchema({
     responseType: "system-design",

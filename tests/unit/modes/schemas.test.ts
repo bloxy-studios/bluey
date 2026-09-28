@@ -33,13 +33,30 @@ describe("outputSchemaFor", () => {
     }
   });
 
-  it("includes code for coding and diagram for system-design", () => {
+  it("includes a diagram for system-design and asks no schema for a separate `code` copy", () => {
+    // AI-001: the optimizer derives `code` from the first fence in `content`;
+    // asking for it too made the model write the solution twice, code first.
     const coding = outputSchemaFor("coding").schema.properties as Record<string, unknown>;
-    expect(coding.code).toBeDefined();
+    expect(coding.code).toBeUndefined();
     const design = outputSchemaFor("system-design").schema.properties as Record<string, unknown>;
     expect(design.diagram).toBeDefined();
     const answer = outputSchemaFor("answer").schema.properties as Record<string, unknown>;
     expect(answer.code).toBeUndefined();
+  });
+
+  it("puts nothing but tiny fields before `content` in sorted key order (strict providers stream sorted keys)", () => {
+    for (const schemaId of ALL_SCHEMAS) {
+      const keys = Object.keys(outputSchemaFor(schemaId).schema.properties as object).sort();
+      const before = keys.slice(0, keys.indexOf("content"));
+      expect(before.every((key) => key === "citations" || key === "confidence")).toBe(true);
+    }
+  });
+
+  it("carries no numeric or length constraints (Anthropic structured outputs reject them)", () => {
+    for (const schemaId of ALL_SCHEMAS) {
+      const json = JSON.stringify(outputSchemaFor(schemaId).schema);
+      expect(json).not.toMatch(/"(minimum|maximum|exclusiveMinimum|exclusiveMaximum|multipleOf|minLength|maxLength)"/);
+    }
   });
 });
 

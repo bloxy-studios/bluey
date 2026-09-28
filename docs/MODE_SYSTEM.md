@@ -20,7 +20,7 @@ interface BlueyMode {
 | General (default) | answer | fast | screen, accessibility, transcript, documents | the answer, first person, answer first |
 | Interview | suggested-response | ultra-fast | transcript, resume, job_description, screen | exactly what the candidate says next |
 | Behavioral Interview | behavioral | fast | transcript, resume | the spoken answer (STAR inside, unlabelled) · Story used · Key point |
-| Coding Interview | coding | balanced | screen, accessibility, transcript | approach + exact code in `content` and `code` · Complexity · Edge cases |
+| Coding Interview | coding | balanced | screen, accessibility, transcript | the fenced solution first in `content` (the app derives `code` from it), then the approach in ≤2 lines · Complexity · Edge cases |
 | System Design | system-design | deep | screen, transcript | requirements → … → trade-offs, optional Mermaid diagram |
 | Case Interview | case | balanced | transcript, screen | the next thing to say · Clarify · Framework · Analyze · Calculate · Synthesize · Recommend |
 | Sales | sales | ultra-fast | transcript, documents | what the seller says next · Why it works · Optional follow-up |
