@@ -155,6 +155,51 @@ fn make_nullable(property: &mut Value) {
     *property = json!({ "anyOf": [original, { "type": "null" }] });
 }
 
+/// Numeric and length bounds Anthropic's structured outputs do not support; a
+/// schema carrying one is answered with HTTP 400 on `output_config`.
+const UNSUPPORTED_BY_ANTHROPIC: [&str; 7] = [
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+];
+
+/// The schema as Anthropic's `output_config.format` accepts it: no `$schema`
+/// and no numeric or length bounds, at any depth. Only schema keywords are
+/// removed — a *property* named `minimum` is kept. The parsers clamp values.
+pub fn anthropic_variant(schema: &Value) -> Value {
+    let mut out = strip_meta(schema);
+    strip_bounds(&mut out);
+    out
+}
+
+fn strip_bounds(node: &mut Value) {
+    let Value::Object(map) = node else {
+        return;
+    };
+    for key in UNSUPPORTED_BY_ANTHROPIC {
+        map.remove(key);
+    }
+    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+        if let Some(Value::Array(items)) = map.get_mut(key) {
+            items.iter_mut().for_each(strip_bounds);
+        }
+    }
+    for key in ["items", "not", "if", "then", "else", "additionalProperties"] {
+        if let Some(child) = map.get_mut(key) {
+            strip_bounds(child);
+        }
+    }
+    for key in ["properties", "$defs", "definitions"] {
+        if let Some(Value::Object(children)) = map.get_mut(key) {
+            children.values_mut().for_each(strip_bounds);
+        }
+    }
+}
+
 /// Property names of an object schema, in declaration order (tests, logging).
 pub fn property_names(schema: &Value) -> Vec<String> {
     schema
@@ -348,5 +393,36 @@ mod tests {
             json!({ "type": "object", "required": [], "additionalProperties": false })
         );
         assert_eq!(property_names(&zod_coding_schema()).len(), 6);
+    }
+
+    #[test]
+    fn anthropic_variant_strips_bounds_at_every_depth_but_keeps_property_names() {
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                "minimum": { "type": "string", "minLength": 1, "maxLength": 9 },
+                "sections": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "n": { "anyOf": [{ "type": "integer", "exclusiveMinimum": 0, "multipleOf": 2 }] }
+                        }
+                    }
+                }
+            },
+            "required": ["minimum"]
+        });
+        let out = anthropic_variant(&schema);
+        assert!(out.get("$schema").is_none());
+        assert_eq!(out["properties"]["confidence"], json!({ "type": "number" }));
+        assert_eq!(out["properties"]["minimum"], json!({ "type": "string" }));
+        assert_eq!(
+            out["properties"]["sections"]["items"]["properties"]["n"],
+            json!({ "anyOf": [{ "type": "integer" }] })
+        );
+        assert_eq!(out["required"], json!(["minimum"]));
     }
 }
