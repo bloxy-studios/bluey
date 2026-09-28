@@ -161,7 +161,9 @@ export async function retrieveRelevantContext(args: RetrieveArgs): Promise<Retri
     hasQuery && mode.attachedDocumentIds.length > 0
       ? run(api, { query: queryText, scopes: modeScope, limit, strategy })
       : none,
-    hasQuery && kinds.length > 0 ? run(api, { query: queryText, scopes: library, kinds, limit, strategy }) : none,
+    hasQuery && kinds.length > 0
+      ? run(api, { query: queryText, scopes: library, kinds, limit, strategy })
+      : none,
     hasQuery
       ? run(api, { query: queryText, scopes: library, limit: OPPORTUNISTIC_LIMIT, strategy: "keyword" })
       : none,

@@ -9,7 +9,13 @@ import { allocateBudget } from "@/context/budget";
 import { fuseContext } from "@/context/fusion";
 import { enrichSnapshot } from "@/context/snapshot";
 import type { ContextSnapshot } from "@/lib/types";
-import { makeMode, makeResponse, makeSession, makeSettings, makeSnapshot } from "../../fixtures/helpers/builders";
+import {
+  makeMode,
+  makeResponse,
+  makeSession,
+  makeSettings,
+  makeSnapshot,
+} from "../../fixtures/helpers/builders";
 
 const settings = makeSettings();
 const mode = makeMode();
@@ -18,7 +24,8 @@ const twoSum = makeResponse({
   id: "resp_two_sum",
   prompt: "Solve Two Sum",
   title: "Two Sum with a hash map",
-  content: "Walk the array once and keep a map from value to index; each lookup is O(1), so the whole pass is O(n).",
+  content:
+    "Walk the array once and keep a map from value to index; each lookup is O(1), so the whole pass is O(n).",
   code: {
     language: "python",
     code: "def two_sum(nums, target):\n    seen = {}\n    for i, n in enumerate(nums):\n        if target - n in seen:\n            return [seen[target - n], i]\n        seen[n] = i",
@@ -36,7 +43,11 @@ const older = [1, 2, 3].map((n) =>
   }),
 );
 
-function prompt(snapshot: ContextSnapshot, instruction: string, trigger: "follow_up" | "typed" = "follow_up") {
+function prompt(
+  snapshot: ContextSnapshot,
+  instruction: string,
+  trigger: "follow_up" | "typed" = "follow_up",
+) {
   const items = fuseContext(snapshot, { instruction });
   return new PromptBuilder({
     mode,
@@ -65,7 +76,12 @@ describe("conversation memory", () => {
 
   it("renders the previous question, answer and code before the follow-up", () => {
     const instruction = "Can you rewrite your solution in Go?";
-    const enriched = enrichSnapshot(makeSnapshot(), { mode, settings, instruction, previousResponses: [twoSum] });
+    const enriched = enrichSnapshot(makeSnapshot(), {
+      mode,
+      settings,
+      instruction,
+      previousResponses: [twoSum],
+    });
     const builder = prompt(enriched, instruction);
     const context = builder.renderContext();
 
@@ -103,11 +119,17 @@ describe("conversation memory", () => {
     const plain = makeResponse({
       id: "resp_plain",
       prompt: "Reverse a list in JS",
-      content: "Use the built-in:\n\n```js\nconst reversed = [...xs].reverse();\n```\n\nIt copies first so the input stays intact.",
+      content:
+        "Use the built-in:\n\n```js\nconst reversed = [...xs].reverse();\n```\n\nIt copies first so the input stays intact.",
       createdAt: "2026-09-07T09:02:00.000Z",
     });
     const instruction = "why copy first?";
-    const enriched = enrichSnapshot(makeSnapshot(), { mode, settings, instruction, previousResponses: [plain] });
+    const enriched = enrichSnapshot(makeSnapshot(), {
+      mode,
+      settings,
+      instruction,
+      previousResponses: [plain],
+    });
     const context = prompt(enriched, instruction).renderContext();
     expect(context).toContain("```js\nconst reversed = [...xs].reverse();\n```");
     expect(context).toContain("It copies first so the input stays intact.");
@@ -134,7 +156,9 @@ describe("conversation memory", () => {
         sessionId: "ses_1",
         modeId: "general",
         startedAt: "2026-09-07T08:55:00.000Z",
-        recentResponses: [{ id: "r_db", content: "Answer loaded from the DB.", createdAt: "2026-09-07T08:57:00.000Z" }],
+        recentResponses: [
+          { id: "r_db", content: "Answer loaded from the DB.", createdAt: "2026-09-07T08:57:00.000Z" },
+        ],
         recentEvents: [],
         notes: [],
         documentIds: [],

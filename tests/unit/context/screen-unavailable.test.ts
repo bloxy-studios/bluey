@@ -19,7 +19,9 @@ const options = {
 describe("snapshot without Screen Recording", () => {
   it("keeps accessibility and app identity and says why the screen is missing", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
-    await mock.invoke("dev_simulate", { simulation: { type: "permission_error", permission: "screenRecording" } });
+    await mock.invoke("dev_simulate", {
+      simulation: { type: "permission_error", permission: "screenRecording" },
+    });
 
     const snapshot: ContextSnapshot = await mock.invoke("context_build_snapshot", { options });
 

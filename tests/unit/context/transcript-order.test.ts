@@ -15,7 +15,10 @@ const turns = Array.from({ length: 12 }, (_, i) =>
     id: `t${i}`,
     speaker: i % 2 === 0 ? "Interviewer" : "You",
     source: i % 2 === 0 ? "system" : "microphone",
-    text: i % 2 === 0 ? `Turn ${i}: what was the hardest bug you fixed?` : `Turn ${i}: it was a race in the cache layer.`,
+    text:
+      i % 2 === 0
+        ? `Turn ${i}: what was the hardest bug you fixed?`
+        : `Turn ${i}: it was a race in the cache layer.`,
     startTime: i * 10_000,
     endTime: i * 10_000 + 8_000,
   }),
@@ -44,7 +47,10 @@ describe("transcript render order", () => {
     // Fusion order is by relevance (questions hoisted), not by time.
     expect(items.map((item) => item.ref)).not.toEqual(turns.map((t) => `segment:${t.id}`));
 
-    const lines = sectionLines(render(allocateBudget(items, 4_000).included), "Recent conversation (You / Speaker)");
+    const lines = sectionLines(
+      render(allocateBudget(items, 4_000).included),
+      "Recent conversation (You / Speaker)",
+    );
     expect(lines).toEqual(turns.map((t) => `${t.speaker}: ${t.text}`));
   });
 
@@ -63,10 +69,29 @@ describe("transcript render order", () => {
 
   it("puts older conversation right before the recent turns, earlier summary first", () => {
     const old = [
-      makeSegment({ id: "o1", speaker: "Interviewer", text: "Tell me about your background.", startTime: 0, endTime: 4_000 }),
-      makeSegment({ id: "o2", speaker: "You", source: "microphone", text: "I spent six years on payments.", startTime: 5_000, endTime: 9_000 }),
+      makeSegment({
+        id: "o1",
+        speaker: "Interviewer",
+        text: "Tell me about your background.",
+        startTime: 0,
+        endTime: 4_000,
+      }),
+      makeSegment({
+        id: "o2",
+        speaker: "You",
+        source: "microphone",
+        text: "I spent six years on payments.",
+        startTime: 5_000,
+        endTime: 9_000,
+      }),
     ];
-    const fresh = makeSegment({ id: "n1", speaker: "Interviewer", text: "Why did you leave?", startTime: 300_000, endTime: 303_000 });
+    const fresh = makeSegment({
+      id: "n1",
+      speaker: "Interviewer",
+      text: "Why did you leave?",
+      startTime: 300_000,
+      endTime: 303_000,
+    });
     const snapshot = makeSnapshot({
       transcript: { segments: [...old, fresh], earlierSummary: "Intro small talk.", windowSeconds: 180 },
       session: {

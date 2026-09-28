@@ -11,10 +11,35 @@ import type { DetectedEvent } from "@/lib/types";
 import { makeMode, makeSegment, makeSnapshot } from "../../fixtures/helpers/builders";
 
 const segments = [
-  makeSegment({ id: "a", speaker: "Interviewer", text: "Thanks for joining us today.", startTime: 0, endTime: 2_000 }),
-  makeSegment({ id: "b", speaker: "Interviewer", text: "Can you walk me through a project you led?", startTime: 3_000, endTime: 6_000 }),
-  makeSegment({ id: "c", speaker: "You", source: "microphone", text: "Sure, I led the migration to Kafka.", startTime: 7_000, endTime: 12_000 }),
-  makeSegment({ id: "d", speaker: "Interviewer", text: "How did you handle exactly-once delivery?", startTime: 13_000, endTime: 16_000 }),
+  makeSegment({
+    id: "a",
+    speaker: "Interviewer",
+    text: "Thanks for joining us today.",
+    startTime: 0,
+    endTime: 2_000,
+  }),
+  makeSegment({
+    id: "b",
+    speaker: "Interviewer",
+    text: "Can you walk me through a project you led?",
+    startTime: 3_000,
+    endTime: 6_000,
+  }),
+  makeSegment({
+    id: "c",
+    speaker: "You",
+    source: "microphone",
+    text: "Sure, I led the migration to Kafka.",
+    startTime: 7_000,
+    endTime: 12_000,
+  }),
+  makeSegment({
+    id: "d",
+    speaker: "Interviewer",
+    text: "How did you handle exactly-once delivery?",
+    startTime: 13_000,
+    endTime: 16_000,
+  }),
 ];
 
 const event: DetectedEvent = {

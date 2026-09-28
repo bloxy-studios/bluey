@@ -28,7 +28,12 @@ function ax(overrides: Partial<AccessibilityContext> = {}): AccessibilityContext
     capturedAt: "2026-09-28T09:00:00.000Z",
     application: { name: "Google Chrome", bundleId: "com.google.Chrome" },
     window: { title: "Two Sum - LeetCode", adapter: "chrome" },
-    focusedElement: { role: "AXTextArea", depth: 3, label: "Code editor", value: "def twoSum(self, nums, target):\n    pass" },
+    focusedElement: {
+      role: "AXTextArea",
+      depth: 3,
+      label: "Code editor",
+      value: "def twoSum(self, nums, target):\n    pass",
+    },
     // The AX tree wraps the statement differently from the OCR lines.
     visibleText: [
       "Two Sum - LeetCode",
@@ -76,9 +81,9 @@ describe("app and window identity (CTX-012)", () => {
       activeApplication: { name: "Mail" },
       activeWindow: { title: "Re: offer letter — confidential" },
     });
-    expect(fuseContext(snapshot, { instruction: "tell me about yourself" }).some((i) => i.source === "active_app")).toBe(
-      false,
-    );
+    expect(
+      fuseContext(snapshot, { instruction: "tell me about yourself" }).some((i) => i.source === "active_app"),
+    ).toBe(false);
   });
 });
 
@@ -97,7 +102,9 @@ describe("window text de-duplication (PERF-005)", () => {
       "Only one valid answer exists.",
       "Follow-up: Can you come up with an algorithm that is less than O(n^2) time complexity?",
     ].join("\n");
-    const items = fuseContext(chromeSnapshot({ accessibility: ax({ visibleText }) }), { instruction: "solve this" });
+    const items = fuseContext(chromeSnapshot({ accessibility: ax({ visibleText }) }), {
+      instruction: "solve this",
+    });
     const windowText = items.find((item) => item.source === "window_text");
     expect(windowText?.content).toBe(visibleText.split("\n").slice(1).join("\n"));
     expect(render(items)).toContain(`### ${SECTION_LABELS.window_text}\nConstraints:`);
@@ -110,9 +117,17 @@ describe("window text de-duplication (PERF-005)", () => {
 });
 
 describe("relevance floor for unrelated typed asks (PERF-006)", () => {
-  const longOcr = Array.from({ length: 200 }, (_, i) => `Row ${i}: quarterly revenue ledger entry ${i * 7}`).join("\n");
+  const longOcr = Array.from(
+    { length: 200 },
+    (_, i) => `Row ${i}: quarterly revenue ledger entry ${i * 7}`,
+  ).join("\n");
   const segments = Array.from({ length: 6 }, (_, i) =>
-    makeSegment({ id: `s${i}`, text: `Turn ${i} about the roadmap.`, startTime: i * 5_000, endTime: i * 5_000 + 4_000 }),
+    makeSegment({
+      id: `s${i}`,
+      text: `Turn ${i} about the roadmap.`,
+      startTime: i * 5_000,
+      endTime: i * 5_000 + 4_000,
+    }),
   );
   const snapshot = chromeSnapshot({
     ocr: ocr(longOcr),
@@ -182,6 +197,8 @@ describe("session notes", () => {
     const notes = items.filter((item) => item.ref === "session:notes");
     expect(notes).toHaveLength(1);
     expect(notes[0]!.source).toBe("session_memory");
-    expect(notes[0]!.content).toBe("Your notes for this session:\n- Ask about on-call\n- Salary band 180-200k");
+    expect(notes[0]!.content).toBe(
+      "Your notes for this session:\n- Ask about on-call\n- Salary band 180-200k",
+    );
   });
 });

@@ -19,7 +19,13 @@ const TRIGGERS: AskTrigger[] = ["typed", "shortcut_capture", "shortcut_generate"
 describe("snapshotOptionsFor with screen context off", () => {
   it("never includes the screen, OCR or the accessibility tree", () => {
     for (const trigger of TRIGGERS) {
-      const options = snapshotOptionsFor({ mode: screenMode, settings, trigger, captureScreen: true, screenAllowed: false });
+      const options = snapshotOptionsFor({
+        mode: screenMode,
+        settings,
+        trigger,
+        captureScreen: true,
+        screenAllowed: false,
+      });
       expect(options).toMatchObject({ includeScreen: false, includeOcr: false, includeAccessibility: false });
       expect(options.inlineImage).toBe(false);
       expect(options.capture).toBeUndefined();
@@ -29,7 +35,12 @@ describe("snapshotOptionsFor with screen context off", () => {
 
   it("still captures when the toggle is on or unset", () => {
     for (const screenAllowed of [true, undefined]) {
-      const options = snapshotOptionsFor({ mode: screenMode, settings, trigger: "shortcut_capture", screenAllowed });
+      const options = snapshotOptionsFor({
+        mode: screenMode,
+        settings,
+        trigger: "shortcut_capture",
+        screenAllowed,
+      });
       expect(options.includeScreen).toBe(true);
       expect(options.includeAccessibility).toBe(true);
     }
@@ -43,7 +54,13 @@ function answerScript(request: { requestId: string }, emit: (chunk: AIChunk) => 
     selection: { providerId: "mock", providerKind: "mock", model: "mock-1", role: "default", reason: "test" },
   });
   emit({ type: "delta", requestId: request.requestId, text: "The deadline is Friday." });
-  emit({ type: "completed", requestId: request.requestId, finishReason: "stop", totalMs: 300, timeToFirstTokenMs: 80 });
+  emit({
+    type: "completed",
+    requestId: request.requestId,
+    finishReason: "stop",
+    totalMs: 300,
+    timeToFirstTokenMs: 80,
+  });
 }
 
 describe("engine with screen context off", () => {
@@ -75,7 +92,11 @@ describe("engine with screen context off", () => {
     expect(await handle.done).not.toBeNull();
 
     expect(requested).toHaveLength(1);
-    expect(requested[0]).toMatchObject({ includeScreen: false, includeOcr: false, includeAccessibility: false });
+    expect(requested[0]).toMatchObject({
+      includeScreen: false,
+      includeOcr: false,
+      includeAccessibility: false,
+    });
     expect(phases).not.toContain("capturing");
   });
 });
