@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FollowUpHeader, HudIdleRow } from "@/features/hud/HudInputRow";
 import { useHudShortcuts, type HudShortcutHandlers } from "@/features/hud/useHudShortcuts";
+import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { setupMockApp } from "./helpers";
 
@@ -279,7 +280,22 @@ describe("HUD shortcut scope", () => {
     });
     expect(shortcuts.onCaptureAnalyze).toHaveBeenCalledOnce();
     expect(shortcuts.onGenerate).toHaveBeenCalledOnce();
-    expect(shortcuts.onNewChat).toHaveBeenCalledTimes(2);
+    // Rust sends ⌘R as both `shortcut.triggered` and `panel.newChat`: one new chat, not two.
+    expect(shortcuts.onNewChat).toHaveBeenCalledOnce();
+  });
+
+  it("leaves toggle_listening to Rust: the HUD starts or stops no audio itself (LIVE-007)", async () => {
+    const start = vi.spyOn(bluey.audio, "start");
+    const stop = vi.spyOn(bluey.audio, "stop");
+    renderHook(() => useHudShortcuts(handlers()));
+    act(() => {
+      eventBus.emit("shortcut.triggered", { id: "toggle_listening", at: new Date().toISOString() });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(start).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
   });
 
   it("releases a composition gate when focus moves inside the HUD without a compositionend", () => {

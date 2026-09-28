@@ -1,10 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import { showErrorToast } from "@/components/ui/toast-store";
-import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
-import { toBlueyError } from "@/lib/types";
-import { useAppStore } from "@/stores/appStore";
 import { hasActiveHudOverlay, isComposingKey } from "./hud-keyboard";
 
 export interface HudShortcutHandlers {
@@ -46,20 +42,10 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
       if (hasActiveHudOverlay()) overlayKeys.add(event);
     };
 
-    const toggleListening = async () => {
-      const audioActive = useAppStore.getState().status?.audioActive ?? false;
-      try {
-        if (audioActive) await bluey.audio.stop();
-        else await bluey.audio.start();
-      } catch (error) {
-        showErrorToast(toBlueyError(error, "audio"));
-      }
-    };
-
     const offShortcut = eventBus.on("shortcut.triggered", ({ id, monoMs }) => {
       // Keep backend bindings/dispatch intact; only protect local IME work from
       // ask/new-chat notifications received while the HUD is composing.
-      if (composing && (id === "capture_analyze" || id === "generate_response" || id === "new_chat")) return;
+      if (composing && (id === "capture_analyze" || id === "generate_response")) return;
       const triggeredAtMs = typeof monoMs === "number" ? monoMs : undefined;
       switch (id) {
         case "capture_analyze":
@@ -68,12 +54,8 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
         case "generate_response":
           handlersRef.current.onGenerate(triggeredAtMs);
           break;
-        case "new_chat":
-          handlersRef.current.onNewChat();
-          break;
-        case "toggle_listening":
-          void toggleListening();
-          break;
+        // `new_chat` arrives as `panel.newChat` (below) and `toggle_listening` is handled
+        // natively in Rust: acting here too would run them twice (LIVE-007).
         default:
           break;
       }
