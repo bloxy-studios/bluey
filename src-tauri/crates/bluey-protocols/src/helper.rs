@@ -350,6 +350,15 @@ pub enum HelperEvent {
     AudioError(crate::jsonl::WireError),
     TranscriptPartial(WireTranscript),
     TranscriptFinal(WireTranscript),
+    /// Supervisor event (never on the wire): the helper process exited.
+    /// `restarting` says a replacement is on its way.
+    Exited {
+        restarting: bool,
+    },
+    /// Supervisor event (never on the wire): a replacement helper finished its
+    /// handshake after an exit. Nothing the old process was doing (audio
+    /// capture, observation) carried over.
+    Restarted,
     Unknown {
         event: String,
     },

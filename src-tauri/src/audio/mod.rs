@@ -165,6 +165,30 @@ fn start_recovery(error: &BlueyError) -> StartRecovery {
     }
 }
 
+/// What the helper exiting means for the listening run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HelperExitPlan {
+    /// The run was live: it stops (with an error) — no capture survives the
+    /// process.
+    stop_run: bool,
+    /// Re-issue the run with its config once the replacement helper is up.
+    resume: bool,
+    /// The helper is gone for good: the run's auto-started session ends.
+    end_auto_session: bool,
+}
+
+fn helper_exit_plan(state: AudioSessionState, restarting: bool) -> HelperExitPlan {
+    let live = matches!(
+        state,
+        AudioSessionState::Running | AudioSessionState::Paused
+    );
+    HelperExitPlan {
+        stop_run: live,
+        resume: live && restarting,
+        end_auto_session: !restarting,
+    }
+}
+
 /// Move a run-relative transcript onto the session's timeline.
 fn on_session_timeline(mut wire: WireTranscript, offset_ms: u64) -> WireTranscript {
     wire.start_ms = wire.start_ms.saturating_add(offset_ms);
@@ -225,6 +249,9 @@ pub struct AudioManager {
     /// Added to this run's segment times: a run attached to a session that
     /// already has a transcript continues its timeline.
     time_offset_ms: AtomicU64,
+    /// The config of a run the helper died under, re-issued once the
+    /// supervisor's replacement helper is up.
+    resume: parking_lot::Mutex<Option<AudioSessionConfig>>,
     listener_started: AtomicBool,
 }
 
@@ -259,6 +286,7 @@ impl AudioManager {
             assembler: parking_lot::Mutex::new(TranscriptAssembler::new()),
             auto_session: parking_lot::Mutex::new(None),
             time_offset_ms: AtomicU64::new(0),
+            resume: parking_lot::Mutex::new(None),
             listener_started: AtomicBool::new(false),
         }
     }
@@ -346,6 +374,8 @@ impl AudioManager {
         // Finals of earlier runs stay in the ring (the transcript view may
         // still list them) but are out of this run's context scope.
         self.run_id.fetch_add(1, Ordering::SeqCst);
+        // This run supersedes one waiting for a helper restart.
+        self.resume.lock().take();
         // Segment times restart at 0 with every helper `audio.start`.
         let offset = match self.sessions.active_id() {
             Some(id) => self.session_last_end_ms(&id).await,
@@ -755,6 +785,7 @@ impl AudioManager {
 
     /// Stop listening (and end the auto-started session).
     pub async fn stop(&self) -> BlueyResult<AudioStatus> {
+        self.resume.lock().take();
         self.stop_helper_audio().await;
         self.close_stt().await;
         let status = self.mark_stopped(None);
@@ -1001,7 +1032,48 @@ impl AudioManager {
         });
     }
 
-    async fn handle_helper_event(&self, event: HelperEvent) {
+    /// The helper died. A live run cannot capture any more, so the status
+    /// stops claiming it; when a replacement is on its way the run is resumed
+    /// with the same config (and session) once it is up.
+    async fn on_helper_exited(&self, restarting: bool) {
+        let plan = helper_exit_plan(self.status().state, restarting);
+        if plan.stop_run {
+            let config = self.config.lock().clone();
+            self.close_stt().await;
+            if plan.resume {
+                *self.resume.lock() = config;
+            }
+            self.mark_stopped(Some(BlueyError::sidecar(
+                "helper_exited",
+                "the native helper stopped while listening",
+            )));
+        }
+        if plan.end_auto_session {
+            self.resume.lock().take();
+            self.end_auto_session().await;
+        }
+    }
+
+    /// The replacement helper is up: resume the run it lost (once).
+    fn on_helper_restarted(self: &Arc<Self>) {
+        let Some(config) = self.resume.lock().take() else {
+            return;
+        };
+        // The user started listening again meanwhile.
+        if claim_start(&self.status).is_err() {
+            return;
+        }
+        tracing::info!("resuming listening after a helper restart");
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = this.start_claimed(config).await {
+                tracing::warn!(error = %error, "could not resume listening after a helper restart");
+                this.end_auto_session().await;
+            }
+        });
+    }
+
+    async fn handle_helper_event(self: &Arc<Self>, event: HelperEvent) {
         match event {
             HelperEvent::AudioStarted {
                 microphone,
@@ -1099,6 +1171,8 @@ impl AudioManager {
             }
             HelperEvent::TranscriptPartial(wire) => self.on_transcript(wire, false).await,
             HelperEvent::TranscriptFinal(wire) => self.on_transcript(wire, true).await,
+            HelperEvent::Exited { restarting } => self.on_helper_exited(restarting).await,
+            HelperEvent::Restarted => self.on_helper_restarted(),
             HelperEvent::Ready { .. }
             | HelperEvent::ScreenChanged { .. }
             | HelperEvent::Unknown { .. } => {}
@@ -1314,6 +1388,25 @@ mod tests {
         let placed = on_session_timeline(run_two, 42_000);
         assert_eq!((placed.start_ms, placed.end_ms), (43_000, 44_500));
         assert!(placed.start_ms > 42_000, "never interleaves with run 1");
+    }
+
+    #[test]
+    fn a_helper_exit_never_leaves_the_run_claiming_to_listen() {
+        use AudioSessionState::*;
+        // A replacement is on its way: the live run stops and resumes on it.
+        for state in [Running, Paused] {
+            let plan = helper_exit_plan(state, true);
+            assert!(plan.stop_run && plan.resume && !plan.end_auto_session);
+        }
+        // Gone for good (crash loop, restart failed, restarts disabled).
+        let plan = helper_exit_plan(Running, false);
+        assert!(plan.stop_run && !plan.resume && plan.end_auto_session);
+        // Not listening: nothing to stop or resume (a start in flight fails
+        // with its pending request).
+        for state in [Stopped, Error, Starting] {
+            let plan = helper_exit_plan(state, true);
+            assert!(!plan.stop_run && !plan.resume);
+        }
     }
 
     #[test]
