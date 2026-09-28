@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import type { DetectedEvent, TranscriptSegment } from "@/lib/types";
+import type { AudioSource, DetectedEvent, TranscriptSegment } from "@/lib/types";
 
 const MAX_SEGMENTS = 200;
 const MAX_QUESTIONS = 12;
@@ -8,8 +8,11 @@ const MAX_QUESTIONS = 12;
 interface TranscriptStore {
   /** Finalized segments, ring-buffered. */
   segments: TranscriptSegment[];
-  /** The in-flight partial segment (replaced on every `transcript.partial`). */
-  partial: TranscriptSegment | null;
+  /**
+   * The in-flight partial per source (replaced on every `transcript.partial`),
+   * so the microphone and system audio never overwrite each other's line.
+   */
+  partials: Partial<Record<AudioSource, TranscriptSegment>>;
   /** Recently detected questions/events (newest last). */
   questions: DetectedEvent[];
   levels: { microphone: number; system: number };
@@ -23,13 +26,15 @@ interface TranscriptStore {
 
 export const useTranscriptStore = create<TranscriptStore>((set) => ({
   segments: [],
-  partial: null,
+  partials: {},
   questions: [],
   levels: { microphone: 0, system: 0 },
-  applyPartial: (segment) => set({ partial: segment }),
+  applyPartial: (segment) => set((state) => ({ partials: { ...state.partials, [segment.source]: segment } })),
+  // A source streams one utterance at a time: its final supersedes its partial
+  // even when an older helper keyed the two differently.
   applyFinal: (segment) =>
     set((state) => ({
-      partial: state.partial?.id === segment.id ? null : state.partial,
+      partials: withoutSource(state.partials, segment.source),
       segments: [...state.segments.filter((s) => s.id !== segment.id), segment].slice(-MAX_SEGMENTS),
     })),
   pushQuestion: (event) =>
@@ -38,7 +43,15 @@ export const useTranscriptStore = create<TranscriptStore>((set) => ({
   setLevels: (levels) => set({ levels }),
   clear: (sessionId) =>
     set((state) => ({
-      partial: null,
+      partials: {},
       segments: sessionId ? state.segments.filter((s) => s.sessionId !== sessionId) : [],
     })),
 }));
+
+function withoutSource(
+  partials: Partial<Record<AudioSource, TranscriptSegment>>,
+  source: AudioSource,
+): Partial<Record<AudioSource, TranscriptSegment>> {
+  const { [source]: _done, ...rest } = partials;
+  return rest;
+}

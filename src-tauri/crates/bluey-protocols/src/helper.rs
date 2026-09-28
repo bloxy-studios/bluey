@@ -302,6 +302,11 @@ pub struct WireTranscript {
     pub confidence: Option<f32>,
     #[serde(default)]
     pub locale: Option<String>,
+    /// The producer's id for this utterance, shared by its partials and its
+    /// final (the helper sends `<request generation>-<counter>`). Older
+    /// helpers omit it and the assembler falls back to `startMs`.
+    #[serde(default)]
+    pub utterance_id: Option<String>,
 }
 
 /// `audio.deviceChanged` event data.
@@ -492,9 +497,9 @@ pub fn speaker_label(source: AudioSource, mode_id: &str) -> (&'static str, f32) 
 /// Assigns stable segment ids across partial → final updates of the same
 /// utterance (keyed by source + utterance key) and applies speaker labels.
 ///
-/// The utterance key is the helper's `startMs` for Apple Speech (stable across
-/// partials of one utterance) or the realtime API's `item_id` for the cloud
-/// path (callers pass it via [`TranscriptAssembler::ingest_keyed`]).
+/// The utterance key is the producer's `utteranceId` (falling back to the
+/// helper's `startMs`, which an older helper's partials and final may not
+/// agree on), or an explicit key passed via [`TranscriptAssembler::ingest_keyed`].
 #[derive(Debug, Default)]
 pub struct TranscriptAssembler {
     pending: HashMap<(AudioSource, String), String>,
@@ -511,7 +516,8 @@ impl TranscriptAssembler {
         self.pending.clear();
     }
 
-    /// Ingest a helper transcript event keyed by its `startMs`.
+    /// Ingest a helper transcript event keyed by its `utteranceId` (or
+    /// `startMs` when the helper sent none).
     #[allow(clippy::too_many_arguments)]
     pub fn ingest(
         &mut self,
@@ -523,7 +529,10 @@ impl TranscriptAssembler {
         now_iso: &str,
         new_id: impl FnMut() -> String,
     ) -> TranscriptSegment {
-        let key = event.start_ms.to_string();
+        let key = event
+            .utterance_id
+            .clone()
+            .unwrap_or_else(|| event.start_ms.to_string());
         self.assemble(
             event,
             &key,
@@ -818,6 +827,7 @@ mod tests {
             end_ms: 1500,
             confidence: None,
             locale: None,
+            utterance_id: None,
         };
         let p1 = assembler.ingest(
             &event,
@@ -885,6 +895,7 @@ mod tests {
             end_ms: 400,
             confidence: None,
             locale: None,
+            utterance_id: None,
         };
         let a = assembler.ingest_keyed(
             &event, "item_1", false, None, "general", true, "t", &mut next,
@@ -902,5 +913,38 @@ mod tests {
         };
         let c = assembler.ingest_keyed(&bad, "item_2", true, None, "general", true, "t", &mut next);
         assert_eq!(c.end_time, 500);
+    }
+
+    /// UX-010: Apple Speech partials carry startMs 0 while the final carries
+    /// the real offset; the helper's utteranceId keeps them one segment.
+    #[test]
+    fn assembler_prefers_the_helper_utterance_id_over_start_ms() {
+        let mut assembler = TranscriptAssembler::new();
+        let mut n = 0u32;
+        let mut next = || {
+            n += 1;
+            format!("seg_{n}")
+        };
+        let partial: WireTranscript = serde_json::from_value(serde_json::json!({
+            "source": "microphone", "text": "so the", "startMs": 0, "endMs": 300,
+            "utteranceId": "2-5"
+        }))
+        .unwrap();
+        let final_ = WireTranscript {
+            text: "So the plan works.".into(),
+            start_ms: 1200,
+            end_ms: 2400,
+            ..partial.clone()
+        };
+        let p = assembler.ingest(&partial, false, None, "general", false, "t", &mut next);
+        let f = assembler.ingest(&final_, true, None, "general", false, "t", &mut next);
+        assert_eq!(p.id, f.id, "one utterance, one segment id");
+
+        let next_partial = WireTranscript {
+            utterance_id: Some("2-6".into()),
+            ..partial
+        };
+        let q = assembler.ingest(&next_partial, false, None, "general", false, "t", &mut next);
+        assert_ne!(q.id, f.id, "the next utterance is a new segment");
     }
 }

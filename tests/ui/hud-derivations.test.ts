@@ -64,7 +64,7 @@ describe("buildTranscriptLines", () => {
       detectedAt: new Date().toISOString(),
     };
 
-    const lines = buildTranscriptLines([a, b, c], partial, [question], undefined, 3);
+    const lines = buildTranscriptLines([a, b, c], [partial], [question], undefined, 3);
     expect(lines.map((l) => l.text)).toEqual(["Second", "Third question?", "typing"]);
     expect(lines[0]?.speaker).toBe("You");
     expect(lines[0]?.speakerConfidence).toBeCloseTo(0.95);
@@ -77,8 +77,20 @@ describe("buildTranscriptLines", () => {
     const a = makeSegment({ text: "Older" });
     const b = makeSegment({ text: "Newest" });
     const partial = makeSegment({ text: "typing", finalized: false });
-    expect(buildTranscriptLines([a, b], null, [], undefined, 1).map((l) => l.text)).toEqual(["Newest"]);
-    expect(buildTranscriptLines([a, b], partial, [], undefined, 1).map((l) => l.text)).toEqual(["typing"]);
-    expect(buildTranscriptLines([], null, [], undefined, 1)).toEqual([]);
+    expect(buildTranscriptLines([a, b], [], [], undefined, 1).map((l) => l.text)).toEqual(["Newest"]);
+    expect(buildTranscriptLines([a, b], [partial], [], undefined, 1).map((l) => l.text)).toEqual(["typing"]);
+    expect(buildTranscriptLines([], [], [], undefined, 1)).toEqual([]);
+  });
+
+  it("shows the microphone and system partials side by side, oldest first", () => {
+    const done = makeSegment({ text: "Done" });
+    const theirs = makeSegment({ source: "system", text: "they say", startTime: 100, finalized: false });
+    const mine = makeSegment({ source: "microphone", text: "I say", startTime: 50, finalized: false });
+    const lines = buildTranscriptLines([done], [theirs, mine], [], undefined, 3);
+    expect(lines.map((l) => [l.text, l.partial])).toEqual([
+      ["Done", false],
+      ["I say", true],
+      ["they say", true],
+    ]);
   });
 });

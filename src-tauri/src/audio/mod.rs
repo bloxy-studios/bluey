@@ -128,6 +128,33 @@ struct ChunkTiming {
     utterance_start_ms: Option<u64>,
     last_start_ms: u64,
     last_end_ms: u64,
+    /// The cloud utterance its interims and final belong to (UX-010).
+    open_utterance: Option<u64>,
+    utterances: u64,
+}
+
+impl ChunkTiming {
+    /// Stamp a cloud transcript with its span and utterance id. A provider
+    /// streams one utterance at a time per source, so the first event opens
+    /// an utterance and its final closes it; the id never depends on timing
+    /// (an interim can arrive before the speech chunk that starts the span).
+    fn stamp_cloud(&mut self, finalized: bool) -> (u64, u64, String) {
+        let start = self.utterance_start_ms.unwrap_or(self.last_start_ms);
+        let end = self.last_end_ms.max(start);
+        let seq = match self.open_utterance {
+            Some(seq) => seq,
+            None => {
+                self.utterances += 1;
+                self.open_utterance = Some(self.utterances);
+                self.utterances
+            }
+        };
+        if finalized {
+            self.utterance_start_ms = None;
+            self.open_utterance = None;
+        }
+        (start, end, format!("cloud-{seq}"))
+    }
 }
 
 /// Claim the start slot under the status lock. Only the claimant goes on to
@@ -805,16 +832,12 @@ impl AudioManager {
         language: Option<String>,
         finalized: bool,
     ) {
-        let (start_ms, end_ms) = {
-            let mut times = self.chunk_times.lock();
-            let timing = times.entry(source).or_default();
-            let start = timing.utterance_start_ms.unwrap_or(timing.last_start_ms);
-            let end = timing.last_end_ms.max(start);
-            if finalized {
-                timing.utterance_start_ms = None;
-            }
-            (start, end)
-        };
+        let (start_ms, end_ms, utterance_id) = self
+            .chunk_times
+            .lock()
+            .entry(source)
+            .or_default()
+            .stamp_cloud(finalized);
         let wire = WireTranscript {
             source,
             text,
@@ -822,6 +845,7 @@ impl AudioManager {
             end_ms,
             confidence: None,
             locale: language,
+            utterance_id: Some(utterance_id),
         };
         self.on_transcript(wire, finalized).await;
     }
@@ -1440,6 +1464,25 @@ mod tests {
         .into_bluey()
     }
 
+    /// UX-010: the first interim after a final arrives before the speech
+    /// chunk that starts its span; it must still share the final's id.
+    #[test]
+    fn cloud_interims_and_their_final_share_one_utterance_id() {
+        let mut timing = ChunkTiming {
+            last_start_ms: 5_000,
+            last_end_ms: 5_100,
+            ..ChunkTiming::default()
+        };
+        let (interim_start, _, interim) = timing.stamp_cloud(false);
+        timing.utterance_start_ms = Some(5_200);
+        let (final_start, _, final_) = timing.stamp_cloud(true);
+        assert_ne!(interim_start, final_start, "the span moved…");
+        assert_eq!(interim, final_, "…but the utterance did not");
+
+        let (_, _, next) = timing.stamp_cloud(false);
+        assert_ne!(next, final_, "a final closes its utterance");
+    }
+
     #[test]
     fn a_second_run_in_a_session_continues_its_timeline() {
         // Run 1 ended at 42 s; run 2's clock restarts at 0.
@@ -1450,6 +1493,7 @@ mod tests {
             end_ms: 2_500,
             confidence: None,
             locale: None,
+            utterance_id: None,
         };
         let placed = on_session_timeline(run_two, 42_000);
         assert_eq!((placed.start_ms, placed.end_ms), (43_000, 44_500));

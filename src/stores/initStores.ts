@@ -90,7 +90,7 @@ export function resetStoresForTest(): void {
   useSessionStore.setState({ active: null, events: [] });
   useTranscriptStore.setState({
     segments: [],
-    partial: null,
+    partials: {},
     questions: [],
     levels: { microphone: 0, system: 0 },
   });
