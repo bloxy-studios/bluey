@@ -330,6 +330,9 @@ pub async fn run(core: &AppCore, options: BenchOptions) -> BlueyResult<BenchRepo
                 first_paint_ms: None,
                 done_ms: None,
             }),
+            scope: None,
+            background: false,
+            preferred_model_role: None,
             created_at: now_iso(),
         };
         match core.ai.run_traced(request).await {

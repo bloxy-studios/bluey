@@ -230,6 +230,20 @@ pub struct AiRequest {
     /// The WebView's half of the fast-path trace (ADR 0010 §2), when the engine measured it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<super::TraceStamps>,
+    /// Supersede group (the engine's generation scope, e.g. `ask` / `prepare`):
+    /// a newer generation cancels an older one only within the same session
+    /// *and* scope, because each scope counts its own generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Work the user did not start (proactive preparation, live suggestions):
+    /// it streams and reports `ai.*` events like any request but never drives
+    /// the app state machine (no Thinking, no Error).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// The model role the request's mode prefers, captured when the request
+    /// was built, so routing does not depend on the mode active when it lands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model_role: Option<ModelRole>,
     pub created_at: String,
 }
 

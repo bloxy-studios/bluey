@@ -121,6 +121,16 @@ export interface AIRequest {
   modelOverride?: ModelAssignment;
   /** The WebView's half of the fast-path trace (ADR 0010 §2), when the engine measured it. */
   trace?: TraceStamps;
+  /**
+   * Supersede group (the engine's generation scope, e.g. `ask` / `prepare`). Rust cancels
+   * an older active request only when session *and* scope match — each scope counts its
+   * own generations.
+   */
+  scope?: string;
+  /** Work the user did not start (proactive/live suggestions): never drives the app state machine. */
+  background?: boolean;
+  /** The request's mode's preferred model role — routed by it, not by the mode active when it lands. */
+  preferredModelRole?: ModelRole;
   createdAt: string;
 }
 

@@ -1,6 +1,7 @@
 //! AI manager: routing (bluey-core router), provider adapters, streaming to
 //! the frontend `Channel<AiChunk>` + mirrored `ai.*` bus events, cancellation
-//! and generation superseding, request records and metrics.
+//! and generation superseding (per session *and* scope), request records and
+//! metrics. Privacy → Cloud AI off refuses every model call made here.
 
 pub mod providers;
 
@@ -9,16 +10,17 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use bluey_core::accounts as account_rules;
+use bluey_core::error::RecoveryAction;
 use bluey_core::events::BlueyEvent;
 use bluey_core::latency::{self, RustStamps};
 use bluey_core::presets;
 use bluey_core::router::{self, RoutingInput};
 use bluey_core::types::{
-    AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent, ConnectionTestResult,
-    FinishReason, LatencyBudget, LatencyTrace, ModelAssignment, ModelRole, ModelSelection,
-    ProviderAuthMethod, ReasoningLevel, Settings, TraceStamps,
+    AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent, AppState,
+    ConnectionTestResult, FinishReason, LatencyBudget, LatencyTrace, ModelAssignment, ModelRole,
+    ModelSelection, ProviderAuthMethod, ReasoningLevel, Settings, TraceStamps,
 };
-use bluey_core::{now_iso, BlueyError, BlueyResult};
+use bluey_core::{now_iso, BlueyError, BlueyErrorKind, BlueyResult};
 use bluey_protocols::gemini as gemini_proto;
 use bluey_storage::{AiRequestRecord, AiRequestRepository};
 use tauri::ipc::Channel;
@@ -42,7 +44,24 @@ pub const MOCK_PROVIDER_ID: &str = "mock";
 struct ActiveRequest {
     token: CancellationToken,
     session_id: Option<String>,
+    /// Supersede group: generations are only comparable within one scope.
+    scope: Option<String>,
     generation: u64,
+    /// Whether this request drives the app state machine ([`drives_state`]).
+    drives_state: bool,
+}
+
+impl ActiveRequest {
+    /// A newer generation of the same session and scope replaces this one.
+    /// Requests of different scopes never cancel each other: each scope
+    /// counts its own generations (ADR 0005), so comparing across them would
+    /// let a busy background counter cancel the user's own answer.
+    fn superseded_by(&self, request: &AiRequest) -> bool {
+        request.session_id.is_some()
+            && self.session_id == request.session_id
+            && self.scope == request.scope
+            && self.generation < request.generation
+    }
 }
 
 /// A request's fast-path trace while its two halves are still arriving
@@ -230,7 +249,8 @@ impl AiManager {
     /// Route a request to a provider+model.
     pub fn select(&self, request: &AiRequest) -> BlueyResult<ModelSelection> {
         let settings = self.settings.get();
-        let preferred_role = self.modes.active_mode().preferred_model_role;
+        let preferred_role =
+            preferred_role_for(request, || self.modes.active_mode().preferred_model_role);
         let input = RoutingInput {
             task: request.task,
             latency: request.latency_budget,
@@ -270,21 +290,20 @@ impl AiManager {
             task: request.task,
             session_id: request.session_id.clone(),
         });
-        let selection = match self.select(request) {
-            Ok(selection) => selection,
-            Err(error) => {
-                self.publish_failed(&request.request_id, error.clone(), is_primary(request.task));
-                return Err(error);
-            }
-        };
+        let selection =
+            match ensure_cloud_ai(&self.settings.get()).and_then(|()| self.select(request)) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    self.publish_failed(&request.request_id, error.clone(), drives_state(request));
+                    return Err(error);
+                }
+            };
 
-        // Supersede older generations of the same session.
-        if let Some(session_id) = &request.session_id {
+        // Supersede older generations of the same session and scope.
+        {
             let active = self.active.lock();
             for (id, entry) in active.iter() {
-                if entry.session_id.as_deref() == Some(session_id)
-                    && entry.generation < request.generation
-                {
+                if entry.superseded_by(request) {
                     tracing::debug!(request_id = %id, "superseding older generation");
                     entry.token.cancel();
                 }
@@ -297,11 +316,13 @@ impl AiManager {
             ActiveRequest {
                 token: token.clone(),
                 session_id: request.session_id.clone(),
+                scope: request.scope.clone(),
                 generation: request.generation,
+                drives_state: drives_state(request),
             },
         );
 
-        if is_primary(request.task) {
+        if drives_state(request) {
             self.hub.transition_soft(AppEvent::ThinkingStarted);
         }
         Ok((selection, token, received))
@@ -436,7 +457,7 @@ impl AiManager {
         received: f64,
     ) {
         let request_id = request.request_id.clone();
-        let primary = is_primary(request.task);
+        let primary = drives_state(&request);
         let started = Instant::now();
         let mut rust = RustStamps {
             request_received: Some(received),
@@ -537,6 +558,9 @@ impl AiManager {
                 });
                 record.finish_reason = Some("cancelled".into());
                 record.total_ms = Some(total_ms);
+                if primary {
+                    self.leave_thinking_after_cancel();
+                }
             }
             StreamOutcome::Failed { error } => {
                 record.finish_reason = Some("error".into());
@@ -675,6 +699,16 @@ impl AiManager {
         }
     }
 
+    /// A cancelled (Escape, Stop, superseded) answer must not leave the pill on
+    /// "Thinking": when no other state-driving request is still running, the
+    /// machine goes back to idle.
+    fn leave_thinking_after_cancel(&self) {
+        let others_running = self.active.lock().values().any(|entry| entry.drives_state);
+        if !others_running && self.hub.state() == AppState::Thinking {
+            self.hub.transition_soft(AppEvent::ResponseDismissed);
+        }
+    }
+
     fn publish_failed(&self, request_id: &str, error: BlueyError, primary: bool) {
         self.bus.publish(BlueyEvent::AiFailed {
             request_id: request_id.to_string(),
@@ -716,6 +750,7 @@ impl AiManager {
             return Ok(Vec::new());
         }
         let settings = self.settings.get();
+        ensure_cloud_ai(&settings)?;
         let assignment = settings.ai.models.embedding.clone().ok_or_else(|| {
             BlueyError::configuration("no_model", "no embedding model is assigned")
         })?;
@@ -734,6 +769,7 @@ impl AiManager {
         options: &TranscribeFileOptions,
     ) -> BlueyResult<Transcription> {
         let settings = self.settings.get();
+        ensure_cloud_ai(&settings)?;
         let assignment = settings.ai.models.transcription.clone().ok_or_else(|| {
             BlueyError::configuration("no_model", "no transcription model is assigned")
         })?;
@@ -785,10 +821,11 @@ impl AiManager {
             .await
     }
 
-    /// Whether an embedding model is currently usable (for documents).
+    /// Whether an embedding model is currently usable (for documents). With
+    /// Cloud AI off nothing is embedded: documents fall back to keyword search.
     pub fn embeddings_ready(&self) -> bool {
         let settings = self.settings.get();
-        if !settings.ai.embeddings_enabled {
+        if !settings.ai.embeddings_enabled || ensure_cloud_ai(&settings).is_err() {
             return false;
         }
         let Some(assignment) = settings.ai.models.embedding else {
@@ -1000,10 +1037,166 @@ fn is_primary(task: AiTask) -> bool {
     )
 }
 
+/// The role the request's own mode prefers; the active mode only for callers
+/// that did not say (a mode switch must not reroute an answer in flight).
+fn preferred_role_for(
+    request: &AiRequest,
+    active_mode_role: impl FnOnce() -> Option<ModelRole>,
+) -> Option<ModelRole> {
+    request.preferred_model_role.or_else(active_mode_role)
+}
+
+/// Only answers the user asked for move the app state (Thinking, Error);
+/// background work (proactive preparation, live suggestions) never does.
+fn drives_state(request: &AiRequest) -> bool {
+    is_primary(request.task) && !request.background
+}
+
+/// Privacy → Cloud AI is the master switch for sending anything to a model
+/// provider; it is enforced here, where the network calls happen, and not
+/// only in the WebView.
+fn ensure_cloud_ai(settings: &Settings) -> BlueyResult<()> {
+    if settings.privacy.cloud_ai_enabled {
+        return Ok(());
+    }
+    Err(BlueyError::new(
+        BlueyErrorKind::Configuration,
+        CLOUD_AI_DISABLED_CODE,
+        "Cloud AI is turned off in Privacy settings, so Bluey cannot ask a model right now.",
+    )
+    .recoverable(RecoveryAction::OpenSettings {
+        tab: "privacy".into(),
+    }))
+}
+
+/// Error code of a model call refused because Cloud AI is off (`present.ts` copy).
+pub const CLOUD_AI_DISABLED_CODE: &str = "privacy.cloud_ai_disabled";
+
 /// serde string tag of a unit enum value (e.g. `AiTask::Answer` → `answer`).
 fn enum_tag<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bluey_core::types::{LatencyBudget, ReasoningLevel};
+
+    fn request(session: Option<&str>, scope: Option<&str>, generation: u64) -> AiRequest {
+        AiRequest {
+            request_id: format!("req_{generation}"),
+            session_id: session.map(str::to_string),
+            generation,
+            task: AiTask::Answer,
+            latency_budget: LatencyBudget::Fast,
+            reasoning: ReasoningLevel::None,
+            vision_required: false,
+            context_tokens: 10,
+            messages: Vec::new(),
+            output_schema: None,
+            max_output_tokens: None,
+            temperature: None,
+            model_override: None,
+            trace: None,
+            scope: scope.map(str::to_string),
+            background: false,
+            preferred_model_role: None,
+            created_at: now_iso(),
+        }
+    }
+
+    fn active(request: &AiRequest) -> ActiveRequest {
+        ActiveRequest {
+            token: CancellationToken::new(),
+            session_id: request.session_id.clone(),
+            scope: request.scope.clone(),
+            generation: request.generation,
+            drives_state: drives_state(request),
+        }
+    }
+
+    #[test]
+    fn a_busy_prepare_scope_never_cancels_the_users_answer() {
+        // The user's ⌘↵ answer (ask gen 1) is streaming while the fifth
+        // detected question is prepared (prepare gen 5) in the same session.
+        let ask = active(&request(Some("s1"), Some("ask"), 1));
+        assert!(!ask.superseded_by(&request(Some("s1"), Some("prepare"), 5)));
+        // …and the reverse: a manual ask does not kill a preparation.
+        let prepare = active(&request(Some("s1"), Some("prepare"), 1));
+        assert!(!prepare.superseded_by(&request(Some("s1"), Some("ask"), 3)));
+    }
+
+    #[test]
+    fn a_newer_generation_supersedes_within_its_session_and_scope() {
+        let first = active(&request(Some("s1"), Some("ask"), 1));
+        assert!(first.superseded_by(&request(Some("s1"), Some("ask"), 2)));
+        assert!(!first.superseded_by(&request(Some("s1"), Some("ask"), 1)));
+        assert!(!first.superseded_by(&request(Some("s2"), Some("ask"), 2)));
+        assert!(!first.superseded_by(&request(None, Some("ask"), 2)));
+        // Callers that send no scope keep superseding each other per session.
+        let legacy = active(&request(Some("s1"), None, 1));
+        assert!(legacy.superseded_by(&request(Some("s1"), None, 2)));
+    }
+
+    #[test]
+    fn background_requests_never_drive_the_app_state() {
+        let mut prepare = request(Some("s1"), Some("prepare"), 1);
+        prepare.background = true;
+        assert!(!drives_state(&prepare));
+        assert!(drives_state(&request(Some("s1"), Some("ask"), 1)));
+        let mut classify = request(None, None, 1);
+        classify.task = AiTask::Classification;
+        assert!(!drives_state(&classify));
+    }
+
+    #[test]
+    fn background_flag_is_optional_on_the_wire() {
+        let json = serde_json::json!({
+            "requestId": "r", "generation": 1, "task": "answer", "latencyBudget": "fast",
+            "reasoning": "none", "visionRequired": false, "contextTokens": 1,
+            "messages": [], "createdAt": "2026-09-28T00:00:00Z",
+            "scope": "prepare", "background": true, "preferredModelRole": "reasoning"
+        });
+        let parsed: AiRequest = serde_json::from_value(json).expect("request");
+        assert!(parsed.background);
+        assert_eq!(parsed.scope.as_deref(), Some("prepare"));
+        assert_eq!(parsed.preferred_model_role, Some(ModelRole::Reasoning));
+        let bare: AiRequest = serde_json::from_value(serde_json::json!({
+            "requestId": "r", "generation": 1, "task": "answer", "latencyBudget": "fast",
+            "reasoning": "none", "visionRequired": false, "contextTokens": 1,
+            "messages": [], "createdAt": "2026-09-28T00:00:00Z"
+        }))
+        .expect("bare request");
+        assert!(!bare.background);
+        assert_eq!(bare.scope, None);
+    }
+
+    #[test]
+    fn routing_uses_the_requests_mode_role_over_the_active_mode() {
+        let mut built_in_sales = request(None, Some("ask"), 1);
+        built_in_sales.preferred_model_role = Some(ModelRole::Fast);
+        assert_eq!(
+            preferred_role_for(&built_in_sales, || Some(ModelRole::Reasoning)),
+            Some(ModelRole::Fast)
+        );
+        let unspecified = request(None, Some("ask"), 1);
+        assert_eq!(
+            preferred_role_for(&unspecified, || Some(ModelRole::Reasoning)),
+            Some(ModelRole::Reasoning)
+        );
+    }
+
+    #[test]
+    fn cloud_ai_off_refuses_model_calls_with_the_privacy_code() {
+        let mut settings = Settings::default();
+        assert!(ensure_cloud_ai(&settings).is_ok());
+        settings.privacy.cloud_ai_enabled = false;
+        let error = ensure_cloud_ai(&settings).expect_err("refused");
+        assert_eq!(error.code, CLOUD_AI_DISABLED_CODE);
+        assert_eq!(error.kind, BlueyErrorKind::Configuration);
+        assert!(error.recoverable);
+    }
 }

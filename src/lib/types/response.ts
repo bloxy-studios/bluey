@@ -1,5 +1,7 @@
 /** Structured AI response contract (mirrors `bluey_core::types::response`). */
 
+import type { ModelRole } from "./mode";
+
 export type ResponseType = "answer" | "code" | "system-design" | "summary" | "suggestion" | "research";
 
 export interface ResponseSection {
@@ -34,6 +36,20 @@ export interface ResponseFeedback {
   categories?: FeedbackCategory[];
   comment?: string;
   createdAt: string;
+}
+
+/**
+ * Which model answered (from the router's `started` chunk), for provenance in the HUD.
+ * In-memory only: not part of the persisted response row.
+ */
+export interface ResponseSelection {
+  role: ModelRole;
+  providerId: string;
+  /** The provider's display name, when it is a configured provider. */
+  providerName?: string;
+  model: string;
+  /** The router's explanation when the preferred role had no usable model and it fell back. */
+  fallbackReason?: string;
 }
 
 export interface ResponseMetrics {
@@ -77,6 +93,10 @@ export interface BlueyResponse {
    * HUD shows "Answer was cut short" with Regenerate under it.
    */
   truncated?: boolean;
+  /** Which model answered (in-memory provenance for the HUD; not persisted). */
+  selection?: ResponseSelection;
+  /** A short note about the research step (e.g. why web research was skipped), when there is one. */
+  researchNote?: string;
   createdAt: string;
 }
 
