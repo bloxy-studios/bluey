@@ -62,9 +62,17 @@ with the reason.
   the service's SMART mode (imported recordings are verbatim). Settings → Audio → *Gemini Live
   (cloud)*; the Live model follows the transcription role when it is a `*-transcribe-live`
   model.
-- **Apple** — `SFSpeechRecognizer` per source with on-device recognition when the
-  locale supports it (`supportsOnDeviceRecognition`); partial results stream; requests are
-  rotated every ~55 s to respect the framework's one-minute limit. Works offline, no API key.
+- **Apple** — `SFSpeechRecognizer` per source in the transcription language (the Mac's own
+  locale for *auto*, `en-US` when that has no recognizer) with on-device recognition when the
+  locale supports it (`supportsOnDeviceRecognition`) and automatic punctuation (macOS 13+).
+  When the locale has no on-device model the recognizer runs on Apple's servers: `audio.started`
+  reports `speech { locale, onDevice }` (also `AudioStatus.speechLocale/speechOnDevice`) and
+  Bluey shows an `audio.speech_server` notice instead of switching silently. Partial results
+  stream; an utterance is committed as a final when the recognizer resets after a pause, and
+  requests are rotated every ~55 s to respect the framework's one-minute limit — only the
+  current request can rotate or restart, a retired request's late callbacks are ignored. Every
+  partial and final carries the helper's `utteranceId` (request generation + counter), so a
+  partial and its final are one segment. Works offline, no API key.
 - **Cloud realtime** — WebSocket chosen from the transcription-role model:
   MAI-Transcribe-1.5 (`MAI-Transcribe-1.5` → Voice Live `mai-transcribe`) uses Foundry Voice Live
   (`session.update` with `input_audio_transcription.model`, Azure semantic VAD,
@@ -77,7 +85,14 @@ with the reason.
 - **Mock** — fixture-driven for tests and developer mode.
 
 `TranscriptSegment { speaker?, speakerConfidence?, source, text, startTime, endTime,
-confidence?, finalized }` — times are ms since the audio session started.
+confidence?, finalized }` — times are ms on the session's timeline: a run that attaches to a
+session which already has segments starts after that session's last segment. Partials and finals
+carry a producer `utteranceId`; the transcript store keeps one partial per source.
+
+The ring of recent finals behind the context snapshot is scoped: while listening it holds the
+current run's finals (each `audio.start` begins a new run), otherwise the active session's; the
+recency window is measured from that scope's newest segment, and deleting a session purges its
+entries. An ask in another session never sees an earlier conversation.
 
 ### Importing recordings
 
@@ -115,3 +130,15 @@ flow again) while the provider reconnects (Gemini Live and Voice Live share the 
 a provider session that gives up is re-opened on the next chunk after a 10 s cool-down, and a
 configuration error (key rejected, model not found, unsupported) moves listening to Apple
 Speech with `stt_fallback`. The other source keeps going throughout. Apple Speech itself unavailable → `speech_unavailable`.
+`stt_fallback` is announced once per run as an info notice, not an error. With Privacy → Cloud AI
+off a cloud provider is never used: listening runs on Apple Speech (`stt_fallback`), and turning
+the switch off mid-run moves a live cloud session onto Apple Speech.
+
+Starting is single-flight: a second `audio.start` while one is starting or running is not an
+error. If the helper does not confirm `audio.start` in time Bluey sends a best-effort
+`audio.stop`. If the helper exits while listening the status leaves `running`
+(`sidecar.helper_exited`); when the supervisor restarts it, the run is re-issued once with the same
+config and session (an info notice shows meanwhile). A helper-initiated stop, or a run that cannot
+resume, ends the session listening auto-started. A microphone that drops out stays wanted: the
+helper retries on the next device or configuration change and re-sends `audio.started` with the
+current `microphone` flag.
