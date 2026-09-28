@@ -34,6 +34,29 @@ public final class SpeechTranscriber {
     /// Restart the request after this much appended audio (SFSpeech ~1 min cap).
     private static let maxRequestSeconds: Double = 55
 
+    static let fallbackLocale = "en-US"
+
+    /// The locale for `language: auto`: the user's own when Apple Speech
+    /// supports it, else en-US.
+    static func defaultLocale(
+        current: Locale = .current,
+        supported: Set<Locale> = SFSpeechRecognizer.supportedLocales()
+    ) -> Locale {
+        let wanted = speechIdentifier(current)
+        return supported.first { speechIdentifier($0) == wanted }
+            ?? Locale(identifier: fallbackLocale)
+    }
+
+    /// "en-GB" for en_GB, en-GB@rg=… and en-GB alike.
+    private static func speechIdentifier(_ locale: Locale) -> String {
+        let language = locale.language.languageCode?.identifier ?? ""
+        // The dialect's region (en_US@rg=gbzzzz speaks en-US), else the locale's.
+        guard let region = (locale.language.region ?? locale.region)?.identifier else {
+            return language
+        }
+        return "\(language)-\(region)"
+    }
+
     private let source: String
     private let localeId: String
     private let onDevice: Bool

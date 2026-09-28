@@ -372,7 +372,14 @@ async fn finish_boot(app: &AppHandle) {
     {
         tracing::warn!(error = %e, "shortcut registration failed at boot");
     }
-    if let Err(e) = core.helper.ensure_running().await {
+    // A cold boot can make the first handshake slow: one quiet retry before
+    // the user hears about it.
+    let mut helper_started = core.helper.ensure_running().await;
+    if let Err(e) = &helper_started {
+        tracing::info!(error = %e, "native helper handshake failed; retrying once");
+        helper_started = core.helper.ensure_running().await;
+    }
+    if let Err(e) = helper_started {
         tracing::warn!(error = %e, "native helper did not start");
         core.bus.publish(BlueyEvent::HelperStatus {
             running: false,

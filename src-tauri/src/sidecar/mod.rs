@@ -430,6 +430,9 @@ fn timeout_for(method: &str) -> Duration {
         m if m.starts_with("capture.") => Duration::from_secs(3),
         "ocr.recognize" => Duration::from_secs(5),
         "accessibility.snapshot" => Duration::from_secs(1),
+        // The handshake: a timeout kills and respawns the helper, so a slow
+        // cold boot must not trip it.
+        "helper.version" => Duration::from_secs(5),
         "audio.start" => Duration::from_secs(5),
         "audio.testMicrophone" => Duration::from_secs(8),
         "permissions.request" => Duration::from_secs(120),
@@ -455,4 +458,17 @@ pub fn child_base_env() -> Vec<(String, String)> {
                 .map(|value| (name.to_string(), value))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MAC-011: a handshake timeout kills the helper, so `helper.version` must
+    /// outlast a cold boot rather than share the 2 s default.
+    #[test]
+    fn the_handshake_outlasts_a_slow_cold_boot() {
+        assert!(timeout_for("helper.version") >= Duration::from_secs(5));
+        assert_eq!(timeout_for("helper.ping"), Duration::from_secs(2));
+    }
 }

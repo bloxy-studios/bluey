@@ -22,6 +22,7 @@ public final class HelperApp {
     private let ax = AXSnapshotService()
     private let audioDevices = AudioDeviceService()
     private let audio: AudioSession
+    private let speechOnDevice = CachedCapability.speechOnDevice()
     private var sigtermSource: DispatchSourceSignal?
 
     public init() {
@@ -118,7 +119,7 @@ public final class HelperApp {
                     AnyEncodable(Pong(pong: true, uptimeMs: Int(Clock.monotonicMs() - startedAtMs)))))
         }
 
-        router.register("helper.version", inline: true) { _, respond in
+        router.register("helper.version", inline: true) { [weak self] _, respond in
             struct Version: Encodable {
                 let version: String
                 let protocolVersion: Int
@@ -137,10 +138,9 @@ public final class HelperApp {
                 let arch = "x86_64"
             #endif
             var capabilities = ["capture", "ocr", "accessibility", "audio.microphone", "audio.system"]
-            // https://developer.apple.com/documentation/speech/sfspeechrecognizer/supportsondevicerecognition
-            if SFSpeechRecognizer(locale: Locale(identifier: "en-US"))?.supportsOnDeviceRecognition
-                == true
-            {
+            // Probed at startup (never here: this is the handshake); omitted
+            // until the probe has answered.
+            if self?.speechOnDevice.current == true {
                 capabilities.append("speech.onDevice")
             }
             var macos = "\(osv.majorVersion).\(osv.minorVersion)"
