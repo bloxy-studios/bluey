@@ -4,11 +4,15 @@ import type { ContextSource } from "@/lib/types";
 
 export const SECTION_LABELS: Record<ContextSource, string> = {
   user_instruction: "Current question",
+  detected_question: "Question just asked (heard; may be mis-transcribed)",
+  conversation: "Earlier in this chat",
+  active_app: "Active app and window",
   transcript: "Recent conversation (You / Speaker)",
   transcript_old: "Earlier conversation",
   ocr: "On screen (OCR)",
   screen: "On screen (OCR)",
   accessibility: "Focused UI",
+  window_text: "Window text (accessibility)",
   resume: "Your background (resume)",
   job_description: "Job description",
   document: "Reference documents",
@@ -16,19 +20,27 @@ export const SECTION_LABELS: Record<ContextSource, string> = {
   personal_instructions: "Personal instructions from the user",
 };
 
-/** Render order of the sections in the user message. */
+/**
+ * Render order of the sections in the user message. The chat so far leads
+ * into the question; older conversation sits directly before the recent
+ * turns so the whole exchange reads in the order it was spoken.
+ */
 export const SECTION_ORDER: readonly ContextSource[] = [
+  "conversation",
   "user_instruction",
+  "detected_question",
+  "transcript_old",
   "transcript",
+  "active_app",
   "ocr",
   "screen",
   "accessibility",
+  "window_text",
   "personal_instructions",
   "resume",
   "job_description",
   "document",
   "session_memory",
-  "transcript_old",
 ];
 
 export const CONTEXT_PREAMBLE =

@@ -59,6 +59,22 @@ export interface PromptBuilderParts {
   blueyName?: string;
 }
 
+/**
+ * One labelled section. Items that carry a time (`at`: transcript segments,
+ * chat turns) read in the order they happened; untimed items (the earlier
+ * summary) lead. Budget selection stays relevance-based.
+ */
+function renderSection(source: ContextSource, bucket: ContextItem[]): string {
+  const ordered = bucket.some((item) => item.at !== undefined)
+    ? bucket.slice().sort((a, b) => {
+        const ta = a.at ?? Number.NEGATIVE_INFINITY;
+        const tb = b.at ?? Number.NEGATIVE_INFINITY;
+        return ta === tb ? 0 : ta < tb ? -1 : 1;
+      })
+    : bucket;
+  return `### ${SECTION_LABELS[source]}\n${ordered.map((item) => item.content).join("\n")}`;
+}
+
 export class PromptBuilder {
   constructor(private readonly parts: PromptBuilderParts) {}
 
@@ -85,23 +101,23 @@ export class PromptBuilder {
     const { items, omittedNote } = this.parts;
     if (items.length === 0 && !omittedNote) return "";
 
-    const grouped = new Map<ContextSource, string[]>();
+    const grouped = new Map<ContextSource, ContextItem[]>();
     for (const item of items) {
       const bucket = grouped.get(item.source) ?? [];
-      bucket.push(item.content);
+      bucket.push(item);
       grouped.set(item.source, bucket);
     }
 
     const sections: string[] = [CONTEXT_PREAMBLE];
     for (const source of SECTION_ORDER) {
-      const contents = grouped.get(source);
-      if (!contents || contents.length === 0) continue;
+      const bucket = grouped.get(source);
+      if (!bucket || bucket.length === 0) continue;
       grouped.delete(source);
-      sections.push(`### ${SECTION_LABELS[source]}\n${contents.join("\n")}`);
+      sections.push(renderSection(source, bucket));
     }
     // Any source not in the fixed order still gets rendered (future-proof).
-    for (const [source, contents] of grouped) {
-      sections.push(`### ${SECTION_LABELS[source]}\n${contents.join("\n")}`);
+    for (const [source, bucket] of grouped) {
+      sections.push(renderSection(source, bucket));
     }
     if (omittedNote) sections.push(`(${omittedNote})`);
     return sections.join("\n\n");
@@ -109,7 +125,10 @@ export class PromptBuilder {
 
   /** Trigger-specific task instruction, followed by the answer-shape line when one was detected. */
   renderTask(): string {
-    const task = taskLineFor(this.parts.trigger);
+    const { trigger, items } = this.parts;
+    // A follow-up with no earlier turn to build on is just a typed question.
+    const followsNothing = trigger === "follow_up" && !items.some((item) => item.source === "conversation");
+    const task = taskLineFor(followsNothing ? "typed" : trigger);
     const shape = this.parts.answerShape;
     return shape ? `${task}\n${answerShapeLine(shape)}` : task;
   }

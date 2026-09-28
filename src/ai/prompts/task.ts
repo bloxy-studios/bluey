@@ -17,7 +17,7 @@ const TASK_LINES: Record<AskTrigger, string> = {
   follow_up:
     "Task: Answer this follow-up. Build on the earlier responses in this session without repeating them.",
   detected_event:
-    "Task: Answer the question just asked in the live conversation (see \"Current question\") as me — first person, ready to speak. The answer itself, not coaching about it.",
+    "Task: Answer the question just asked in the live conversation (see \"Question just asked\") as me — first person, ready to speak. The answer itself, not coaching about it.",
   regenerate:
     "Task: Answer again, better: a sharper or differently angled answer to the same question — not a rephrasing, and not a critique of the previous one.",
   assist:

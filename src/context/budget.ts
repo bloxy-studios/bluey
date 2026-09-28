@@ -22,10 +22,14 @@ export interface BudgetPolicy {
 export const DEFAULT_BUDGET_POLICY: BudgetPolicy = {
   priorities: {
     user_instruction: 0,
+    detected_question: 0,
+    conversation: 1,
+    active_app: 1,
     personal_instructions: 1,
     transcript: 1,
     ocr: 1,
     accessibility: 1,
+    window_text: 1,
     screen: 2,
     job_description: 2,
     resume: 2,
@@ -92,9 +96,14 @@ function withContent(item: ContextItem, content: string): ContextItem {
   return { ...item, content, tokens: estimateTokens(content) };
 }
 
+/** The question being answered (typed or heard): never dropped. */
+function isQuestion(item: ContextItem): boolean {
+  return item.source === "user_instruction" || item.source === "detected_question";
+}
+
 /**
- * Fit items into `budgetTokens`. The user instruction is always included
- * (compressed only if it alone exceeds the budget, keeping its head).
+ * Fit items into `budgetTokens`. The question (typed or heard) is always
+ * included (compressed only if it alone exceeds the budget, keeping its head).
  */
 export function allocateBudget(
   items: ContextItem[],
@@ -106,9 +115,9 @@ export function allocateBudget(
   const compressed: string[] = [];
   let remaining = Math.max(0, Math.floor(budgetTokens));
 
-  const instructions = items.filter((i) => i.source === "user_instruction");
+  const instructions = items.filter(isQuestion);
   const rest = items
-    .filter((i) => i.source !== "user_instruction")
+    .filter((i) => !isQuestion(i))
     .slice()
     .sort((a, b) => {
       const pa = policy.priorities[a.source];

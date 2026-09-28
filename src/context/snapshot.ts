@@ -4,8 +4,8 @@
  * `buildNativeSnapshot` asks Rust for the fast-path snapshot with
  * settings-driven options (screen only when the mode requires it or the
  * trigger is a capture). `enrichSnapshot` then fills the TS-owned parts:
- * session context, user context (retrieved chunks + personal instructions),
- * mode context and the explicit user instruction.
+ * the chat thread, session context, user context (retrieved chunks +
+ * personal instructions), mode context and the explicit user instruction.
  */
 
 import type { AskTrigger } from "@/lib/engine-contract";
@@ -14,6 +14,7 @@ import type {
   BlueyResponse,
   CaptureTarget,
   ContextSnapshot,
+  ConversationTurn,
   RetrievedChunk,
   Session,
   SessionContext,
@@ -111,6 +112,8 @@ export interface EnrichSnapshotArgs {
 }
 
 const RECENT_RESPONSE_LIMIT = 5;
+/** Chat turns carried into the prompt as conversation memory (fusion renders the last few). */
+const CONVERSATION_TURN_LIMIT = 5;
 const RECENT_RESPONSE_CHARS = 320;
 const RECENT_EVENT_LIMIT = 12;
 const NOTE_LIMIT = 10;
@@ -122,23 +125,36 @@ interface SessionExtras {
   documentIds?: string[];
 }
 
+function toConversation(previousResponses: BlueyResponse[]): ConversationTurn[] {
+  return previousResponses.slice(-CONVERSATION_TURN_LIMIT).map((response) => ({
+    id: response.id,
+    prompt: response.prompt,
+    title: response.title,
+    content: response.content,
+    code: response.code,
+    createdAt: response.createdAt,
+  }));
+}
+
 function toSessionContext(
   session: Session,
   previousResponses: BlueyResponse[] | undefined,
   existing: SessionContext | undefined,
   extras: SessionExtras = {},
 ): SessionContext {
-  const recentResponses = (previousResponses ?? [])
-    .slice(-RECENT_RESPONSE_LIMIT)
-    .map((response) => ({
-      id: response.id,
-      title: response.title,
-      content:
-        response.content.length > RECENT_RESPONSE_CHARS
-          ? `${response.content.slice(0, RECENT_RESPONSE_CHARS)}…`
-          : response.content,
-      createdAt: response.createdAt,
-    }));
+  // Without chat turns from the UI, keep what the native builder loaded from the DB.
+  const recentResponses =
+    previousResponses === undefined
+      ? (existing?.recentResponses ?? [])
+      : previousResponses.slice(-RECENT_RESPONSE_LIMIT).map((response) => ({
+          id: response.id,
+          title: response.title,
+          content:
+            response.content.length > RECENT_RESPONSE_CHARS
+              ? `${response.content.slice(0, RECENT_RESPONSE_CHARS)}…`
+              : response.content,
+          createdAt: response.createdAt,
+        }));
   return {
     sessionId: session.id,
     modeId: session.modeId,
@@ -190,6 +206,10 @@ export function enrichSnapshot(snapshot: ContextSnapshot, args: EnrichSnapshotAr
 
   if (instruction !== undefined && instruction.trim().length > 0) {
     enriched.userInstruction = instruction.trim();
+  }
+  // The chat thread is conversation memory whether or not a session is active.
+  if (previousResponses && previousResponses.length > 0) {
+    enriched.conversation = toConversation(previousResponses);
   }
   if (session) {
     enriched.session = toSessionContext(session, previousResponses, snapshot.session, {

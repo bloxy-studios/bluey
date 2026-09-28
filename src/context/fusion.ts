@@ -2,7 +2,8 @@
  * Context Fusion: turns a `ContextSnapshot` into scored `ContextItem`s.
  *
  * Every source gets a relevance score in 0..1 relative to the current ask:
- *   - user instruction: 1.0 (always the anchor)
+ *   - user instruction / detected question: 1.0 (always the anchor)
+ *   - conversation (earlier turns of this chat): recent turns high, older lower
  *   - transcript: recent segments decay with age; questions get a boost
  *   - OCR: keyword overlap with the instruction/question + code/question markers
  *   - accessibility: focused element / selected text are high-value
@@ -15,6 +16,7 @@ import type {
   ContextItem,
   ContextSnapshot,
   ContextSource,
+  ConversationTurn,
   DetectedEvent,
   RetrievedChunk,
   TranscriptSegment,
@@ -119,7 +121,67 @@ function transcriptItem(
     relevance: clamp01(relevance),
     tokens: estimateTokens(`${speaker}: ${segment.text}`),
     ref: `segment:${segment.id}`,
+    at: segment.startTime,
   };
+}
+
+/** Turns rendered in full (question, answer and the last turn's code). */
+const FULL_TURNS = 2;
+/** Older turns kept as one-line summaries. */
+const SUMMARY_TURNS = 3;
+const TURN_ANSWER_CHARS = 800;
+const TURN_CODE_CHARS = 1500;
+const TURN_SUMMARY_CHARS = 200;
+
+function clip(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max).trimEnd()}…` : trimmed;
+}
+
+const FENCED_CODE = /```([\w+#.-]*)\n([\s\S]*?)```/g;
+
+/** The answer's prose and its code (the `code` field, else the last fenced block in the body). */
+function splitAnswer(turn: ConversationTurn): { prose: string; code?: { language: string; code: string } } {
+  if (turn.code && turn.code.code.trim().length > 0) {
+    return { prose: turn.content, code: { language: turn.code.language, code: turn.code.code } };
+  }
+  const blocks = Array.from(turn.content.matchAll(FENCED_CODE));
+  const last = blocks.at(-1);
+  if (!last) return { prose: turn.content };
+  const prose = turn.content.replace(FENCED_CODE, "").replace(/\n{3,}/g, "\n\n");
+  return { prose, code: { language: last[1] ?? "", code: last[2] ?? "" } };
+}
+
+/**
+ * Earlier turns of this chat, oldest first: the last two as `Q:`/`A:` (the
+ * newest with its code block, capped), older ones as one-line summaries.
+ */
+function conversationItems(turns: ConversationTurn[]): ContextItem[] {
+  const kept = turns.slice(-(FULL_TURNS + SUMMARY_TURNS));
+  return kept.map((turn, index) => {
+    const fromEnd = kept.length - index; // 1 = newest
+    const question = turn.prompt?.trim() ? `Q: ${clip(turn.prompt, TURN_SUMMARY_CHARS)}\n` : "";
+    let content: string;
+    if (fromEnd <= FULL_TURNS) {
+      const { prose, code } = splitAnswer(turn);
+      content = `${question}A: ${clip(prose, TURN_ANSWER_CHARS)}`;
+      if (fromEnd === 1 && code) {
+        content += `\n\`\`\`${code.language}\n${clip(code.code, TURN_CODE_CHARS)}\n\`\`\``;
+      }
+    } else {
+      const summary = turn.title?.trim() || splitAnswer(turn).prose;
+      content = `${question}A (summary): ${clip(summary, TURN_SUMMARY_CHARS)}`;
+    }
+    const createdAt = Date.parse(turn.createdAt);
+    return {
+      source: "conversation",
+      content,
+      relevance: clamp01(fromEnd <= FULL_TURNS ? 0.9 - 0.05 * (fromEnd - 1) : 0.5),
+      tokens: estimateTokens(content),
+      ref: `response:${turn.id}`,
+      ...(Number.isFinite(createdAt) ? { at: createdAt } : {}),
+    };
+  });
 }
 
 function chunkSource(chunk: RetrievedChunk): ContextSource {
@@ -140,15 +202,20 @@ function chunkSource(chunk: RetrievedChunk): ContextSource {
   }
 }
 
+function isQuestionSource(source: ContextSource): boolean {
+  return source === "user_instruction" || source === "detected_question";
+}
+
 /**
  * Fuse a snapshot into scored context items. Pure; ordering is highest
- * relevance first with the user instruction always at the front.
+ * relevance first with the question (typed or heard) always at the front.
  */
 export function fuseContext(snapshot: ContextSnapshot, opts: FuseOptions = {}): ContextItem[] {
   const items: ContextItem[] = [];
   const question = currentQuestionText(snapshot, opts);
 
-  const instruction = opts.instruction?.trim() ?? snapshot.userInstruction?.trim() ?? "";
+  const instruction = opts.instruction?.trim() || snapshot.userInstruction?.trim() || "";
+  const event = instruction.length === 0 ? opts.detectedEvent : undefined;
   if (instruction.length > 0) {
     items.push({
       source: "user_instruction",
@@ -157,7 +224,20 @@ export function fuseContext(snapshot: ContextSnapshot, opts: FuseOptions = {}): 
       tokens: estimateTokens(instruction),
       ref: "instruction",
     });
+  } else if (event && event.text.trim().length > 0) {
+    // A live-detected question: rendered on its own (as heard) instead of
+    // being one transcript line among several recent questions.
+    const content = `${event.speaker ?? "Speaker"}: ${event.text.trim()}`;
+    items.push({
+      source: "detected_question",
+      content,
+      relevance: 1,
+      tokens: estimateTokens(content),
+      ref: `event:${event.id}`,
+    });
   }
+
+  items.push(...conversationItems(snapshot.conversation ?? []));
 
   // Transcript — per segment so budget can drop the oldest first (keep the tail).
   const segments = snapshot.transcript?.segments ?? [];
@@ -165,8 +245,10 @@ export function fuseContext(snapshot: ContextSnapshot, opts: FuseOptions = {}): 
     const nowMs =
       opts.transcriptNowMs ?? segments.reduce((max, s) => Math.max(max, s.endTime), 0);
     const windowSeconds = opts.recentWindowSeconds ?? 120;
+    const asked = new Set(event?.segmentIds ?? []);
     for (const segment of segments) {
       if (segment.text.trim().length === 0) continue;
+      if (asked.has(segment.id)) continue; // already rendered as the detected question
       items.push(transcriptItem(segment, nowMs, windowSeconds));
     }
   }
@@ -246,8 +328,9 @@ export function fuseContext(snapshot: ContextSnapshot, opts: FuseOptions = {}): 
     });
   }
 
-  // Session memory — recent responses, newest slightly higher.
-  const recent = snapshot.session?.recentResponses ?? [];
+  // Session memory — recent responses not already in the chat thread, newest slightly higher.
+  const inThread = new Set((snapshot.conversation ?? []).map((turn) => turn.id));
+  const recent = (snapshot.session?.recentResponses ?? []).filter((r) => !inThread.has(r.id));
   recent.forEach((response, index) => {
     const recency = (index + 1) / recent.length; // most recent last per contract
     const title = response.title ? `${response.title}: ` : "";
@@ -272,8 +355,9 @@ export function fuseContext(snapshot: ContextSnapshot, opts: FuseOptions = {}): 
   }
 
   return items.sort((a, b) => {
-    if (a.source === "user_instruction" && b.source !== "user_instruction") return -1;
-    if (b.source === "user_instruction" && a.source !== "user_instruction") return 1;
+    const qa = isQuestionSource(a.source);
+    const qb = isQuestionSource(b.source);
+    if (qa !== qb) return qa ? -1 : 1;
     return b.relevance - a.relevance;
   });
 }
