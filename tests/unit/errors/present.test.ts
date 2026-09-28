@@ -116,6 +116,33 @@ describe("describeError", () => {
       message: "Cloud transcription isn't available right now, so Bluey is transcribing on-device.",
     });
   });
+
+  it("tells a Keychain refusal apart from a missing key (ADR 0011)", () => {
+    const denied = describeError(error({ kind: "storage", code: "storage.keychain_access_denied" }));
+    expect(denied.title).toBe("macOS blocked a saved credential");
+    expect(denied.message).toMatch(/Always Allow/);
+    expect(denied.message).toMatch(/re-enter the key/);
+    expect(describeError(error({ kind: "storage", code: "storage.keychain_interaction_not_allowed" })).message).toMatch(
+      /Allow access/,
+    );
+    expect(describeError(error({ kind: "storage", code: "storage.keychain_unavailable" })).title).toBe(
+      "Keychain unavailable",
+    );
+  });
+
+  it("names the app whose sign-in macOS refused to share on import", () => {
+    const presented = describeError(
+      error({
+        kind: "authentication",
+        code: "account.import_denied",
+        message: "macOS blocked Bluey from reading Claude Code's sign-in — click Import again and choose Allow",
+      }),
+    );
+    expect(presented.title).toBe("macOS blocked the import");
+    expect(presented.message).toBe(
+      "macOS blocked Bluey from reading Claude Code's sign-in — click Import again and choose Allow",
+    );
+  });
 });
 
 describe("presentError", () => {

@@ -28,6 +28,7 @@ use bluey_protocols::request_shaper::{
     FingerprintInfo, ProviderHttpRequest, RequestShaper, ShapeContext,
 };
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 use super::chatgpt::send_shaped;
 use super::process_device_id;
@@ -297,13 +298,16 @@ fn read_local_credentials() -> BlueyResult<(
     claude_code::OauthAccountInfo,
 )> {
     let username = std::env::var("USER").unwrap_or_default();
-    let mut raw: Option<String> = None;
+    let mut raw: Option<Zeroizing<String>> = None;
+    let mut denied: Option<BlueyError> = None;
     for account in claude_code::keychain_accounts(&username) {
-        if let Ok(entry) = keyring::Entry::new(claude_code::KEYCHAIN_SERVICE, &account) {
-            if let Ok(password) = entry.get_password() {
+        match super::read_foreign_secret(claude_code::KEYCHAIN_SERVICE, &account, "Claude Code") {
+            Ok(Some(password)) => {
                 raw = Some(password);
                 break;
             }
+            Ok(None) => {}
+            Err(error) => denied = Some(error),
         }
     }
     let home =
@@ -313,9 +317,13 @@ fn read_local_credentials() -> BlueyResult<(
             &home,
             std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
         );
-        raw = std::fs::read_to_string(&path).ok();
+        raw = std::fs::read_to_string(&path).ok().map(Zeroizing::new);
     }
     let Some(raw) = raw else {
+        // macOS refused the Keychain read: say so rather than "not signed in".
+        if let Some(error) = denied {
+            return Err(error);
+        }
         return Err(import_not_found(
             "Claude Code is not signed in on this Mac (no Keychain item or ~/.claude/.credentials.json) — run `claude` and sign in first, or connect in the browser",
         ));

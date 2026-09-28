@@ -132,9 +132,13 @@ impl AuthManager {
         self.config.is_some()
     }
 
-    /// Whether OAuth tokens are stored (bootstrap decides the initial state).
+    /// Whether OAuth tokens are stored (bootstrap decides the initial state) —
+    /// an attribute-only answer (the boot enumeration) that never prompts. A
+    /// saved session this build may not read yet still counts as stored.
     pub fn has_stored_session(&self) -> bool {
-        self.secrets.has_sync(CLERK_OAUTH_TOKENS_KEY)
+        self.secrets
+            .has_sync(CLERK_OAUTH_TOKENS_KEY)
+            .unwrap_or(false)
     }
 
     pub async fn status(&self) -> BlueyResult<AuthStatus> {

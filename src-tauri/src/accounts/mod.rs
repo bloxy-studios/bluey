@@ -896,6 +896,42 @@ fn needs_reauth(account_id: &str, provider_id: &str) -> BlueyError {
     .recoverable(RecoveryAction::reconnect_account(account_id, provider_id))
 }
 
+/// Read another app's Keychain item for an explicit "Import" click — the only
+/// place Bluey decrypts a foreign item, and the one legitimate foreign prompt.
+/// `app` names the owner in the error when macOS refuses (the user denied the
+/// prompt, or it was cancelled): that is not the same as "not signed in".
+pub(crate) fn read_foreign_secret(
+    service: &str,
+    account: &str,
+    app: &str,
+) -> BlueyResult<Option<zeroize::Zeroizing<String>>> {
+    foreign_read_outcome(
+        crate::secrets::keychain::read_foreign_item(service, account),
+        app,
+    )
+}
+
+fn foreign_read_outcome(
+    result: Result<Option<zeroize::Zeroizing<String>>, crate::secrets::backend::KeychainStatus>,
+    app: &str,
+) -> BlueyResult<Option<zeroize::Zeroizing<String>>> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(status) if status.is_locked() => Err(BlueyError::account(
+            "import_denied",
+            format!(
+                "macOS blocked Bluey from reading {app}'s sign-in — click Import again and choose Allow"
+            ),
+        )
+        .recoverable(RecoveryAction::Retry)
+        .with_details(serde_json::json!({ "status": status.0 }))),
+        Err(status) => {
+            tracing::warn!(status = status.0, "reading another app's keychain item failed");
+            Ok(None)
+        }
+    }
+}
+
 /// Accounts are keyed by provider id in this version (one per provider).
 fn account_id_provider(account_id: &str) -> String {
     account_id.to_string()
@@ -939,5 +975,25 @@ mod tests {
             Some(RecoveryAction::reconnect_account("claude", "claude"))
         );
         assert!(!error.message.contains("sk-"));
+    }
+
+    #[test]
+    fn a_refused_foreign_read_is_reported_as_blocked_not_missing() {
+        use crate::secrets::backend::KeychainStatus;
+        for status in [-25293, -128, -25308] {
+            let error = foreign_read_outcome(Err(KeychainStatus(status)), "Claude Code")
+                .expect_err("a refusal is an error");
+            assert_eq!(error.code, "account.import_denied");
+            assert!(error.message.contains("Claude Code"));
+            assert!(error.message.contains("Import again"));
+        }
+        assert!(foreign_read_outcome(Ok(None), "Claude Code")
+            .unwrap()
+            .is_none());
+        assert!(
+            foreign_read_outcome(Err(KeychainStatus(-26275)), "Claude Code")
+                .unwrap()
+                .is_none()
+        );
     }
 }
