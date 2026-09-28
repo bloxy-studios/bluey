@@ -135,9 +135,13 @@ impl DocumentsManager {
     }
 
     /// Retrieve relevant chunks; the query is embedded when semantic retrieval
-    /// is possible (embedding role usable and not keyword-only).
+    /// is possible (embedding role usable and the strategy matches by meaning).
+    /// Only vectors produced by the current embedding model are compared.
     pub async fn retrieve(&self, query: RetrievalQuery) -> BlueyResult<Vec<RetrievedChunk>> {
-        let wants_semantic = !matches!(query.strategy, Some(RetrievalStrategy::Keyword));
+        let wants_semantic = !matches!(
+            query.strategy,
+            Some(RetrievalStrategy::Keyword | RetrievalStrategy::Leading)
+        );
         let embedding = if wants_semantic && self.ai.embeddings_ready() {
             match self
                 .ai
@@ -157,8 +161,11 @@ impl DocumentsManager {
         } else {
             None
         };
+        let model_tag = embedding.as_ref().and_then(|_| self.embedding_tag());
         self.storage
-            .run(move |db| bluey_storage::retrieve(db, &query, embedding.as_deref()))
+            .run(move |db| {
+                bluey_storage::retrieve(db, &query, embedding.as_deref(), model_tag.as_deref())
+            })
             .await
     }
 

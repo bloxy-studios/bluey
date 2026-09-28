@@ -706,7 +706,18 @@ export class MockTransport implements Transport {
       },
       timings: { capture: 84, ocr: 128, accessibility: 22, assembly: 41 },
     };
-    if (opts.includeScreen) {
+    // Like Rust: a failed capture keeps the rest of the snapshot and says why.
+    const screenDenied = opts.includeScreen && this.permissions.screenRecording === "denied";
+    if (screenDenied) {
+      snapshot.warnings = [
+        {
+          kind: "screen_unavailable",
+          code: "permission.screen_recording",
+          message: "Screen Recording permission is not granted.",
+          recovery: { type: "open_system_settings", pane: "screenRecording" },
+        },
+      ];
+    } else if (opts.includeScreen) {
       snapshot.screen = {
         image: opts.inlineImage ? FIXTURE_PNG_BASE64 : undefined,
         mimeType: "image/png",
@@ -716,7 +727,7 @@ export class MockTransport implements Transport {
         frameId: createId("frame"),
       };
     }
-    if (opts.includeOcr) {
+    if (opts.includeOcr && !screenDenied) {
       snapshot.ocr = {
         blocks: [
           {
@@ -1973,8 +1984,19 @@ export class MockTransport implements Transport {
       this.documents = args.scope ? this.documents.filter((d) => d.scope !== args.scope) : [];
       return before - this.documents.length;
     },
-    documents_retrieve: (args) =>
-      this.documents.slice(0, args.query.limit ?? 4).map((doc, index) => ({
+    // Filters like Rust: requested scopes (+ scope id) and kinds; only
+    // `leading` answers an empty query.
+    documents_retrieve: ({ query }) =>
+      this.documents
+        .filter(
+          (doc) =>
+            query.scopes.length === 0 ||
+            query.scopes.some((s) => s.scope === doc.scope && (s.scopeId === undefined || s.scopeId === doc.scopeId)),
+        )
+        .filter((doc) => !query.kinds?.length || query.kinds.includes(doc.kind))
+        .filter(() => query.strategy === "leading" || query.query.trim().length > 0)
+        .slice(0, query.limit ?? 4)
+        .map((doc, index) => ({
         chunkId: `${doc.id}-chunk-${index}`,
         documentId: doc.id,
         documentTitle: doc.title,

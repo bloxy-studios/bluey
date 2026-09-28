@@ -413,15 +413,22 @@ impl DocumentRepository {
         })
     }
 
-    /// Chunks that have embeddings, restricted to `scopes` (empty = all) and
-    /// optional `kinds`, joined with their document context.
+    /// Chunks that have embeddings, restricted to `scopes` (empty = all),
+    /// optional `kinds` and, when given, the `providerId/model` tag that
+    /// produced the vectors (another model's vectors live in a different
+    /// space even at the same size), joined with their document context.
     pub fn chunks_with_embeddings(
         db: &Database,
         scopes: &[ScopeRef],
         kinds: Option<&[DocumentKind]>,
+        model_tag: Option<&str>,
     ) -> Result<Vec<EmbeddedChunk>, BlueyError> {
         let (scope_sql, scope_params) = scope_filter_sql(scopes)?;
         let (kind_sql, kind_params) = kind_filter_sql(kinds)?;
+        let (model_sql, model_params) = match model_tag {
+            Some(tag) => ("d.embedding_model = ?", vec![tag.to_string()]),
+            None => ("1=1", Vec::new()),
+        };
         type RawRow = (
             String,
             String,
@@ -438,12 +445,16 @@ impl DocumentRepository {
                     "SELECT c.id, c.document_id, d.title, d.kind, d.scope, c.content, c.heading, c.embedding
                        FROM document_chunks c
                        JOIN documents d ON d.id = c.document_id
-                      WHERE c.embedding IS NOT NULL AND {scope_sql} AND {kind_sql}
+                      WHERE c.embedding IS NOT NULL AND {scope_sql} AND {kind_sql} AND {model_sql}
                       ORDER BY c.document_id, c.chunk_index"
                 );
                 let mut stmt = conn.prepare(&sql).sql()?;
-                let all_params: Vec<&str> =
-                    scope_params.iter().map(String::as_str).chain(kind_params.iter().map(String::as_str)).collect();
+                let all_params: Vec<&str> = scope_params
+                    .iter()
+                    .chain(&kind_params)
+                    .chain(&model_params)
+                    .map(String::as_str)
+                    .collect();
                 let rows = stmt
                     .query_map(rusqlite::params_from_iter(all_params), |r| {
                         Ok((
@@ -677,7 +688,7 @@ mod tests {
                 .has_embeddings
         );
 
-        let all = DocumentRepository::chunks_with_embeddings(&db, &[], None).unwrap();
+        let all = DocumentRepository::chunks_with_embeddings(&db, &[], None, None).unwrap();
         assert_eq!(all.len(), chunks.len());
         assert_eq!(all[0].embedding, vec![1.0, 0.0]);
         assert_eq!(all[0].document_kind, DocumentKind::Resume);
@@ -689,6 +700,7 @@ mod tests {
                 scope_id: Some("nope".into()),
             }],
             None,
+            None,
         )
         .unwrap();
         assert!(scoped.is_empty());
@@ -697,9 +709,34 @@ mod tests {
             &db,
             &[],
             Some(&[DocumentKind::JobDescription]),
+            None,
         )
         .unwrap();
         assert!(kind_miss.is_empty());
+
+        // Only vectors from the current embedding model are candidates.
+        let tag = "gemini/gemini-embedding-2";
+        assert!(
+            DocumentRepository::chunks_with_embeddings(&db, &[], None, Some(tag))
+                .unwrap()
+                .is_empty(),
+            "vectors of unknown provenance must not match a model filter"
+        );
+        DocumentRepository::mark_embedded(&db, &doc.id, tag, 2).unwrap();
+        assert_eq!(
+            DocumentRepository::chunks_with_embeddings(&db, &[], None, Some(tag))
+                .unwrap()
+                .len(),
+            chunks.len()
+        );
+        assert!(DocumentRepository::chunks_with_embeddings(
+            &db,
+            &[],
+            None,
+            Some("openai/text-embedding-3-small")
+        )
+        .unwrap()
+        .is_empty());
 
         assert!(DocumentRepository::set_embedding(&db, "missing", &[1.0]).is_err());
     }

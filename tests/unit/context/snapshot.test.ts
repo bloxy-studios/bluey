@@ -1,4 +1,4 @@
-import { enrichSnapshot, snapshotOptionsFor } from "@/context/snapshot";
+import { enrichSnapshot, PERSONAL_INSTRUCTIONS_CHARS, snapshotOptionsFor } from "@/context/snapshot";
 import type { RetrievedChunk } from "@/lib/types";
 import { makeMode, makeResponse, makeSession, makeSettings, makeSnapshot } from "../../fixtures/helpers/builders";
 
@@ -70,6 +70,21 @@ describe("enrichSnapshot", () => {
     const enriched = enrichSnapshot(makeSnapshot(), { mode, settings, retrieved });
     expect(enriched.userContext?.personalInstructions).toBe("Always answer briefly.");
     expect(enriched.userContext?.chunks.map((c) => c.chunkId)).toEqual(["c1"]);
+  });
+
+  it("joins every personal-instruction chunk (global, mode, session) and caps the text", () => {
+    const pi = (id: string, content: string, scope: RetrievedChunk["scope"]): RetrievedChunk => ({
+      chunkId: id, documentId: `d_${id}`, documentTitle: "Prefs", documentKind: "personal_instructions", content, score: 1, scope,
+    });
+    const enriched = enrichSnapshot(makeSnapshot(), {
+      mode,
+      settings,
+      retrieved: [pi("g", "Answer briefly.", "global"), pi("m", "Use STAR for behavioral questions.", "mode")],
+    });
+    expect(enriched.userContext?.personalInstructions).toBe("Answer briefly.\n\nUse STAR for behavioral questions.");
+
+    const long = enrichSnapshot(makeSnapshot(), { mode, settings, retrieved: [pi("g", "x".repeat(4000), "global")] });
+    expect(long.userContext?.personalInstructions?.length).toBeLessThanOrEqual(PERSONAL_INSTRUCTIONS_CHARS + 1);
   });
 
   it("sets the trimmed user instruction and does not mutate the input", () => {

@@ -7,6 +7,8 @@
 import type { SnapshotTrace } from "./latency";
 import type { DocumentKind, DocumentScope } from "./documents";
 import type { BlueyMode, ResponseStyle } from "./mode";
+import type { CodeBlock } from "./response";
+import type { RecoveryAction } from "./errors";
 import type { SessionEvent } from "./session";
 import type { TranscriptSegment } from "./transcript";
 
@@ -168,6 +170,34 @@ export interface RetrievedChunk {
   scope: DocumentScope;
 }
 
+/** One earlier exchange in the current chat thread (TS-only; not mirrored in Rust). */
+export interface ConversationTurn {
+  id: string;
+  /** The typed question or detected question the answer responded to. */
+  prompt?: string;
+  title?: string;
+  content: string;
+  code?: CodeBlock;
+  createdAt: string;
+}
+
+/**
+ * Why part of the snapshot is missing (mirrors `SnapshotWarningKind`):
+ * `screen_unavailable` — the capture failed (the rest of the context is kept);
+ * `ocr_pending` — OCR missed its soft deadline and finishes in the background,
+ * so the screenshot has to stand in for the screen text.
+ */
+export type SnapshotWarningKind = "screen_unavailable" | "ocr_pending";
+
+export interface SnapshotWarning {
+  kind: SnapshotWarningKind;
+  /** The `BlueyError` code of the underlying failure (e.g. `permission.screen_recording`). */
+  code: string;
+  message: string;
+  /** The fix the UI can offer (e.g. open the Screen Recording pane). */
+  recovery?: RecoveryAction;
+}
+
 export interface ContextSnapshot {
   timestamp: string;
   activeApplication?: ApplicationContext;
@@ -188,6 +218,10 @@ export interface ContextSnapshot {
   mode?: ModeContext;
   /** Explicit user question typed into the HUD (highest priority). */
   userInstruction?: string;
+  /** Earlier exchanges in the chat thread, oldest first, whether or not a session is active. */
+  conversation?: ConversationTurn[];
+  /** Parts the native builder could not gather (the rest of the snapshot is still usable). */
+  warnings?: SnapshotWarning[];
   /** Native assembly timings (ms). */
   timings?: Partial<Record<"capture" | "ocr" | "accessibility" | "transcript" | "assembly", number>>;
   /** What the native builder observed on the Rust clock (ADR 0010 §2); the engine anchors on `replyMs`. */
@@ -209,9 +243,13 @@ export interface SnapshotOptions {
 
 export type ContextSource =
   | "user_instruction"
+  | "detected_question"
+  | "conversation"
+  | "active_app"
   | "screen"
   | "ocr"
   | "accessibility"
+  | "window_text"
   | "transcript"
   | "transcript_old"
   | "resume"
@@ -229,4 +267,9 @@ export interface ContextItem {
   tokens: number;
   /** Optional origin identifiers for traceability. */
   ref?: string;
+  /**
+   * When the content happened (transcript: segment start ms; chat turn: epoch
+   * ms). Rendering orders a section by it; budget selection ignores it.
+   */
+  at?: number;
 }

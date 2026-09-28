@@ -36,6 +36,8 @@ export interface AskInput {
   /** Pre-built native snapshot. When absent and `captureScreen` is true the engine builds one. */
   snapshot?: ContextSnapshot;
   captureScreen: boolean;
+  /** `false` when the HUD screen toggle is off: no capture, OCR or accessibility tree at all. */
+  screenAllowed?: boolean;
   mode: BlueyMode;
   session?: Session | null;
   settings: Settings;

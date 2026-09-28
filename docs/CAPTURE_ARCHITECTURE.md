@@ -30,6 +30,13 @@
 (with language correction). Output: blocks with confidence and normalized top-left-origin
 bounding boxes, plus text joined in reading order. Cached per frame hash.
 
+On the ⌘↵ path `context_build_snapshot` waits for OCR at most 150 ms after the frame is
+captured. If OCR misses that soft deadline the snapshot goes out with the image and AX only
+(an `ocr_pending` warning; the request uses vision) and OCR finishes in the background into the
+cache. If the capture itself fails (for example Screen Recording is not granted), the snapshot
+keeps AX, transcript and app identity, has no `screen`, and carries a `screen_unavailable`
+warning with the error code so the UI can offer to open System Settings.
+
 ## Accessibility (AX APIs)
 `accessibility.snapshot` collects the frontmost application, focused window, focused element
 (role/label/value/position/size/actions), selected text, and a bounded set of text-bearing and
@@ -46,7 +53,8 @@ on them.
 ## Snapshot hygiene
 `trim_snapshot` bounds OCR (12k chars), AX visible text (8k), elements (150), transcript window
 (300 s / 200 segments) and removes OCR lines duplicated by AX text before the TS layer scores
-and budgets the context.
+and budgets the context. Fusion then drops AX window-text lines already present in the OCR or
+the focused value (whitespace- and case-insensitive).
 
 ## Privacy controls
 Capture target (display / active window / region), observation mode (manual only by default),

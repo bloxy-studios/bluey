@@ -285,7 +285,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     let imagePx: number | undefined;
 
     // Phase: capturing ──────────────────────────────────────────────────────
-    if (input.captureScreen && !input.snapshot) phase(opts, "capturing");
+    if (input.captureScreen && input.screenAllowed !== false && !input.snapshot) phase(opts, "capturing");
     let snapshot: ContextSnapshot;
     if (input.snapshot) {
       snapshot = input.snapshot;
@@ -296,6 +296,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
         settings: input.settings,
         trigger: input.trigger,
         captureScreen: input.captureScreen,
+        screenAllowed: input.screenAllowed,
         transcriptWindowSeconds: input.transcriptWindowSeconds,
         api,
       });

@@ -98,9 +98,11 @@ docs/                      this documentation + ADRs
    ≤1600px JPEG), OCR (Vision) and accessibility snapshot **in parallel**, recent transcript from
    the in-memory ring buffer; Rust trims everything to `SnapshotLimits` and applies application
    adapters. Targets: capture < 200 ms, assembly < 150 ms.
-4. Engine (TS): retrieval of relevant document chunks (session → mode → global), context fusion
-   into scored `ContextItem`s, token budget allocation, intent classification → `AIRequest`
-   with structured-output schema for the mode; state `→ thinking`.
+4. Engine (TS): retrieval of relevant document chunks (the mode's attached files, a small
+   relevance-floored pass over session and global documents, personal instructions on every
+   ask, the résumé pinned in candidate modes), context fusion into scored `ContextItem`s, token
+   budget allocation, intent classification → `AIRequest` with structured-output schema for the
+   mode; state `→ thinking`.
 5. Rust `ai_stream`: model router picks provider/model by task/latency/vision; provider adapter
    streams SSE; chunks flow back over a `Channel`; `ai.*` events mirror to the bus.
 6. Engine buffers code fences, parses structured output, optimises, saves the response and

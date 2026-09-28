@@ -413,15 +413,41 @@ impl SessionEventRepository {
 
     /// All events of a session in chronological order.
     pub fn list(db: &Database, session_id: &str) -> Result<Vec<SessionEvent>, BlueyError> {
+        Self::query(
+            db,
+            "SELECT id, session_id, type, title, detail, refs, confidence, created_at
+               FROM session_events WHERE session_id = ?1 ORDER BY created_at, id",
+            params![session_id],
+        )
+    }
+
+    /// The newest `limit` events of a session, still in chronological order —
+    /// the snapshot needs the tail, not the whole timeline.
+    pub fn list_recent(
+        db: &Database,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEvent>, BlueyError> {
+        Self::query(
+            db,
+            "SELECT * FROM (
+                 SELECT id, session_id, type, title, detail, refs, confidence, created_at
+                   FROM session_events WHERE session_id = ?1
+                  ORDER BY created_at DESC, id DESC LIMIT ?2
+             ) ORDER BY created_at, id",
+            params![session_id, limit as i64],
+        )
+    }
+
+    fn query(
+        db: &Database,
+        sql: &str,
+        args: impl rusqlite::Params,
+    ) -> Result<Vec<SessionEvent>, BlueyError> {
         let raw = db.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, session_id, type, title, detail, refs, confidence, created_at
-                       FROM session_events WHERE session_id = ?1 ORDER BY created_at, id",
-                )
-                .sql()?;
+            let mut stmt = conn.prepare(sql).sql()?;
             let rows = stmt
-                .query_map([session_id], |r| {
+                .query_map(args, |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -704,6 +730,23 @@ mod tests {
         assert_eq!(ordered.len(), 2);
         assert_eq!(ordered[0].session.id, a.id);
         assert_eq!(ordered[1].session.id, b.id);
+    }
+
+    #[test]
+    fn recent_events_are_the_newest_tail_in_chronological_order() {
+        let db = testutil::db();
+        let s = SessionRepository::create(&db, "general", None).unwrap();
+        let events: Vec<_> = (0..5)
+            .map(|i| {
+                let mut ev = testutil::event(&s.id, &format!("Question {i}"));
+                ev.created_at = format!("2026-09-28T10:00:0{i}.000Z");
+                SessionEventRepository::add(&db, &ev).unwrap()
+            })
+            .collect();
+        let recent = SessionEventRepository::list_recent(&db, &s.id, 2).unwrap();
+        assert_eq!(recent, events[3..].to_vec());
+        let all = SessionEventRepository::list_recent(&db, &s.id, 50).unwrap();
+        assert_eq!(all, events);
     }
 
     #[test]

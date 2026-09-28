@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { MockTransport } from "@/lib/tauri/mock";
 import type { DetectedEvent } from "@/lib/types";
 import { useChatStore } from "@/stores/chatStore";
+import { useHudUiStore } from "@/stores/hudUiStore";
 import { setEngine } from "@/stores/engine";
 import { canShowLive, useProactiveStore } from "@/stores/proactive";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -63,6 +64,17 @@ describe("proactive preparation loop", () => {
     expect(useProactiveStore.getState().preparingEventId).toBeNull();
     expect(useProactiveStore.getState().liveEventId).toBeNull();
     expect(useTranscriptStore.getState().questions.map((q) => q.id)).not.toContain("det-1"); // answered
+  });
+
+  it("prepares without screen context when the HUD screen toggle is off", async () => {
+    useHudUiStore.getState().setScreenEnabled(false);
+    try {
+      mock.emit("transcript.final", makeSegment({ text: "How would you design a rate limiter?" }));
+      await waitFor(() => expect(engine.prepared).toHaveLength(1));
+      expect(engine.prepared[0]?.screenAllowed).toBe(false);
+    } finally {
+      useHudUiStore.getState().setScreenEnabled(true);
+    }
   });
 
   it("keeps the ⌘⇧↵ hint when suggestions are shown on request", async () => {

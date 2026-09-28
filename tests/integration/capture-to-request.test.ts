@@ -128,8 +128,10 @@ describe("capture → context → request → response", () => {
       ocrLevel: "accurate",
     });
 
-    // Coding mode declares no document needs — retrieval must be skipped.
-    expect(fake.callsFor("documents_retrieve")).toHaveLength(0);
+    // Coding mode declares no document needs — only the personal-instructions
+    // pass and the small relevance-floored library pass run.
+    const retrieveQueries = fake.callsFor("documents_retrieve").map((call) => call.query);
+    expect(retrieveQueries.every((q) => q.strategy === "leading" || (q.kinds === undefined && (q.limit ?? 0) <= 3))).toBe(true);
 
     // The AI request carries task, schema, budgeted context and prompt sections.
     const streamCalls = fake.callsFor("ai_stream");

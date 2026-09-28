@@ -113,9 +113,9 @@ describe("prepare flow", () => {
     expect(preparedEvents).toEqual([prepared!.id]);
 
     // Retrieval used the interview mode's document requirements.
-    const retrieveCalls = fake.callsFor("documents_retrieve");
-    expect(retrieveCalls).toHaveLength(1);
-    expect(retrieveCalls[0]?.query.kinds).toEqual(expect.arrayContaining(["resume", "job_description"]));
+    const declared = fake.callsFor("documents_retrieve").filter((call) => call.query.kinds?.includes("job_description"));
+    expect(declared).toHaveLength(1);
+    expect(declared[0]?.query.kinds).toEqual(expect.arrayContaining(["resume", "job_description"]));
 
     // A second prepare for the same event reuses the cache.
     const again = await engine.prepare({

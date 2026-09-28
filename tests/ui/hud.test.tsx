@@ -10,6 +10,7 @@ import type { AppStatus } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
 import { setEngine } from "@/stores/engine";
 import { useChatStore } from "@/stores/chatStore";
+import { useHudUiStore } from "@/stores/hudUiStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { FakeEngine, ProactiveFakeEngine, makeResponse, makeSegment, setupMockApp } from "./helpers";
@@ -102,6 +103,20 @@ describe("HudPanel", () => {
     expect(engine.asks[0]?.trigger).toBe("shortcut_capture");
     expect(engine.asks[0]?.captureScreen).toBe(true);
     expect(screen.getByText("Assist")).toBeInTheDocument();
+  });
+
+  it("⌘↵ with screen context toggled off asks without the screen", async () => {
+    const user = userEvent.setup();
+    renderHud();
+    try {
+      await user.click(screen.getByRole("button", { name: "Screen context on" }));
+      await user.keyboard("{Meta>}{Enter}{/Meta}");
+      expect(engine.asks).toHaveLength(1);
+      expect(engine.asks[0]?.trigger).toBe("shortcut_capture");
+      expect(engine.asks[0]?.screenAllowed).toBe(false);
+    } finally {
+      useHudUiStore.getState().setScreenEnabled(true);
+    }
   });
 
   it("shows a prepared-response hint and takes it with ⌘⇧↵", async () => {

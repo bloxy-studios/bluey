@@ -110,7 +110,8 @@ describe("PromptBuilder.buildMessages", () => {
     expect(builder({ trigger: "shortcut_capture" }).renderTask()).toContain("Solve or answer what is on the screen");
     expect(builder({ trigger: "shortcut_capture" }).renderTask()).toContain("Do not describe the screen");
     expect(builder({ trigger: "shortcut_generate" }).renderTask()).toContain("Write exactly what I say next");
-    expect(builder({ trigger: "follow_up" }).renderTask()).toContain("follow-up");
+    const earlierTurn: ContextItem = { source: "conversation", content: "Q: Why?\nA: Because.", relevance: 0.9, tokens: 5 };
+    expect(builder({ trigger: "follow_up", items: [...items, earlierTurn] }).renderTask()).toContain("follow-up");
     expect(builder({ trigger: "detected_event" }).renderTask()).toContain("Answer the question just asked");
     expect(builder({ trigger: "assist" }).renderTask()).toContain("Do the single most useful thing");
   });
