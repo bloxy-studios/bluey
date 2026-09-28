@@ -19,30 +19,31 @@ export const HELPER_STOPPED_ERROR: BlueyError = {
   recovery: { type: "restart_helper" },
 };
 
-const STT_FALLBACK_CODE = "audio.stt_fallback";
+/**
+ * Expected changes of transcription route, not failures: listening fell back
+ * to on-device Apple Speech (no cloud key, Privacy → Cloud AI off), or Apple
+ * Speech has no on-device model for the locale and uses Apple's servers.
+ */
+const AUDIO_NOTICE_CODES = new Set(["audio.stt_fallback", "audio.speech_server"]);
 const NOTICE_DURATION_MS = 4000;
 
-/**
- * Listening fell back to on-device Apple Speech — expected (no cloud key,
- * Privacy → Cloud AI off), so an info notice, and each reason only once per
- * app run rather than on every start.
- */
-function showSttFallback(error: BlueyError, shown: Set<string>): void {
+/** An info notice, and each reason only once per app run rather than on every start. */
+function showAudioNotice(error: BlueyError, shown: Set<string>): void {
   if (shown.has(error.message)) return;
   shown.add(error.message);
   useToastStore.getState().push({
     message: presentError(error).message,
     variant: "info",
-    key: STT_FALLBACK_CODE,
+    key: error.code,
     durationMs: NOTICE_DURATION_MS,
   });
 }
 
 export function startErrorSurface(): Unlisten {
-  const shownFallbacks = new Set<string>();
+  const shownNotices = new Set<string>();
   const offApp = eventBus.on("app.error", (error) => showErrorToast(error));
   const offAudio = eventBus.on("audio.error", (error) => {
-    if (error.code === STT_FALLBACK_CODE) showSttFallback(error, shownFallbacks);
+    if (AUDIO_NOTICE_CODES.has(error.code)) showAudioNotice(error, shownNotices);
     else showErrorToast(error);
   });
   const offHelper = eventBus.on("helper.status", (status) => {

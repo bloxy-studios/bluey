@@ -13,6 +13,11 @@ import Foundation
 public final class MicrophoneCapture {
     public var onSamples: (([Int16]) -> Void)?
     public var onError: ((HelperError) -> Void)?
+    /// Capture stopped (a rebuild after a device change failed) or resumed
+    /// mid-session. Called on the mic queue.
+    public var onLiveChange: ((Bool) -> Void)?
+    /// Test seam: replaces building and starting the AVAudioEngine.
+    var startEngineOverride: (() -> HelperError?)?
 
     private let queue = DispatchQueue(label: "com.codewithabdul.bluey.helper.mic")
     private let deviceService: AudioDeviceService
@@ -23,7 +28,13 @@ public final class MicrophoneCapture {
     private var converterInputFormat: AVAudioFormat?
     private var configChangeObserver: NSObjectProtocol?
     private var requestedDeviceUID: String?
-    private var running = false
+    /// Between a successful `start` and `stop`: a failed rebuild keeps it set
+    /// so the next device change retries (MAC-005).
+    private var wantRunning = false
+    /// The engine is capturing.
+    private var live = false
+    /// The requested device vanished and capture uses the default input.
+    private var onFallbackDevice = false
 
     public init(deviceService: AudioDeviceService, targetSampleRate: Double = 16000) {
         self.deviceService = deviceService
@@ -35,14 +46,15 @@ public final class MicrophoneCapture {
     public func start(deviceUID: String?, completion: @escaping (HelperError?) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
-            guard !self.running else {
+            guard !self.wantRunning else {
                 completion(nil)
                 return
             }
             self.requestedDeviceUID = deviceUID
-            let error = self.buildAndStartEngine()
+            let error = self.startEngine(fallBackToDefault: false)
             if error == nil {
-                self.running = true
+                self.wantRunning = true
+                self.live = true
                 self.observeConfigurationChanges()
             }
             completion(error)
@@ -52,7 +64,8 @@ public final class MicrophoneCapture {
     public func stop() {
         queue.async { [weak self] in
             guard let self else { return }
-            self.running = false
+            self.wantRunning = false
+            self.live = false
             self.teardownEngine()
             if let observer = self.configChangeObserver {
                 NotificationCenter.default.removeObserver(observer)
@@ -68,14 +81,35 @@ public final class MicrophoneCapture {
         }
     }
 
-    /// Must run on `queue`.
-    private func restartLocked() {
-        guard running else { return }
-        teardownEngine()
-        if let error = buildAndStartEngine() {
-            running = false
-            onError?(error)
+    /// After a device change: retry when a previous rebuild failed, or when
+    /// the requested device is back after capture fell back to the default.
+    public func retryIfDegraded() {
+        queue.async { [weak self] in
+            guard let self, !self.live || self.requestedDeviceReturned else { return }
+            self.restartLocked()
         }
+    }
+
+    private var requestedDeviceReturned: Bool {
+        guard onFallbackDevice, let uid = requestedDeviceUID else { return false }
+        return deviceService.deviceID(forUID: uid) != nil
+    }
+
+    /// Must run on `queue`. A vanished requested device falls back to the
+    /// default input rather than leaving the microphone dead.
+    private func restartLocked() {
+        guard wantRunning else { return }
+        teardownEngine()
+        let error = startEngine(fallBackToDefault: true)
+        let wasLive = live
+        live = error == nil
+        if let error, wasLive { onError?(error) }
+        if live != wasLive { onLiveChange?(live) }
+    }
+
+    private func startEngine(fallBackToDefault: Bool) -> HelperError? {
+        if let startEngineOverride { return startEngineOverride() }
+        return buildAndStartEngine(fallBackToDefault: fallBackToDefault)
     }
 
     // MARK: engine plumbing (all on `queue`)
@@ -89,26 +123,32 @@ public final class MicrophoneCapture {
         converterInputFormat = nil
     }
 
-    private func buildAndStartEngine() -> HelperError? {
+    private func buildAndStartEngine(fallBackToDefault: Bool) -> HelperError? {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             return .permissionDenied("microphone", message: "Microphone not granted")
         }
         let engine = AVAudioEngine()
         let input = engine.inputNode
 
+        onFallbackDevice = false
         if let uid = requestedDeviceUID, !uid.isEmpty {
-            guard let deviceID = deviceService.deviceID(forUID: uid) else {
+            if let deviceID = deviceService.deviceID(forUID: uid) {
+                guard let unit = input.audioUnit else {
+                    return .audio("engine_unavailable", "input audio unit unavailable")
+                }
+                var device = deviceID
+                let status = AudioUnitSetProperty(
+                    unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                    &device, UInt32(MemoryLayout<AudioDeviceID>.size))
+                if status != noErr {
+                    return .audio(
+                        "device_select_failed", "could not select input device (\(status))")
+                }
+            } else if !fallBackToDefault {
                 return .audio("device_not_found", "input device \(uid) not found")
-            }
-            guard let unit = input.audioUnit else {
-                return .audio("engine_unavailable", "input audio unit unavailable")
-            }
-            var device = deviceID
-            let status = AudioUnitSetProperty(
-                unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                &device, UInt32(MemoryLayout<AudioDeviceID>.size))
-            if status != noErr {
-                return .audio("device_select_failed", "could not select input device (\(status))")
+            } else {
+                Log.shared.warn("selected input device is gone; capturing from the default input")
+                onFallbackDevice = true
             }
         }
 
@@ -158,7 +198,7 @@ public final class MicrophoneCapture {
     // MARK: conversion (on `queue`)
 
     private func convertAndDeliver(_ buffer: AVAudioPCMBuffer) {
-        guard running else { return }
+        guard live else { return }
         guard
             let outFormat = AVAudioFormat(
                 commonFormat: .pcmFormatInt16, sampleRate: targetSampleRate,

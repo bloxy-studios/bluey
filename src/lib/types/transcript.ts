@@ -71,6 +71,10 @@ export interface AudioStatus {
   /** Rolling RMS levels 0..1 for UI meters. */
   levels?: { microphone: number; system: number };
   error?: BlueyError;
+  /** Apple Speech's locale while it transcribes (BCP-47). */
+  speechLocale?: string;
+  /** Whether Apple Speech runs on the Mac (false: on Apple's servers). */
+  speechOnDevice?: boolean;
 }
 
 export type DetectedEventType =

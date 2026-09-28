@@ -24,7 +24,9 @@ use bluey_core::types::{
     TranscriptSegment, TranscriptionProviderKind,
 };
 use bluey_core::{new_id, now_iso, BlueyError, BlueyErrorKind, BlueyResult};
-use bluey_protocols::helper::{DevicesResult, HelperEvent, TranscriptAssembler, WireTranscript};
+use bluey_protocols::helper::{
+    DevicesResult, HelperEvent, TranscriptAssembler, WireSpeechRoute, WireTranscript,
+};
 use bluey_protocols::voice_live::{self, TranscriptionTransport};
 use bluey_storage::TranscriptRepository;
 use serde::Serialize;
@@ -155,6 +157,21 @@ impl ChunkTiming {
         }
         (start, end, format!("cloud-{seq}"))
     }
+}
+
+/// The Apple route promises on-device transcription; when the recognizer has
+/// no on-device model for the locale the helper falls back to Apple's servers,
+/// which the user is told (MAC-007) instead of it happening silently.
+fn server_speech_notice(route: &WireSpeechRoute) -> Option<BlueyError> {
+    (!route.on_device).then(|| {
+        BlueyError::audio(
+            "speech_server",
+            format!(
+                "Apple Speech has no on-device model for {}, so it transcribes on Apple's servers",
+                route.locale
+            ),
+        )
+    })
 }
 
 /// Claim the start slot under the status lock. Only the claimant goes on to
@@ -937,6 +954,8 @@ impl AudioManager {
             status.system_audio_active = false;
             status.levels = None;
             status.started_at = None;
+            status.speech_locale = None;
+            status.speech_on_device = None;
             status.error = error;
             status.clone()
         };
@@ -1169,7 +1188,10 @@ impl AudioManager {
                 microphone,
                 system_audio,
                 device,
+                speech,
             } => {
+                // Also re-sent mid-run when the microphone drops out or comes
+                // back (MAC-005); those updates carry no speech route.
                 let mut status = self.status.lock();
                 // A late event of a start that was already given up on.
                 if !matches!(
@@ -1184,6 +1206,15 @@ impl AudioManager {
                 status.system_audio_active = system_audio;
                 if device.is_some() {
                     status.current_input_device = device;
+                }
+                if let Some(route) = speech {
+                    let notice = server_speech_notice(&route);
+                    status.speech_locale = Some(route.locale);
+                    status.speech_on_device = Some(route.on_device);
+                    drop(status);
+                    if let Some(notice) = notice {
+                        self.bus.publish(BlueyEvent::AudioError(notice));
+                    }
                 }
             }
             HelperEvent::AudioStopped { reason } => {
@@ -1462,6 +1493,19 @@ mod tests {
             details: None,
         }
         .into_bluey()
+    }
+
+    /// MAC-007: server recognition behind an on-device promise is surfaced.
+    #[test]
+    fn apple_speech_on_the_server_is_announced() {
+        let route = |on_device| WireSpeechRoute {
+            locale: "de-DE".into(),
+            on_device,
+        };
+        assert!(server_speech_notice(&route(true)).is_none());
+        let notice = server_speech_notice(&route(false)).expect("announced");
+        assert_eq!(notice.code, "audio.speech_server");
+        assert!(notice.message.contains("de-DE"));
     }
 
     /// UX-010: the first interim after a final arrives before the speech

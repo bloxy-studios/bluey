@@ -233,6 +233,12 @@ pub struct AudioStatus {
     pub levels: Option<AudioLevels>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<BlueyError>,
+    /// Apple Speech's locale while it transcribes (BCP-47).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_locale: Option<String>,
+    /// Whether Apple Speech runs on the Mac (false: on Apple's servers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_on_device: Option<bool>,
 }
 
 /// Mirrors `DetectedEventType`.

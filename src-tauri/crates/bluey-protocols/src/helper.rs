@@ -309,6 +309,15 @@ pub struct WireTranscript {
     pub utterance_id: Option<String>,
 }
 
+/// `audio.started.speech`: the locale Apple Speech runs in and whether it
+/// runs on the Mac (false: Apple's servers, no on-device model for it).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireSpeechRoute {
+    pub locale: String,
+    pub on_device: bool,
+}
+
 /// `audio.deviceChanged` event data.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -342,6 +351,9 @@ pub enum HelperEvent {
         microphone: bool,
         system_audio: bool,
         device: Option<AudioDevice>,
+        /// Apple Speech's route; `None` when the helper is not transcribing
+        /// (or predates the field).
+        speech: Option<WireSpeechRoute>,
     },
     AudioStopped {
         reason: String,
@@ -418,12 +430,15 @@ pub fn parse_helper_event(event: &str, data: Value) -> HelperEvent {
                 system_audio: bool,
                 #[serde(default)]
                 device: Option<AudioDevice>,
+                #[serde(default)]
+                speech: Option<WireSpeechRoute>,
             }
             match de::<Started>(data) {
                 Some(s) => HelperEvent::AudioStarted {
                     microphone: s.microphone,
                     system_audio: s.system_audio,
                     device: s.device,
+                    speech: s.speech,
                 },
                 None => unknown(),
             }
@@ -913,6 +928,34 @@ mod tests {
         };
         let c = assembler.ingest_keyed(&bad, "item_2", true, None, "general", true, "t", &mut next);
         assert_eq!(c.end_time, 500);
+    }
+
+    /// MAC-007: the helper reports where Apple Speech runs; older helpers
+    /// omit it.
+    #[test]
+    fn audio_started_carries_the_speech_route() {
+        let event = parse_helper_event(
+            "audio.started",
+            serde_json::json!({
+                "microphone": true, "systemAudio": false,
+                "speech": { "locale": "de-DE", "onDevice": false }
+            }),
+        );
+        let HelperEvent::AudioStarted { speech, .. } = event else {
+            panic!("not audio.started: {event:?}");
+        };
+        assert_eq!(
+            speech,
+            Some(WireSpeechRoute {
+                locale: "de-DE".into(),
+                on_device: false
+            })
+        );
+        let legacy = parse_helper_event("audio.started", serde_json::json!({ "microphone": true }));
+        assert!(matches!(
+            legacy,
+            HelperEvent::AudioStarted { speech: None, .. }
+        ));
     }
 
     /// UX-010: Apple Speech partials carry startMs 0 while the final carries

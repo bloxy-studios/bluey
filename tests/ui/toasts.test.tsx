@@ -91,6 +91,18 @@ describe("error toasts", () => {
     expect(useToastStore.getState().toasts).toHaveLength(0);
   });
 
+  it("says when Apple Speech transcribes on Apple's servers, as a notice (MAC-007)", async () => {
+    render(<Toasts />);
+    mock.emit("audio.error", {
+      kind: "audio",
+      code: "audio.speech_server",
+      message: "Apple Speech has no on-device model for de-DE, so it transcribes on Apple's servers",
+      recoverable: false,
+    });
+    await screen.findByText(/sends audio to Apple to transcribe it/);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("stays silent for cancellations and can be dismissed manually", async () => {
     const user = userEvent.setup();
     render(<Toasts />);
