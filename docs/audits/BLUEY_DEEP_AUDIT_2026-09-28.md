@@ -76,7 +76,7 @@ The deep-research prompt's "`## Sources` intuition" line is a real wording bug (
 **By the numbers:**
 - **Scope:** 18 audit dimensions; 280 auditor findings, plus 30 more raised by the independent verifiers.
 - **After de-duplication:** **246 distinct issues** — 3 Critical, 43 High, 101 Medium, 88 Low and 11 Opportunities. Findings reported independently by up to four auditors are merged and keep every source.
-- **Verification:** verifiers confirmed 202, adjusted 56 (mostly severity, in both directions) and marked 3 unverifiable without a device. None was refuted.
+- **Verification:** verifiers confirmed 217, adjusted 60 (mostly severity, in both directions) and marked 3 unverifiable without a device. None was refuted.
 - **Refutation:** all 15 adversarial refutation attempts on Critical/High findings failed.
 - **Coverage:** the feature matrix has 439 traced rows; real-runtime verification debt totals 148 items.
 
@@ -102,7 +102,7 @@ The deep-research prompt's "`## Sources` intuition" line is a real wording bug (
 | Prettier | `prettier --check` (not a CI gate) | ⚠️ 108 files unformatted — not gated in CI |
 | Rust fmt / tests / clippy (core, storage, protocols, oauth, fingerprints) | `scripts/check-rust.sh` | ✅ fmt, 417 tests, clippy `-D warnings` |
 | App crate `cargo check --target aarch64-apple-darwin` | `check-rust.sh --darwin` | ⚠️ environmental: no aarch64 sidecar placeholders locally (CI creates them) |
-| App crate tests + clippy (macOS) | CI `macos` job | ✅ green on `1a117a5` (CI run on push). Re-run locally on the integration branch. |
+| App crate tests + clippy (macOS) | `cargo test --features dev-tools`; `cargo clippy --features dev-tools --all-targets -- -D warnings` | ✅ 63 tests and a clean clippy, run locally on this Intel Mac (cold build about 30 min); also green in CI on `1a117a5` |
 | Swift helper tests | `scripts/test-helper.sh` | ✅ 40 XCTest tests (note: **not run by any CI workflow**) |
 | Sidecar | `tsc` + `vitest tests/sidecar` | ✅ typecheck, 96 tests |
 | Release scripts | `python3 -m unittest discover -s scripts/release/tests`, `bash -n` | ✅ in isolation (3 shell tests hit their 20 s subprocess timeout under load) |
@@ -2331,7 +2331,6 @@ IDs are stable. Severity reflects the verifier and refuter re-rating, and the fe
 | [PERF-009](2026-09-28/B-findings-register.md#perf-009) | Medium | Performance & latency | Screenshots are 1600 px / JPEG q0.8 base64 with no Gemini mediaResolution hint, and cross IPC twice | likely | Open — needs real-device verification |
 | [PERF-010](2026-09-28/B-findings-register.md#perf-010) | Medium | Performance & latency | With embeddings on, every document-using ask does a Keychain read and a network embed call serially after the snapshot, even when no chunk is embedded | verified | Open |
 | [DOC-001](2026-09-28/B-findings-register.md#doc-001) | Medium | Performance & latency | LATENCY.md and SECURITY.md describe the ADR 0010 fast path (OCR off-path, warm-up, warm frame) as existing; the baseline was never measured | verified | Open |
-| [FEATURE-003](2026-09-28/B-findings-register.md#feature-003) | Medium | Command/event/settings surface parity | Raw-audio retention setting (never / until session end / N minutes) is persisted and shown but nothing implements it | verified | Open |
 | [DATA-009](2026-09-28/B-findings-register.md#data-009) | Medium | Command/event/settings surface parity | One incompatible settings field silently resets ALL settings (providers, models, privacy) to defaults | likely | Open |
 | [UX-036](2026-09-28/B-findings-register.md#ux-036) | Medium | Stubs, swallowed errors & unfinished states | Recovery buttons (Reconnect, Restart helper, Open Settings) swallow their own failures | verified | Open |
 | [UX-037](2026-09-28/B-findings-register.md#ux-037) | Medium | Stubs, swallowed errors & unfinished states | Settings side effects (Smart observation, content protection, retention sweep, autostart) fail silently | verified | Open |
@@ -2345,6 +2344,8 @@ IDs are stable. Severity reflects the verifier and refuter re-rating, and the fe
 | [TEST-012](2026-09-28/B-findings-register.md#test-012) | Medium | Testing quality & verification debt | No opt-in live/contract test tier; every real-provider and real-OS check exists only as prose | verified | Open |
 | [DEBT-008](2026-09-28/B-findings-register.md#debt-008) | Medium | Testing quality & verification debt | The 374-line updater state machine (check/install/relaunch/channel switch) has zero tests | likely | Open |
 | [FEATURE-006](2026-09-28/B-findings-register.md#feature-006) | Medium | Prior research & documentation drift | The 'Selected region' capture target quietly captures the whole display | verified | Open |
+| [DOC-011](2026-09-28/B-findings-register.md#doc-011) | Medium | Prior research & documentation drift | ARCHITECTURE.md, README and several ADRs name missing folders and still describe Claude/Apple as defaults | verified | Open |
+| [SEC-018](2026-09-28/B-findings-register.md#sec-018) | Medium | Prior research & documentation drift | README and MACOS_PERMISSIONS say transcription is on-device Apple Speech by default, but the default streams microphone audio to Google Gemini Live | verified | Open |
 | [TEST-013](2026-09-28/B-findings-register.md#test-013) | Low | Credentials & Keychain | SecretsStore is hard-wired to keyring, so no test can assert how many Keychain reads/writes an action performs | verified | Open |
 | [UX-018](2026-09-28/B-findings-register.md#ux-018) | Low | Credentials & Keychain | Denying the macOS prompt during Claude/Antigravity import is reported as 'not signed in' / 'not found' | verified | Open — needs real-device verification |
 | [SEC-014](2026-09-28/B-findings-register.md#sec-014) | Low | Security & privacy | Any bluey://auth/callback (or first loopback hit) consumes the pending sign-in before state is checked; error links need no state and their text is shown verbatim | verified | Open |
@@ -2407,6 +2408,7 @@ IDs are stable. Severity reflects the verifier and refuter re-rating, and the fe
 | [PERF-013](2026-09-28/B-findings-register.md#perf-013) | Low | Performance & latency | `t_first_paint` is stamped by a single rAF that can fire before React commits the draft, so render cost is invisible to the trace | likely | Open |
 | [PERF-014](2026-09-28/B-findings-register.md#perf-014) | Low | Performance & latency | One mutex-guarded SQLite connection serialises hot-path reads behind background writes | likely | Open |
 | [PERF-015](2026-09-28/B-findings-register.md#perf-015) | Low | Performance & latency | Every ⌘↵ capture re-enumerates SCShareableContent (all windows/apps) before taking the screenshot | likely | Open — needs real-device verification |
+| [FEATURE-003](2026-09-28/B-findings-register.md#feature-003) | Low | Command/event/settings surface parity | Raw-audio retention setting (never / until session end / N minutes) is persisted and shown but nothing implements it | verified | Open |
 | [TEST-015](2026-09-28/B-findings-register.md#test-015) | Low | Command/event/settings surface parity | Mock transport defaults and validation diverge from Rust with no parity test, hiding real bugs | verified | Open |
 | [UX-031](2026-09-28/B-findings-register.md#ux-031) | Low | Command/event/settings surface parity | Observation interval default (1.5 s) is not one of the select options; the UI shows 'Every 3 seconds' and there is no range validation | verified | Open |
 | [UX-032](2026-09-28/B-findings-register.md#ux-032) | Low | Command/event/settings surface parity | appearance.followActiveDisplay has a toggle but no consumer | verified | Open — needs real-device verification |
@@ -2429,10 +2431,9 @@ IDs are stable. Severity reflects the verifier and refuter re-rating, and the fe
 | [TEST-022](2026-09-28/B-findings-register.md#test-022) | Low | Testing quality & verification debt | UI suites run at the 5 s default timeout and fail on slower developer Macs (6 of 651 on the audit machine) | verified | Open |
 | [PROV-014](2026-09-28/B-findings-register.md#prov-014) | Low | Prior research & documentation drift | EXA_API_KEY / FIRECRAWL_API_KEY in .env are silently ignored, even though .env.example says they are imported | verified | Open |
 | [DOC-010](2026-09-28/B-findings-register.md#doc-010) | Low | Prior research & documentation drift | Two doc table rows were broken by a sed `\1` artifact | verified | Open |
-| [DOC-011](2026-09-28/B-findings-register.md#doc-011) | Low | Prior research & documentation drift | ARCHITECTURE.md, README and several ADRs name missing folders and still describe Claude/Apple as defaults | verified | Open |
 | [DOC-012](2026-09-28/B-findings-register.md#doc-012) | Low | Prior research & documentation drift | A 'Bluey is offline' HUD state and an offline-banner QA check are documented but don't exist | verified | Open |
 | [UX-042](2026-09-28/B-findings-register.md#ux-042) | Low | Prior research & documentation drift | The output language dropdown uses names while settings store codes, so the current value never matches an option | verified | Open |
-| [UX-043](2026-09-28/B-findings-register.md#ux-043) | Low | Prior research & documentation drift | The About tab's Help and Support links point to bluey.app, which did not resolve | likely | Open |
+| [UX-043](2026-09-28/B-findings-register.md#ux-043) | Low | Prior research & documentation drift | The About tab's Help and Support links point to bluey.app, which did not resolve | verified | Open |
 | [PERF-016](2026-09-28/B-findings-register.md#perf-016) | Opportunity | Credentials & Keychain | Opportunity: consolidate Bluey-owned secrets into one Keychain item (vault) so an identity change costs one prompt instead of N | likely | Open — needs real-device verification |
 | [FEATURE-005](2026-09-28/B-findings-register.md#feature-005) | Opportunity | Credentials & Keychain | Credential health: show which saved credentials this build can use silently, and repair them without guesswork | verified | Open — needs real-device verification |
 | [AI-015](2026-09-28/B-findings-register.md#ai-015) | Opportunity | AI prompt stack | About 1.1k static system tokens per ask, with a duplicated shape rule and duplicated OCR/AX text | verified | Open |

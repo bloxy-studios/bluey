@@ -7140,7 +7140,7 @@
   "key": "raw-audio-retention-noop",
   "category": "FEATURE",
   "title": "Raw-audio retention setting (never / until session end / N minutes) is persisted and shown but nothing implements it",
-  "severity": "Medium",
+  "severity": "Low",
   "confidence": "verified",
   "evidence": [
    "bluey-core types/settings.rs:302-304 store_raw_audio / raw_audio_retention_minutes",
@@ -8330,8 +8330,8 @@
   "effort": "S",
   "dim": "prior-audit-docs-drift",
   "origin": "auditor",
-  "verdict": null,
-  "verify_note": null,
+  "verdict": "confirmed",
+  "verify_note": "snapshot.ts:46-56 maps 'region' to display. capture/mod.rs:138-139 has the explicit comment 'degrades to display'. ScreenSettings (settings.rs:198-207) has no rect field. ScreenTab.tsx:53 offers the option. Privacy-relevant: a user who picks region to limit exposure sends the whole display. Medium is fair, arguably High for privacy-minded users.",
   "refute": null,
   "also": [],
   "id": "FEATURE-006"
@@ -8363,8 +8363,8 @@
   "effort": "S",
   "dim": "prior-audit-docs-drift",
   "origin": "auditor",
-  "verdict": null,
-  "verify_note": null,
+  "verdict": "confirmed",
+  "verify_note": "presets.rs key_env covers only GEMINI/GOOGLE/AZURE_FOUNDRY/ANTHROPIC/OPENAI. agent/mod.rs:148-153 injects EXA/FIRECRAWL only from the Keychain, COMMON_PASSTHROUGH_ENV (:54) holds only BLUEY_AGENT_MAX_TURNS/MOCK, and :233 env_clear() runs before spawn. .env.example:3-10 and :99-100 imply import. Research degrades gracefully, so Low.",
   "refute": null,
   "also": [],
   "id": "PROV-014"
@@ -8392,8 +8392,8 @@
   "effort": "S",
   "dim": "prior-audit-docs-drift",
   "origin": "auditor",
-  "verdict": null,
-  "verify_note": null,
+  "verdict": "confirmed",
+  "verify_note": "rg '^\\\\1' docs matches exactly docs/TESTING.md:8 and docs/PROVIDER_ACCOUNTS.md:416. I did not verify the originating commits (2493c50/0337d21), but the corruption itself is confirmed.",
   "refute": null,
   "also": [],
   "id": "DOC-010"
@@ -8402,7 +8402,7 @@
   "key": "architecture-readme-layout-stale",
   "category": "DOC",
   "title": "ARCHITECTURE.md, README and several ADRs name missing folders and still describe Claude/Apple as defaults",
-  "severity": "Low",
+  "severity": "Medium",
   "confidence": "verified",
   "evidence": [
    "docs/ARCHITECTURE.md:44 features 'sessions/, privacy/, dev/' \u2014 only hud/ onboarding/ settings/ exist; sessions logic is src/sessions/, privacy is settings/tabs/PrivacyTab.tsx, the dev overlay is src/app/dev",
@@ -8431,8 +8431,8 @@
   "effort": "S",
   "dim": "prior-audit-docs-drift",
   "origin": "auditor",
-  "verdict": null,
-  "verify_note": null,
+  "verdict": "adjusted",
+  "verify_note": "The layout claims are confirmed. src/features has only hud, onboarding and settings. src/app has only dev and styles. src-tauri/src has no tray/ but does have accounts, updates, context, documents, sessions, settings, modes, app, events and logging, all omitted from ARCHITECTURE.md:66-71. Raised to Medium because part of the drift is a user-facing privacy claim, not just layout. README.md:15-16 says 'on-device Apple Speech by default' and MACOS_PERMISSIONS.md:14 says Speech Recognition is the '(default provider)' that works 'without sending it to a cloud', but the default is GeminiLive (settings.rs:191). See the missed finding default-transcription-privacy-claim. The pure layout part alone is Low.",
   "refute": null,
   "also": [],
   "id": "DOC-011"
@@ -8461,8 +8461,8 @@
   "effort": "S",
   "dim": "prior-audit-docs-drift",
   "origin": "auditor",
-  "verdict": null,
-  "verify_note": null,
+  "verdict": "confirmed",
+  "verify_note": "rg -i offline over src (excluding tests) finds nothing. AI_ARCHITECTURE.md:268-272 and TESTING.md:47 'offline banner' describe an unbuilt state.",
   "refute": null,
   "also": [],
   "id": "DOC-012"
@@ -8489,8 +8489,8 @@
   "effort": "S",
   "dim": "prior-audit-docs-drift",
   "origin": "auditor",
-  "verdict": null,
-  "verify_note": null,
+  "verdict": "confirmed",
+  "verify_note": "GeneralTab.tsx:31/143 uses names as values, while settings.rs:133 defaults to 'en'. The impact is purely cosmetic: outputLanguageLine (prompts/system.ts:46-50) treats 'en' and 'English' the same, and choosing 'Spanish' produces 'Respond in Spanish'. The select just doesn't reflect the stored 'en' value. Low (arguably polish).",
   "refute": null,
   "also": [],
   "id": "UX-042"
@@ -8500,7 +8500,7 @@
   "category": "UX",
   "title": "The About tab's Help and Support links point to bluey.app, which did not resolve",
   "severity": "Low",
-  "confidence": "likely",
+  "confidence": "verified",
   "evidence": [
    "src/features/settings/tabs/AboutTab.tsx:61 openExternal(\"https://bluey.app/help\"), :67 mailto:support@bluey.app",
    "`host bluey.app` returned SERVFAIL on 2026-09-28 (earlier attempt of this audit)"
@@ -8517,8 +8517,8 @@
   "effort": "S",
   "dim": "prior-audit-docs-drift",
   "origin": "auditor",
-  "verdict": null,
-  "verify_note": null,
+  "verdict": "confirmed",
+  "verify_note": "AboutTab.tsx:61 uses https://bluey.app/help and :67 uses mailto:support@bluey.app. Re-ran `host -W 8 bluey.app` today and got 'not found: 2(SERVFAIL)'; curl got no response. Support email will bounce. Upgraded confidence to verified.",
   "refute": null,
   "also": [],
   "id": "UX-043"
@@ -8548,11 +8548,45 @@
   "effort": "S",
   "dim": "prior-audit-docs-drift",
   "origin": "auditor",
-  "verdict": null,
-  "verify_note": null,
+  "verdict": "confirmed",
+  "verify_note": "The AudioTab.tsx:142 description is static (it does mention the Gemini fallback to Apple, but doesn't show the assigned model or warn about a missing key). DeepResearchEvent::Started { job_id } in bluey-core types/ai.rs:395 carries no model, and Completed carries no usage. Correctly rated as an Opportunity.",
   "refute": null,
   "also": [],
   "id": "FEATURE-007"
+ },
+ "SEC-018": {
+  "key": "default-transcription-privacy-claim",
+  "category": "SEC",
+  "title": "README and MACOS_PERMISSIONS say transcription is on-device Apple Speech by default, but the default streams microphone audio to Google Gemini Live",
+  "severity": "Medium",
+  "confidence": "verified",
+  "evidence": [
+   "README.md:15-16 \u2014 'Live transcription \u2014 ... on-device Apple Speech by default or a cloud realtime provider'",
+   "docs/MACOS_PERMISSIONS.md:14 \u2014 Speech Recognition row: 'Turn audio into text without sending it to a cloud (default provider)'",
+   "src-tauri/crates/bluey-core/src/types/settings.rs:189-191 \u2014 transcription_provider: TranscriptionProviderKind::GeminiLive (\"Gemini Live by default (ADR 0007)\")",
+   "src-tauri/src/audio/mod.rs:368-389 \u2014 GeminiLive branch opens a cloud session whenever an enabled Gemini provider has a key",
+   "src/features/onboarding/steps/permissions.tsx:32-34 \u2014 the Microphone step's 'access' copy says only that raw audio is never stored; it doesn't say audio is streamed to Google (connect.tsx:169 does mention 'live transcription' among what the key powers)"
+  ],
+  "user_impact": "Privacy-conscious users who read the README or the permissions doc believe their meeting audio stays on the Mac, but once a Gemini key is connected (the recommended onboarding path) mic and system audio are streamed to Google by default.",
+  "root_cause": "The docs were written when Apple Speech was the default and weren't updated when ADR 0007 made Gemini Live the default.",
+  "proposed_solution": "Update README.md:15-16 and MACOS_PERMISSIONS.md:14 to say 'Gemini Live (cloud) by default when a Google key is connected, otherwise on-device Apple Speech'. Add one sentence to the onboarding Microphone access copy saying audio is sent to the selected transcription provider (Gemini Live by default) while listening.",
+  "test_plan": "Doc-lint test (vitest or a script) asserting the README doesn't contain 'Apple Speech by default' while settings.rs defaults to GeminiLive. Snapshot test of the onboarding permissions copy that includes the cloud-transcription disclosure.",
+  "files_to_change": [
+   "README.md",
+   "docs/MACOS_PERMISSIONS.md",
+   "src/features/onboarding/steps/permissions.tsx"
+  ],
+  "independent": true,
+  "needs_real_macos": false,
+  "effort": "S",
+  "depends_on": [],
+  "dim": "prior-audit-docs-drift",
+  "origin": "verifier (missed by auditor)",
+  "verdict": "confirmed",
+  "verify_note": "Raised by the independent verifier.",
+  "refute": null,
+  "also": [],
+  "id": "SEC-018"
  },
  "TEST-022": {
   "dim": "testing-verification-debt",

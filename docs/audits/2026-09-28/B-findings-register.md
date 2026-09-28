@@ -3264,20 +3264,6 @@ Severity **High** · confidence likely · effort S · independent · needs real 
 - **Also reported as:** hud-ux/toggle-listening-double-dispatch
 - _Source: auditor (surface-parity/shortcut-toggle-listening-double-dispatch)_
 
-#### FEATURE-003
-
-**Raw-audio retention setting (never / until session end / N minutes) is persisted and shown but nothing implements it**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
-
-- **User impact:** Users who choose to keep raw audio (for example to review later) get nothing. The UI implies a capability and a retention policy that do not exist. It fails safe, since no audio is ever stored.
-- **Root cause:** The setting and UI shipped ahead of the recording and retention implementation.
-- **Evidence:** `bluey-core types/settings.rs:302-304 store_raw_audio / raw_audio_retention_minutes`; src-tauri/src/audio/mod.rs:225 `config.retain_raw_audio = settings.privacy.store_raw_audio;` copies to AudioSessionConfig.retain_raw_audio (bluey-core types/transcript.rs:109), which nothing reads: not helper_start_params, not Swift, not storage; `raw_audio_retention_minutes: 0 Rust readers`; src/features/settings/tabs/PrivacyTab.tsx:222-241 offers the options and the copy 'Raw audio is discarded after N minutes'; src/features/settings/tabs/PrivacyTab.tsx:220-260 options plus 'Raw audio is discarded after N minutes'; src-tauri/src/audio/mod.rs:225 only copies the value into the config; no Swift consumer (rg retainRawAudio in the helper: none); `docs/AUDIO_ARCHITECTURE.md:28-29 'accepted in settings but not implemented'`; src/features/settings/tabs/PrivacyTab.tsx:220-235 offers 'Until session ends' / 'Custom window'; src-tauri/src/audio/mod.rs:225 is the only consumer (assigns config.retain_raw_audio, never read by helper or Rust); bluey-core types/settings.rs:306 debug_log_transcripts has no reader; docs/SECURITY.md 'Logging' cites it; `AiCacheRepository set/get used only in tests (repositories/cache.rs:108-136)`; src/features/settings/tabs/PrivacyTab.tsx:220-258 offers 'Until session ends' / 'Custom window'; src-tauri/src/audio/mod.rs:225 only copies retain_raw_audio into config; no Rust/Swift consumer; docs/AUDIO_ARCHITECTURE.md:28-30 admits it; src/lib/tauri/bootstrap.ts:33 sets root.dataset.density; no CSS selector or TS reader of data-density; AppearanceTab.tsx:80-84 'Spacing of rows and responses.'; src/features/settings/tabs/AppearanceTab.tsx:157-163 'Move with the display that has focus'; only settings.rs:149,164 define it; settings.rs:306 debug_log_transcripts: no UI, no consumer; docs/SECURITY.md:141 references it as if it worked
-- **Proposed solution:** Product decision. Either hide or remove the control and the fields (the smallest honest fix: mark it 'coming soon' and disable), or implement helper-side WAV writing plus a retention sweep in bluey-storage retention.rs.
-- **Test plan:** If removed: a settings parity test confirming the field is gone on both sides. If implemented: a Rust unit test that the retention sweep deletes files older than N minutes, and a Swift test that audio.start with retainRawAudio writes a file.
-- **Verification (adjusted):** It is true that nothing reads retain_raw_audio or raw_audio_retention_minutes. But raw audio is never written anywhere, so 'never' is honored in practice and nothing is kept longer than the user chose. The harm is only misleading options and copy ('until session end' / 'N minutes'), not a privacy or data failure. Downgraded to Low. The fix still stands: hide or disable the control.
-- **Also reported as:** data-sessions-history/raw-audio-retention-inert-ui, security-privacy/dead-privacy-settings, prior-audit-docs-drift/dead-settings-no-consumer
-- _Source: auditor (surface-parity/raw-audio-retention-noop)_
-
 #### DATA-009
 
 **One incompatible settings field silently resets ALL settings (providers, models, privacy) to defaults**  
@@ -3291,6 +3277,20 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 - **Verification (adjusted):** The scope is overstated. Provider configs (ModelConfigRepository) and shortcuts are stored and loaded separately (settings/mod.rs:35-41), so providers survive a blob fallback. What is lost is the sections inside the settings blob: general, appearance, audio, screen, models and privacy. That can include onboarding state and privacy choices, and the next settings_update makes the loss permanent. The per-section fallback plus backup fix is still right; drop the claim about providers.
 - **Also reported as:** error-handling-stubs/settings-decode-fallback-resets-all
 - _Source: auditor (surface-parity/settings-load-all-or-nothing-fallback)_
+
+#### FEATURE-003
+
+**Raw-audio retention setting (never / until session end / N minutes) is persisted and shown but nothing implements it**  
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+
+- **User impact:** Users who choose to keep raw audio (for example to review later) get nothing. The UI implies a capability and a retention policy that do not exist. It fails safe, since no audio is ever stored.
+- **Root cause:** The setting and UI shipped ahead of the recording and retention implementation.
+- **Evidence:** `bluey-core types/settings.rs:302-304 store_raw_audio / raw_audio_retention_minutes`; src-tauri/src/audio/mod.rs:225 `config.retain_raw_audio = settings.privacy.store_raw_audio;` copies to AudioSessionConfig.retain_raw_audio (bluey-core types/transcript.rs:109), which nothing reads: not helper_start_params, not Swift, not storage; `raw_audio_retention_minutes: 0 Rust readers`; src/features/settings/tabs/PrivacyTab.tsx:222-241 offers the options and the copy 'Raw audio is discarded after N minutes'; src/features/settings/tabs/PrivacyTab.tsx:220-260 options plus 'Raw audio is discarded after N minutes'; src-tauri/src/audio/mod.rs:225 only copies the value into the config; no Swift consumer (rg retainRawAudio in the helper: none); `docs/AUDIO_ARCHITECTURE.md:28-29 'accepted in settings but not implemented'`; src/features/settings/tabs/PrivacyTab.tsx:220-235 offers 'Until session ends' / 'Custom window'; src-tauri/src/audio/mod.rs:225 is the only consumer (assigns config.retain_raw_audio, never read by helper or Rust); bluey-core types/settings.rs:306 debug_log_transcripts has no reader; docs/SECURITY.md 'Logging' cites it; `AiCacheRepository set/get used only in tests (repositories/cache.rs:108-136)`; src/features/settings/tabs/PrivacyTab.tsx:220-258 offers 'Until session ends' / 'Custom window'; src-tauri/src/audio/mod.rs:225 only copies retain_raw_audio into config; no Rust/Swift consumer; docs/AUDIO_ARCHITECTURE.md:28-30 admits it; src/lib/tauri/bootstrap.ts:33 sets root.dataset.density; no CSS selector or TS reader of data-density; AppearanceTab.tsx:80-84 'Spacing of rows and responses.'; src/features/settings/tabs/AppearanceTab.tsx:157-163 'Move with the display that has focus'; only settings.rs:149,164 define it; settings.rs:306 debug_log_transcripts: no UI, no consumer; docs/SECURITY.md:141 references it as if it worked
+- **Proposed solution:** Product decision. Either hide or remove the control and the fields (the smallest honest fix: mark it 'coming soon' and disable), or implement helper-side WAV writing plus a retention sweep in bluey-storage retention.rs.
+- **Test plan:** If removed: a settings parity test confirming the field is gone on both sides. If implemented: a Rust unit test that the retention sweep deletes files older than N minutes, and a Swift test that audio.start with retainRawAudio writes a file.
+- **Verification (adjusted):** It is true that nothing reads retain_raw_audio or raw_audio_retention_minutes. But raw audio is never written anywhere, so 'never' is honored in practice and nothing is kept longer than the user chose. The harm is only misleading options and copy ('until session end' / 'N minutes'), not a privacy or data failure. Downgraded to Low. The fix still stands: hide or disable the control.
+- **Also reported as:** data-sessions-history/raw-audio-retention-inert-ui, security-privacy/dead-privacy-settings, prior-audit-docs-drift/dead-settings-no-consumer
+- _Source: auditor (surface-parity/raw-audio-retention-noop)_
 
 #### TEST-015
 
@@ -3751,7 +3751,34 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 - **Evidence:** src/features/settings/tabs/ScreenTab.tsx:53 — option { value: "region", label: "Selected region" }; `src/context/snapshot.ts:46-56 — case "region" falls through to { type: "display" }`; src-tauri/src/capture/mod.rs:138-139 — "A region preference without a stored rect degrades to display."; src-tauri/crates/bluey-core/src/types/settings.rs:198-207 — ScreenSettings has no rect field; no region picker exists; README.md:12 and docs/CAPTURE_ARCHITECTURE.md:13,52 list region as a supported target and privacy control
 - **Proposed solution:** Remove the option from ScreenTab and the docs until a picker exists, or make Region without a rect return a configuration error instead of degrading to display.
 - **Test plan:** UI test on ScreenTab options. Unit test that captureTargetFor({captureTarget:'region'}) does not produce a display target, plus a matching Rust test in capture/mod.rs.
+- **Verification (confirmed):** snapshot.ts:46-56 maps 'region' to display. capture/mod.rs:138-139 has the explicit comment 'degrades to display'. ScreenSettings (settings.rs:198-207) has no rect field. ScreenTab.tsx:53 offers the option. Privacy-relevant: a user who picks region to limit exposure sends the whole display. Medium is fair, arguably High for privacy-minded users.
 - _Source: auditor (prior-audit-docs-drift/region-capture-target-widens-to-display)_
+
+#### DOC-011
+
+**ARCHITECTURE.md, README and several ADRs name missing folders and still describe Claude/Apple as defaults**  
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+
+- **User impact:** New contributors look for folders that don't exist and form the wrong mental model of the defaults (Claude/Apple instead of Gemini).
+- **Root cause:** The docs weren't updated as the Gemini-default (#5/#8/#11), accounts (#25-31) and update (#41-42) work landed.
+- **Evidence:** docs/ARCHITECTURE.md:44 features 'sessions/, privacy/, dev/' — only hud/ onboarding/ settings/ exist; sessions logic is src/sessions/, privacy is settings/tabs/PrivacyTab.tsx, the dev overlay is src/app/dev; docs/ARCHITECTURE.md:42 app/ 'bootstrap' — bootstrap is src/lib/tauri/bootstrap.ts; src/app has dev/ and styles/ only; docs/ARCHITECTURE.md:69-71 lists tray/ (doesn't exist; the tray is TrayIconBuilder in src-tauri/src/platform/mod.rs) and 'transcription/ (cloud realtime)' (gemini_live.rs is the default); omits accounts/ updates/ context/ documents/ sessions/ settings/ modes/ app/ events/ logging/; docs/ARCHITECTURE.md:62-64 bluey-protocols list omits gemini/codex/claude_code/antigravity/fingerprints; the crate list omits crates/bluey-fingerprints; docs/ARCHITECTURE.md:76,89 'Claude Agent SDK research sidecar' — default backend is Gemini (sidecars/agent/src/config.ts:76, ADR 0007); :87 WebView 'Clerk auth' (ADR 0008: Rust owns OAuth); :96-98 OCR 'in parallel' (OCR runs after capture, context/mod.rs:91); README.md:15-16 'on-device Apple Speech by default' — default is gemini_live (settings.rs:191); README.md:29-30 'Claude Agent SDK sidecar'; docs/MACOS_PERMISSIONS.md:13 Apple Speech '(default provider)'; docs/adr/0001-layering-and-secret-boundary.md:17 'Claude Agent SDK loop'; docs/adr/0004-agent-sdk-sidecar-and-research-router.md:12 'src/ai/research/router.ts' (the file is src/ai/research.ts) and the status doesn't mention the ADR 0007 amendment; docs/DEVELOPMENT.md:104 'crates/bluey-core/src/types' (it's src-tauri/crates/…); :151 says the docs/ci/workflows copies are in sync, but ci.yml differs from .github/workflows/ci.yml:61 (step name)
+- **Proposed solution:** Edit the layout block and process table in ARCHITECTURE.md, the README feature bullets, MACOS_PERMISSIONS:13, ADR 0001/0004 (add 'amended by ADR 0007') and the DEVELOPMENT.md path. Re-run scripts/install-workflows.sh or fix the sync statement.
+- **Test plan:** Doc-only change. Optionally a script that checks every backticked path in docs/*.md exists (whitelisting upstream references in NATIVE_HUD_MENUS.md).
+- **Verification (adjusted):** The layout claims are confirmed. src/features has only hud, onboarding and settings. src/app has only dev and styles. src-tauri/src has no tray/ but does have accounts, updates, context, documents, sessions, settings, modes, app, events and logging, all omitted from ARCHITECTURE.md:66-71. Raised to Medium because part of the drift is a user-facing privacy claim, not just layout. README.md:15-16 says 'on-device Apple Speech by default' and MACOS_PERMISSIONS.md:14 says Speech Recognition is the '(default provider)' that works 'without sending it to a cloud', but the default is GeminiLive (settings.rs:191). See the missed finding default-transcription-privacy-claim. The pure layout part alone is Low.
+- _Source: auditor (prior-audit-docs-drift/architecture-readme-layout-stale)_
+
+#### SEC-018
+
+**README and MACOS_PERMISSIONS say transcription is on-device Apple Speech by default, but the default streams microphone audio to Google Gemini Live**  
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+
+- **User impact:** Privacy-conscious users who read the README or the permissions doc believe their meeting audio stays on the Mac, but once a Gemini key is connected (the recommended onboarding path) mic and system audio are streamed to Google by default.
+- **Root cause:** The docs were written when Apple Speech was the default and weren't updated when ADR 0007 made Gemini Live the default.
+- **Evidence:** README.md:15-16 — 'Live transcription — ... on-device Apple Speech by default or a cloud realtime provider'; docs/MACOS_PERMISSIONS.md:14 — Speech Recognition row: 'Turn audio into text without sending it to a cloud (default provider)'; src-tauri/crates/bluey-core/src/types/settings.rs:189-191 — transcription_provider: TranscriptionProviderKind::GeminiLive ("Gemini Live by default (ADR 0007)"); src-tauri/src/audio/mod.rs:368-389 — GeminiLive branch opens a cloud session whenever an enabled Gemini provider has a key; src/features/onboarding/steps/permissions.tsx:32-34 — the Microphone step's 'access' copy says only that raw audio is never stored; it doesn't say audio is streamed to Google (connect.tsx:169 does mention 'live transcription' among what the key powers)
+- **Proposed solution:** Update README.md:15-16 and MACOS_PERMISSIONS.md:14 to say 'Gemini Live (cloud) by default when a Google key is connected, otherwise on-device Apple Speech'. Add one sentence to the onboarding Microphone access copy saying audio is sent to the selected transcription provider (Gemini Live by default) while listening.
+- **Test plan:** Doc-lint test (vitest or a script) asserting the README doesn't contain 'Apple Speech by default' while settings.rs defaults to GeminiLive. Snapshot test of the onboarding permissions copy that includes the cloud-transcription disclosure.
+- **Verification (confirmed):** Raised by the independent verifier.
+- _Source: verifier (missed by auditor) (prior-audit-docs-drift/default-transcription-privacy-claim)_
 
 #### PROV-014
 
@@ -3763,6 +3790,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 - **Evidence:** .env.example:5-9 — 'secrets are moved into the macOS Keychain the first time they are seen'; :99-100 list EXA_API_KEY and FIRECRAWL_API_KEY; src-tauri/src/agent/mod.rs:148-153 — Exa/Firecrawl read from the Keychain only; :233 env_clear(); `src-tauri/src/research/mod.rs:66,99 — Keychain only`; DEVELOPMENT.md:62-63 / presets plan_env_import import only GEMINI/GOOGLE/AZURE_FOUNDRY/ANTHROPIC/OPENAI keys; SECURITY.md:37-38 '.env values are imported into the Keychain on first run'
 - **Proposed solution:** Add EXA_API_KEY/FIRECRAWL_API_KEY to the env import, writing EXA_KEY/FIRECRAWL_KEY only when the Keychain entry is empty (and honouring BLUEY_ENV_OVERRIDES_KEYCHAIN). Or remove them from .env.example and say 'Settings → AI only'.
 - **Test plan:** bluey-core presets::plan_env_import unit test including both vars. env_import test with an in-memory SecretsStore asserting both entries are written once.
+- **Verification (confirmed):** presets.rs key_env covers only GEMINI/GOOGLE/AZURE_FOUNDRY/ANTHROPIC/OPENAI. agent/mod.rs:148-153 injects EXA/FIRECRAWL only from the Keychain, COMMON_PASSTHROUGH_ENV (:54) holds only BLUEY_AGENT_MAX_TURNS/MOCK, and :233 env_clear() runs before spawn. .env.example:3-10 and :99-100 imply import. Research degrades gracefully, so Low.
 - _Source: auditor (prior-audit-docs-drift/exa-firecrawl-env-ignored)_
 
 #### DOC-010
@@ -3775,19 +3803,8 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 - **Evidence:** docs/TESTING.md:8 starts '\1 the `ai_requests.trace` column …' — lost the '| Rust storage | `cargo test -p bluey-storage` | `bun run test:rust` | migrations …' prefix (introduced by 2493c50, PR #32); docs/PROVIDER_ACCOUNTS.md:416 starts '\1built in PR 3c …' — lost the '| 3 | Antigravity (client id/secret, scopes, …) | ' prefix (introduced by 0337d21)
 - **Proposed solution:** Restore both rows from git history (git show 0337d21^:docs/PROVIDER_ACCOUNTS.md, and the pre-2493c50 TESTING.md row). Add a CI rg check for lines starting with a literal backslash-1 in docs.
 - **Test plan:** rg -n '^\\1' docs returns nothing; markdown table lint passes.
+- **Verification (confirmed):** rg '^\\1' docs matches exactly docs/TESTING.md:8 and docs/PROVIDER_ACCOUNTS.md:416. I did not verify the originating commits (2493c50/0337d21), but the corruption itself is confirmed.
 - _Source: auditor (prior-audit-docs-drift/doc-table-rows-corrupted)_
-
-#### DOC-011
-
-**ARCHITECTURE.md, README and several ADRs name missing folders and still describe Claude/Apple as defaults**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
-
-- **User impact:** New contributors look for folders that don't exist and form the wrong mental model of the defaults (Claude/Apple instead of Gemini).
-- **Root cause:** The docs weren't updated as the Gemini-default (#5/#8/#11), accounts (#25-31) and update (#41-42) work landed.
-- **Evidence:** docs/ARCHITECTURE.md:44 features 'sessions/, privacy/, dev/' — only hud/ onboarding/ settings/ exist; sessions logic is src/sessions/, privacy is settings/tabs/PrivacyTab.tsx, the dev overlay is src/app/dev; docs/ARCHITECTURE.md:42 app/ 'bootstrap' — bootstrap is src/lib/tauri/bootstrap.ts; src/app has dev/ and styles/ only; docs/ARCHITECTURE.md:69-71 lists tray/ (doesn't exist; the tray is TrayIconBuilder in src-tauri/src/platform/mod.rs) and 'transcription/ (cloud realtime)' (gemini_live.rs is the default); omits accounts/ updates/ context/ documents/ sessions/ settings/ modes/ app/ events/ logging/; docs/ARCHITECTURE.md:62-64 bluey-protocols list omits gemini/codex/claude_code/antigravity/fingerprints; the crate list omits crates/bluey-fingerprints; docs/ARCHITECTURE.md:76,89 'Claude Agent SDK research sidecar' — default backend is Gemini (sidecars/agent/src/config.ts:76, ADR 0007); :87 WebView 'Clerk auth' (ADR 0008: Rust owns OAuth); :96-98 OCR 'in parallel' (OCR runs after capture, context/mod.rs:91); README.md:15-16 'on-device Apple Speech by default' — default is gemini_live (settings.rs:191); README.md:29-30 'Claude Agent SDK sidecar'; docs/MACOS_PERMISSIONS.md:13 Apple Speech '(default provider)'; docs/adr/0001-layering-and-secret-boundary.md:17 'Claude Agent SDK loop'; docs/adr/0004-agent-sdk-sidecar-and-research-router.md:12 'src/ai/research/router.ts' (the file is src/ai/research.ts) and the status doesn't mention the ADR 0007 amendment; docs/DEVELOPMENT.md:104 'crates/bluey-core/src/types' (it's src-tauri/crates/…); :151 says the docs/ci/workflows copies are in sync, but ci.yml differs from .github/workflows/ci.yml:61 (step name)
-- **Proposed solution:** Edit the layout block and process table in ARCHITECTURE.md, the README feature bullets, MACOS_PERMISSIONS:13, ADR 0001/0004 (add 'amended by ADR 0007') and the DEVELOPMENT.md path. Re-run scripts/install-workflows.sh or fix the sync statement.
-- **Test plan:** Doc-only change. Optionally a script that checks every backticked path in docs/*.md exists (whitelisting upstream references in NATIVE_HUD_MENUS.md).
-- _Source: auditor (prior-audit-docs-drift/architecture-readme-layout-stale)_
 
 #### DOC-012
 
@@ -3799,6 +3816,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 - **Evidence:** docs/AI_ARCHITECTURE.md:268-272 — 'If no provider is reachable the HUD shows "Bluey is offline"'; `docs/TESTING.md:47 — manual QA item 'offline banner'`; rg -i offline over src/ finds no state or string; network failures are per-request presentations (src/lib/errors/present.ts:48 'Bluey couldn't reach the network')
 - **Proposed solution:** Fix the doc and QA list to describe the per-request network error presentation. Or, optionally, add a lightweight offline pill driven by navigator.onLine plus repeated network.* errors.
 - **Test plan:** Doc-only change. If implemented: a UI test that a network.* error streak shows the pill.
+- **Verification (confirmed):** rg -i offline over src (excluding tests) finds nothing. AI_ARCHITECTURE.md:268-272 and TESTING.md:47 'offline banner' describe an unbuilt state.
 - _Source: auditor (prior-audit-docs-drift/offline-banner-documented-not-built)_
 
 #### UX-042
@@ -3811,18 +3829,20 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 - **Evidence:** `src/features/settings/tabs/GeneralTab.tsx:31 — LANGUAGES = ["English", "Spanish", …]`; `src-tauri/crates/bluey-core/src/types/settings.rs:133 — output_language: "en"`
 - **Proposed solution:** Use {value:'en', label:'English'} style options, matching what the prompts accept.
 - **Test plan:** UI test that the default settings render 'English' selected and selection persists 'es'.
+- **Verification (confirmed):** GeneralTab.tsx:31/143 uses names as values, while settings.rs:133 defaults to 'en'. The impact is purely cosmetic: outputLanguageLine (prompts/system.ts:46-50) treats 'en' and 'English' the same, and choosing 'Spanish' produces 'Respond in Spanish'. The select just doesn't reflect the stored 'en' value. Low (arguably polish).
 - _Source: auditor (prior-audit-docs-drift/output-language-code-label-mismatch)_
 
 #### UX-043
 
 **The About tab's Help and Support links point to bluey.app, which did not resolve**  
-Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
 
 - **User impact:** Help opens an error page and support mail bounces (earlier audit B3.21, still open).
 - **Root cause:** Placeholder URLs from the scaffold.
 - **Evidence:** src/features/settings/tabs/AboutTab.tsx:61 openExternal("https://bluey.app/help"), :67 mailto:support@bluey.app; ``host bluey.app` returned SERVFAIL on 2026-09-28 (earlier attempt of this audit)`
 - **Proposed solution:** Point Help at the GitHub README/docs and Support at the GitHub issues page, or a real address.
 - **Test plan:** UI test asserting the URLs. Manual click check.
+- **Verification (confirmed):** AboutTab.tsx:61 uses https://bluey.app/help and :67 uses mailto:support@bluey.app. Re-ran `host -W 8 bluey.app` today and got 'not found: 2(SERVFAIL)'; curl got no response. Support email will bounce. Upgraded confidence to verified.
 - _Source: auditor (prior-audit-docs-drift/about-links-dead-domain)_
 
 #### FEATURE-007
@@ -3835,4 +3855,5 @@ Severity **Opportunity** · confidence verified · effort S · independent · pr
 - **Evidence:** src/features/settings/tabs/AudioTab.tsx:139-157 — static description; no assigned model/provider shown and no missing-key warning (brief PR 6 / earlier audit B6.4); bluey-core types/ai.rs:395 ResearchEvent Started{job_id} and :407 Completed without usage — sidecar model/usage dropped (earlier audit A1, brief PR 5); `No cost/quota hints on the Gemini provider card (earlier audit B6.8)`
 - **Proposed solution:** Derive the AudioTab description from settings.ai.models.transcription and secrets_has; forward model/usage in the research events (additive fields); add a free-tier note on the Gemini card.
 - **Test plan:** UI tests for the AudioTab description variants. Rust serde round-trip test for the extended research events.
+- **Verification (confirmed):** The AudioTab.tsx:142 description is static (it does mention the Gemini fallback to Apple, but doesn't show the assigned model or warn about a missing key). DeepResearchEvent::Started { job_id } in bluey-core types/ai.rs:395 carries no model, and Completed carries no usage. Correctly rated as an Opportunity.
 - _Source: auditor (prior-audit-docs-drift/brief-leftover-opportunities)_
