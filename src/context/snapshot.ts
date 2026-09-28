@@ -38,6 +38,11 @@ export interface BuildNativeSnapshotArgs {
   trigger: AskTrigger;
   /** Force screen inclusion regardless of mode requirements. */
   captureScreen?: boolean;
+  /**
+   * `false` when the user turned screen context off in the HUD: no capture,
+   * OCR or accessibility tree, whatever the trigger or mode asks for.
+   */
+  screenAllowed?: boolean;
   transcriptWindowSeconds?: number;
   api: SnapshotApi;
 }
@@ -60,14 +65,15 @@ function captureTargetFor(settings: Settings): CaptureTarget {
 /** Settings-driven snapshot options for the Rust fast path. */
 export function snapshotOptionsFor(args: Omit<BuildNativeSnapshotArgs, "api">): SnapshotOptions {
   const { mode, settings, trigger, captureScreen, transcriptWindowSeconds } = args;
+  const screenAllowed = args.screenAllowed !== false;
   const includeScreen =
-    captureScreen === true || trigger === "shortcut_capture" || requires(mode, "screen");
+    screenAllowed && (captureScreen === true || trigger === "shortcut_capture" || requires(mode, "screen"));
   const includeTranscript = requires(mode, "transcript") || trigger === "shortcut_generate" || trigger === "detected_event";
 
   const options: SnapshotOptions = {
     includeScreen,
     includeOcr: includeScreen,
-    includeAccessibility: includeScreen || requires(mode, "accessibility"),
+    includeAccessibility: includeScreen || (screenAllowed && requires(mode, "accessibility")),
     includeTranscript,
     ocrLevel: settings.screen.ocrLevel,
     inlineImage: includeScreen,

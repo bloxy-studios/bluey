@@ -6,6 +6,7 @@ import type { DetectedEvent } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
 import { completedResponses, useChatStore } from "@/stores/chatStore";
 import { getEngine } from "@/stores/engine";
+import { useHudUiStore } from "@/stores/hudUiStore";
 import { modeById, useModesStore } from "@/stores/modesStore";
 import { useProactiveStore } from "@/stores/proactive";
 import { useSessionStore } from "@/stores/sessionStore";
@@ -49,6 +50,7 @@ export function useAsk() {
         trigger: request.trigger,
         instruction: request.instruction,
         captureScreen: request.captureScreen ?? false,
+        screenAllowed: useHudUiStore.getState().screenEnabled,
         mode,
         session: sessionState.active,
         settings,

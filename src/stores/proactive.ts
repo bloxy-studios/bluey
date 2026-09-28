@@ -35,6 +35,7 @@ import { recentSegments } from "@/transcript/window";
 import { useAppStore } from "./appStore";
 import { shownResponse, useChatStore, type SuggestionMeta } from "./chatStore";
 import { getEngine } from "./engine";
+import { useHudUiStore } from "./hudUiStore";
 import { modeById, useModesStore } from "./modesStore";
 import { useSessionStore } from "./sessionStore";
 import { useSettingsStore } from "./settingsStore";
@@ -167,6 +168,7 @@ export function startProactiveLoop(): Unlisten {
         {
           trigger: "detected_event",
           captureScreen: false,
+          screenAllowed: useHudUiStore.getState().screenEnabled,
           detectedEvent: event,
           mode,
           session: sessionState.active,
