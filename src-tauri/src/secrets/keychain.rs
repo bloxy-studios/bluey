@@ -32,6 +32,7 @@ impl KeychainBackend {
 
 /// Read another app's generic password (an explicit account import). Prompts
 /// when macOS has not been told to Always Allow Bluey for that item.
+#[cfg_attr(not(feature = "subscription-accounts"), allow(dead_code))]
 pub fn read_foreign_item(
     service: &str,
     account: &str,
