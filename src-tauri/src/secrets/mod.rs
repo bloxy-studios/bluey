@@ -325,6 +325,13 @@ impl SecretsStore {
         Ok(present)
     }
 
+    /// The value of `key` if this process already read or wrote it — never a
+    /// Keychain call (best-effort work such as revoking tokens on sign-out
+    /// must not prompt).
+    pub fn peek(&self, key: &str) -> Option<String> {
+        self.cached(key)
+    }
+
     /// The cached presence of `key`, without touching the Keychain.
     pub fn known_presence(&self, key: &str) -> Option<bool> {
         self.cache.lock().presence(key)

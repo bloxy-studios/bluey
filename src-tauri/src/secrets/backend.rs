@@ -159,7 +159,8 @@ pub mod fake {
         locked: HashMap<String, i32>,
         /// Accounts whose removal fails with this status.
         failing_removes: HashMap<String, i32>,
-        fail_list: Option<i32>,
+        /// Attribute-only lookups (`exists`, `list`) fail with this status.
+        fail_lookups: Option<i32>,
     }
 
     /// Faithful to the Keychain where it matters: `add` refuses duplicates,
@@ -196,8 +197,8 @@ pub mod fake {
                 .insert(account.into(), status);
         }
 
-        pub fn fail_list(&self, status: i32) {
-            self.inner.lock().fail_list = Some(status);
+        pub fn fail_lookups(&self, status: i32) {
+            self.inner.lock().fail_lookups = Some(status);
         }
 
         pub fn value(&self, account: &str) -> Option<String> {
@@ -258,7 +259,11 @@ pub mod fake {
 
         fn exists(&self, account: &str) -> Result<bool, KeychainStatus> {
             self.note(Op::Exists, account);
-            Ok(self.inner.lock().items.contains_key(account))
+            let inner = self.inner.lock();
+            if let Some(status) = inner.fail_lookups {
+                return Err(KeychainStatus(status));
+            }
+            Ok(inner.items.contains_key(account))
         }
 
         fn add(&self, account: &str, value: &str) -> Result<(), KeychainStatus> {
@@ -285,7 +290,7 @@ pub mod fake {
         fn list(&self) -> Result<Vec<String>, KeychainStatus> {
             self.note(Op::List, "*");
             let inner = self.inner.lock();
-            if let Some(status) = inner.fail_list {
+            if let Some(status) = inner.fail_lookups {
                 return Err(KeychainStatus(status));
             }
             Ok(inner.items.keys().cloned().collect())

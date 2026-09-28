@@ -130,6 +130,24 @@ describe("describeError", () => {
     );
   });
 
+  it("asks a signed-out user to sign in before listening", () => {
+    expect(describeError(error({ kind: "authentication", code: "auth.sign_in_required" }))).toEqual({
+      title: "Sign in first",
+      message: "Sign in to Bluey before you start listening.",
+    });
+  });
+
+  it("offers a new import when an imported sign-in expires", () => {
+    const presented = describeError(
+      error({ kind: "authentication", code: "account.needs_reauth", details: { imported: true } }),
+    );
+    expect(presented.title).toBe("Imported sign-in expired");
+    expect(presented.message).toMatch(/Import the sign-in again/);
+    expect(describeError(error({ kind: "authentication", code: "account.needs_reauth" })).title).toBe(
+      "Subscription sign-in expired",
+    );
+  });
+
   it("names the app whose sign-in macOS refused to share on import", () => {
     const presented = describeError(
       error({

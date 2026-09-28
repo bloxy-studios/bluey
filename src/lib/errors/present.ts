@@ -184,6 +184,10 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "Sign-in not completed",
     message: "The provider did not finish the sign-in. Try again from the account card.",
   },
+  "auth.sign_in_required": {
+    title: "Sign in first",
+    message: "Sign in to Bluey before you start listening.",
+  },
   "account.not_connected": {
     title: "Account not connected",
     message: "Connect the account in Settings → AI → Accounts first.",
@@ -275,6 +279,14 @@ export function describeError(error: BlueyError): { title: string; message: stri
   if (error.code === "account.provider_pending") {
     // Rust names the provider and the PR that lands it.
     return { title: "Not available yet", message: error.message };
+  }
+  if (error.code === "account.needs_reauth" && details.imported === true) {
+    // Claude Code / Codex rotate refresh tokens: Bluey never refreshes an imported session.
+    return {
+      title: "Imported sign-in expired",
+      message:
+        "Import the sign-in again from the official app (macOS asks once to share it), or reconnect in the browser. Bluey uses your API key meanwhile.",
+    };
   }
   if (error.code === "account.import_denied") {
     // Rust names the app whose sign-in macOS refused to share ("… reading Claude Code's sign-in …").
