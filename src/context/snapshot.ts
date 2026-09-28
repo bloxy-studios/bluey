@@ -118,6 +118,22 @@ const RECENT_RESPONSE_CHARS = 320;
 const RECENT_EVENT_LIMIT = 12;
 const NOTE_LIMIT = 10;
 const NOTE_CHARS = 400;
+/** Personal instructions apply to every answer; cap them so they stay a preamble. */
+export const PERSONAL_INSTRUCTIONS_CHARS = 1500;
+
+/**
+ * Every `personal_instructions` chunk (global, mode and session scope, in the
+ * order retrieval returned them), joined and capped. Undefined when none.
+ */
+function joinPersonalInstructions(chunks: RetrievedChunk[]): string | undefined {
+  const text = chunks
+    .filter((chunk) => chunk.documentKind === "personal_instructions")
+    .map((chunk) => chunk.content.trim())
+    .filter((content) => content.length > 0)
+    .join("\n\n");
+  if (text.length === 0) return undefined;
+  return text.length > PERSONAL_INSTRUCTIONS_CHARS ? `${text.slice(0, PERSONAL_INSTRUCTIONS_CHARS).trimEnd()}…` : text;
+}
 
 interface SessionExtras {
   events?: SessionEvent[];
@@ -191,7 +207,6 @@ export function enrichSnapshot(snapshot: ContextSnapshot, args: EnrichSnapshotAr
   } = args;
 
   const chunks = retrieved ?? snapshot.userContext?.chunks ?? [];
-  const personalChunk = chunks.find((chunk) => chunk.documentKind === "personal_instructions");
   const contentChunks = chunks.filter((chunk) => chunk.documentKind !== "personal_instructions");
 
   const enriched: ContextSnapshot = {
@@ -199,7 +214,7 @@ export function enrichSnapshot(snapshot: ContextSnapshot, args: EnrichSnapshotAr
     mode: { mode, responseStyle: effectiveStyle(mode, settings) },
     userContext: {
       chunks: contentChunks,
-      personalInstructions: personalChunk?.content ?? snapshot.userContext?.personalInstructions,
+      personalInstructions: joinPersonalInstructions(chunks) ?? snapshot.userContext?.personalInstructions,
       displayName: snapshot.userContext?.displayName,
     },
   };
