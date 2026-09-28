@@ -19,6 +19,8 @@ function detected(id: string, requiresResponse = true): DetectedEvent {
     requiresResponse,
     text: `Question ${id}?`,
     segmentIds: [],
+    // A panel: each question comes from its own interviewer, so no cooldown applies.
+    speaker: `Interviewer ${id}`,
     detectedAt: new Date().toISOString(),
   };
 }
@@ -119,6 +121,24 @@ describe("proactive preparation loop", () => {
     expect(engine.classified).toHaveLength(0);
     expect(engine.prepared).toHaveLength(0);
     expect(useChatStore.getState().turns).toHaveLength(0);
+  });
+
+  it("gates what surfaces: back-channel, repeats and same-speaker rapid questions open nothing (LIVE-009)", async () => {
+    const say = (id: string, text: string, speaker = "Interviewer") =>
+      mock.emit("question.detected", { ...detected(id), text, speaker });
+    say("meta", "Can you hear me?");
+    say("q1", "How would you design a rate limiter?");
+    await waitFor(() => expect(engine.prepared).toHaveLength(1));
+    await waitFor(() => expect(useProactiveStore.getState().preparingEventId).toBeNull());
+
+    say("q1-again", "So how would you design a rate limiter?", "Panelist"); // duplicate text
+    say("q2", "Which store holds the counters?"); // same speaker, inside the cooldown
+    await flush();
+    expect(engine.prepared.map((p) => p.detectedEvent?.id)).toEqual(["q1"]);
+
+    say("q3", "Which store holds the counters?", "Panelist"); // another voice asks it
+    await waitFor(() => expect(engine.prepared).toHaveLength(2));
+    expect(engine.prepared.at(-1)?.detectedEvent?.id).toBe("q3");
   });
 
   it("dedupes question ids and serializes preparation (newest waiting question wins)", async () => {

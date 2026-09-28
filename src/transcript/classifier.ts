@@ -28,8 +28,12 @@ interface Candidate {
 
 // ── Cue patterns ────────────────────────────────────────────────────────────
 
-const INTERROGATIVE_LEAD =
-  /^(what|how|why|when|where|who|which|can|could|would|will|should|do|does|did|is|are|have you|has|tell me|walk me|talk me|describe|explain)\b/i;
+/** Short spoken fillers that often open a question ("so, what…", "okay um how…"). */
+const LEAD_FILLERS = String.raw`(?:(?:so|okay|ok|um+|uh+|uhm|er|well|alright|and|now|right|yeah)[,\s]+){0,3}`;
+const INTERROGATIVE_LEAD = new RegExp(
+  String.raw`^${LEAD_FILLERS}(what|how|why|when|where|who|which|can|could|would|will|should|do|does|did|is|are|have you|has|tell me|walk me|talk me|describe|explain)\b`,
+  "i",
+);
 const RISING_PATTERNS = /\b(tell me about|walk me through|talk me through|how would you|what would you|can you (explain|describe|tell)|give me an example)\b/i;
 
 const BEHAVIORAL_MARKERS =
@@ -103,7 +107,20 @@ const RESPONSE_WORTHY: ReadonlySet<DetectedEventType> = new Set([
   "follow_up",
 ]);
 
-function conversationalMode(mode: BlueyMode): boolean {
+/**
+ * Question types a non-conversational mode (General, Team Meeting, Lecture, most custom
+ * modes) may still answer — only when asked outright (an explicit "?", LIVE-009).
+ */
+export const DIRECT_QUESTION_TYPES: ReadonlySet<DetectedEventType> = new Set([
+  "question",
+  "follow_up",
+  "technical_question",
+  "coding_problem",
+]);
+export const DIRECT_QUESTION_MIN_CONFIDENCE = 0.8;
+
+/** Modes where answering the other party is the point (interviews, sales, recruiting). */
+export function conversationalMode(mode: BlueyMode): boolean {
   return (
     isCandidateMode(mode) ||
     mode.responseSchema === "sales" ||
@@ -201,8 +218,9 @@ export function classifySegment(args: ClassifySegmentArgs): DetectedEvent | null
   let type = best.type;
   if (type === "question" && isFollowUpQuestion(args, speaker)) type = "follow_up";
 
+  const direct = DIRECT_QUESTION_TYPES.has(type) && best.confidence >= DIRECT_QUESTION_MIN_CONFIDENCE;
   const requiresResponse =
-    RESPONSE_WORTHY.has(type) && speaker !== "You" && conversationalMode(mode);
+    RESPONSE_WORTHY.has(type) && speaker !== "You" && (conversationalMode(mode) || direct);
 
   return {
     id: `evt_${idGen()}`,

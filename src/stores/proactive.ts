@@ -30,7 +30,13 @@ import { create } from "zustand";
 import { PREPARED_TTL_MS, type CancelHandle, type EngineCallbacks, type EnginePhase } from "@/lib/engine-contract";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { getTransport, type Unlisten } from "@/lib/tauri/transport";
-import type { BlueyError, DetectedEvent, Settings, TranscriptSegment } from "@/lib/types";
+import type { BlueyError, BlueyMode, DetectedEvent, Settings, TranscriptSegment } from "@/lib/types";
+import {
+  CLASSIFIER_MIN_CONFIDENCE,
+  conversationalMode,
+  DIRECT_QUESTION_MIN_CONFIDENCE,
+  DIRECT_QUESTION_TYPES,
+} from "@/transcript/classifier";
 import { recentSegments } from "@/transcript/window";
 import { useAppStore } from "./appStore";
 import { completedResponses, shownResponse, useChatStore, type SuggestionMeta } from "./chatStore";
@@ -93,17 +99,118 @@ export function canShowLive(settings: Settings | null, phase: EnginePhase | null
   return settings?.ai.suggestionDisplay === "live" && (phase === null || !BUSY_PHASES.has(phase));
 }
 
+// ── Surfacing gate (LIVE-009) ───────────────────────────────────────────────
+
+/** A detection older than this is not worth answering any more (queue staleness). */
+export const QUESTION_STALE_MS = 20_000;
+/** Near-identical questions within this window surface once. */
+export const SURFACE_DEDUPE_WINDOW_MS = 90_000;
+/** After a suggestion, the same speaker's next generic question waits this long. */
+export const SURFACE_COOLDOWN_MS = 8_000;
+const DUPLICATE_SIMILARITY = 0.8;
+/** Each dismissed live suggestion raises the bar a little; capped so it never mutes. */
+const DISMISSAL_STEP = 0.05;
+const MAX_DISMISSAL_PENALTY = 0.15;
+
+/** Words that carry no question on their own ("okay?", "right?", "so, what?"). */
+const FILLER_WORDS: ReadonlySet<string> = new Set(
+  "so okay ok um umm uh uhh uhm er well like right yeah yes no hmm mm alright anyway actually and but sorry what huh really hello hey".split(
+    " ",
+  ),
+);
+/** Meta / back-channel checks about the call itself, never a question to answer. */
+const META_PHRASES =
+  /^(?:(?:so|okay|ok|um|uh|and|but|sorry|alright|well|hey|hi)\s+)*(?:can you (?:hear|see) (?:me|us|my screen|the screen)|(?:is|was) my (?:screen|audio|mic|microphone|video) (?:visible|working|ok|okay|clear)|(?:can|could) you repeat(?: that| the question)?|(?:does|did) (?:that|this|it) make sense|makes? sense|(?:is|was) (?:that|this) (?:right|clear|ok|okay)|sounds? good|any (?:other )?questions(?: so far)?|are you (?:there|still there|with me)|am i (?:audible|on mute|muted)|you know)(?:\s+(?:right|so far|now))?$/;
+
+const GENERIC_TYPES: ReadonlySet<DetectedEvent["type"]> = new Set(["question", "follow_up"]);
+
+export type SurfaceVerdict = "surface" | "not_substantive" | "below_threshold" | "duplicate" | "cooldown" | "stale";
+
+/** What the gate knows about the session so far. */
+export interface SurfaceContext {
+  mode: BlueyMode;
+  now: number;
+  /** Questions surfaced recently, newest last. */
+  surfaced: readonly { text: string; speaker?: string; at: number }[];
+  /** Live suggestions the user dismissed (Esc / Stop) since listening started. */
+  dismissals: number;
+}
+
+function words(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}'\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/** Pure: token-set Jaccard similarity of two utterances. */
+function similarity(a: string, b: string): number {
+  const left = new Set(words(a));
+  const right = new Set(words(b));
+  if (left.size === 0 || right.size === 0) return 0;
+  let shared = 0;
+  for (const word of left) if (right.has(word)) shared += 1;
+  return shared / (left.size + right.size - shared);
+}
+
+export function isStale(event: DetectedEvent, now: number): boolean {
+  const at = Date.parse(event.detectedAt);
+  return Number.isFinite(at) && now - at > QUESTION_STALE_MS;
+}
+
+/** Pure: back-channel and call-meta utterances ("right?", "can you hear me?"). */
+export function isSubstantive(event: DetectedEvent): boolean {
+  const all = words(event.text);
+  if (META_PHRASES.test(all.join(" "))) return false;
+  // A specific detection (objection, coding problem, …) carries meaning even when short.
+  if (!GENERIC_TYPES.has(event.type)) return true;
+  return all.filter((word) => !FILLER_WORDS.has(word)).length >= 2;
+}
+
+/**
+ * Pure gate: should this detection open a (billed) suggestion? Adaptive rather than a
+ * kill switch — conversational modes answer as before, other modes only direct
+ * questions, repeats and back-channel are dropped, and dismissals raise the bar.
+ */
+export function shouldSurface(event: DetectedEvent, ctx: SurfaceContext): SurfaceVerdict {
+  if (isStale(event, ctx.now)) return "stale";
+  if (!isSubstantive(event)) return "not_substantive";
+  // Other modes (General, Team Meeting, Lecture, custom) answer only direct questions.
+  const conversational = conversationalMode(ctx.mode);
+  if (!conversational && !DIRECT_QUESTION_TYPES.has(event.type)) return "below_threshold";
+  const base = conversational ? CLASSIFIER_MIN_CONFIDENCE : DIRECT_QUESTION_MIN_CONFIDENCE;
+  const penalty = Math.min(MAX_DISMISSAL_PENALTY, ctx.dismissals * DISMISSAL_STEP);
+  if (event.confidence < base + penalty) return "below_threshold";
+  const recent = ctx.surfaced.filter((entry) => ctx.now - entry.at <= SURFACE_DEDUPE_WINDOW_MS);
+  if (recent.some((entry) => similarity(entry.text, event.text) >= DUPLICATE_SIMILARITY)) return "duplicate";
+  const last = recent.at(-1);
+  if (
+    last &&
+    GENERIC_TYPES.has(event.type) &&
+    last.speaker === event.speaker &&
+    ctx.now - last.at < SURFACE_COOLDOWN_MS
+  ) {
+    return "cooldown";
+  }
+  return "surface";
+}
+
 /** The live suggestion streaming into the thread right now, if any. */
 let liveHandle: CancelHandle | null = null;
+/** Live suggestions the user dismissed since listening started (feeds the gate). */
+let dismissals = 0;
 
 /**
  * End the live suggestion (Esc, Stop, a manual ask, a prepared answer shown over it):
  * its stream stops and nothing it produced is saved (LIVE-001).
  */
-export async function cancelLiveSuggestion(): Promise<void> {
+export async function cancelLiveSuggestion(options: { dismissed?: boolean } = {}): Promise<void> {
   const handle = liveHandle;
   liveHandle = null;
   if (!handle) return;
+  // Esc / Stop on a suggestion is a signal it was not wanted: the gate gets stricter.
+  if (options.dismissed) dismissals += 1;
   try {
     await handle.cancel();
   } catch (error) {
@@ -162,6 +269,8 @@ export function startProactiveLoop(): Unlisten {
   /** The newest question detected while the HUD was hidden (live display only). */
   let deferred: { event: DetectedEvent; at: number } | null = null;
   let busy = false;
+  /** Questions that opened a suggestion recently (dedupe + cooldown). */
+  let surfaced: SurfaceContext["surfaced"] = [];
 
   const remember = (id: string) => {
     seen.add(id);
@@ -173,6 +282,8 @@ export function startProactiveLoop(): Unlisten {
 
   const prepareFor = async (event: DetectedEvent): Promise<void> => {
     busy = true;
+    // What opened a suggestion feeds dedupe and the cooldown (LIVE-009).
+    surfaced = [...surfaced, { text: event.text, at: Date.now(), ...(event.speaker ? { speaker: event.speaker } : {}) }];
     useProactiveStore.getState().setPreparing(event.id);
     try {
       const settings = useSettingsStore.getState().settings;
@@ -231,7 +342,8 @@ export function startProactiveLoop(): Unlisten {
       useProactiveStore.getState().setLive(null);
       const next = queued;
       queued = null;
-      if (next) void prepareFor(next);
+      // A question that waited too long behind the previous answer is dropped (LIVE-009).
+      if (next && !isStale(next, Date.now())) void prepareFor(next);
     }
   };
 
@@ -247,6 +359,11 @@ export function startProactiveLoop(): Unlisten {
     if (!isHudWindow() || !proactiveEnabled() || !event.requiresResponse) return;
     if (seen.has(event.id)) return;
     remember(event.id);
+    const mode = activeMode();
+    if (!mode) return;
+    const now = Date.now();
+    surfaced = surfaced.filter((entry) => now - entry.at <= SURFACE_DEDUPE_WINDOW_MS);
+    if (shouldSurface(event, { mode, now, surfaced, dismissals }) !== "surface") return;
     if (useSettingsStore.getState().settings?.ai.suggestionDisplay === "live" && !hudVisible()) {
       // No billed live turn streams into a hidden HUD: keep the newest question and
       // prepare it once the HUD is shown, while it is still fresh (LIVE-012).
@@ -270,6 +387,7 @@ export function startProactiveLoop(): Unlisten {
     if (before?.audioActive && now && !now.audioActive) {
       queued = null;
       deferred = null;
+      dismissals = 0;
     }
     // Answers prepared for the previous mode were written for it: drop them (MODE-012).
     if (before && now && before.modeId !== now.modeId) {
@@ -313,5 +431,6 @@ export function startProactiveLoop(): Unlisten {
 /** Test helper. */
 export function resetProactiveForTest(): void {
   liveHandle = null;
+  dismissals = 0;
   useProactiveStore.setState({ preparedEventId: null, preparingEventId: null, liveEventId: null });
 }

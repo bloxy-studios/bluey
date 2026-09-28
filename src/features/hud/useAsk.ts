@@ -39,7 +39,7 @@ async function cancelStreaming(): Promise<void> {
   currentHandle = null;
   await Promise.all([
     handle?.cancel().catch((error: unknown) => console.warn("[ask] cancel failed", error)),
-    cancelLiveSuggestion(),
+    cancelLiveSuggestion({ dismissed: true }),
   ]);
 }
 

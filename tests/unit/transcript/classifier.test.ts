@@ -43,16 +43,23 @@ describe("classifySegment rules", () => {
     expect(event?.speaker).toBe("You");
   });
 
-  it("does not require responses in meeting mode even for others' questions", () => {
-    const event = classifySegment({
-      segment: makeSegment({ source: "system", text: "Who is taking notes today?" }),
-      recent: [],
-      mode: makeMode({ id: "team-meeting", responseSchema: "meeting" }),
-      now: NOW,
-      idGen,
-    });
-    expect(event?.type).toBe("question");
-    expect(event?.requiresResponse).toBe(false);
+  it("answers only direct questions in non-conversational modes (LIVE-009)", () => {
+    const meeting = makeMode({ id: "team-meeting", responseSchema: "meeting" });
+    const classify = (text: string) =>
+      classifySegment({ segment: makeSegment({ source: "system", text }), recent: [], mode: meeting, now: NOW, idGen });
+    const direct = classify("What is the rollout date for the billing migration?");
+    expect(direct?.type).toBe("question");
+    expect(direct?.requiresResponse).toBe(true);
+    // An implied question (no "?") is a weaker signal: noted, not answered.
+    const implied = classify("how we handle the rollout is still open");
+    expect(implied?.type).toBe("question");
+    expect(implied?.requiresResponse).toBe(false);
+  });
+
+  it("recognises questions opened by short fillers", () => {
+    expect(isQuestionText("so which option did you pick").question).toBe(true);
+    expect(isQuestionText("okay um how did you measure it").question).toBe(true);
+    expect(isQuestionText("so the plan is fine").question).toBe(false);
   });
 
   it("ignores unfinalized partials and empty text", () => {
