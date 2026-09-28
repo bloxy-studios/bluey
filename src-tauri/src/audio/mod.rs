@@ -165,6 +165,13 @@ fn start_recovery(error: &BlueyError) -> StartRecovery {
     }
 }
 
+/// Move a run-relative transcript onto the session's timeline.
+fn on_session_timeline(mut wire: WireTranscript, offset_ms: u64) -> WireTranscript {
+    wire.start_ms = wire.start_ms.saturating_add(offset_ms);
+    wire.end_ms = wire.end_ms.saturating_add(offset_ms);
+    wire
+}
+
 /// Build the helper `audio.start` params from a session config.
 pub fn helper_start_params(config: &AudioSessionConfig, route: TranscriptionRoute) -> Value {
     let mut sources = Vec::new();
@@ -212,8 +219,12 @@ pub struct AudioManager {
     run_id: AtomicU64,
     partials: parking_lot::Mutex<HashMap<AudioSource, TranscriptSegment>>,
     assembler: parking_lot::Mutex<TranscriptAssembler>,
-    /// The session was started by `audio_start` and ends with it.
-    auto_session: AtomicBool,
+    /// The session `start` created for this listening run (it ends with the
+    /// run, unless the user has switched to another session meanwhile).
+    auto_session: parking_lot::Mutex<Option<String>>,
+    /// Added to this run's segment times: a run attached to a session that
+    /// already has a transcript continues its timeline.
+    time_offset_ms: AtomicU64,
     listener_started: AtomicBool,
 }
 
@@ -246,7 +257,8 @@ impl AudioManager {
             run_id: AtomicU64::new(0),
             partials: parking_lot::Mutex::new(HashMap::new()),
             assembler: parking_lot::Mutex::new(TranscriptAssembler::new()),
-            auto_session: AtomicBool::new(false),
+            auto_session: parking_lot::Mutex::new(None),
+            time_offset_ms: AtomicU64::new(0),
             listener_started: AtomicBool::new(false),
         }
     }
@@ -334,6 +346,12 @@ impl AudioManager {
         // Finals of earlier runs stay in the ring (the transcript view may
         // still list them) but are out of this run's context scope.
         self.run_id.fetch_add(1, Ordering::SeqCst);
+        // Segment times restart at 0 with every helper `audio.start`.
+        let offset = match self.sessions.active_id() {
+            Some(id) => self.session_last_end_ms(&id).await,
+            None => 0,
+        };
+        self.time_offset_ms.store(offset, Ordering::SeqCst);
         *self.config.lock() = Some(config.clone());
         if route == TranscriptionRoute::Pcm {
             if let Some((provider, model)) = cloud {
@@ -383,7 +401,7 @@ impl AudioManager {
 
         if self.sessions.active().is_none() {
             match self.sessions.start(None, None).await {
-                Ok(_) => self.auto_session.store(true, Ordering::SeqCst),
+                Ok(session) => *self.auto_session.lock() = Some(session.id),
                 Err(e) => tracing::warn!(error = %e, "could not start a session for listening"),
             }
         }
@@ -740,12 +758,42 @@ impl AudioManager {
         self.stop_helper_audio().await;
         self.close_stt().await;
         let status = self.mark_stopped(None);
-        if self.auto_session.swap(false, Ordering::SeqCst) {
-            if let Err(e) = self.sessions.end().await {
-                tracing::debug!(error = %e, "could not end the auto-started session");
-            }
-        }
+        self.end_auto_session().await;
         Ok(status)
+    }
+
+    /// End the session `start` created for the run that just ended — not a
+    /// session the user switched to meanwhile.
+    async fn end_auto_session(&self) {
+        let Some(id) = self.auto_session.lock().take() else {
+            return;
+        };
+        if self.sessions.active_id().as_deref() != Some(id.as_str()) {
+            return;
+        }
+        if let Err(e) = self.sessions.end().await {
+            tracing::debug!(error = %e, "could not end the auto-started session");
+        }
+    }
+
+    /// Where a session's transcript ends (stored segments, or the ring when
+    /// transcripts are not persisted).
+    async fn session_last_end_ms(&self, session_id: &str) -> u64 {
+        let id = session_id.to_string();
+        let stored = self
+            .storage
+            .run(move |db| TranscriptRepository::last_end_ms(db, &id))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "could not read the session's transcript end");
+                0
+            });
+        let in_memory = self
+            .ring
+            .lock()
+            .last_end_of_session(session_id)
+            .unwrap_or(0);
+        stored.max(in_memory)
     }
 
     fn mark_stopped(&self, error: Option<BlueyError>) -> AudioStatus {
@@ -1001,6 +1049,9 @@ impl AudioManager {
                 }
                 self.close_stt().await;
                 self.mark_stopped(error);
+                // Capture ended in the helper (device lost, stream error): the
+                // listening run is over, and so is the session it started.
+                self.end_auto_session().await;
             }
             HelperEvent::AudioLevel { microphone, system } => {
                 if let Some(levels) = self.status.lock().levels.as_mut() {
@@ -1058,6 +1109,7 @@ impl AudioManager {
         if wire.text.trim().is_empty() {
             return;
         }
+        let wire = on_session_timeline(wire, self.time_offset_ms.load(Ordering::SeqCst));
         let speaker_identification = self
             .config
             .lock()
@@ -1246,6 +1298,22 @@ mod tests {
             details: None,
         }
         .into_bluey()
+    }
+
+    #[test]
+    fn a_second_run_in_a_session_continues_its_timeline() {
+        // Run 1 ended at 42 s; run 2's clock restarts at 0.
+        let run_two = WireTranscript {
+            source: AudioSource::Microphone,
+            text: "later".into(),
+            start_ms: 1_000,
+            end_ms: 2_500,
+            confidence: None,
+            locale: None,
+        };
+        let placed = on_session_timeline(run_two, 42_000);
+        assert_eq!((placed.start_ms, placed.end_ms), (43_000, 44_500));
+        assert!(placed.start_ms > 42_000, "never interleaves with run 1");
     }
 
     #[test]
