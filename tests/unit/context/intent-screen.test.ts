@@ -6,7 +6,7 @@
 
 import { classifyIntent } from "@/context/relevance";
 import type { AccessibilityContext, ContextSnapshot, OCRContext } from "@/lib/types";
-import { makeMode, makeSnapshot } from "../../fixtures/helpers/builders";
+import { makeMode, makeSegment, makeSnapshot } from "../../fixtures/helpers/builders";
 
 const NOW = () => new Date("2026-09-07T09:05:00.000Z");
 const SCREEN = { width: 1600, height: 1000, frameId: "f1" };
@@ -114,5 +114,44 @@ describe("the vision gate (CTX-009)", () => {
       now: NOW,
     });
     expect(intent.visionRequired).toBe(false);
+  });
+});
+
+describe("⌘↵ keeps the screen as the subject (CTX-001)", () => {
+  const heard = {
+    segments: [
+      makeSegment({ id: "s1", text: "I'll share a problem with you now.", startTime: 0, endTime: 2 }),
+      makeSegment({ id: "s2", text: "Can you see my screen?", startTime: 3, endTime: 5 }),
+    ],
+    windowSeconds: 180,
+  };
+  const modes = [
+    makeMode(),
+    makeMode({ id: "interview", responseSchema: "suggested-response" }),
+    makeMode({ id: "coding-interview", responseSchema: "coding" }),
+  ];
+
+  for (const mode of modes) {
+    it(`solves the problem on screen, not the question heard earlier (${mode.id})`, () => {
+      const intent = classifyIntent({
+        snapshot: screenSnapshot({ ocr: ocr(PROBLEM), transcript: heard }),
+        mode,
+        trigger: "shortcut_capture",
+        now: NOW,
+      });
+      expect(intent.task).toBe("coding");
+      expect(intent.schemaId).toBe("coding");
+      expect(intent.answerShape).toBe("code");
+    });
+  }
+
+  it("still answers the heard question on ⌘⇧↵ (what do I say next)", () => {
+    const intent = classifyIntent({
+      snapshot: screenSnapshot({ ocr: ocr("Inbox (3)"), transcript: heard }),
+      mode: makeMode({ id: "interview", responseSchema: "suggested-response" }),
+      trigger: "shortcut_generate",
+      now: NOW,
+    });
+    expect(intent.answerShape).toBe("spoken");
   });
 });

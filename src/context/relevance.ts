@@ -295,10 +295,14 @@ export function classifyIntent(input: IntentInput): Intent {
   const { snapshot, mode, detectedEvent, trigger } = input;
   const now = input.now ?? (() => new Date());
 
-  const question = currentQuestionText(snapshot, {
-    instruction: input.instruction,
-    detectedEvent,
-  });
+  // On ⌘↵ and assist the screen is the subject: with nothing typed, a
+  // question heard minutes ago ("Can you see my screen?") must not become the
+  // question and decide the task or shape (CTX-001).
+  const screenTrigger = trigger === "shortcut_capture" || trigger === "assist";
+  const question =
+    screenTrigger && !detectedEvent
+      ? (input.instruction?.trim() ?? "")
+      : currentQuestionText(snapshot, { instruction: input.instruction, detectedEvent });
   const ocrText = snapshot.ocr?.text ?? "";
   const screenText = screenTextOf(snapshot);
 
@@ -335,7 +339,7 @@ export function classifyIntent(input: IntentInput): Intent {
   // the image however much label text OCR read off it (CTX-009).
   const hasScreen = Boolean(snapshot.screen?.image ?? snapshot.screen?.frameId);
   const insufficientText = ocrText.length < VISION_TEXT_SUFFICIENCY_CHARS;
-  const screenIsSubject = question.length === 0 || trigger === "shortcut_capture" || trigger === "assist";
+  const screenIsSubject = question.length === 0 || screenTrigger;
   const refersToVisual =
     VISUAL_REFERENCE_CUES.test(question) || (screenIsSubject && screenLooksVisual(ocrText));
   const codingLowOcr = task === "coding" && averageOcrConfidence(snapshot) < 0.55;
