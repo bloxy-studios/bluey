@@ -18,6 +18,8 @@ export interface ExaSearchParams {
   numResults?: number;
   /** ISO date — only return results published after this date. */
   startPublishedDate?: string;
+  /** Aborts the request when the job is cancelled. */
+  signal?: AbortSignal;
 }
 
 export interface ExaResultItem {
@@ -99,6 +101,7 @@ export function createExaClient(options: ExaClientOptions): ExaClient {
         timeoutMs,
         fetchImpl,
         label: "exa search",
+        signal: params.signal,
       });
       return mapExaResponse(json);
     },

@@ -15,7 +15,10 @@
     "dialog:allow-open",
     "dialog:allow-confirm",
     "dialog:allow-message",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
+    },
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",

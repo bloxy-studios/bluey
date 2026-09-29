@@ -24,3 +24,22 @@ the WebView.
 * The sidecar is per job, so a crash or runaway loop never affects the app; `maxTurns` and an
   `AbortController` bound cost.
 * Requires the platform-specific SDK binary at build time (`scripts/build-agent.sh`).
+
+## Addendum — 2026-09-28 (deep-refinement audit)
+* The router lives in `src/ai/research.ts` (`decideResearch`, `buildPublicQuery`,
+  `runResearch`); the engine calls it from `maybeResearch` in `src/ai/engine.ts`. There is no
+  `src/ai/research/router.ts`.
+* The sidecar's default backend is **Gemini** function calling (ADR 0007); the Claude Agent SDK
+  is the opt-in `claude` backend and needs the full build (the lite build has no Claude Code CLI).
+  `research_available` reports the backends the installed build can run (`agent.info`), and
+  deep research is offered only with an Exa key; the job requests only the tools that have keys.
+* Rust injects exactly one backend's model credential plus the Exa/Firecrawl keys. The Claude
+  Code subprocess never receives the tool keys and runs with telemetry, error reporting and
+  non-essential traffic disabled.
+* Public query: `buildPublicQuery` strips emails, phone numbers, handles, the signed-in user's
+  names and proper nouns from retrieved private documents (résumé, notes, personal instructions,
+  …), passed in explicitly by the engine. It is a best-effort scrub, not a guarantee: a private
+  term that is also an ordinary word, or one that was never retrieved, can still pass.
+* Bounds: a cancelled or superseded ask cancels its job; the agent gets a `deadlineMs` 15 s inside
+  the 90 s ask timeout and a turn budget, and when either runs out it reports from the evidence
+  gathered instead of failing. The search paths have a 10 s overall deadline.

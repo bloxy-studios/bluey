@@ -87,6 +87,8 @@ export interface BlueyResponse {
   feedback?: ResponseFeedback;
   /** True when this response was prepared proactively and not yet shown. */
   prepared?: boolean;
+  /** Short notice that web research failed and the answer went without it. */
+  researchNote?: string;
   /**
    * True when the output budget cut the answer short (after the engine's one
    * retry with double the room): `content` is what could be salvaged and the

@@ -28,6 +28,7 @@ import type {
   ConnectionTestResult,
   ContextSnapshot,
   DeepResearchRequest,
+  ResearchBackend,
   DevInfo,
   DevSimulation,
   DisplayInfo,
@@ -143,7 +144,10 @@ export interface CommandMap {
   // ── Provider accounts (subscription sign-in, ADR 0009): Rust owns the tokens; the WebView sees status only ─
   accounts_list: { args: void; result: ProviderAccount[] };
   /** Start a sign-in with `chatgpt` | `claude` | `antigravity`; completion arrives as `accounts.changed`. */
-  accounts_connect: { args: { providerId: string; options?: AccountConnectOptions }; result: ProviderAccount };
+  accounts_connect: {
+    args: { providerId: string; options?: AccountConnectOptions };
+    result: ProviderAccount;
+  };
   /** Import the official client's local sign-in on this Mac (read-only). */
   accounts_import: { args: { providerId: string }; result: ProviderAccount };
   accounts_cancel_connect: { args: { accountId: string }; result: ProviderAccount };
@@ -227,7 +231,13 @@ export interface CommandMap {
    * timestamps limit the recording to 30 minutes; `language` is a BCP-47 tag (omit = auto).
    */
   ai_transcribe_file: {
-    args: { path: string; diarization: boolean; wordTimestamps: boolean; language?: string; sessionId?: string };
+    args: {
+      path: string;
+      diarization: boolean;
+      wordTimestamps: boolean;
+      language?: string;
+      sessionId?: string;
+    };
     result: TranscribeFileResult;
   };
 
@@ -236,7 +246,10 @@ export interface CommandMap {
   research_scrape: { args: { url: string }; result: ScrapeResult };
   research_deep_start: { args: { request: DeepResearchRequest }; result: void };
   research_deep_cancel: { args: { jobId: string }; result: boolean };
-  research_available: { args: void; result: { search: boolean; scrape: boolean; deepAgent: boolean } };
+  research_available: {
+    args: void;
+    result: { search: boolean; scrape: boolean; deepAgent: boolean; agentBackends: ResearchBackend[] };
+  };
 
   // ── Modes ──────────────────────────────────────────────────────────────
   modes_list: { args: void; result: BlueyMode[] };

@@ -4,13 +4,13 @@
  * fully offline — no network, no model, no CLI subprocess.
  */
 
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
 import { sanitizeErrorMessage, type QueryFn } from "../../sidecars/agent/src/agent";
 import type { BuildVariant } from "../../sidecars/agent/src/config";
 import type { GenerateFn } from "../../sidecars/agent/src/gemini";
-import { startSidecar, type StartSidecarOptions } from "../../sidecars/agent/src/main";
+import { flushStream, startSidecar, type StartSidecarOptions } from "../../sidecars/agent/src/main";
 
 type Frame = Record<string, unknown>;
 
@@ -156,12 +156,10 @@ describe.each(mockCases)("sidecar end-to-end (mock mode, $backend backend)", ({ 
     const completed = completedFrame["data"] as Frame;
     expect(completed["report"]).toBe(deltas);
 
-    // Citations: deduped, only tool-observed URLs, model citation first
+    // Citations: only the tool-observed sources the model used — the search
+    // hit it never cited is not padded in.
     const citations = completed["citations"] as Array<{ title: string; url: string }>;
-    expect(citations.length).toBeGreaterThanOrEqual(2);
-    expect(citations[0]?.url).toBe("https://example.org/bluey/overview");
-    const urls = citations.map((c) => c.url);
-    expect(new Set(urls).size).toBe(urls.length);
+    expect(citations.map((c) => c.url)).toEqual(["https://example.org/bluey/overview"]);
 
     expect(typeof completed["turns"]).toBe("number");
     expect(typeof completed["totalMs"]).toBe("number");
@@ -234,6 +232,36 @@ describe("sidecar cancellation", () => {
     const error = (failed["data"] as Frame)["error"] as Frame;
     expect(error["code"]).toBe("cancelled");
     expect(error["kind"]).toBe("cancelled");
+    expect(await harness.done).toBe(0);
+  });
+
+  it("answers research.cancel with the terminal event even when the run never unwinds", async () => {
+    // A tool call or model stream that ignores the abort must not hold back
+    // the cancellation: the host is waiting for a terminal event (LIVE-005).
+    const stuckQueryFn: QueryFn = () => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "system", subtype: "init", model: "stuck-model", tools: [] };
+        await new Promise<never>(() => {});
+      },
+    });
+    const harness = makeHarness({ env: { ...stubKeys }, deps: { queryFn: stuckQueryFn } });
+    harness.send(baseRun);
+    await harness.waitFor(isEvent("research.progress"), "job start");
+
+    harness.send({ id: 2, method: "research.cancel", params: { jobId: "job-1" } });
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    expect(((failed["data"] as Frame)["error"] as Frame)["code"]).toBe("cancelled");
+    expect(harness.eventsNamed("research.failed")).toHaveLength(1);
+  });
+
+  it("hard-stops a Claude run at deadlineMs instead of reporting a cancellation", async () => {
+    const harness = makeHarness({ env: { ...stubKeys }, deps: { queryFn: hangingQueryFn } });
+    harness.send({ ...baseRun, params: { ...baseRun.params, deadlineMs: 50 } });
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    // No tool ran, so there is no evidence to report — but it is a deadline, not a cancel.
+    expect((failed["data"] as Frame)["error"]).toMatchObject({ code: "deadline_exceeded", kind: "research" });
     expect(await harness.done).toBe(0);
   });
 
@@ -472,5 +500,43 @@ describe("sidecar protocol errors", () => {
     harness.send({ id: 13, method: "research.cancel", params: { jobId: "job-1" } });
     await harness.waitFor(isEvent("research.failed"), "cancelled");
     expect(await harness.done).toBe(0);
+  });
+});
+
+describe("sidecar agent.info", () => {
+  it.each([
+    { variant: "lite" as const, env: {}, backends: ["gemini"] },
+    { variant: "lite" as const, env: { BLUEY_CLAUDE_CLI: "/opt/claude" }, backends: ["gemini", "claude"] },
+    { variant: "full" as const, env: {}, backends: ["gemini", "claude"] },
+  ])(
+    "reports the $variant build's backends without credentials ($backends)",
+    async ({ variant, env, backends }) => {
+      const harness = makeHarness({ env, buildVariant: variant });
+      harness.send({ id: 7, method: "agent.info", params: {} });
+      const reply = await harness.waitFor((f) => f["id"] === 7, "agent.info reply");
+      expect(reply["result"]).toEqual({ variant, backends });
+    },
+  );
+});
+
+describe("sidecar exit flush", () => {
+  it("waits until the final frame has left the process, not just been queued", async () => {
+    // A slow pipe: `write()` returns true (the frame is under the high-water
+    // mark) long before the bytes are actually out (AI-014).
+    const written: string[] = [];
+    const slowPipe = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        setTimeout(() => {
+          written.push(chunk.toString());
+          callback();
+        }, 100);
+      },
+    });
+    const frame = `${JSON.stringify({ event: "research.completed", data: { report: "x".repeat(4_000) } })}\n`;
+    expect(slowPipe.write(frame)).toBe(true);
+
+    await flushStream(slowPipe);
+
+    expect(written.join("")).toBe(frame);
   });
 });

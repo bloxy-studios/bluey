@@ -1776,7 +1776,12 @@ export class MockTransport implements Transport {
       });
     },
     research_deep_cancel: () => true,
-    research_available: () => ({ search: true, scrape: true, deepAgent: false }),
+    research_available: () => ({
+      search: true,
+      scrape: true,
+      deepAgent: false,
+      agentBackends: ["gemini", "claude"],
+    }),
 
     // Modes
     modes_list: () => this.modes,

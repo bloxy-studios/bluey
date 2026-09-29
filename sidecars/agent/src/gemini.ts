@@ -53,6 +53,8 @@ export type GenerateFn = (params: GenerateParams) => Promise<AsyncIterable<Gemin
 export interface GeminiRunOptions {
   model: string;
   maxTurns: number;
+  /** Epoch ms after which no further tool turn starts; the report is written instead. */
+  deadlineAt?: number;
   systemPrompt: string;
   prompt: string;
   handlers: ToolHandlers;
@@ -267,11 +269,11 @@ export async function runGemini(options: GeminiRunOptions): Promise<GeminiRunRes
   };
 
   // ── Tool loop (text mode) ──────────────────────────────────────────────────
-  let toolBudgetExhausted = false;
   for (;;) {
-    if (turns >= maxTurns - 1) {
-      // Keep one turn for the report.
-      toolBudgetExhausted = true;
+    // Keep one turn for the report; past the deadline, report what we have.
+    if (turns >= maxTurns - 1) break;
+    if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt) {
+      options.onProgress("time is up — writing the report from the evidence so far");
       break;
     }
     const turn = await runTurn(
@@ -319,30 +321,21 @@ export async function runGemini(options: GeminiRunOptions): Promise<GeminiRunRes
     }
     contents.push({ role: "user", parts: responses });
   }
-  if (toolBudgetExhausted) {
-    // Only fatal when the model still wanted tools; otherwise the last turn
-    // already ended the investigation and the report turn below is turn `maxTurns`.
-    const last = contents[contents.length - 1];
-    if (last?.role === "user" && last.parts?.some((p) => p.functionResponse)) {
-      throw new GeminiRunError(
-        "max_turns_exceeded",
-        `research stopped after ${turns} turns without a final answer`,
-      );
-    }
-  }
-
   // ── Final report turn (structured, no tools) ───────────────────────────────
+  // Out of budget with tool results still pending, the instruction joins that
+  // same user turn: the evidence gathered so far is never thrown away (AI-008).
   options.onProgress("writing the report");
-  contents.push({
-    role: "user",
-    parts: [
-      {
-        text:
-          "Write the final research report now. Return JSON with `report` (the full Markdown " +
-          "report) and `citations` (only URLs that appeared in tool results).",
-      },
-    ],
-  });
+  const reportInstruction: Part = {
+    text:
+      "Write the final research report now from the evidence gathered so far. Return JSON with " +
+      "`report` (the full Markdown report) and `citations` (only URLs that appeared in tool results).",
+  };
+  const last = contents[contents.length - 1];
+  if (last?.role === "user" && last.parts?.some((p) => p.functionResponse)) {
+    last.parts.push(reportInstruction);
+  } else {
+    contents.push({ role: "user", parts: [reportInstruction] });
+  }
   const final = await runTurn(
     {
       ...baseConfig,

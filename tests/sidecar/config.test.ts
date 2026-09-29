@@ -281,6 +281,19 @@ describe("buildSubprocessEnv", () => {
     expect(env["GOOGLE_API_KEY"]).toBeUndefined();
   });
 
+  it("opts the Claude Code CLI out of telemetry and keeps the tool keys in the agent process", () => {
+    const env = buildSubprocessEnv(
+      { ...baseEnv, EXA_API_KEY: "exa-secret", FIRECRAWL_API_KEY: "fc-secret" },
+      loadConfig({ RESEARCH_BACKEND: "claude", ANTHROPIC_API_KEY: "sk-live" }),
+    );
+    expect(env["DISABLE_TELEMETRY"]).toBe("1");
+    expect(env["DISABLE_ERROR_REPORTING"]).toBe("1");
+    expect(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]).toBe("1");
+    // The MCP tools run in bluey-agent, never in the CLI.
+    expect(env["EXA_API_KEY"]).toBeUndefined();
+    expect(env["FIRECRAWL_API_KEY"]).toBeUndefined();
+  });
+
   it("switches Claude Code to Microsoft Foundry with the resource name and pinned deployments", () => {
     const env = buildSubprocessEnv(
       baseEnv,

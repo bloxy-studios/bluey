@@ -205,6 +205,8 @@ export interface DeepResearchRequest {
   tools: Array<"exa_search" | "firecrawl_scrape" | "document_read">;
   /** Document ids the agent may read via the document_read tool (local, private). */
   allowedDocumentIds?: string[];
+  /** Wall-clock budget from job start: past it the agent stops calling tools and reports. */
+  deadlineMs?: number;
 }
 
 export type DeepResearchEvent =

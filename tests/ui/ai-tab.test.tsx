@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import AITab from "@/features/settings/tabs/AITab";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { setupMockApp } from "./helpers";
+import { setupInterceptedApp, setupMockApp } from "./helpers";
 
 function renderTab() {
   return render(
@@ -180,7 +180,9 @@ describe("AITab", () => {
     expect(screen.getByText(/streams into the HUD/)).toBeInTheDocument();
 
     await user.selectOptions(display, "on_request");
-    await waitFor(() => expect(useSettingsStore.getState().settings?.ai.suggestionDisplay).toBe("on_request"));
+    await waitFor(() =>
+      expect(useSettingsStore.getState().settings?.ai.suggestionDisplay).toBe("on_request"),
+    );
     expect(screen.getByText(/⌘⇧↵ shows it/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("switch", { name: "Prepare answers while listening" }));
@@ -198,6 +200,18 @@ describe("AITab", () => {
     await user.selectOptions(screen.getByLabelText("Research backend"), "claude");
     await waitFor(() => expect(useSettingsStore.getState().settings?.ai.researchBackend).toBe("claude"));
     expect(await screen.findByLabelText("Anthropic agent API key")).toBeInTheDocument();
+  });
+
+  it("disables the Claude backend when the installed agent is the lite build", async () => {
+    const { transport } = await setupInterceptedApp();
+    transport.intercept("research_available", async (_args, next) => ({
+      ...(await next()),
+      agentBackends: ["gemini"],
+    }));
+    renderTab();
+    const claude = await screen.findByRole("option", { name: "Claude (full build only)" });
+    expect(claude).toBeDisabled();
+    expect(screen.getByRole("option", { name: "Gemini" })).toBeEnabled();
   });
 
   it("offers a one-click recommended model per role", async () => {

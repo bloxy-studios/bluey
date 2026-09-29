@@ -16,7 +16,10 @@
     "core:event:allow-unlisten",
     "core:event:allow-emit",
     "clipboard-manager:allow-write-text",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
+    },
     "notification:default",
     "os:allow-platform",
     "os:allow-version"

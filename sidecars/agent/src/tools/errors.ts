@@ -54,6 +54,8 @@ export interface JsonRequestOptions {
   fetchImpl?: FetchLike;
   /** Human-readable label used in error messages (e.g. "exa search"). */
   label: string;
+  /** The job's cancellation: aborting it rejects with the caller's AbortError. */
+  signal?: AbortSignal;
 }
 
 /** POST JSON with a hard timeout; returns the parsed JSON body. */
@@ -66,9 +68,13 @@ export async function postJson(options: JsonRequestOptions): Promise<unknown> {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: options.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
+    // A cancelled job is not a tool timeout: let the abort unwind the run.
+    if (options.signal?.aborted) throw err;
     throw toToolError(err, `${label} timed out after ${timeoutMs}ms`);
   }
   if (!response.ok) {

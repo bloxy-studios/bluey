@@ -111,7 +111,8 @@ follows the *store transcripts / screenshots* settings exactly as before.
 * Every command has a typed signature in `src/lib/tauri/commands.ts`; the Rust side validates
   parameters and returns typed `BlueyError`s.
 * Capabilities: `main` (HUD) gets core window/event permissions plus the Bluey commands it
-  needs; `settings` additionally gets dialog/opener/autostart; `onboarding` a subset. No window
+  needs; `settings` additionally gets dialog/opener/autostart; `onboarding` a subset. The
+  opener may open only `https://`, `http://` and `mailto:` links. No window
   gets `shell:allow-execute`; sidecars are spawned from Rust only.
 * CSP restricts scripts to the bundle and connections to Tauri IPC only; nothing in the WebView
   talks to Clerk or to a provider — sign-in runs in the system browser and Rust completes it
@@ -127,11 +128,21 @@ follows the *store transcripts / screenshots* settings exactly as before.
   files.
 * `document_read` is limited to ids Rust passed in `allowedDocumentIds`, served from SQLite by
   Rust over the protocol — the sidecar has no database access.
-* One process per job, `maxTurns` bound, `AbortController` cancellation, killed on app exit.
+* One process per job, a turn budget and a `deadlineMs`; cancellation aborts the model call and
+  in-flight Exa/Firecrawl requests, and Rust kills the process (publishing the cancellation
+  itself) if the job has not ended 2 s after `research.cancel`. Killed on app exit.
+* The Claude Code subprocess (Claude backend) gets no Exa/Firecrawl keys and runs with
+  `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`.
+* Tool output is treated as untrusted data (the system prompt says so); the report's links and
+  the citation list are checked against the URLs the tools actually returned — unknown links
+  are de-linked, and only sources the model used (or pages it read) are cited.
 
 ## Research privacy
-Web queries are **public queries only**. `buildPublicQuery` removes names, emails, phone
-numbers, employer/education details and anything sourced from resume/session documents. Private
+Web queries are **public queries only**, on a best-effort basis. `buildPublicQuery` strips
+emails, phone numbers and @handles, the signed-in user's names, and proper nouns found in the
+private documents retrieved for the ask (résumé, notes, personal instructions, …); the engine
+passes those terms in explicitly. It cannot recognise private facts it was never given, so the
+router also keeps research off for candidate answers about the user's own experience. Private
 context is merged with results locally. Example: search "software engineer interview questions
 for Acme", never "John Doe, who worked at X per his resume, is interviewing at Acme".
 

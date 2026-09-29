@@ -239,3 +239,25 @@ export function checkClaudeCliAvailable(
       "variant (BLUEY_AGENT_VARIANT=full bun run build:agent)",
   };
 }
+
+/** The `agent.info` result: how this binary was built and what it can run. */
+export interface AgentInfo {
+  /** `dev` = run from source (`bun src/main.ts`), not a compiled build. */
+  variant: BuildVariant | "dev";
+  backends: ResearchBackend[];
+}
+
+/**
+ * Answer `agent.info` without credentials: Gemini is pure JS and always runs;
+ * Claude runs exactly when `checkClaudeCliAvailable` would let it (PROV-009).
+ */
+export function agentInfo(
+  config: AgentConfig,
+  build: { variant?: BuildVariant; embeddedClaudePath?: string },
+): AgentInfo {
+  const claudeProblem = checkClaudeCliAvailable({ ...config, backend: "claude" }, build);
+  return {
+    variant: build.variant ?? "dev",
+    backends: claudeProblem ? ["gemini"] : ["gemini", "claude"],
+  };
+}
