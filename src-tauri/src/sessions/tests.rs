@@ -10,6 +10,7 @@ use tokio::sync::broadcast::Receiver;
 use super::SessionManager;
 use crate::events::EventBus;
 use crate::modes::ModeManager;
+use crate::secrets::backend::fake::CountingFake;
 use crate::secrets::SecretsStore;
 use crate::settings::SettingsManager;
 use crate::state::StateHub;
@@ -28,8 +29,14 @@ impl Harness {
         let storage = Arc::new(Storage::in_memory());
         let bus = Arc::new(EventBus::new());
         let settings = Arc::new(
-            SettingsManager::load(storage.clone(), Arc::new(SecretsStore::new()), bus.clone())
-                .unwrap(),
+            SettingsManager::load(
+                storage.clone(),
+                Arc::new(SecretsStore::with_backend(
+                    Arc::new(CountingFake::default()),
+                )),
+                bus.clone(),
+            )
+            .unwrap(),
         );
         let hub = Arc::new(StateHub::new(DEFAULT_MODE_ID, bus.clone()));
         let modes = Arc::new(

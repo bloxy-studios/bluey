@@ -187,6 +187,11 @@ impl Default for SecretsStore {
 
 impl SecretsStore {
     pub fn new() -> Self {
+        // Unit tests take a fake backend (`with_backend`): the login keychain
+        // would make their results depend on the machine's saved items.
+        if cfg!(test) {
+            panic!("unit tests must not use the real Keychain");
+        }
         Self::with_backend(Arc::new(KeychainBackend::new(SERVICE)))
     }
 
