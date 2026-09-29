@@ -125,7 +125,7 @@ impl Database {
         if applied.is_empty() || !pending {
             return Ok(None);
         }
-        let backup = PathBuf::from(format!("{}.bak-{tag}", path.display()));
+        let backup = backup_path(path, tag);
         if !backup.exists() {
             let target = backup.to_string_lossy().into_owned();
             self.with_conn(|conn| conn.execute("VACUUM INTO ?1", [target]).map(|_| ()).sql())?;
@@ -270,6 +270,17 @@ impl Database {
         })
     }
 
+    /// End a user deletion: checkpoint so the deleted text does not linger in
+    /// the WAL (DATA-010), and remove the pre-migration backups, which still
+    /// hold every row the database held when they were taken (CRIT-003).
+    pub fn finish_deletion(&self) -> Result<(), BlueyError> {
+        self.checkpoint()?;
+        if let Some(path) = &self.path {
+            remove_backups(path, None);
+        }
+        Ok(())
+    }
+
     /// Logical database size in bytes (`page_count * page_size`), which also
     /// works for in-memory databases.
     pub fn db_size_bytes(&self) -> Result<u64, BlueyError> {
@@ -294,6 +305,40 @@ impl Database {
             .map_err(db_err)
         })
     }
+}
+
+/// `<db>.bak-<tag>`: where [`Database::backup_before_migrations`] copies the database.
+fn backup_path(db_path: &Path, tag: &str) -> PathBuf {
+    PathBuf::from(format!("{}.bak-{tag}", db_path.display()))
+}
+
+/// Delete the `<db>.bak-<tag>` copies next to `db_path`, except the one tagged
+/// `keep`. Best effort (a file that cannot go is logged); returns how many went.
+pub fn remove_backups(db_path: &Path, keep: Option<&str>) -> usize {
+    let (Some(dir), Some(name)) = (db_path.parent(), db_path.file_name()) else {
+        return 0;
+    };
+    let prefix = format!("{}.bak-", name.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let Some(tag) = path
+            .file_name()
+            .and_then(|n| n.to_str()?.strip_prefix(&prefix).map(str::to_owned))
+        else {
+            continue;
+        };
+        if !path.is_file() || keep == Some(tag.as_str()) {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::warn!(error = %e, "could not delete a database backup"),
+        }
+    }
+    removed
 }
 
 fn migration_err(name: &str, e: rusqlite::Error) -> BlueyError {
@@ -372,6 +417,25 @@ mod tests {
             )
             .unwrap();
         assert!(pre_migration, "the copy is the pre-migration state");
+    }
+
+    #[test]
+    fn only_the_kept_backup_survives_and_a_deletion_drops_it_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bluey.db");
+        let db = Database::open(&path).unwrap();
+        for name in ["bluey.db.bak-0.1.1", "bluey.db.bak-0.1.2", "other.db.bak-1"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        // Boot after a successful upgrade: older versions' copies go.
+        assert_eq!(remove_backups(&path, Some("0.1.2")), 1);
+        assert!(dir.path().join("bluey.db.bak-0.1.2").exists());
+        assert!(!dir.path().join("bluey.db.bak-0.1.1").exists());
+
+        db.finish_deletion().unwrap();
+        assert!(!dir.path().join("bluey.db.bak-0.1.2").exists());
+        assert!(path.exists());
+        assert!(dir.path().join("other.db.bak-1").exists());
     }
 
     #[test]

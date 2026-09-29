@@ -186,8 +186,8 @@ fn show_boot_failure(app: &AppHandle, error: &BlueyError) {
 fn boot_failure_message(error: &str, logs: &str) -> String {
     format!(
         "{error}\n\nNothing was deleted. The log in {logs} has the details. If this started \
-         after an update, the data folder keeps a copy of the database from before it \
-         (bluey.db.bak-<version>)."
+         after an update, the data folder has a copy of the database from before it \
+         (bluey.db.bak-<version>) until you delete data in Bluey."
     )
 }
 

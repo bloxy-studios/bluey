@@ -195,6 +195,8 @@ monitoring software.
 files they reference (frame cache). The database runs with `PRAGMA secure_delete` (freed pages
 are zeroed) and FTS5 `secure-delete` (a deleted row's tokens leave the search index at once), and
 each of these deletions — plus retention pruning — ends with a `wal_checkpoint(TRUNCATE)`, so the
-deleted text is not left readable in `bluey.db` or `bluey.db-wal`; reset also runs `VACUUM`
+deleted text is not left readable in `bluey.db` or `bluey.db-wal`, and removes the
+pre-migration copy an update takes (`bluey.db.bak-<version>`), which still holds it (at most one
+exists: older versions' copies go at the next successful startup); reset also runs `VACUUM`
 and deletes the log files. Reset also deletes every Keychain item of Bluey's service — enumerated by attributes, so keys of providers removed earlier go too — and the
 Clerk session; deletes never read the item first, so they never prompt.

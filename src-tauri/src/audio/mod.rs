@@ -1059,7 +1059,12 @@ impl AudioManager {
         let target = session_id.clone();
         let removed = self
             .storage
-            .run(move |db| TranscriptRepository::clear(db, target.as_deref()))
+            .run(move |db| {
+                let removed = TranscriptRepository::clear(db, target.as_deref())?;
+                // Nothing of it may linger in the WAL or a pre-migration backup.
+                db.finish_deletion()?;
+                Ok(removed)
+            })
             .await?;
         {
             let mut ring = self.ring.lock();
