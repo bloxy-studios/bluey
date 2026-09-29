@@ -36,10 +36,10 @@ the WebView.
 * Rust injects exactly one backend's model credential plus the Exa/Firecrawl keys. The Claude
   Code subprocess never receives the tool keys and runs with telemetry, error reporting and
   non-essential traffic disabled.
-* Public query: `buildPublicQuery` strips emails, phone numbers, handles, the signed-in user's
-  names and proper nouns from retrieved private documents (résumé, notes, personal instructions,
-  …), passed in explicitly by the engine. It is a best-effort scrub, not a guarantee: a private
-  term that is also an ordinary word, or one that was never retrieved, can still pass.
+* Public query: the user's typed ask only. `buildPublicQuery` strips emails, phone numbers,
+  handles and the signed-in user's names, passed in explicitly by the engine. It is a
+  best-effort scrub, not a guarantee; private documents are never added to the query, and
+  words the ask shares with them (a skill, a past employer) are kept as the search topic.
 * Bounds: a cancelled or superseded ask cancels its job; the agent gets a `deadlineMs` 15 s inside
   the 90 s ask timeout and a turn budget, and when either runs out it reports from the evidence
   gathered instead of failing. The search paths have a 10 s overall deadline.

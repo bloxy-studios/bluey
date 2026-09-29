@@ -167,11 +167,12 @@ follows the *store transcripts / screenshots* settings exactly as before.
   are de-linked, and only sources the model used (or pages it read) are cited.
 
 ## Research privacy
-Web queries are **public queries only**, on a best-effort basis. `buildPublicQuery` strips
-emails, phone numbers and @handles, the signed-in user's names, and proper nouns found in the
-private documents retrieved for the ask (résumé, notes, personal instructions, …); the engine
-passes those terms in explicitly. It cannot recognise private facts it was never given, so the
-router also keeps research off for candidate answers about the user's own experience. Private
+Web queries are **public queries only**, on a best-effort basis. The query is only what
+the user typed, and `buildPublicQuery` strips emails, phone numbers and @handles and the
+signed-in user's names (the engine passes those in explicitly). Words the typed query shares
+with the user's private documents stay: they are the topic being searched for. Private
+documents never go into the query, and the router keeps research off for candidate answers
+about the user's own experience. Private
 context is merged with results locally. Example: search "software engineer interview questions
 for Acme", never "John Doe, who worked at X per his resume, is interviewing at Acme".
 

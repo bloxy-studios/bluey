@@ -139,13 +139,13 @@ describe("research flow inside ask", () => {
     expect(result!.citations).toBeUndefined();
   });
 
-  it("keeps résumé nouns and the signed-in name out of the public query (SEC-013)", async () => {
+  it("keeps the signed-in name out of the public query, and the topic in (SEC-013)", async () => {
     const resume: RetrievedChunk = {
       chunkId: "c1",
       documentId: "d1",
       documentTitle: "Resume",
       documentKind: "resume",
-      content: "Led the platform team at Globex for three years.",
+      content: "Led the Machine Learning platform team at Globex for three years.",
       score: 0.9,
       scope: "global",
     };
@@ -168,7 +168,7 @@ describe("research flow inside ask", () => {
     try {
       await createResponseEngine().ask({
         trigger: "typed",
-        instruction: "latest news on Globex hiring, relevant to Jane Doe",
+        instruction: "latest machine learning news on Globex hiring, relevant to Jane Doe",
         captureScreen: false,
         mode: makeMode({ contextRequirements: ["resume"] }),
         settings: makeSettings({ ai: { researchEnabled: true } }),
@@ -181,8 +181,9 @@ describe("research flow inside ask", () => {
     // built from what it returned.
     expect(fake.callsFor("documents_retrieve").length).toBeGreaterThan(0);
     const query = fake.callsFor("research_search")[0]?.query ?? "";
-    expect(query).toContain("hiring");
-    expect(query).not.toMatch(/Globex|Jane|Doe/);
+    // The user typed the topic: résumé words in it are what to search for.
+    expect(query).toContain("machine learning news on Globex hiring");
+    expect(query).not.toMatch(/Jane|Doe/);
   });
 
   it("cancelling the ask cancels its deep research job (AI-010)", async () => {

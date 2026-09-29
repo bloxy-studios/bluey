@@ -7,7 +7,7 @@ import {
   OPTIMISTIC_AVAILABILITY,
 } from "@/ai/research";
 import type { DeepResearchEvent, DeepResearchRequest } from "@/lib/types";
-import type { RetrievedChunk, ScrapeResult, SearchResult } from "@/lib/types";
+import type { ScrapeResult, SearchResult } from "@/lib/types";
 import { makeMode, makeSettings } from "../../fixtures/helpers/builders";
 
 const NOW = () => new Date("2026-09-07T09:00:00.000Z");
@@ -149,40 +149,22 @@ describe("buildPublicQuery", () => {
     expect(query).toContain("Datadog");
   });
 
-  it("strips the display name and resume proper nouns, keeps public entities", () => {
-    const chunks: RetrievedChunk[] = [
-      {
-        chunkId: "c1",
-        documentId: "d1",
-        documentTitle: "Resume",
-        documentKind: "resume",
-        content: "Jane Doe led the payments team at HyperScale Inc for four years.",
-        score: 0.9,
-        scope: "global",
-      },
-    ];
+  it("strips the signed-in user's names, keeps what the search is about", () => {
     const query = buildPublicQuery("what is the latest Stripe news relevant to Jane Doe at HyperScale?", {
-      chunks,
-      names: ["Jane Doe"],
+      names: ["Jane", "Doe", "jane.doe"],
     });
-    expect(query).not.toMatch(/Jane|Doe|HyperScale/);
+    expect(query).not.toMatch(/Jane|Doe/);
     expect(query).toContain("Stripe");
+    expect(query).toContain("HyperScale");
   });
 
-  it("does not strip terms that only appear in public-ish documents", () => {
-    const chunks: RetrievedChunk[] = [
-      {
-        chunkId: "c1",
-        documentId: "d1",
-        documentTitle: "JD",
-        documentKind: "job_description",
-        content: "Acme builds infrastructure for Kubernetes.",
-        score: 0.8,
-        scope: "mode",
-      },
-    ];
-    const query = buildPublicQuery("latest Acme announcements?", { chunks });
-    expect(query).toContain("Acme");
+  it.each([
+    "latest machine learning news 2026",
+    "What is the latest news about Stripe funding?",
+    "current Kubernetes release notes",
+    "What are the latest product design trends?",
+  ])("leaves the topic words of %j alone", (instruction) => {
+    expect(buildPublicQuery(instruction, { names: ["Jane", "Doe"] })).toBe(instruction);
   });
 
   it("caps the query length", () => {
