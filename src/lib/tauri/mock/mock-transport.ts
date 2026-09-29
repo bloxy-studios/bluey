@@ -24,6 +24,7 @@ import type {
   DetectedEvent,
   DevSimulation,
   LatencyMetrics,
+  PermissionKind,
   PermissionState,
   ScreenFrame,
   Session,
@@ -318,6 +319,7 @@ export class MockTransport implements Transport {
     notifications: "not_determined",
     speechRecognition: "granted",
     checkedAt: now(),
+    lostAfterUpdate: [],
   };
 
   private protection: CaptureProtection = {
@@ -399,6 +401,13 @@ export class MockTransport implements Transport {
 
   createChannel<T>(): StreamChannel<T> {
     return new MockStreamChannel<T>();
+  }
+
+  /** Tests: this launch follows an update that cost these grants (MAC-001). */
+  simulateLostAfterUpdate(kinds: PermissionKind[]): void {
+    const denied = Object.fromEntries(kinds.map((kind) => [kind, "denied"]));
+    this.permissions = { ...this.permissions, ...denied, lostAfterUpdate: [...kinds], checkedAt: now() };
+    this.emit("permissions.changed", this.permissions);
   }
 
   currentWindowLabel(): string {
@@ -1344,7 +1353,12 @@ export class MockTransport implements Transport {
     // Permissions
     permissions_get: () => this.permissions,
     permissions_request: (args) => {
-      this.permissions = { ...this.permissions, [args.kind]: "granted", checkedAt: now() };
+      this.permissions = {
+        ...this.permissions,
+        [args.kind]: "granted",
+        checkedAt: now(),
+        lostAfterUpdate: this.permissions.lostAfterUpdate.filter((kind) => kind !== args.kind),
+      };
       this.emit("permissions.changed", this.permissions);
       return this.permissions;
     },

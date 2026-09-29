@@ -1,6 +1,6 @@
 /** Permission contract (mirrors `bluey_core::types::permissions`). */
 
-import type { RecoveryAction } from "./errors";
+import type { PermissionKind, RecoveryAction } from "./errors";
 
 export type PermissionStatus = "granted" | "denied" | "not_determined" | "restricted" | "unknown";
 
@@ -11,6 +11,8 @@ export interface PermissionState {
   notifications: PermissionStatus;
   speechRecognition: PermissionStatus;
   checkedAt: string;
+  /** Grants an earlier Bluey version had that macOS dropped with this update (MAC-001). */
+  lostAfterUpdate: PermissionKind[];
 }
 
 export interface CaptureProtection {

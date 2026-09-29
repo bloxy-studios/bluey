@@ -156,6 +156,7 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         helper.clone(),
         bus.clone(),
         hub.clone(),
+        storage.clone(),
     ));
     let ax = Arc::new(AxManager::new(helper.clone(), bus.clone()));
     let modes = Arc::new(ModeManager::load(
@@ -388,8 +389,16 @@ async fn finish_boot(app: &AppHandle) {
             error: Some(e),
         });
     }
-    if let Err(e) = core.permissions.refresh().await {
-        tracing::debug!(error = %e, "initial permission refresh failed");
+    match core.permissions.refresh().await {
+        // MAC-001: an update signed with another identity reset macOS grants.
+        // Explain it instead of leaving capture and listening silently broken.
+        Ok(state) if !state.lost_after_update.is_empty() => {
+            if let Err(e) = crate::platform::open_window(app, "settings", Some("permissions")) {
+                tracing::warn!(error = %e, "cannot open the permission repair card");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::debug!(error = %e, "initial permission refresh failed"),
     }
     crate::platform::set_autostart(app, settings.general.launch_at_login);
     if settings.privacy.display_mode == DisplayMode::Privacy {

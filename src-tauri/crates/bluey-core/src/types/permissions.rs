@@ -81,6 +81,11 @@ pub struct PermissionState {
     pub notifications: PermissionStatus,
     pub speech_recognition: PermissionStatus,
     pub checked_at: String,
+    /// Grants an earlier Bluey version had that macOS no longer reports since
+    /// this version launched (MAC-001). Only filled in the first run after an
+    /// update; a kind drops out as soon as it is granted again.
+    #[serde(default)]
+    pub lost_after_update: Vec<PermissionKind>,
 }
 
 impl PermissionState {
@@ -92,6 +97,7 @@ impl PermissionState {
             notifications: PermissionStatus::Unknown,
             speech_recognition: PermissionStatus::Unknown,
             checked_at,
+            lost_after_update: Vec::new(),
         }
     }
 
@@ -112,6 +118,70 @@ impl PermissionState {
             PermissionKind::Accessibility => self.accessibility = status,
             PermissionKind::Notifications => self.notifications = status,
             PermissionKind::SpeechRecognition => self.speech_recognition = status,
+        }
+    }
+}
+
+/// Privacy grants TCC ties to the app's code identity. An update signed with
+/// a different identity (every ad-hoc build) no longer matches them (MAC-001).
+/// Notifications are keyed by bundle id and survive.
+pub const IDENTITY_BOUND_PERMISSIONS: [PermissionKind; 4] = [
+    PermissionKind::Microphone,
+    PermissionKind::ScreenRecording,
+    PermissionKind::Accessibility,
+    PermissionKind::SpeechRecognition,
+];
+
+/// The last-known granted permissions and the Bluey version that saw them,
+/// persisted so the first launch after an update can tell which grants the
+/// update cost (MAC-001).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionSnapshot {
+    pub version: String,
+    pub granted: Vec<PermissionKind>,
+}
+
+impl PermissionSnapshot {
+    /// Identity-bound grants this snapshot had that `current` reports as off,
+    /// when it was taken by another version. `Unknown` (the helper is not up
+    /// yet) never counts as lost.
+    pub fn lost_after_update(
+        &self,
+        version: &str,
+        current: &PermissionState,
+    ) -> Vec<PermissionKind> {
+        if self.version == version {
+            return Vec::new();
+        }
+        IDENTITY_BOUND_PERMISSIONS
+            .into_iter()
+            .filter(|kind| self.granted.contains(kind))
+            .filter(|kind| {
+                matches!(
+                    current.get(*kind),
+                    PermissionStatus::Denied
+                        | PermissionStatus::NotDetermined
+                        | PermissionStatus::Restricted
+                )
+            })
+            .collect()
+    }
+
+    /// The snapshot to persist after observing `current` in `version`: a
+    /// kind that could not be checked keeps its previous entry.
+    pub fn observe(&self, version: &str, current: &PermissionState) -> Self {
+        let granted = PermissionKind::ALL
+            .into_iter()
+            .filter(|kind| match current.get(*kind) {
+                PermissionStatus::Granted => true,
+                PermissionStatus::Unknown => self.granted.contains(kind),
+                _ => false,
+            })
+            .collect();
+        Self {
+            version: version.to_string(),
+            granted,
         }
     }
 }
@@ -148,4 +218,65 @@ pub enum SetupCheckId {
     Ai,
     Helper,
     SystemAudio,
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    fn state(granted: &[PermissionKind], unknown: &[PermissionKind]) -> PermissionState {
+        let mut s = PermissionState::unknown("t".into());
+        for kind in PermissionKind::ALL {
+            let status = if granted.contains(&kind) {
+                PermissionStatus::Granted
+            } else if unknown.contains(&kind) {
+                PermissionStatus::Unknown
+            } else {
+                PermissionStatus::Denied
+            };
+            s.set(kind, status);
+        }
+        s
+    }
+
+    fn snapshot(version: &str, granted: &[PermissionKind]) -> PermissionSnapshot {
+        PermissionSnapshot {
+            version: version.into(),
+            granted: granted.to_vec(),
+        }
+    }
+
+    #[test]
+    fn an_update_that_drops_grants_reports_them() {
+        use PermissionKind::*;
+        let before = snapshot("0.1.0", &[ScreenRecording, Accessibility, Microphone]);
+        let now = state(&[Microphone], &[]);
+        assert_eq!(
+            before.lost_after_update("0.1.1", &now),
+            vec![ScreenRecording, Accessibility]
+        );
+    }
+
+    #[test]
+    fn same_version_unknown_and_notifications_are_not_lost() {
+        use PermissionKind::*;
+        let before = snapshot("0.1.0", &[ScreenRecording, Microphone, Notifications]);
+        // Same version: the user revoked it on purpose, no update involved.
+        assert!(before
+            .lost_after_update("0.1.0", &state(&[], &[]))
+            .is_empty());
+        // Microphone unknown (helper not up yet), notifications survive updates.
+        assert_eq!(
+            before.lost_after_update("0.2.0", &state(&[ScreenRecording], &[Microphone])),
+            Vec::<PermissionKind>::new()
+        );
+    }
+
+    #[test]
+    fn observe_records_the_version_and_keeps_unchecked_grants() {
+        use PermissionKind::*;
+        let before = snapshot("0.1.0", &[Microphone, Accessibility]);
+        let next = before.observe("0.2.0", &state(&[ScreenRecording], &[Microphone]));
+        assert_eq!(next, snapshot("0.2.0", &[Microphone, ScreenRecording]));
+    }
 }
