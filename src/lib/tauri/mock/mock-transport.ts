@@ -1912,30 +1912,37 @@ export class MockTransport implements Transport {
       return this.settings;
     },
 
-    // Research
-    research_search: (args) => [
-      {
-        id: "sr-1",
-        title: `Result for "${args.query}"`,
-        url: "https://example.com/1",
-        snippet: "Fixture search result.",
+    // Research: Rust checks Privacy → Cloud AI before any provider call.
+    research_search: (args) => {
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
+      return [
+        {
+          id: "sr-1",
+          title: `Result for "${args.query}"`,
+          url: "https://example.com/1",
+          snippet: "Fixture search result.",
+          source: "mock" as const,
+        },
+        {
+          id: "sr-2",
+          title: "Second fixture result",
+          url: "https://example.com/2",
+          snippet: "More fixture context.",
+          source: "mock" as const,
+        },
+      ];
+    },
+    research_scrape: (args) => {
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
+      return {
+        url: args.url,
+        title: "Fixture page",
+        markdown: "# Fixture page\n\nScraped content (mock).",
         source: "mock" as const,
-      },
-      {
-        id: "sr-2",
-        title: "Second fixture result",
-        url: "https://example.com/2",
-        snippet: "More fixture context.",
-        source: "mock" as const,
-      },
-    ],
-    research_scrape: (args) => ({
-      url: args.url,
-      title: "Fixture page",
-      markdown: "# Fixture page\n\nScraped content (mock).",
-      source: "mock" as const,
-    }),
+      };
+    },
     research_deep_start: async (args) => {
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
       const jobId = args.request.jobId;
       this.emit("research.event", { type: "started", jobId });
       await this.delay(this.streamDelayMs * 10);

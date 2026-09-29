@@ -318,6 +318,7 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
     let research = Arc::new(ResearchManager::new(
         http.clone(),
         secrets.clone(),
+        settings.clone(),
         agent.clone(),
     ));
     let accounts = Arc::new(crate::accounts::AccountsManager::load(

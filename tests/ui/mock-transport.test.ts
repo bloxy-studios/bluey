@@ -107,6 +107,18 @@ describe("MockTransport", () => {
     expect((await mock.invoke("app_get_status", undefined)).state).toBe("analyzing");
   });
 
+  it("refuses web research with Cloud AI off, like Rust", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    await mock.invoke("settings_update", { patch: { privacy: { cloudAiEnabled: false } } });
+
+    await expect(mock.invoke("research_search", { query: "acme" })).rejects.toMatchObject({
+      code: "privacy.cloud_ai_disabled",
+    });
+    await expect(mock.invoke("research_scrape", { url: "https://example.com" })).rejects.toMatchObject({
+      code: "privacy.cloud_ai_disabled",
+    });
+  });
+
   it("seeds the ten built-in modes with instructions and groups", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     const modes = await mock.invoke("modes_list", undefined);

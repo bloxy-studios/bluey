@@ -268,6 +268,8 @@ impl AgentManager {
 
     /// Spawn the sidecar for `request` and stream its events onto the bus.
     pub async fn start(self: &Arc<Self>, request: DeepResearchRequest) -> BlueyResult<()> {
+        // The job sends the query and allow-listed documents to a model provider.
+        crate::ai::ensure_cloud_ai(&self.settings.get())?;
         if !self.settings.get().ai.deep_research_enabled {
             return Err(BlueyError::configuration(
                 "deep_research_disabled",
