@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bluey_core::events::BlueyEvent;
 use bluey_core::types::{AppEvent, BlueyMode, ModePatch, Settings};
 use bluey_core::{now_iso, BlueyError, BlueyResult};
-use bluey_storage::{ModeRepository, SessionRepository, SettingsRepository};
+use bluey_storage::{ModeRepository, SettingsRepository};
 
 use crate::events::EventBus;
 use crate::settings::SettingsManager;
@@ -25,9 +25,10 @@ pub struct ModeManager {
 
 impl ModeManager {
     /// Seed built-ins and resolve the active mode (bootstrap, synchronous):
-    /// Bluey launches in the default mode, except that a session being
-    /// resumed keeps the mode it was running in. A mode that no longer
-    /// exists falls back to the built-in `general`.
+    /// Bluey launches in the default mode. No session is ever resumed
+    /// (`SessionManager::load` ends the ones a crash or quit left open), so a
+    /// session's mode never carries over. A mode that no longer exists falls
+    /// back to the built-in `general`.
     pub fn load(
         storage: Arc<Storage>,
         settings: Arc<SettingsManager>,
@@ -37,13 +38,8 @@ impl ModeManager {
         let built_ins = bluey_core::modes::built_in_modes(&now_iso());
         storage.run_sync(|db| ModeRepository::seed_built_in(db, &built_ins))?;
         let stored_active = storage.run_sync(SettingsRepository::get_active_mode_id)?;
-        let resuming_session = storage.run_sync(SessionRepository::get_active)?.is_some();
         let default_id = settings.get().general.default_mode_id;
-        let preferred = match stored_active.clone() {
-            Some(active) if resuming_session => active,
-            _ => default_id,
-        };
-        let active_id = existing_or_general(&storage, preferred);
+        let active_id = existing_or_general(&storage, default_id);
         if stored_active.as_deref() != Some(active_id.as_str()) {
             storage.run_sync(|db| SettingsRepository::set_active_mode_id(db, &active_id))?;
         }
@@ -233,6 +229,7 @@ mod tests {
     use crate::secrets::SecretsStore;
     use crate::storage::AppPaths;
     use bluey_core::types::DEFAULT_MODE_ID;
+    use bluey_storage::SessionRepository;
 
     /// A throwaway data directory with the managers `ModeManager` needs.
     struct Harness {
@@ -331,7 +328,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launch_uses_the_default_mode_unless_a_session_is_resumed() {
+    async fn launch_uses_the_default_mode_even_with_a_session_left_open() {
         let h = Harness::new();
         let modes = h.launch();
         let pitch = custom_mode(&modes, "Pitch").await;
@@ -341,13 +338,14 @@ mod tests {
 
         assert_eq!(h.launch().active_id(), pitch);
 
-        // A session left active resumes in the mode it was running in.
+        // A session a crash left open is ended at launch, not resumed, so
+        // its mode does not carry over either.
         modes.set_active(notes.clone()).await.unwrap();
         let mode_id = notes.clone();
         h.storage
             .run_sync(|db| SessionRepository::create(db, &mode_id, None))
             .unwrap();
-        assert_eq!(h.launch().active_id(), notes);
+        assert_eq!(h.launch().active_id(), pitch);
     }
 
     #[tokio::test]

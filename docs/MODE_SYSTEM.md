@@ -63,8 +63,8 @@ set active.
 
 ## Default and active mode
 
-`general.defaultModeId` is the mode Bluey starts in. Bluey launches in the default mode, except
-when an active session is being resumed: that session keeps the mode it was running in. Setting
+`general.defaultModeId` is the mode Bluey starts in. Bluey always launches in the default mode:
+a session a crash or quit left open is ended at launch, not resumed. Setting
 the default (onboarding or Settings) also switches to it right away when no session is running;
 a running session keeps its mode until it ends. Deleting the mode that is the default resets the
 default to `general`; deleting the active mode switches to the default (or `general` when the
