@@ -43,7 +43,7 @@ describe("notableEntry (MODE-006)", () => {
       "important_statement",
     );
     expect(notableEntry(detection(), lecture, true)).toBeNull();
-    expect(notableEntry(detection(), makeMode({ responseSchema: "interview" }), true)).toBeNull();
+    expect(notableEntry(detection(), makeMode({ responseSchema: "behavioral" }), true)).toBeNull();
   });
 
   it("skips detections that already get an answer", () => {

@@ -61,14 +61,14 @@ describe("MockTransport AI parity with AiManager", () => {
 
     expect(failed.chunks.at(-1)?.type).toBe("failed");
     expect(states).toEqual([]);
-    expect((await mock.invoke("app_get_status", {})).state).toBe("ready");
+    expect((await mock.invoke("app_get_status", undefined)).state).toBe("ready");
   });
 
   it("lands a primary failure in Error and leaves it on the next answer", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     await mock.invoke("dev_simulate", { simulation: { type: "ai_failure" } });
     await stream(mock, request("ask-1")).done;
-    expect((await mock.invoke("app_get_status", {})).state).toBe("error");
+    expect((await mock.invoke("app_get_status", undefined)).state).toBe("error");
 
     const states: string[] = [];
     await mock.listen("app.state", (payload) => states.push(payload.state));
@@ -80,12 +80,12 @@ describe("MockTransport AI parity with AiManager", () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     await stream(mock, request("done")).done;
     expect(await mock.invoke("ai_cancel", { requestId: "done" })).toBe(false);
-    expect(await mock.invoke("ai_cancel_all", {})).toBe(0);
+    expect(await mock.invoke("ai_cancel_all", undefined)).toBe(0);
   });
 
   it("refuses every model call when Privacy → Cloud AI is off (SEC-003)", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
-    const settings = await mock.invoke("settings_get", {});
+    const settings = await mock.invoke("settings_get", undefined);
     await mock.invoke("settings_update", {
       patch: { privacy: { ...settings.privacy, cloudAiEnabled: false } },
     });
@@ -95,6 +95,6 @@ describe("MockTransport AI parity with AiManager", () => {
     await expect(mock.invoke("ai_embed", { texts: ["hello"], purpose: "query" })).rejects.toMatchObject({
       code: "privacy.cloud_ai_disabled",
     });
-    expect((await mock.invoke("app_get_status", {})).state).toBe("error");
+    expect((await mock.invoke("app_get_status", undefined)).state).toBe("error");
   });
 });
