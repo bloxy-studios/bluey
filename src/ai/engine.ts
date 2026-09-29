@@ -53,6 +53,7 @@ import {
   type StructuredModelOutput,
   type TraceStamps,
 } from "@/lib/types";
+import { useAuthStore } from "@/lib/auth/auth-store";
 import { allocateBudget, defaultContextBudget } from "@/context/budget";
 import { estimateTokens, fuseContext } from "@/context/fusion";
 import { classifyIntent, type Intent } from "@/context/relevance";
@@ -71,6 +72,7 @@ import { buildAIRequest, maxOutputTokensFor } from "./request";
 import {
   decideResearch,
   buildPublicQuery,
+  keptResearchCitations,
   runResearch,
   OPTIMISTIC_AVAILABILITY,
   type ResearchOutcome,
@@ -208,7 +210,11 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
 
   // ── Research (best-effort, never fails the ask) ───────────────────────────
 
-  async function maybeResearch(input: AskInput, snapshot: ContextSnapshot): Promise<ResearchOutcome | null> {
+  async function maybeResearch(
+    input: AskInput,
+    retrieved: RetrievedChunk[],
+    opts: PipelineOptions,
+  ): Promise<ResearchOutcome | null> {
     const instruction = input.instruction?.trim();
     if (!instruction || !input.settings.ai.researchEnabled) return null;
     const policyDepth = decideResearch({
@@ -230,13 +236,22 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       now,
     });
     if (depth === "none") return null;
-    const query = buildPublicQuery(instruction, snapshot);
+    // Private terms go in explicitly: the snapshot only gains the retrieved
+    // documents after research (SEC-013).
+    const user = useAuthStore.getState().user;
+    const query = buildPublicQuery(instruction, {
+      chunks: retrieved,
+      names: [user?.firstName, user?.lastName, user?.email?.split("@")[0]],
+    });
     if (query.length === 0) return null;
     return runResearch(depth, query, {
       jobId: `res_${idGen()}`,
       api,
       bus,
       timeoutMs: deps.researchTimeoutMs,
+      availability,
+      // A cancelled or superseded ask stops its research job (AI-010).
+      isCancelled: () => opts.isCancelled() || isStale(opts.scope, opts.generation),
     });
   }
 
@@ -327,7 +342,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     const retrievalDoneMs = perfNow() - anchorTs;
     checkAlive(opts);
 
-    const research = await maybeResearch(input, snapshot);
+    const research = await maybeResearch(input, retrieved, opts);
     checkAlive(opts);
 
     snapshot = enrichSnapshot(snapshot, {
@@ -346,13 +361,14 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       instruction: input.instruction,
       detectedEvent: input.detectedEvent,
     });
-    if (research) {
+    // One item per page plus one for the snippets, so the budget keeps what fits (AI-002).
+    for (const item of research?.items ?? []) {
       items.push({
         source: "document",
-        content: research.contextText,
-        relevance: 0.8,
-        tokens: estimateTokens(research.contextText),
-        ref: "research",
+        content: item.content,
+        relevance: item.relevance,
+        tokens: estimateTokens(item.content),
+        ref: item.ref,
       });
     }
 
@@ -368,6 +384,8 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     const style = effectiveStyle(input.mode, input.settings);
     const headroom = maxOutputTokensFor(style.length, intent.task, intent.answerShape, true);
     const budget = allocateBudget(items, defaultContextBudget(input.settings, headroom));
+    const keptResearch =
+      research && keptResearchCitations(research, new Set(budget.included.map((item) => item.ref ?? "")));
     const contextAssemblyMs = now().getTime() - startedAt;
     checkAlive(opts);
 
@@ -555,7 +573,8 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       code: parsed.code,
       diagram: parsed.diagram,
       confidence: parsed.confidence,
-      citations: mergeCitations(parsed, research),
+      citations: mergeCitations(parsed, keptResearch),
+      ...(research?.note ? { researchNote: research.note } : {}),
       metrics,
       createdAt: now().toISOString(),
       ...(truncated ? { truncated: true } : {}),
