@@ -273,6 +273,7 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         sessions.clone(),
         ax.clone(),
     ));
+    capture.start_listener();
     let audio = Arc::new(AudioManager::new(
         helper.clone(),
         bus.clone(),

@@ -11,10 +11,10 @@ use base64::Engine;
 use bluey_core::events::BlueyEvent;
 use bluey_core::types::{
     CaptureOptions, CaptureProtection, CaptureTarget, CaptureTargetPreference, DisplayInfo,
-    DisplayMode, ImageMimeType, OcrContext, OcrLevel, ScreenFrame,
+    DisplayMode, ImageMimeType, ObservationMode, OcrContext, OcrLevel, ScreenFrame,
 };
 use bluey_core::{BlueyError, BlueyResult};
-use bluey_protocols::helper::{self as helper_proto, CapturableWindow};
+use bluey_protocols::helper::{self as helper_proto, CapturableWindow, HelperEvent};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
@@ -448,6 +448,38 @@ impl CaptureManager {
         Ok(())
     }
 
+    /// Follow the helper's lifecycle (call once after construction): a helper
+    /// that exited observes nothing, and its replacement is asked to observe
+    /// again when Smart observation is on.
+    pub fn start_listener(self: &Arc<Self>) {
+        use tokio::sync::broadcast::error::RecvError;
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut rx = this.helper.subscribe();
+            loop {
+                match rx.recv().await {
+                    Ok(HelperEvent::Exited { .. }) => this.observing.store(false, Ordering::SeqCst),
+                    Ok(HelperEvent::Restarted) => this.resume_observation().await,
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    async fn resume_observation(&self) {
+        let screen = self.settings.get().screen;
+        if !observes_after_restart(screen.observation) {
+            return;
+        }
+        if let Err(e) = self
+            .observe_start(Some(screen.observation_interval_ms), None)
+            .await
+        {
+            tracing::warn!(error = %e, "cannot resume screen observation after a helper restart");
+        }
+    }
+
     /// Stop observation.
     pub async fn observe_stop(&self) -> BlueyResult<()> {
         if self.helper.is_running() {
@@ -480,6 +512,12 @@ impl CaptureManager {
         self.protection.store(enabled, Ordering::SeqCst);
         Ok(self.protection())
     }
+}
+
+/// Whether a replacement helper is asked to observe (nothing the old
+/// process was doing carries over).
+fn observes_after_restart(mode: ObservationMode) -> bool {
+    mode == ObservationMode::Smart
 }
 
 /// Write a frame the user chose to keep into `dir` — from the inline image,
@@ -639,6 +677,12 @@ mod tests {
             "a path outside the frames dir is never deleted"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn smart_observation_is_reissued_to_a_restarted_helper() {
+        assert!(observes_after_restart(ObservationMode::Smart));
+        assert!(!observes_after_restart(ObservationMode::Manual));
     }
 
     #[tokio::test]
