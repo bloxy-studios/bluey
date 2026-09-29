@@ -623,6 +623,9 @@ export function startResearchJob(
       goal: request.goal,
       toolNames: activeToolNames,
       hasDocuments: Boolean(handlers.document_read && (request.allowedDocumentIds?.length ?? 0) > 0),
+      maxTurns,
+      // en-CA formats as YYYY-MM-DD in the user's local time zone.
+      today: new Date(startedAt).toLocaleDateString("en-CA"),
     });
   }
 
