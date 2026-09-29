@@ -15,9 +15,9 @@ use bluey_core::types::TranscriptSegment;
 /// Which finals a context read may see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RingScope {
-    /// Listening: the finals of the current run.
+    /// Listening without a session: the finals of the current run.
     Run(u64),
-    /// Not listening: the finals filed under the active session.
+    /// A session is active: the finals filed under it, across its runs.
     Session(String),
     /// Neither: nothing is recent.
     Nothing,

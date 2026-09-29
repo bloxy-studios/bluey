@@ -1019,17 +1019,13 @@ impl AudioManager {
     // ── Transcript access ──────────────────────────────────────────────────
 
     /// Finals from the last `window_seconds`, oldest first — the context
-    /// snapshot's transcript. While listening only the current run counts;
-    /// otherwise only the active session's finals (none without a session).
+    /// snapshot's transcript (scoped by [`context_scope`]).
     pub fn recent(&self, window_seconds: u32) -> Vec<TranscriptSegment> {
-        let scope = if self.is_running() {
-            RingScope::Run(self.run_id.load(Ordering::SeqCst))
-        } else {
-            match self.sessions.active_id() {
-                Some(id) => RingScope::Session(id),
-                None => RingScope::Nothing,
-            }
-        };
+        let scope = context_scope(
+            self.sessions.active_id(),
+            self.is_running(),
+            self.run_id.load(Ordering::SeqCst),
+        );
         self.ring.lock().recent(&scope, window_seconds)
     }
 
@@ -1377,10 +1373,59 @@ fn ensure_signed_in(state: AppState) -> BlueyResult<()> {
     Ok(())
 }
 
+/// Which finals the context snapshot sees: the active session's (its runs
+/// share one timeline through `time_offset_ms`, so a reroute to Apple, a helper
+/// restart or a stop/start keeps what was said before); without a session, the
+/// current listening run's; otherwise none.
+fn context_scope(active_session: Option<String>, running: bool, run_id: u64) -> RingScope {
+    match active_session {
+        Some(id) => RingScope::Session(id),
+        None if running => RingScope::Run(run_id),
+        None => RingScope::Nothing,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bluey_core::types::VadSensitivity;
+
+    #[test]
+    fn a_session_keeps_what_was_said_before_the_run_changed() {
+        // A reroute to Apple or a helper restart starts run 2 in the same
+        // session; the question heard in run 1 must stay in the next answer.
+        let segment = |text: &str, start: u64| TranscriptSegment {
+            id: format!("seg_{text}"),
+            session_id: Some("ses_1".into()),
+            speaker: None,
+            speaker_confidence: None,
+            source: bluey_core::types::AudioSource::System,
+            text: text.into(),
+            start_time: start,
+            end_time: start + 1_000,
+            confidence: None,
+            finalized: true,
+            language: None,
+            created_at: "t".into(),
+        };
+        let mut ring = TranscriptRing::new(8);
+        ring.push(1, segment("what is your notice period", 0));
+        ring.push(2, segment("and your salary range", 4_000));
+
+        let scope = context_scope(Some("ses_1".into()), true, 2);
+        let texts: Vec<String> = ring
+            .recent(&scope, 120)
+            .into_iter()
+            .map(|s| s.text)
+            .collect();
+        assert_eq!(
+            texts,
+            ["what is your notice period", "and your salary range"]
+        );
+
+        assert_eq!(context_scope(None, true, 2), RingScope::Run(2));
+        assert_eq!(context_scope(None, false, 2), RingScope::Nothing);
+    }
 
     #[test]
     fn listening_is_refused_while_signed_out() {
