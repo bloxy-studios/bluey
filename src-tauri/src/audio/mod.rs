@@ -572,6 +572,10 @@ impl AudioManager {
             }
             Err(error) => {
                 tracing::warn!(error = %error, "could not restart listening on Apple Speech");
+                // Nothing is captured any more: leave Listening and close the
+                // session listening opened, as a failed helper-restart resume does.
+                self.mark_stopped(Some(error));
+                self.end_auto_session().await;
             }
         }
     }
