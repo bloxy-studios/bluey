@@ -206,3 +206,51 @@ describe("yes/no only for real yes/no questions (AI-005)", () => {
     expect(shapeOf("Is it likely to rain tomorrow?")).toBe("short_answer");
   });
 });
+
+describe("eval-matrix routing gaps (TEST-001 rows 13, 23, 25)", () => {
+  const interview = makeMode({ id: "interview", responseSchema: "suggested-response" });
+  const codingMode = makeMode({ id: "coding-interview", responseSchema: "coding" });
+
+  it("treats a bare stack trace under ⌘↵ as a bug to fix", () => {
+    const intent = intentFor({
+      screen:
+        "TypeError: Cannot read properties of undefined (reading 'map')\n    at renderList (List.tsx:12:18)",
+    });
+    expect(intent.answerShape).toBe("debug");
+    expect(intent.schemaId).toBe("answer");
+  });
+
+  it("keeps an error word in prose on ⌘↵ an explanation", () => {
+    const intent = intentFor({
+      screen: "A NetworkError is raised when the browser cannot reach the server.",
+    });
+    expect(intent.answerShape).not.toBe("debug");
+  });
+
+  it("gives words to say when I ask what to say, even with a why inside", () => {
+    const ask = (instruction: string, mode: BlueyMode) =>
+      classifyIntent({ snapshot: makeSnapshot(), mode, instruction, trigger: "typed", now: NOW });
+    expect(ask("How should I answer why I want to work at Acme?", interview).answerShape).toBe("spoken");
+    const exact = ask("Give me the exact words to say to decline the meeting", makeMode());
+    expect(exact.answerShape).toBe("spoken");
+    expect(exact.voice).toBe("speak-as-user");
+  });
+
+  it("continues a code answer as code on a follow-up in a coding mode", () => {
+    const snapshot = makeSnapshot({
+      conversation: [
+        {
+          id: "r1",
+          prompt: "Solve Two Sum",
+          content: "```python\ndef two_sum(nums, target):\n    seen = {}\n```",
+          createdAt: NOW().toISOString(),
+        },
+      ],
+    });
+    const followUp = (instruction: string) =>
+      classifyIntent({ snapshot, mode: codingMode, instruction, trigger: "follow_up", now: NOW });
+    expect(followUp("And in Go?").task).toBe("coding");
+    expect(followUp("And in Go?").answerShape).toBe("code");
+    expect(followUp("Why is that O(n)?").answerShape).toBe("explain");
+  });
+});

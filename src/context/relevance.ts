@@ -49,13 +49,17 @@ const CODING_CUES =
   /\b(implement|write (a|the) (function|method|program|algorithm)|leetcode|time complexity|space complexity|big[- ]o|debug|fix (this|the) (bug|code|test)|refactor|unit test|regex|algorithm)\b/i;
 
 /** A problem to solve: a judge's statement or verdict. Upgrades any ask to coding. */
-const PROBLEM_SCREEN_MARKERS = /(Example \d+:|Constraints:|Input:[\s\S]{0,400}Output:|Time Limit Exceeded|Wrong Answer)/;
+const PROBLEM_SCREEN_MARKERS =
+  /(Example \d+:|Constraints:|Input:[\s\S]{0,400}Output:|Time Limit Exceeded|Wrong Answer)/;
 /** Source code in an editor. Upgrades to coding only when the ask is to solve, fix or write it. */
 const SOURCE_SCREEN_MARKERS =
   /(\bfunction\s+\w+\s*\(|\bdef\s+\w+\s*\(|\bclass\s+[A-Z]\w*\s*(\(|\{|:|extends\b|implements\b)|```)/;
 /** A runtime or compiler error, a failing test or a stack trace. */
 const ERROR_SCREEN_MARKERS =
   /(Traceback \(most recent call last\)|panicked at|error\[E\d{4}\]|\b[A-Z]\w*(Error|Exception)\b|Segmentation fault|\bFAILED\b|Uncaught )/;
+/** A stack frame or traceback: code failed even when its source is off screen. */
+const STACK_TRACE_MARKERS =
+  /(Traceback \(most recent call last\)|^\s+at \S.*:\d+:\d+\)?\s*$|^\s*File ".+", line \d+|panicked at|error\[E\d{4}\])/m;
 /** "why … fail/error/bug", "what's wrong with", "debug", "fix the bug". */
 const DEBUG_CUES =
   /\b(debug|fix (this|the|my) (bug|error|test|crash)|what'?s wrong with|why\b[^?\n]{0,60}\b(fail\w*|error\w*|bug\w*|crash\w*|throw\w*|broken|wrong|not work\w*|doesn'?t work))/i;
@@ -65,7 +69,8 @@ const SYSTEM_DESIGN_CUES =
 
 const SUMMARIZE_CUES = /\b(summari[sz]e|recap|sum up|tl;?dr|key takeaways|meeting notes|wrap[- ]up)\b/i;
 
-const RESEARCH_CUES = /\b(research|look up|latest|news|recent(ly)?|current(ly)?|deep dive|compare vendors?|competitors? of)\b/i;
+const RESEARCH_CUES =
+  /\b(research|look up|latest|news|recent(ly)?|current(ly)?|deep dive|compare vendors?|competitors? of)\b/i;
 const WHO_WHAT_IS = /\b(who|what)\s+(is|are|was|were)\s+([A-Z][\w.&-]*)/;
 const URL_CUE = /https?:\/\/\S+/i;
 
@@ -109,7 +114,8 @@ const FILL_IN_CUES =
 const FILL_IN_SCREEN_CUES = /\b(fill in the blanks?|complete the (sentence|statement|expression))\b/i;
 
 const BOOLEAN_CUES = /\b(true or false|yes or no|correct or incorrect|valid or invalid)\b/i;
-const YES_NO_OPENER = /^(is|are|was|were|do|does|did|can|could|should|would|will|has|have|had|am|shall|must)\b/i;
+const YES_NO_OPENER =
+  /^(is|are|was|were|do|does|did|can|could|should|would|will|has|have|had|am|shall|must)\b/i;
 /** "A or B?" is a pick, not a yes/no ("… or not" still is one) (AI-005). */
 const EITHER_OR = /\bor\b(?!\s+not\b)/i;
 /** A prediction has no yes/no answer yet: a best estimate and what it hinges on. */
@@ -129,7 +135,11 @@ const EXPLAIN_TO_ME_CUES =
   /\b(explain|so (that )?I (can )?understand|help me understand|what does .{1,40} mean|what is meant by|in simple terms|eli5|why)\b/i;
 /** A question put to the user ("why do you…", "tell me about your…") — words to say, not an explanation. */
 const ADDRESSED_TO_USER = /\b(you|your|yourself)\b/i;
-const SHORT_ANSWER_OPENER = /^(what|who|whom|when|where|which|name|define|state|list|give|identify|convert|translate)\b/i;
+/** A request for the words themselves ("what should I say", "the exact words") — speech, whatever else the ask contains. */
+const SAY_CUES =
+  /\b(exact words|word for word|words to say|what to say|what (should|do|can|would) I say|how (should|would) I (answer|respond|reply))\b/i;
+const SHORT_ANSWER_OPENER =
+  /^(what|who|whom|when|where|which|name|define|state|list|give|identify|convert|translate)\b/i;
 
 /** Distinct lettered option markers, or radio/checkbox glyphs, at line starts. */
 function distinctOptionMarkers(text: string): number {
@@ -178,7 +188,13 @@ export function detectAssessmentShape(
   if (options.spoken) return null;
   if (FILL_IN_CUES.test(q) || FILL_IN_SCREEN_CUES.test(screen)) return "fill_in";
   if (BOOLEAN_CUES.test(q)) return "boolean";
-  if (YES_NO_OPENER.test(q) && q.length <= 160 && !EXPLAIN_CUES.test(q) && !EITHER_OR.test(q) && !FORECAST_CUES.test(q)) {
+  if (
+    YES_NO_OPENER.test(q) &&
+    q.length <= 160 &&
+    !EXPLAIN_CUES.test(q) &&
+    !EITHER_OR.test(q) &&
+    !FORECAST_CUES.test(q)
+  ) {
     return "boolean";
   }
   if (CALCULATION_CUES.test(q) && /\d/.test(both)) return "calculation";
@@ -202,8 +218,9 @@ export function detectAnswerShape(input: AnswerShapeInput): AnswerShape {
   const spokenTrigger = trigger === "shortcut_generate" || trigger === "detected_event";
   // A typed request for an explanation in a conversational mode is for me to
   // read, not words to say (MODE-002); a question put to me stays spoken.
-  const explainToMe = !spokenTrigger && EXPLAIN_TO_ME_CUES.test(q) && !ADDRESSED_TO_USER.test(q);
-  const spoken = spokenTrigger || (SPOKEN_SCHEMAS.has(schemaId) && !explainToMe);
+  const sayCue = SAY_CUES.test(q);
+  const explainToMe = !spokenTrigger && !sayCue && EXPLAIN_TO_ME_CUES.test(q) && !ADDRESSED_TO_USER.test(q);
+  const spoken = spokenTrigger || sayCue || (SPOKEN_SCHEMAS.has(schemaId) && !explainToMe);
   const assessment = detectAssessmentShape(q, screenText, { spoken });
   if (assessment) return assessment;
   if (input.debugging && !spoken) return "debug";
@@ -215,7 +232,8 @@ export function detectAnswerShape(input: AnswerShapeInput): AnswerShape {
   if (EXPLAIN_CUES.test(q)) return "explain";
   if (q.length > 0 && q.length <= 120 && SHORT_ANSWER_OPENER.test(q)) return "short_answer";
   // An either/or or a forecast phrased as yes/no: the pick or the best estimate (AI-005).
-  if (YES_NO_OPENER.test(q) && q.length <= 160 && (EITHER_OR.test(q) || FORECAST_CUES.test(q))) return "short_answer";
+  if (YES_NO_OPENER.test(q) && q.length <= 160 && (EITHER_OR.test(q) || FORECAST_CUES.test(q)))
+    return "short_answer";
   return "explain";
 }
 
@@ -237,7 +255,8 @@ const SUBMITTED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>([
  * addressed to me for explain, summary and debug.
  */
 export function voiceFor(shape: AnswerShape, trigger?: AskTrigger): AnswerVoice {
-  if (shape === "spoken" || trigger === "shortcut_generate" || trigger === "detected_event") return "speak-as-user";
+  if (shape === "spoken" || trigger === "shortcut_generate" || trigger === "detected_event")
+    return "speak-as-user";
   return SUBMITTED_SHAPES.has(shape) ? "write-as-user" : "explain-to-user";
 }
 
@@ -353,6 +372,11 @@ function screenTextOf(snapshot: ContextSnapshot): string {
 }
 
 /** Classify the current ask into task, vision need, reasoning depth, schema and answer shape. */
+function lastTurnHadCode(snapshot: ContextSnapshot): boolean {
+  const last = snapshot.conversation?.at(-1);
+  return Boolean(last && (last.code || last.content.includes("```")));
+}
+
 export function classifyIntent(input: IntentInput): Intent {
   const { snapshot, mode, detectedEvent, trigger } = input;
   const now = input.now ?? (() => new Date());
@@ -376,14 +400,20 @@ export function classifyIntent(input: IntentInput): Intent {
   // Code in an editor is the subject of a solve, fix or write request — not
   // of "what does this do?" or "who wrote this?" (MODE-001).
   const asksToSolve =
-    question.length === 0 || codingAsked || !(EXPLAIN_CUES.test(question) || SHORT_ANSWER_OPENER.test(question));
+    question.length === 0 ||
+    codingAsked ||
+    !(EXPLAIN_CUES.test(question) || SHORT_ANSWER_OPENER.test(question));
   const codingVisible = problemVisible || (sourceVisible && asksToSolve);
   const designCue =
     SYSTEM_DESIGN_CUES.test(question) || (screenTrigger && SYSTEM_DESIGN_CUES.test(screenText));
   // A coding or design mode forces its task only for a technical ask — a cue,
   // or ⌘↵/assist over code. "Tell me about yourself" in a coding interview is
   // answered as speech, not as code (MODE-004).
-  const technicalAsk = codingAsked || designCue || (screenTrigger && (problemVisible || sourceVisible));
+  // A follow-up to a code answer ("And in Go?") continues the code unless it asks why.
+  const continuesCode =
+    trigger === "follow_up" && lastTurnHadCode(snapshot) && !EXPLAIN_CUES.test(question) && !designCue;
+  const technicalAsk =
+    codingAsked || designCue || continuesCode || (screenTrigger && (problemVisible || sourceVisible));
   const designAsked = designCue || (mode.responseSchema === "system-design" && technicalAsk);
   // A multiple-choice or compare-two-responses question about code is still
   // an assessment question: the screen's code markers alone must not turn it
@@ -399,14 +429,21 @@ export function classifyIntent(input: IntentInput): Intent {
     !spokenTrigger &&
     !problemVisible &&
     assessment === null &&
-    (sourceVisible || codingAsked) &&
-    (ERROR_SCREEN_MARKERS.test(screenText) || DEBUG_CUES.test(question));
+    (((sourceVisible || codingAsked) &&
+      (ERROR_SCREEN_MARKERS.test(screenText) || DEBUG_CUES.test(question))) ||
+      (screenTrigger && question.length === 0 && STACK_TRACE_MARKERS.test(screenText)));
 
   if (SUMMARIZE_CUES.test(question)) {
     task = "summarization";
   } else if (designAsked) {
     task = "system_design";
-  } else if (codingAsked || codingFromScreen || debugging || (mode.responseSchema === "coding" && technicalAsk)) {
+  } else if (
+    codingAsked ||
+    codingFromScreen ||
+    debugging ||
+    continuesCode ||
+    (mode.responseSchema === "coding" && technicalAsk)
+  ) {
     task = "coding";
   } else if (!spokenTrigger && mentionsExternalInfo(question, now)) {
     task = "research";
