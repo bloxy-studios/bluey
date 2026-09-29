@@ -192,6 +192,10 @@ impl PermissionSnapshot {
 pub struct CaptureProtection {
     pub supported: bool,
     pub enabled: bool,
+    /// Enabled, but only apps that honour `NSWindow.sharingType` are kept out:
+    /// ScreenCaptureKit on macOS 15+ may still capture Bluey (SEC-004).
+    #[serde(default)]
+    pub partial: bool,
     pub note: String,
 }
 

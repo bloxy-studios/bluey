@@ -18,6 +18,8 @@ export interface PermissionState {
 export interface CaptureProtection {
   supported: boolean;
   enabled: boolean;
+  /** Enabled, but ScreenCaptureKit on macOS 15+ may still capture Bluey (SEC-004). */
+  partial: boolean;
   /** Honest description of what the platform guarantees. */
   note: string;
 }

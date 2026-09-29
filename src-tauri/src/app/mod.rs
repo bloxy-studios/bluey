@@ -274,6 +274,13 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
 
     let authenticated = !auth.auth_required() || auth.has_stored_session();
     let onboarding_completed = settings.get().general.onboarding_completed;
+    // Privacy mode protects every window before the HUD is first shown (at
+    // attach below), not seconds later once the helper is up (SEC-012).
+    if settings.get().privacy.display_mode == DisplayMode::Privacy {
+        if let Err(e) = capture.set_protection(true) {
+            tracing::warn!(error = %e, "cannot enable content protection");
+        }
+    }
 
     app.manage(AppCore {
         paths,
@@ -401,11 +408,6 @@ async fn finish_boot(app: &AppHandle) {
         Err(e) => tracing::debug!(error = %e, "initial permission refresh failed"),
     }
     crate::platform::set_autostart(app, settings.general.launch_at_login);
-    if settings.privacy.display_mode == DisplayMode::Privacy {
-        if let Err(e) = core.capture.set_protection(true) {
-            tracing::warn!(error = %e, "cannot enable content protection");
-        }
-    }
     if settings.screen.observation == ObservationMode::Smart {
         if let Err(e) = core
             .capture

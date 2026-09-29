@@ -23,11 +23,41 @@ use crate::settings::SettingsManager;
 use crate::sidecar::HelperClient;
 use crate::storage::Storage;
 
-/// Honest ADR-0006 notes shown in the privacy centre.
-const PROTECTED_NOTE: &str = "Bluey is excluded from most screen sharing and recording \
-(ScreenCaptureKit and window-list capture). Hardware capture devices and some virtual \
-displays may still see it.";
+/// Honest ADR-0006 notes shown in the privacy centre (SEC-004). Protection is
+/// `NSWindow.sharingType = .none`, which ScreenCaptureKit on macOS 15 and
+/// later may not honour; NSMenu popups are separate windows and never covered.
+const PROTECTED_NOTE: &str = "Bluey is hidden from screen sharing and recording that honour \
+macOS window protection. Hardware capture devices, some virtual displays and Bluey's menus may \
+still show it.";
+const PARTIAL_NOTE: &str = "Bluey is hidden from apps that honour macOS window protection \
+(legacy capture). Modern ScreenCaptureKit screen sharing and recording on macOS 15 and later may \
+still show Bluey, and its menus are never hidden.";
 const UNPROTECTED_NOTE: &str = "Bluey windows are visible in screen shares and recordings.";
+
+/// First macOS whose ScreenCaptureKit may ignore `NSWindow.sharingType`.
+const SHARING_TYPE_PARTIAL_FROM: u32 = 15;
+
+/// The protection status to report: an unknown macOS version counts as
+/// partial, never as fully hidden.
+fn protection_status(
+    supported: bool,
+    enabled: bool,
+    macos_major: Option<u32>,
+) -> CaptureProtection {
+    let partial =
+        supported && enabled && macos_major.is_none_or(|major| major >= SHARING_TYPE_PARTIAL_FROM);
+    let note = match (enabled, partial) {
+        (false, _) => UNPROTECTED_NOTE,
+        (true, true) => PARTIAL_NOTE,
+        (true, false) => PROTECTED_NOTE,
+    };
+    CaptureProtection {
+        supported,
+        enabled,
+        partial,
+        note: note.to_string(),
+    }
+}
 
 /// Frames remembered per id. Inline captures carry their image here, so the
 /// bound keeps memory flat over a long session. A frame's helper temp file is
@@ -424,17 +454,11 @@ impl CaptureManager {
 
     /// Current content-protection status.
     pub fn protection(&self) -> CaptureProtection {
-        let enabled = self.protection.load(Ordering::SeqCst);
-        CaptureProtection {
-            supported: cfg!(target_os = "macos"),
-            enabled,
-            note: if enabled {
-                PROTECTED_NOTE
-            } else {
-                UNPROTECTED_NOTE
-            }
-            .to_string(),
-        }
+        protection_status(
+            cfg!(target_os = "macos"),
+            self.protection.load(Ordering::SeqCst),
+            crate::platform::macos_major_version(),
+        )
     }
 
     /// Toggle `NSWindow.sharingType`-based protection on every Bluey window.
@@ -522,6 +546,28 @@ mod tests {
         assert_eq!(cache.remove("f-2"), Some(frame(None, Some("QUJD"))));
         assert_eq!(cache.get("f-2"), None);
         assert_eq!(cache.order.len(), 1);
+    }
+
+    #[test]
+    fn protection_is_reported_as_partial_where_screencapturekit_may_ignore_it() {
+        let sequoia = protection_status(true, true, Some(15));
+        assert!(sequoia.partial);
+        assert!(sequoia
+            .note
+            .contains("macOS 15 and later may still show Bluey"));
+        assert!(protection_status(true, true, Some(26)).partial);
+        assert!(
+            protection_status(true, true, None).partial,
+            "unknown is never full"
+        );
+        let sonoma = protection_status(true, true, Some(14));
+        assert!(!sonoma.partial);
+        assert!(!sonoma.note.contains("ScreenCaptureKit"));
+        assert!(sonoma.note.contains("menus"));
+        let off = protection_status(true, false, Some(26));
+        assert!(!off.partial);
+        assert_eq!(off.note, UNPROTECTED_NOTE);
+        assert!(!protection_status(false, true, None).partial);
     }
 
     #[test]

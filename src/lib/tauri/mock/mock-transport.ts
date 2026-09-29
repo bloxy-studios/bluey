@@ -68,6 +68,16 @@ import { detectConflict, normalizeAccelerator } from "./accelerators";
 
 const now = () => new Date().toISOString();
 
+/** `capture::protection_status` as it reports on macOS 15+ (SEC-004). */
+const mockProtection = (enabled: boolean): CaptureProtection => ({
+  supported: true,
+  enabled,
+  partial: enabled,
+  note: enabled
+    ? "Bluey is hidden from apps that honour macOS window protection (legacy capture). Modern ScreenCaptureKit screen sharing and recording on macOS 15 and later may still show Bluey, and its menus are never hidden."
+    : "Bluey windows are visible in screen shares and recordings.",
+});
+
 /** The identity the simulated browser sign-in returns. */
 const MOCK_AUTH_USER: AuthUser = {
   id: "user_mock_jordan",
@@ -322,11 +332,7 @@ export class MockTransport implements Transport {
     lostAfterUpdate: [],
   };
 
-  private protection: CaptureProtection = {
-    supported: true,
-    enabled: true,
-    note: "Bluey excludes its windows from screen recordings and screenshots on macOS 12.3+. Hardware capture cards and cameras pointed at the display can still see it.",
-  };
+  private protection: CaptureProtection = mockProtection(true);
 
   private status: AppStatus = {
     state: "ready",
@@ -1405,7 +1411,7 @@ export class MockTransport implements Transport {
     },
     capture_get_protection: () => this.protection,
     capture_set_protection: (args) => {
-      this.protection = { ...this.protection, enabled: args.enabled };
+      this.protection = mockProtection(args.enabled);
       return this.protection;
     },
 

@@ -37,6 +37,12 @@ describe("PrivacyTab raw audio retention", () => {
     expect(screen.getByText(/discarded after 45 minutes/)).toBeInTheDocument();
   });
 
+  it("does not promise that Privacy mode hides Bluey from modern screen sharing (SEC-004)", async () => {
+    render(<PrivacyTab />);
+    await waitFor(() => expect(screen.getByText(/macOS 15 and later may still show Bluey/)).toBeInTheDocument());
+    expect(screen.queryByText(/excludes its windows from screen recordings/)).not.toBeInTheDocument();
+  });
+
   it("clamps the window to the supported range", () => {
     expect(clampRetentionMinutes(0)).toBe(1);
     expect(clampRetentionMinutes(999)).toBe(240);
