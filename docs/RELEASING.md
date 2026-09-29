@@ -74,7 +74,9 @@ the publish path. A self-signed certificate does not help (macOS pins it to the 
    implemented/tested on Linux and is **not evidence of a working native release**.
 6. Store the updater signing key as the **repository** secrets `TAURI_SIGNING_PRIVATE_KEY` and
    `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (every build path — publication, developer, nightly —
-   signs its updater bundle, so an environment-scoped copy is not enough) and keep an offline
+   signs its updater bundle, so an environment-scoped copy is not enough; the workflows hand
+   them to the `scripts/release.sh` step alone, and the script withholds them from installs,
+   tests and sidecar builds, so only `tauri build` sees them) and keep an offline
    backup: a lost key strands every installed app on its current version (`docs/UPDATES.md ›
    Signing`). The public key lives in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 
@@ -206,7 +208,9 @@ on that channel. The **Nightly** channel reads the rolling `nightly` prerelease,
 1. `plan` (ubuntu, read-only) runs the portable tests, refuses any ref but `main`, computes
    `X.Y.(Z+1)-nightly.YYYYMMDD` from the sources, and reads the last nightly's commit from the
    marker `<!-- bluey-nightly commit=… version=… -->` in the release body. Unchanged `main`
-   skips the night unless dispatched with `force`.
+   skips the night unless dispatched with `force`, and so does a commit whose latest `ci.yml`
+   push run on `main` has not concluded `success` (failed, cancelled or still running) — even
+   when forced, since nightly users auto-install the result.
 2. `build` (macos-14 matrix, `macos-build` environment): the ordinary developer path of
    `scripts/release.sh` — ad-hoc Apple signature, **no Apple secrets**, minisign-signed updater
    bundle — with `BLUEY_BUILD_VERSION` overriding the version. Nightlies are therefore

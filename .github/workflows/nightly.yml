@@ -1,9 +1,9 @@
 name: Nightly
 
-# The Nightly update channel (docs/UPDATES.md): every night `main` changed, build both macOS
-# targets on the developer path with a version above the sources (`X.Y.(Z+1)-nightly.YYYYMMDD`)
-# and replace the rolling `nightly` prerelease's assets and updater feed. Version tags and their
-# releases are never touched here; `release.yml` owns those.
+# The Nightly update channel (docs/UPDATES.md): every night `main` changed and its CI run passed,
+# build both macOS targets on the developer path with a version above the sources
+# (`X.Y.(Z+1)-nightly.YYYYMMDD`) and replace the rolling `nightly` prerelease's assets and
+# updater feed. Version tags and their releases are never touched here; `release.yml` owns those.
 on:
   schedule:
     - cron: "0 3 * * *"
@@ -24,8 +24,12 @@ concurrency:
 
 jobs:
   plan:
-    name: Skip unless main changed; compute the nightly version
+    name: Skip unless main changed and passed CI; compute the nightly version
     runs-on: ubuntu-latest
+    # actions:read lets the plan read the commit's CI run (TEST-006).
+    permissions:
+      contents: read
+      actions: read
     outputs:
       build: ${{ steps.plan.outputs.build }}
       version: ${{ steps.plan.outputs.version }}
@@ -40,7 +44,7 @@ jobs:
           python-version: "3.12"
       - name: Portable release safety tests
         run: python3 -m unittest discover -s scripts/release/tests -v
-      - name: Compare main with the last nightly's recorded commit
+      - name: Compare main with the last nightly's recorded commit; require its CI run to have passed
         id: plan
         env:
           INPUT_FORCE: ${{ inputs.force || false }}
@@ -68,8 +72,6 @@ jobs:
       PUBLISH_RELEASE: "false"
       RESEARCH_BACKEND: gemini
       BLUEY_BUILD_VERSION: ${{ needs.plan.outputs.version }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       # Public build-time settings only, identical to release.yml.
       VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
       VITE_CLERK_FRONTEND_API_URL: ${{ vars.VITE_CLERK_FRONTEND_API_URL }}
@@ -93,6 +95,10 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ matrix.target }}
       - name: Developer build carrying the nightly version
+        # The updater key reaches only the step that signs, never the actions above (SEC-008).
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bash scripts/release.sh
       - name: Upload the nightly bundles for the publisher
         uses: actions/upload-artifact@v4

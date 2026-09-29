@@ -29,6 +29,7 @@ class ShellGateTests(ReleaseFixture):
 set -euo pipefail
 if [[ "${1:-}" == --version ]]; then printf '%s\\n' "${MOCK_BUN_VERSION:-1.4.2}"; exit 0; fi
 printf 'bun' >> "$MOCK_LOG"; printf ' [%s]' "$@" >> "$MOCK_LOG"; printf '\\n' >> "$MOCK_LOG"
+[[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] || printf '%s\\n' "bun $*" >> "$MOCK_LOG.key"
 if [[ "${1:-}" == install && "${MOCK_FAIL:-}" == install ]]; then exit 19; fi
 if [[ "${1:-} ${2:-}" == 'run typecheck' && "${MOCK_FAIL:-}" == typecheck ]]; then exit 20; fi
 if [[ "${1:-} ${2:-} ${3:-}" == 'run tauri build' ]]; then
@@ -46,10 +47,13 @@ fi
 ''')
         self.executable(self.bin / "uname", '#!/usr/bin/env bash\nprintf "Darwin\\n"\n')
         self.executable(self.bin / "git", '#!/usr/bin/env bash\ncase " $* " in *" rev-parse "*) printf "' + COMMIT + '\\n";; esac\n')
-        self.executable(scripts / "check-rust.sh", '#!/usr/bin/env bash\nprintf "rust-check\\n" >> "$MOCK_LOG"\n')
+        self.executable(scripts / "check-rust.sh", '#!/usr/bin/env bash\nprintf "rust-check\\n" >> "$MOCK_LOG"\n'
+                        + '[[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]]'
+                        + ' || printf "%s\\n" "check-rust $*" >> "$MOCK_LOG.key"\n')
         self.executable(scripts / "build-helper.sh", '''#!/usr/bin/env bash
 set -euo pipefail
 printf 'helper\\n' >> "$MOCK_LOG"
+[[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] || printf '%s\\n' "helper $*" >> "$MOCK_LOG.key"
 mkdir -p src-tauri/binaries
 for binary in bluey-helper bluey-agent; do
   printf 'mock' > "src-tauri/binaries/$binary-$TARGET"
@@ -59,6 +63,7 @@ done
         self.executable(scripts / "build-agent.sh", '''#!/usr/bin/env bash
 set -euo pipefail
 printf 'agent-%s\\n' "$BLUEY_AGENT_VARIANT" >> "$MOCK_LOG"
+[[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] || printf '%s\\n' "agent $*" >> "$MOCK_LOG.key"
 # Simulate the actual nested helper install (which lacks its own frozen flag).
 bun install --os darwin --cpu '*'
 ''')
@@ -86,6 +91,15 @@ bun install --os darwin --cpu '*'
         return {"APPLE_CERTIFICATE_P12": "ZmFrZS1jZXJ0", "APPLE_CERTIFICATE_PASSWORD": "fixture-cert-password",
                 "APPLE_SIGNING_IDENTITY": "Developer ID Application: Fixture (ABCDEFGHIJ)",
                 "APPLE_ID": "fixture@example.test", "APPLE_PASSWORD": "fixture-notary-password", "APPLE_TEAM_ID": "ABCDEFGHIJ"}
+
+    def test_updater_key_reaches_only_the_signing_tauri_build(self):
+        # SEC-008: package install scripts, tests and sidecar builds never see the key.
+        result = self.run_shell()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        seen = Path(str(self.log) + ".key").read_text().splitlines()
+        self.assertTrue(seen, "the Tauri build must still get the key")
+        for line in seen:
+            self.assertTrue(line.startswith("bun run tauri build "), line)
 
     def test_no_credentials_cannot_publish_or_begin_install(self):
         result = self.run_shell(PUBLISH_RELEASE="true")

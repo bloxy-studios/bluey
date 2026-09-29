@@ -18,6 +18,11 @@ case "$PUBLISH_RELEASE" in true|false) ;; *) fail 'PUBLISH_RELEASE must be true 
 # Every build signs its updater bundle (bundle.createUpdaterArtifacts); Tauri refuses to build without the key.
 [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]] \
   || fail 'TAURI_SIGNING_PRIVATE_KEY (or TAURI_SIGNING_PRIVATE_KEY_PATH) is required to sign the updater bundle (docs/UPDATES.md › Signing)'
+# Only the Tauri build that signs the bundle gets the key: package install scripts, tests and
+# sidecar builds run without it (SEC-008).
+without_updater_key() {
+  env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PATH -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$@"
+}
 
 # Nightly builds carry a version above the sources (docs/UPDATES.md); publication builds never override.
 # (macOS ships bash 3.2: no arrays under `set -u`, no `${var,,}`; keep this file 3.2-clean.)
@@ -82,11 +87,11 @@ chmod +x "$SHIM/bun"
 export PATH="$SHIM:$PATH"
 
 printf '%s\n' 'Installing locked dependencies (including nested sidecar installs)'
-bun install --frozen-lockfile
-bun run typecheck
-bun run lint
-bun run test
-bash scripts/check-rust.sh
+without_updater_key bun install --frozen-lockfile
+without_updater_key bun run typecheck
+without_updater_key bun run lint
+without_updater_key bun run test
+without_updater_key bash scripts/check-rust.sh
 
 # A stable local identity (an Apple Development certificate) instead of ad-hoc keeps
 # Keychain approvals across local rebuilds (ADR 0011). Never notarized or publishable.
@@ -101,8 +106,8 @@ fi
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   export BLUEY_CODESIGN_IDENTITY="$APPLE_SIGNING_IDENTITY"
 fi
-TARGET="$TARGET" bash scripts/build-helper.sh
-BLUEY_AGENT_VARIANT="$AGENT_VARIANT" TARGET="$TARGET" bash scripts/build-agent.sh
+without_updater_key env TARGET="$TARGET" bash scripts/build-helper.sh
+without_updater_key env BLUEY_AGENT_VARIANT="$AGENT_VARIANT" TARGET="$TARGET" bash scripts/build-agent.sh
 for bin in bluey-helper bluey-agent; do
   [[ -x "src-tauri/binaries/${bin}-${TARGET}" ]] || fail 'missing target sidecar binary'
 done

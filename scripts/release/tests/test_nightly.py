@@ -24,6 +24,8 @@ class NightlyFakeAPI:
         self.uploads = []
         self.facts = {}
         self.next_id = 500
+        # Latest CI run per commit; a commit without an entry has a green run.
+        self.ci_runs = {}
 
     def find_release(self, tag):
         assert tag == nightly.NIGHTLY_TAG
@@ -32,6 +34,12 @@ class NightlyFakeAPI:
     def call(self, method, path, data=None):
         self.calls.append((method, path, copy.deepcopy(data)))
         self.events.append(("call", method, path))
+        runs = publisher.PREFIX + "/actions/workflows/ci.yml/runs?head_sha="
+        if method == "GET" and path.startswith(runs):
+            commit = path[len(runs):].split("&", 1)[0]
+            assert path.endswith("&event=push&branch=main&per_page=1"), path
+            run = self.ci_runs.get(commit, {"status": "completed", "conclusion": "success"})
+            return {"workflow_runs": [] if run is None else [{"head_sha": commit, **run}]}
         if method == "POST" and path.endswith("/releases"):
             self.release = {"id": 77, "assets": [], "tag_name": data["tag_name"], **copy.deepcopy(data)}
             return copy.deepcopy(self.release)
@@ -86,17 +94,34 @@ class NightlyPlanTests(ReleaseFixture):
         body = nightly.body_for(self.expected_version(), COMMIT, "1")
         api = NightlyFakeAPI({"id": 77, "body": body, "prerelease": True, "draft": False, "assets": []})
         result = nightly.plan(self.root, COMMIT, api, False, TODAY)
-        self.assertEqual(result, {"build": False, "version": self.expected_version(), "commit": COMMIT})
+        self.assertEqual(result, {"build": False, "version": self.expected_version(), "commit": COMMIT,
+                                  "skipped": "main unchanged since the last nightly"})
         self.assertTrue(nightly.plan(self.root, COMMIT, api, True, TODAY)["build"])
         self.assertTrue(nightly.plan(self.root, "b" * 40, api, False, TODAY)["build"])
         self.assertTrue(nightly.plan(self.root, COMMIT, NightlyFakeAPI(None), False, TODAY)["build"])
         # A body without the marker (edited by hand) means "unknown", so build.
         api.release["body"] = "someone edited this"
         self.assertTrue(nightly.plan(self.root, COMMIT, api, False, TODAY)["build"])
+        api.calls.clear()
         for commit in ("--evil", "", "b" * 39, COMMIT + "\n"):
             with self.subTest(commit=commit), self.assertRaises(metadata.ReleaseError):
                 nightly.plan(self.root, commit, api, False, TODAY)
         self.assertEqual(api.calls, [])
+
+    def test_plan_skips_a_commit_whose_ci_did_not_pass(self):
+        # TEST-006: nightlies auto-install, so only a commit with a green CI run is built.
+        for run in ({"status": "completed", "conclusion": "failure"},
+                    {"status": "completed", "conclusion": "cancelled"},
+                    {"status": "in_progress", "conclusion": None}, None):
+            with self.subTest(run=run):
+                api = NightlyFakeAPI(None)
+                api.ci_runs[COMMIT] = run
+                for force in (False, True):
+                    result = nightly.plan(self.root, COMMIT, api, force, TODAY)
+                    self.assertFalse(result["build"])
+                    self.assertEqual(result["skipped"], "CI has not passed for this commit")
+        result = nightly.plan(self.root, COMMIT, NightlyFakeAPI(None), False, TODAY)
+        self.assertEqual((result["build"], result["skipped"]), (True, ""))
 
 
 class NightlyPublishTests(ReleaseFixture):

@@ -81,11 +81,6 @@ jobs:
       APPLE_ID: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_ID || '' }}
       APPLE_PASSWORD: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_PASSWORD || '' }}
       APPLE_TEAM_ID: ${{ needs.prepare.outputs.publish == 'true' && secrets.APPLE_TEAM_ID || '' }}
-      # The in-app updater bundle (`Bluey.app.tar.gz` + `.sig`) is minisign-signed on BOTH paths —
-      # developer builds too — so these are repository secrets, not macos-release environment
-      # secrets (docs/UPDATES.md › Signing). Apple identity and updater key are independent.
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       # Public build-time settings only. Never put provider keys or Clerk secrets here.
       VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
       VITE_CLERK_FRONTEND_API_URL: ${{ vars.VITE_CLERK_FRONTEND_API_URL }}
@@ -120,6 +115,13 @@ jobs:
           targets: ${{ matrix.target }}
       # No cross-run build cache on the signing path.
       - name: Build, then native trust gates (publication) or build-only (developer)
+        # The in-app updater bundle (`Bluey.app.tar.gz` + `.sig`) is minisign-signed on BOTH paths —
+        # developer builds too — so these are repository secrets, not macos-release environment
+        # secrets (docs/UPDATES.md › Signing). Apple identity and updater key are independent.
+        # Step-level only: the actions and steps above never see the updater key (SEC-008).
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bash scripts/release.sh
       - name: Remove imported keychain and restore original search list
         if: always() && needs.prepare.outputs.publish == 'true'
