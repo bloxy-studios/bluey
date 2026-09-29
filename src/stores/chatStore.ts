@@ -65,7 +65,10 @@ interface ChatStore {
   begin(prompt: string | undefined, promptLabel?: string, options?: BeginOptions): number;
   setActiveRequest(generation: number, requestId: string): void;
   setPhase(generation: number, phase: EnginePhase): void;
+  /** Queue a streamed draft; the newest one lands in `turns` at most once per frame (PERF-003). */
   applyDraft(generation: number, response: BlueyResponse): void;
+  /** Write the queued draft now (terminal transitions call it so no text is lost). */
+  flushDraft(): void;
   complete(generation: number, response: BlueyResponse): void;
   fail(generation: number, error: BlueyError): void;
   markCancelled(generation: number): void;
@@ -91,6 +94,20 @@ export function shownResponse(response: BlueyResponse): BlueyResponse {
 
 let preparedExpiry: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * The newest streamed draft not yet in `turns`. A stream delivers a draft per
+ * token; writing each one re-rendered the whole thread, so drafts are coalesced
+ * to one store write per animation frame (PERF-003). The frame is requested
+ * before the engine's first-paint stamp, so that stamp runs after the commit.
+ */
+let pendingDraft: { generation: number; response: BlueyResponse } | null = null;
+let draftFrameScheduled = false;
+
+function onNextFrame(callback: () => void): void {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(callback);
+  else setTimeout(callback, 16);
+}
+
 export const useChatStore = create<ChatStore>((set, get) => ({
   turns: [],
   generation: 0,
@@ -99,6 +116,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   prepared: null,
 
   begin: (prompt, promptLabel, options = {}) => {
+    // The superseded turn keeps the text it had streamed so far.
+    get().flushDraft();
     const generation = get().generation + 1;
     set((state) => ({
       generation,
@@ -131,11 +150,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   applyDraft: (generation, response) => {
     if (generation !== get().generation) return;
-    set((state) => ({ turns: updateLast(state.turns, (turn) => ({ ...turn, response })) }));
+    pendingDraft = { generation, response };
+    if (draftFrameScheduled) return;
+    draftFrameScheduled = true;
+    onNextFrame(() => {
+      draftFrameScheduled = false;
+      get().flushDraft();
+    });
+  },
+
+  flushDraft: () => {
+    const draft = pendingDraft;
+    pendingDraft = null;
+    if (!draft || draft.generation !== get().generation) return;
+    set((state) => ({ turns: updateLast(state.turns, (turn) => ({ ...turn, response: draft.response })) }));
   },
 
   complete: (generation, response) => {
     if (generation !== get().generation) return;
+    // The final response supersedes any queued draft.
+    pendingDraft = null;
     set((state) => ({
       phase: "done",
       activeRequestId: null,
@@ -145,6 +179,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   fail: (generation, error) => {
     if (generation !== get().generation) return;
+    get().flushDraft();
     set((state) => ({
       phase: "error",
       activeRequestId: null,
@@ -154,6 +189,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   markCancelled: (generation) => {
     if (generation !== get().generation) return;
+    get().flushDraft();
     set((state) => ({
       phase: "cancelled",
       activeRequestId: null,
@@ -165,6 +201,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   showResponse: (response, options = {}) => {
     const shown = shownResponse(response);
+    get().flushDraft();
     set((state) => ({
       generation: state.generation + 1,
       phase: "done",
@@ -198,14 +235,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }, PREPARED_TTL_MS);
   },
 
-  newChat: () =>
+  newChat: () => {
+    pendingDraft = null;
     set((state) => ({
       turns: [],
       phase: null,
       activeRequestId: null,
       prepared: null,
       generation: state.generation + 1,
-    })),
+    }));
+  },
 }));
 
 /** Latest completed responses, oldest first (for follow-up context). */

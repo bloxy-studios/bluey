@@ -1,5 +1,5 @@
 import { ChevronRight, ExternalLink } from "lucide-react";
-import { lazy, Suspense, useState, type ComponentProps } from "react";
+import { lazy, memo, Suspense, useState, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -46,13 +46,16 @@ const MARKDOWN_COMPONENTS = {
   ),
 };
 
-function Markdown({ content }: { content: string }) {
+const REMARK_PLUGINS = [remarkGfm];
+
+/** Parsing is the expensive part of a render: unchanged text is never parsed again (PERF-003). */
+const Markdown = memo(function Markdown({ content }: { content: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
       {content}
     </ReactMarkdown>
   );
-}
+});
 
 /**
  * Response types whose sections are part of the answer the user reads or
@@ -119,7 +122,7 @@ export interface ResponseViewProps {
  * the engine's parser should have unwrapped or salvaged it; if raw JSON still
  * arrives here, the user sees the "couldn't read the answer" state instead.
  */
-export function ResponseView({ response, streaming, className }: ResponseViewProps) {
+export const ResponseView = memo(function ResponseView({ response, streaming, className }: ResponseViewProps) {
   const { renderable, pendingCode } = streaming
     ? splitStreamingMarkdown(response.content)
     : { renderable: response.content, pendingCode: false };
@@ -191,4 +194,4 @@ export function ResponseView({ response, streaming, className }: ResponseViewPro
       ) : null}
     </div>
   );
-}
+});

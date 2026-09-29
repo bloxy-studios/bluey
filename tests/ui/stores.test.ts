@@ -74,10 +74,12 @@ describe("chatStore stale-draft protection", () => {
 
     // Stale stream keeps writing — must be ignored.
     useChatStore.getState().applyDraft(gen1, makeResponse({ content: "STALE" }));
+    useChatStore.getState().flushDraft();
     let lastTurn = useChatStore.getState().turns.at(-1);
     expect(lastTurn?.response).toBeNull();
 
     useChatStore.getState().applyDraft(gen2, makeResponse({ content: "FRESH" }));
+    useChatStore.getState().flushDraft();
     lastTurn = useChatStore.getState().turns.at(-1);
     expect(lastTurn?.response?.content).toBe("FRESH");
 
@@ -89,6 +91,33 @@ describe("chatStore stale-draft protection", () => {
     lastTurn = useChatStore.getState().turns.at(-1);
     expect(lastTurn?.status).toBe("done");
     expect(lastTurn?.response?.content).toBe("FRESH DONE");
+  });
+
+  it("coalesces streamed drafts into one store write per frame and keeps the last text (PERF-003)", async () => {
+    const gen = useChatStore.getState().begin("q");
+    let writes = 0;
+    const unsubscribe = useChatStore.subscribe((state, previous) => {
+      if (state.turns !== previous.turns) writes += 1;
+    });
+    let text = "";
+    for (let i = 0; i < 100; i += 1) {
+      text += `w${i} `;
+      useChatStore.getState().applyDraft(gen, makeResponse({ content: text }));
+    }
+    expect(writes).toBe(0);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(writes).toBe(1);
+    expect(useChatStore.getState().turns.at(-1)?.response?.content).toBe(text);
+    unsubscribe();
+  });
+
+  it("keeps a queued draft when the stream is stopped or fails (PERF-003)", () => {
+    const gen = useChatStore.getState().begin("q");
+    useChatStore.getState().applyDraft(gen, makeResponse({ content: "partial" }));
+    useChatStore.getState().markCancelled(gen);
+    const turn = useChatStore.getState().turns.at(-1);
+    expect(turn?.status).toBe("cancelled");
+    expect(turn?.response?.content).toBe("partial");
   });
 
   it("supersedes the previous streaming turn when a new ask begins", () => {

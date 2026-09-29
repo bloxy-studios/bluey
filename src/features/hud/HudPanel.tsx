@@ -25,7 +25,8 @@ export function HudPanel() {
   const nativeOpacity = usePanelStore((s) => s.state?.opacity);
   const native = hasTauriRuntime();
   const workArea = useHudWorkArea();
-  const turns = useChatStore((s) => s.turns);
+  // Only whether a chat exists: the panel must not re-render per streamed draft (PERF-003).
+  const expanded = useChatStore((s) => s.turns.length > 0);
   const phase = useChatStore((s) => s.phase);
   const screenEnabled = useHudUiStore((s) => s.screenEnabled);
   const toggleScreen = useHudUiStore((s) => s.toggleScreen);
@@ -33,7 +34,6 @@ export function HudPanel() {
 
   const { ask, stop, generateOrTakePrepared, retry: retryTurn, regenerate, newChat } = useAsk();
 
-  const expanded = turns.length > 0;
   const streaming =
     phase === "capturing" || phase === "analyzing" || phase === "thinking" || phase === "streaming";
 

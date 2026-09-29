@@ -1,5 +1,5 @@
 import { ArrowDown } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { Pill } from "@/components/ui/Pill";
@@ -83,7 +83,8 @@ interface TurnProps {
   onRegenerate: (turnId: string) => void;
 }
 
-function Turn({ turn, isLast, onRetry, onRegenerate }: TurnProps) {
+/** Finished turns keep their identity in the store, so only the streaming turn re-renders (PERF-003). */
+const Turn = memo(function Turn({ turn, isLast, onRetry, onRegenerate }: TurnProps) {
   const streaming = turn.status === "streaming";
   // Each turn re-sends its own request, not whatever the last turn asked (UX-011).
   const retry = () => onRetry(turn.id);
@@ -111,7 +112,7 @@ function Turn({ turn, isLast, onRetry, onRegenerate }: TurnProps) {
       ) : null}
     </div>
   );
-}
+});
 
 export interface ResponseThreadProps {
   /** Re-send a failed turn's original request. */
@@ -141,10 +142,13 @@ export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
     setAtBottom(nearBottom);
   }, []);
 
-  // Follow the stream while the user is at the bottom.
+  // Follow the stream while the user is at the bottom: one layout read per
+  // frame, not one per streamed draft (PERF-003).
   const lastContent = turns[turns.length - 1]?.response?.content;
   useEffect(() => {
-    if (atBottomRef.current) scrollToBottom(false);
+    if (!atBottomRef.current) return;
+    const frame = requestAnimationFrame(() => scrollToBottom(false));
+    return () => cancelAnimationFrame(frame);
   }, [lastContent, turns.length, scrollToBottom]);
 
   // Global scroll shortcuts (⇧⌘↑ / ⇧⌘↓ forwarded by the backend).
