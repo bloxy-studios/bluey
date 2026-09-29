@@ -873,19 +873,10 @@ impl AiManager {
     ) -> BlueyResult<Transcription> {
         let settings = self.settings.get();
         ensure_cloud_ai(&settings)?;
-        let assignment = settings.ai.models.transcription.clone().ok_or_else(|| {
-            BlueyError::configuration("no_model", "no transcription model is assigned")
-        })?;
-        let config = self.find_provider(&assignment.provider_id)?;
-        if !matches!(
-            config.kind,
-            AiProviderKind::GoogleGemini | AiProviderKind::Mock
-        ) {
-            return Err(BlueyError::not_supported(
-                "transcribe_file",
-                "this provider cannot transcribe recordings; assign the transcription role to Google Gemini",
-            ));
-        }
+        let (config, assigned_model) = batch_transcription_target(
+            settings.ai.models.transcription.as_ref(),
+            &self.providers(),
+        )?;
         let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let mime_type = gemini_proto::audio_mime_for_extension(extension).ok_or_else(|| {
             BlueyError::invalid_params(format!(
@@ -909,7 +900,7 @@ impl AiManager {
         // The name is only shown in Google's file store and file names can be
         // personal ("Interview with J. Doe.wav"); the real name stays local.
         let display_name = "recording".to_string();
-        let model = gemini_proto::batch_transcribe_model(&assignment.model);
+        let model = gemini_proto::batch_transcribe_model(&assigned_model);
         let adapter = self.adapter_for(&config).await?;
         adapter
             .transcribe_audio(
@@ -1155,6 +1146,45 @@ fn drives_state(request: &AiRequest) -> bool {
     is_primary(request.task) && !request.background
 }
 
+/// Provider + model that batch-transcribes an imported recording. Only Gemini
+/// (and the dev mock) can; when the Transcription role points elsewhere (the
+/// Foundry preset assigns MAI-Transcribe, a live-only model) the first enabled
+/// Gemini provider with a key does it with its preset model, as live
+/// transcription already does.
+fn batch_transcription_target(
+    assignment: Option<&ModelAssignment>,
+    providers: &[AiProviderConfig],
+) -> BlueyResult<(AiProviderConfig, String)> {
+    let can_batch = |p: &AiProviderConfig| {
+        matches!(p.kind, AiProviderKind::GoogleGemini | AiProviderKind::Mock)
+    };
+    if let Some(assignment) = assignment {
+        if let Some(config) = providers
+            .iter()
+            .find(|p| p.id == assignment.provider_id && can_batch(p))
+        {
+            return Ok((config.clone(), assignment.model.clone()));
+        }
+    }
+    let mut gemini: Vec<_> = providers
+        .iter()
+        .filter(|p| p.kind == AiProviderKind::GoogleGemini && p.enabled && p.has_api_key)
+        .collect();
+    gemini.sort_by_key(|p| p.id != presets::GEMINI_ID);
+    let model = presets::by_kind(AiProviderKind::GoogleGemini)
+        .and_then(|preset| preset.model_for(ModelRole::Transcription));
+    match (gemini.first(), model) {
+        (Some(config), Some(model)) => {
+            tracing::info!(provider = %config.id, "importing a recording through Gemini");
+            Ok(((*config).clone(), model.to_string()))
+        }
+        _ => Err(BlueyError::not_supported(
+            "transcribe_file",
+            "importing a recording needs a Google Gemini provider with a key; add one in Settings → AI",
+        )),
+    }
+}
+
 /// Privacy → Cloud AI is the master switch for sending anything to a model
 /// provider; it is enforced here, where the network calls happen, and not
 /// only in the WebView.
@@ -1301,5 +1331,56 @@ mod tests {
         assert_eq!(error.code, CLOUD_AI_DISABLED_CODE);
         assert_eq!(error.kind, BlueyErrorKind::Configuration);
         assert!(error.recoverable);
+    }
+
+    fn keyed(id: &str, kind: AiProviderKind) -> AiProviderConfig {
+        let preset = presets::by_kind(kind).expect("preset kind");
+        AiProviderConfig {
+            id: id.into(),
+            has_api_key: true,
+            ..preset.config()
+        }
+    }
+
+    fn assigned(provider_id: &str, model: &str) -> ModelAssignment {
+        ModelAssignment {
+            provider_id: provider_id.into(),
+            model: model.into(),
+        }
+    }
+
+    #[test]
+    fn a_foundry_transcription_role_imports_recordings_through_gemini() {
+        let foundry = assigned(presets::AZURE_FOUNDRY_ID, "MAI-Transcribe-1.5");
+        let providers = [
+            keyed(presets::AZURE_FOUNDRY_ID, AiProviderKind::AzureFoundry),
+            keyed(presets::GEMINI_ID, AiProviderKind::GoogleGemini),
+        ];
+        let (config, model) =
+            batch_transcription_target(Some(&foundry), &providers).expect("gemini fallback");
+        assert_eq!(config.id, presets::GEMINI_ID);
+        let preset = presets::by_kind(AiProviderKind::GoogleGemini).unwrap();
+        assert_eq!(
+            Some(model.as_str()),
+            preset.model_for(ModelRole::Transcription)
+        );
+
+        let gemini = assigned(presets::GEMINI_ID, "gemini-custom");
+        let (_, model) = batch_transcription_target(Some(&gemini), &providers).unwrap();
+        assert_eq!(model, "gemini-custom", "a Gemini assignment is used as is");
+    }
+
+    #[test]
+    fn without_a_keyed_gemini_provider_import_asks_for_one() {
+        let foundry = assigned(presets::AZURE_FOUNDRY_ID, "MAI-Transcribe-1.5");
+        let mut gemini = keyed(presets::GEMINI_ID, AiProviderKind::GoogleGemini);
+        gemini.has_api_key = false;
+        let providers = [
+            keyed(presets::AZURE_FOUNDRY_ID, AiProviderKind::AzureFoundry),
+            gemini,
+        ];
+        let error = batch_transcription_target(Some(&foundry), &providers).expect_err("none");
+        assert_eq!(error.kind, BlueyErrorKind::NotSupported);
+        assert!(error.message.contains("Google Gemini provider with a key"));
     }
 }
