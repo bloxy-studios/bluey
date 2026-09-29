@@ -54,9 +54,14 @@ const PROBLEM_SCREEN_MARKERS =
 /** Source code in an editor. Upgrades to coding only when the ask is to solve, fix or write it. */
 const SOURCE_SCREEN_MARKERS =
   /(\bfunction\s+\w+\s*\(|\bdef\s+\w+\s*\(|\bclass\s+[A-Z]\w*\s*(\(|\{|:|extends\b|implements\b)|```)/;
-/** A runtime or compiler error, a failing test or a stack trace. */
+/**
+ * A runtime or compiler error, a failing test or a stack trace. An
+ * `XxxError`/`XxxException` counts only as a report line ("ValueError: …",
+ * "java.io.IOException: …"), not as a name in code (`raise ValueError(`,
+ * `throws IOException`).
+ */
 const ERROR_SCREEN_MARKERS =
-  /(Traceback \(most recent call last\)|panicked at|error\[E\d{4}\]|\b[A-Z]\w*(Error|Exception)\b|Segmentation fault|\bFAILED\b|Uncaught )/;
+  /(Traceback \(most recent call last\)|panicked at|error\[E\d{4}\]|^\s*(?:[\w$]+\.)*[A-Z]\w*(?:Error|Exception)(?::|\s*$)|Exception in thread|Segmentation fault|\bFAILED\b|Uncaught )/m;
 /** A stack frame or traceback: code failed even when its source is off screen. */
 const STACK_TRACE_MARKERS =
   /(Traceback \(most recent call last\)|^\s+at \S.*:\d+:\d+\)?\s*$|^\s*File ".+", line \d+|panicked at|error\[E\d{4}\])/m;

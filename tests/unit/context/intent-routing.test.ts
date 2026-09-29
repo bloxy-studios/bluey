@@ -89,6 +89,40 @@ describe("coding schema only for problems and solve requests (MODE-001)", () => 
     expect(intent.schemaId).toBe("answer");
   });
 
+  it("does not read an exception class named in ordinary code as an error on screen", () => {
+    const python = [
+      "def parse_age(value):",
+      "    if not value.isdigit():",
+      '        raise ValueError("age must be a number")',
+      "    return int(value)",
+    ].join("\n");
+    const java = [
+      "class Repo {",
+      "  User load(String id) throws IOException {",
+      "    try { return db.get(id); } catch (IOException e) { throw e; }",
+      "  }",
+      "}",
+    ].join("\n");
+    const codingMode = makeMode({ id: "coding-interview", responseSchema: "coding" });
+    for (const screen of [python, java]) {
+      for (const mode of [makeMode(), codingMode]) {
+        for (const instruction of [undefined, "add type hints to this function"]) {
+          const label = `${mode.id} ${String(instruction)} ${screen.slice(0, 12)}`;
+          const intent = intentFor({ screen, instruction, mode });
+          expect(intent.answerShape, label).not.toBe("debug");
+          if (mode === codingMode) expect(intent.schemaId, label).toBe("coding");
+        }
+      }
+    }
+  });
+
+  it("still reads an error report line as an error beside the code", () => {
+    for (const report of ["ValueError: age must be a number", "java.io.IOException: disk full"]) {
+      const intent = intentFor({ screen: `${IDE_CODE}\n${report}` });
+      expect(intent.answerShape, report).toBe("debug");
+    }
+  });
+
   it("routes 'why is this failing' over code to the debug shape", () => {
     const intent = intentFor({ screen: IDE_CODE, instruction: "why is this failing?" });
     expect(intent.answerShape).toBe("debug");
