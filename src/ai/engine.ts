@@ -273,10 +273,14 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       seen.add(citation.url);
       merged.push(citation);
     }
+    // With web research in the prompt, the answer may only cite what research
+    // found — any other URL is invented. Answer ids get their own prefix: deep
+    // research citations are already `cit_N` (AI-009).
+    const researched = (research?.citations.length ?? 0) > 0;
     (parsed.citations ?? []).forEach((citation, index) => {
-      if (seen.has(citation.url)) return;
+      if (seen.has(citation.url) || researched) return;
       seen.add(citation.url);
-      merged.push({ id: `cit_${index + 1}`, ...citation });
+      merged.push({ id: `ans_${index + 1}`, ...citation });
     });
     return merged.length > 0 ? merged : undefined;
   }

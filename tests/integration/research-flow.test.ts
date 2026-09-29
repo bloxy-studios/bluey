@@ -8,7 +8,7 @@ import { createResponseEngine } from "@/ai/engine";
 import { setTransport } from "@/lib/tauri/transport";
 import { useAuthStore } from "@/lib/auth/auth-store";
 import type { ContextSnapshot, RetrievedChunk, SearchResult } from "@/lib/types";
-import { FakeTransport } from "../fixtures/helpers/fake-transport";
+import { defaultAIScript, FakeTransport } from "../fixtures/helpers/fake-transport";
 import { makeMode, makeSettings } from "../fixtures/helpers/builders";
 
 const snapshot: ContextSnapshot = { timestamp: "2026-09-07T09:00:00.000Z" };
@@ -277,5 +277,45 @@ describe("research flow inside ask", () => {
       "https://vercel.com/pricing",
       "https://blog.example/vercel",
     ]);
+  });
+
+  it("drops answer citations research never returned and keeps ids unique (AI-009)", async () => {
+    const fake = new FakeTransport();
+    fake.handle("context_build_snapshot", () => snapshot);
+    fake.handle("responses_save", ({ response }) => response);
+    fake.handle("research_available", () => ({
+      search: true,
+      scrape: false,
+      deepAgent: false,
+      agentBackends: [],
+    }));
+    fake.handle("research_search", () => results.map((r, i) => ({ ...r, id: `cit_${i + 1}` })));
+    fake.setAIScript((request, emit) => {
+      const answer = JSON.stringify({
+        responseType: "answer",
+        content: "Pro is $20.",
+        citations: [
+          { title: "Pricing", url: "https://vercel.com/pricing" },
+          { title: "Invented", url: "https://invented.example/pricing" },
+        ],
+      });
+      defaultAIScript(request, (chunk) => emit(chunk.type === "delta" ? { ...chunk, text: answer } : chunk));
+    });
+    setTransport(fake);
+
+    const result = await createResponseEngine().ask({
+      trigger: "typed",
+      instruction: "What is the latest Vercel pricing?",
+      captureScreen: false,
+      mode: makeMode(),
+      settings: makeSettings({ ai: { researchEnabled: true } }),
+    }).done;
+
+    const citations = result?.citations ?? [];
+    expect(citations.map((c) => c.url)).toEqual([
+      "https://vercel.com/pricing",
+      "https://blog.example/vercel",
+    ]);
+    expect(new Set(citations.map((c) => c.id)).size).toBe(citations.length);
   });
 });
