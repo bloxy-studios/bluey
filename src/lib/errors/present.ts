@@ -311,6 +311,13 @@ function describeCopy(error: BlueyError): { title: string; message: string } {
     // Rust names the app whose sign-in macOS refused to share ("… reading Claude Code's sign-in …").
     return { title: "macOS blocked the import", message: error.message };
   }
+  if (error.code === "config.model_not_found" && typeof details.model === "string") {
+    // Azure / OpenAI-compatible / Anthropic name the model or deployment they could not find.
+    return {
+      title: "Model not available",
+      message: `"${details.model}" isn't available on this provider. Check the model or deployment name in Settings → AI.`,
+    };
+  }
   if (error.code === "ai.invalid_request") {
     // Rust names the provider and quotes its reason ("ChatGPT rejected the request: Invalid
     // schema …") — that is what fixes the request, so it outranks the generic copy.

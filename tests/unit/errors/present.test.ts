@@ -233,6 +233,19 @@ describe("subscription accounts (ADR 0009)", () => {
     expect(stranded.message).toContain("Add an API key in Settings → AI");
   });
 
+  it("names the missing model or deployment and offers to configure the provider (PROV-004)", () => {
+    const presented = presentError(
+      error({
+        kind: "configuration",
+        code: "config.model_not_found",
+        details: { model: "gpt-5.5", provider: "Azure Foundry" },
+        recovery: { type: "configure_provider" },
+      }),
+    );
+    expect(presented.message).toContain('"gpt-5.5"');
+    expect(presented.actionLabel).toBe("Configure provider");
+  });
+
   it("names the assigned provider and why it can't serve the role (UX-007)", () => {
     const unusable = (cause: string) =>
       presentError(
