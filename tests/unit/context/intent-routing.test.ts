@@ -6,10 +6,20 @@
 
 import { classifyIntent, type Intent } from "@/context/relevance";
 import type { AskTrigger } from "@/lib/engine-contract";
-import type { BlueyMode } from "@/lib/types";
+import type { BlueyMode, DetectedEvent } from "@/lib/types";
 import { makeMode, makeSnapshot } from "../../fixtures/helpers/builders";
 
 const NOW = () => new Date("2026-09-07T09:05:00.000Z");
+const EVENT: DetectedEvent = {
+  id: "evt_1",
+  type: "question",
+  confidence: 0.9,
+  requiresResponse: true,
+  text: "",
+  segmentIds: ["seg_1"],
+  speaker: "Interviewer",
+  detectedAt: NOW().toISOString(),
+};
 
 function intentFor(opts: {
   screen: string;
@@ -83,5 +93,60 @@ describe("coding schema only for problems and solve requests (MODE-001)", () => 
     const intent = intentFor({ screen: IDE_CODE, instruction: "why is this failing?" });
     expect(intent.answerShape).toBe("debug");
     expect(intent.schemaId).toBe("answer");
+  });
+});
+
+describe("technical modes answer non-technical questions as speech (MODE-004)", () => {
+  const codingMode = makeMode({ id: "coding-interview", responseSchema: "coding" });
+  const designMode = makeMode({ id: "system-design", responseSchema: "system-design" });
+  const heard = (text: string, type: DetectedEvent["type"] = "question") =>
+    classifyIntent({
+      snapshot: makeSnapshot(),
+      mode: codingMode,
+      detectedEvent: { ...EVENT, type, text },
+      trigger: "detected_event",
+      now: NOW,
+    });
+
+  it("answers an intro question in Coding Interview as speech on the suggestion schema", () => {
+    const intent = heard("Tell me about yourself.");
+    expect(intent.task).toBe("answer");
+    expect(intent.schemaId).toBe("suggested-response");
+    expect(intent.answerShape).toBe("spoken");
+  });
+
+  it("uses the behavioral schema for a behavioral question", () => {
+    const intent = heard("Tell me about a time you disagreed with a teammate.", "behavioral_question");
+    expect(intent.schemaId).toBe("behavioral");
+    expect(intent.answerShape).toBe("spoken");
+  });
+
+  it("keeps coding and design asks on their schemas", () => {
+    expect(heard("Can you implement two-sum for me?", "coding_problem").schemaId).toBe("coding");
+    const design = classifyIntent({
+      snapshot: makeSnapshot(),
+      mode: designMode,
+      detectedEvent: { ...EVENT, text: "How would you design a URL shortener?" },
+      trigger: "detected_event",
+      now: NOW,
+    });
+    expect(design.task).toBe("system_design");
+    expect(design.schemaId).toBe("system-design");
+  });
+
+  it("answers a typed non-technical question in System Design on the answer schema", () => {
+    const intent = classifyIntent({
+      snapshot: makeSnapshot(),
+      mode: designMode,
+      instruction: "What does the acronym CAP stand for?",
+      trigger: "typed",
+      now: NOW,
+    });
+    expect(intent.task).toBe("answer");
+    expect(intent.schemaId).toBe("answer");
+  });
+
+  it("still solves on ⌘↵ in Coding Interview when code is on screen", () => {
+    expect(intentFor({ screen: IDE_CODE, mode: codingMode }).schemaId).toBe("coding");
   });
 });

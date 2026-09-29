@@ -18,6 +18,7 @@ import type {
   ResponseType,
 } from "@/lib/types";
 import { defaultTaskFor } from "@/modes/registry";
+import { BEHAVIORAL_MARKERS } from "@/transcript/classifier";
 import { currentQuestionText } from "./fusion";
 
 export interface IntentInput {
@@ -246,11 +247,23 @@ export function mentionsExternalInfo(text: string, now: () => Date): boolean {
   return false;
 }
 
-function schemaFor(mode: BlueyMode, task: AITask, debugging: boolean): ResponseSchemaId {
+interface SchemaInput {
+  debugging: boolean;
+  spokenTrigger: boolean;
+  behavioral: boolean;
+}
+
+function schemaFor(mode: BlueyMode, task: AITask, input: SchemaInput): ResponseSchemaId {
   // Modes with generic schemas get upgraded when the ask is clearly technical.
   const generic = mode.responseSchema === "answer" || mode.responseSchema === "suggested-response";
   // A fix is an answer, not a full solution with complexity and edge cases.
-  if (debugging && (generic || mode.responseSchema === "coding")) return "answer";
+  if (input.debugging && (generic || mode.responseSchema === "coding")) return "answer";
+  // A technical mode asked something non-technical: speech when heard, else a plain answer.
+  const technical = mode.responseSchema === "coding" || mode.responseSchema === "system-design";
+  if (technical && task !== "coding" && task !== "system_design") {
+    if (!input.spokenTrigger) return "answer";
+    return input.behavioral ? "behavioral" : "suggested-response";
+  }
   if (task === "coding" && generic) return "coding";
   if (task === "system_design" && generic) return "system-design";
   return mode.responseSchema;
@@ -330,7 +343,13 @@ export function classifyIntent(input: IntentInput): Intent {
   const asksToSolve =
     question.length === 0 || codingAsked || !(EXPLAIN_CUES.test(question) || SHORT_ANSWER_OPENER.test(question));
   const codingVisible = problemVisible || (sourceVisible && asksToSolve);
-  const designAsked = SYSTEM_DESIGN_CUES.test(question) || mode.responseSchema === "system-design";
+  const designCue =
+    SYSTEM_DESIGN_CUES.test(question) || (screenTrigger && SYSTEM_DESIGN_CUES.test(screenText));
+  // A coding or design mode forces its task only for a technical ask — a cue,
+  // or ⌘↵/assist over code. "Tell me about yourself" in a coding interview is
+  // answered as speech, not as code (MODE-004).
+  const technicalAsk = codingAsked || designCue || (screenTrigger && (problemVisible || sourceVisible));
+  const designAsked = designCue || (mode.responseSchema === "system-design" && technicalAsk);
   // A multiple-choice or compare-two-responses question about code is still
   // an assessment question: the screen's code markers alone must not turn it
   // into a "solve this problem" coding task.
@@ -352,7 +371,7 @@ export function classifyIntent(input: IntentInput): Intent {
     task = "summarization";
   } else if (designAsked) {
     task = "system_design";
-  } else if (codingAsked || codingFromScreen || debugging || mode.responseSchema === "coding") {
+  } else if (codingAsked || codingFromScreen || debugging || (mode.responseSchema === "coding" && technicalAsk)) {
     task = "coding";
   } else if (!spokenTrigger && mentionsExternalInfo(question, now)) {
     task = "research";
@@ -377,7 +396,8 @@ export function classifyIntent(input: IntentInput): Intent {
   const reasoning = reasoningFor(task, mode);
   const latency = slowerOf(mode.preferredLatency, minimumLatencyFor(task));
 
-  const schemaId = schemaFor(mode, task, debugging);
+  const behavioral = detectedEvent?.type === "behavioral_question" || BEHAVIORAL_MARKERS.test(question);
+  const schemaId = schemaFor(mode, task, { debugging, spokenTrigger, behavioral });
   const responseType = responseTypeFor(schemaId, task);
   const answerShape = detectAnswerShape({ question, screenText, task, schemaId, trigger, debugging });
 

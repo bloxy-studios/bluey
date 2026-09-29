@@ -111,7 +111,10 @@ multiple-choice or compare question **about** code stays an assessment answer: t
 markers alone no longer upgrade the ask to the `coding` task and schema. Only a problem
 statement (`Example 1:`, `Constraints:`, `Input:` … `Output:`, a judge verdict) upgrades any ask
 to coding; source code in an editor does so only for ⌘↵ or a solve/fix/write request — "what does
-this function do?" over code stays an `answer`.
+this function do?" over code stays an `answer`. The Coding Interview and System Design schemas
+force their task only for a technical ask (a coding or design cue, or ⌘↵/assist over code or a
+design prompt); anything else in those modes is answered on the `answer` schema when typed, and
+as speech (`suggested-response`, or `behavioral` for a behavioral question) when heard or on ⌘⇧↵.
 
 ## Context priority
 current explicit user input > session context > mode context > global "My Context" >

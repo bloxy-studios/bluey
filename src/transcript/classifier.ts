@@ -32,7 +32,7 @@ const INTERROGATIVE_LEAD =
   /^(what|how|why|when|where|who|which|can|could|would|will|should|do|does|did|is|are|have you|has|tell me|walk me|talk me|describe|explain)\b/i;
 const RISING_PATTERNS = /\b(tell me about|walk me through|talk me through|how would you|what would you|can you (explain|describe|tell)|give me an example)\b/i;
 
-const BEHAVIORAL_MARKERS =
+export const BEHAVIORAL_MARKERS =
   /\b(tell me about a time|describe a (time|situation)|give (me |us )?an example of (a time|when)|walk me through a (time|situation)|a time (when|where) you|have you ever (had|faced|dealt))\b/i;
 
 const CODING_MARKERS =
