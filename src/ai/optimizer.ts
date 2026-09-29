@@ -9,7 +9,8 @@
  *    whose first sentence is the deliverable),
  *    duplicate paragraphs removed
  *  - length capped by style (concise ≈ 120 words of prose, code excluded) —
- *    never for spoken, written or code shapes, never the first paragraph
+ *    never for spoken, written, code, design or summary shapes, never the
+ *    first paragraph
  *  - `title` derived when missing; `code` populated for coding responses
  */
 
@@ -181,7 +182,13 @@ const LENGTH_WORD_CAPS: Record<ResponseStyle["length"], number> = {
 };
 
 /** Shapes whose text is the deliverable itself — cutting them mid-way would destroy it. */
-const UNCAPPED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>(["spoken", "written", "code"]);
+const UNCAPPED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>([
+  "spoken",
+  "written",
+  "code",
+  "design",
+  "summary",
+]);
 
 function mustKeepParagraph(paragraph: string): boolean {
   return CAVEAT_MARKERS.test(paragraph) || CITATION_MARKER.test(paragraph);
@@ -235,7 +242,7 @@ export function deriveTitle(content: string, prompt?: string): string | undefine
 export interface OptimizeOptions {
   style: ResponseStyle;
   mode: BlueyMode;
-  /** The detected answer shape; spoken, written and code answers are never length-capped. */
+  /** The detected answer shape; spoken, written, code, design and summary answers are never length-capped. */
   shape?: AnswerShape;
 }
 
@@ -259,7 +266,7 @@ export function optimizeResponse(response: BlueyResponse, opts: OptimizeOptions)
   }
 
   // Cap prose length by style — never when the payload is primarily code, and
-  // never for the shapes whose text is the deliverable (spoken, written, code).
+  // never for the shapes whose text or structure is the deliverable.
   const cap = LENGTH_WORD_CAPS[opts.style.length];
   const uncapped = (hasCode && opts.style.length === "concise") || (opts.shape !== undefined && UNCAPPED_SHAPES.has(opts.shape));
   if (!uncapped) {

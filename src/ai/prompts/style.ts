@@ -5,7 +5,7 @@
  * precedence).
  */
 
-import type { ResponseLength, ResponseStyle, ResponseTone } from "@/lib/types";
+import type { AnswerShape, ResponseLength, ResponseStyle, ResponseTone } from "@/lib/types";
 
 const LENGTH_LINES: Record<ResponseLength, string> = {
   concise:
@@ -24,6 +24,13 @@ const TONE_LINES: Record<ResponseTone, string> = {
   direct: "Tone: direct — the answer, zero filler; real uncertainty in one clause at most.",
 };
 
-export function styleBlock(style: ResponseStyle): string {
-  return `${LENGTH_LINES[style.length]}\n${TONE_LINES[style.tone]}`;
+/** Shapes whose structure is the deliverable: no word ceiling, even under concise (AI-006). */
+export const STRUCTURED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>(["design", "code", "summary"]);
+
+const CONCISE_STRUCTURED =
+  "Length ceiling: concise — every line must carry information; the shape's own parts (sections, code, points) set the length, not a word count.";
+
+export function styleBlock(style: ResponseStyle, shape?: AnswerShape): string {
+  const structured = style.length === "concise" && shape !== undefined && STRUCTURED_SHAPES.has(shape);
+  return `${structured ? CONCISE_STRUCTURED : LENGTH_LINES[style.length]}\n${TONE_LINES[style.tone]}`;
 }

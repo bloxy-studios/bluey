@@ -118,7 +118,7 @@ export class PromptBuilder {
     const preferences = trustedText(this.parts.items, "personal_instructions");
     if (preferences) blocks.push(`${PREFERENCES_LABEL}\n${preferences}`);
 
-    blocks.push(styleBlock(style));
+    blocks.push(styleBlock(style, this.parts.answerShape));
 
     const language = outputLanguageLine(outputLanguage ?? "");
     if (language) blocks.push(language);

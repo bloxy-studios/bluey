@@ -202,3 +202,13 @@ describe("answer-first cleanup", () => {
     expect(spoken.content).toContain("Spoken paragraph 19");
   });
 });
+
+describe("the optimizer agrees with the shape-aware ceiling (AI-006)", () => {
+  it.each(["design", "summary"] as const)("does not cap a concise %s answer", (shape) => {
+    const paragraphs = Array.from({ length: 20 }, (_, i) => `Part ${i} of the answer carries exactly ten words here.`).join(
+      "\n\n",
+    );
+    const optimized = optimizeResponse(response(paragraphs), { style: STYLE_CONCISE, mode: makeMode(), shape });
+    expect(optimized.content).toContain("Part 19");
+  });
+});

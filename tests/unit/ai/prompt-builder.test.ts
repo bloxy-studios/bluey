@@ -280,3 +280,19 @@ describe("room for a non-binary truth (AI-005)", () => {
     expect(tone).toMatch(/uncertainty in one clause/);
   });
 });
+
+describe("a shape-aware concise ceiling (AI-006)", () => {
+  const lengthLine = (b: PromptBuilder) =>
+    b.renderSystem().split("\n").find((line) => line.startsWith("Length ceiling:")) ?? "";
+
+  it.each(["design", "code", "summary"] as const)("does not cap a %s answer at ~120 words", (answerShape) => {
+    const line = lengthLine(builder({ answerShape }));
+    expect(line).toMatch(/^Length ceiling: concise/);
+    expect(line).not.toContain("~120 words");
+  });
+
+  it("keeps the ~120-word ceiling for every other shape", () => {
+    expect(lengthLine(builder({ answerShape: "explain" }))).toContain("~120 words");
+    expect(lengthLine(builder({ answerShape: "spoken" }))).toContain("~120 words");
+  });
+});

@@ -61,7 +61,8 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   an option, a number or code, and never for spoken, written, code, choice or debug answers),
   respect length & tone,
   preserve code, caveats and citations. The length cap keeps the first paragraph and never
-  applies to the spoken, written and code shapes. Goal: the minimum text necessary to be useful.
+  applies to the spoken, written, code, design and summary shapes (the concise style line drops
+  its ~120-word ceiling for design, code and summary answers too). Goal: the minimum text necessary to be useful.
 - **Proactive preparation**: when the classifier detects a likely question with
   `requiresResponse`, the loop in `src/stores/proactive.ts` calls `engine.prepare()`. With
   *Show suggestions = Live* (default) it first opens a suggestion turn in the HUD and passes
