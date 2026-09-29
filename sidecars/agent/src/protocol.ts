@@ -54,6 +54,8 @@ export const deepResearchRequestSchema = z.object({
   tools: z.array(z.enum(RESEARCH_TOOL_NAMES)).min(1),
   allowedDocumentIds: z.array(z.string()).optional(),
   model: z.string().min(1).optional(),
+  /** Wall-clock budget from job start: past it the agent stops calling tools and reports. */
+  deadlineMs: z.number().int().positive().optional(),
 });
 
 // ── Citations (mirrors Citation in src/lib/types/response.ts, sans local id) ──
@@ -133,8 +135,7 @@ export type DocumentResponseParams = z.infer<typeof documentResponseSchema>;
 // ── Line parsing ─────────────────────────────────────────────────────────────
 
 export type ParsedLine =
-  | { ok: true; request: RpcRequest }
-  | { ok: false; error: string; id: RequestId | null };
+  { ok: true; request: RpcRequest } | { ok: false; error: string; id: RequestId | null };
 
 /** Parse one JSON-Lines request. Never throws. */
 export function parseRequestLine(line: string): ParsedLine {

@@ -146,3 +146,23 @@ function hostOf(url: string): string {
     return "";
   }
 }
+
+/**
+ * The report for a job that ran out of turns or time before the model wrote
+ * one: the sources gathered so far, labelled as leads (AI-008). Better than
+ * throwing the evidence away.
+ */
+export function evidenceReport(reason: "turns" | "time", sources: WireCitation[]): string {
+  return [
+    "## Research stopped early",
+    "",
+    `The research agent ran out of ${reason} before writing its report. These are the sources it ` +
+      "found — leads to check, not conclusions.",
+    "",
+    "## Sources",
+    ...sources.map((s) => {
+      const title = s.title.replace(/[[\]]/g, "");
+      return `- [${title}](${s.url})${s.snippet ? ` — ${s.snippet}` : ""}`;
+    }),
+  ].join("\n");
+}

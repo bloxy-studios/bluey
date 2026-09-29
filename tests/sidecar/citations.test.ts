@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CitationStore, normalizeUrl } from "../../sidecars/agent/src/citations";
+import { CitationStore, evidenceReport, normalizeUrl } from "../../sidecars/agent/src/citations";
 
 describe("normalizeUrl", () => {
   it("lowercases the host, strips fragments and trailing slashes", () => {
@@ -88,5 +88,18 @@ describe("CitationStore", () => {
     const store = new CitationStore();
     store.add({ title: "Long", url: "https://example.com/long", snippet: "x".repeat(2000) });
     expect(store.list()[0]?.snippet?.length).toBeLessThanOrEqual(400);
+  });
+});
+
+describe("evidenceReport", () => {
+  it("lists the gathered sources as links the citation check accepts", () => {
+    const store = new CitationStore();
+    store.add({ title: "A [draft]", url: "https://example.com/a", snippet: "first" });
+    store.add({ title: "B", url: "https://example.com/b" });
+    const report = evidenceReport("turns", store.list());
+    expect(report).toContain("ran out of turns");
+    expect(report).toContain("- [A draft](https://example.com/a) — first");
+    expect(store.sanitizeReport(report)).toBe(report);
+    expect(store.finalize(undefined, report)).toHaveLength(2);
   });
 });

@@ -255,6 +255,16 @@ describe("sidecar cancellation", () => {
     expect(harness.eventsNamed("research.failed")).toHaveLength(1);
   });
 
+  it("hard-stops a Claude run at deadlineMs instead of reporting a cancellation", async () => {
+    const harness = makeHarness({ env: { ...stubKeys }, deps: { queryFn: hangingQueryFn } });
+    harness.send({ ...baseRun, params: { ...baseRun.params, deadlineMs: 50 } });
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    // No tool ran, so there is no evidence to report — but it is a deadline, not a cancel.
+    expect((failed["data"] as Frame)["error"]).toMatchObject({ code: "deadline_exceeded", kind: "research" });
+    expect(await harness.done).toBe(0);
+  });
+
   it("rejects cancels for unknown jobs", async () => {
     const harness = makeHarness({ env: { BLUEY_AGENT_MOCK: "1" } });
     harness.send({ id: 5, method: "research.cancel", params: { jobId: "nope" } });

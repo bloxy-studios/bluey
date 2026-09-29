@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { createSdkMcpServer, query, tool, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
-import { CitationStore } from "./citations";
+import { CitationStore, evidenceReport } from "./citations";
 import { resolveClaudeCliPath } from "./cli-path";
 import {
   checkClaudeCliAvailable,
@@ -170,6 +170,10 @@ const structuredOutputSchema = z.object({
 type StructuredReport = z.infer<typeof structuredOutputSchema>;
 
 const DOCUMENT_TEXT_MAX_CHARS = 40_000;
+/** Sources listed in a report written from gathered evidence (out of turns/time). */
+const EVIDENCE_REPORT_MAX_SOURCES = 10;
+/** How long past `deadlineMs` Gemini's forced report turn may take before the hard stop. */
+const DEADLINE_REPORT_GRACE_MS = 10_000;
 
 // ── Structural narrowing helpers (SDK messages are handled as `unknown`) ────
 
@@ -371,7 +375,12 @@ export function startResearchJob(
   const store = new CitationStore();
   const startedAt = Date.now();
 
+  const deadlineAt = request.deadlineMs !== undefined ? startedAt + request.deadlineMs : undefined;
+
   let cancelRequested = false;
+  /** Set when the deadline's hard stop aborted the run (not a user cancel). */
+  let outOfTime = false;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   let finished = false;
   let tmpDir: string | undefined;
 
@@ -410,6 +419,27 @@ export function startResearchJob(
 
   const emitCancelled = (): void => {
     emitFailed("cancelled", "research job was cancelled", "cancelled");
+  };
+
+  /** Out of turns or time: the gathered sources become the report (AI-008). */
+  const emitEvidenceReport = (
+    reason: "turns" | "time",
+    turns = 0,
+    usage = { inputTokens: 0, outputTokens: 0 },
+  ): void => {
+    const sources = store.list().slice(0, EVIDENCE_REPORT_MAX_SOURCES);
+    if (sources.length === 0) {
+      const code = reason === "turns" ? "max_turns_exceeded" : "deadline_exceeded";
+      emitFailed(code, `research ran out of ${reason} before finding any sources`, "research");
+      return;
+    }
+    emitCompleted({ report: evidenceReport(reason, sources), turns, usage });
+  };
+
+  /** The run was aborted: by the user (cancelled) or by the deadline's hard stop. */
+  const emitAborted = (): void => {
+    if (outOfTime && !cancelRequested) emitEvidenceReport("time");
+    else emitCancelled();
   };
 
   // ── Tool handlers (shared by both backends and the mocks) ─────────────────
@@ -593,7 +623,7 @@ export function startResearchJob(
     const detail = firstError ? `: ${sanitizeErrorMessage(firstError)}` : "";
     switch (subtype) {
       case "error_max_turns":
-        emitFailed("max_turns_exceeded", `research stopped after ${turns} turns${detail}`, "research");
+        emitEvidenceReport("turns", turns, usage);
         return;
       case "error_max_budget_usd":
         emitFailed("budget_exceeded", `research stopped: budget exceeded${detail}`, "research");
@@ -716,7 +746,7 @@ export function startResearchJob(
     }
 
     if (!finished) {
-      if (cancelRequested) emitCancelled();
+      if (cancelRequested || outOfTime) emitAborted();
       else if (!sawResult)
         emitFailed("agent_no_result", "the agent stream ended without a result message", "research");
     }
@@ -740,6 +770,7 @@ export function startResearchJob(
       outcome = await runGemini({
         model,
         maxTurns,
+        deadlineAt,
         systemPrompt: systemPrompt(handlers, activeToolNames),
         prompt,
         handlers,
@@ -751,8 +782,8 @@ export function startResearchJob(
         onProgress: progress,
       });
     } catch (err) {
-      if (cancelRequested || (err instanceof Error && err.name === "AbortError")) {
-        emitCancelled();
+      if (cancelRequested || outOfTime || (err instanceof Error && err.name === "AbortError")) {
+        emitAborted();
         return;
       }
       const mapped = mapGeminiError(err);
@@ -785,6 +816,19 @@ export function startResearchJob(
 
   async function run(): Promise<void> {
     writer.event("research.started", { jobId, model });
+    if (deadlineAt !== undefined) {
+      // Hard stop: Gemini gets a grace period for its report turn; Claude
+      // cannot be asked for one mid-run, so its gathered sources are reported.
+      const grace = config.backend === "gemini" ? DEADLINE_REPORT_GRACE_MS : 0;
+      deadlineTimer = setTimeout(
+        () => {
+          if (finished) return;
+          outOfTime = true;
+          abortController.abort();
+        },
+        Math.max(0, deadlineAt + grace - Date.now()),
+      );
+    }
 
     const usingInjectedModel =
       config.mockMode || Boolean(config.backend === "gemini" ? deps.generateFn : deps.queryFn);
@@ -822,8 +866,8 @@ export function startResearchJob(
 
   const done = run()
     .catch((err: unknown) => {
-      if (cancelRequested || (err instanceof Error && err.name === "AbortError")) {
-        emitCancelled();
+      if (cancelRequested || outOfTime || (err instanceof Error && err.name === "AbortError")) {
+        emitAborted();
         return;
       }
       if (err instanceof GeminiRunError) {
@@ -836,6 +880,7 @@ export function startResearchJob(
       emitFailed("agent_execution_failed", sanitizeErrorMessage(message), "research");
     })
     .finally(() => {
+      clearTimeout(deadlineTimer);
       broker.close();
       if (tmpDir) {
         try {
