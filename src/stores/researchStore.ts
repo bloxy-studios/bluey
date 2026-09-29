@@ -7,6 +7,7 @@
 
 import { create } from "zustand";
 
+import { skipLocalResearch } from "@/ai/research";
 import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
 import { toBlueyError, type DeepResearchEvent } from "@/lib/types";
@@ -42,6 +43,29 @@ export function describeToolCall(tool: string): string {
   }
 }
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, "");
+  } catch {
+    return "a page";
+  }
+}
+
+/**
+ * Plain words for the agent's developer progress lines (UX-030). `null`
+ * keeps the current line: session start, tool failures and anything
+ * unrecognised are not worth showing.
+ */
+export function describeProgress(message: string): string | null {
+  const found = /^exa_search: (\d+) result/.exec(message);
+  if (found) return found[1] === "1" ? "Found 1 source" : `Found ${found[1]} sources`;
+  const fetched = /^firecrawl_scrape: fetched (\S+)/.exec(message);
+  if (fetched) return `Read ${hostOf(fetched[1]!)}`;
+  if (message.startsWith("document_read: loaded")) return "Read your documents";
+  if (/writing the report/i.test(message)) return "Writing up findings…";
+  return null;
+}
+
 export const useResearchStore = create<ResearchStore>((set, get) => ({
   active: null,
   apply: (event) => {
@@ -58,10 +82,12 @@ export const useResearchStore = create<ResearchStore>((set, get) => ({
           },
         });
         return;
-      case "progress":
-        if (current?.jobId !== event.jobId) return;
-        set({ active: { ...current, message: event.message } });
+      case "progress": {
+        if (current?.jobId !== event.jobId || current.cancelling) return;
+        const message = describeProgress(event.message);
+        if (message) set({ active: { ...current, message } });
         return;
+      }
       case "tool_call":
         if (current?.jobId !== event.jobId) return;
         set({
@@ -81,6 +107,11 @@ export const useResearchStore = create<ResearchStore>((set, get) => ({
   skip: async () => {
     const current = get().active;
     if (!current || current.cancelling) return;
+    // A web search runs in the engine: skipping it ends it right away (LIVE-006).
+    if (skipLocalResearch(current.jobId)) {
+      set({ active: null });
+      return;
+    }
     set({ active: { ...current, cancelling: true, message: "Skipping research…" } });
     try {
       await bluey.research.deepCancel({ jobId: current.jobId });

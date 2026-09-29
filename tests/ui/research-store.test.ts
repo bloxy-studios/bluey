@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { derivePill } from "@/features/hud/state-pill";
 import type { MockTransport } from "@/lib/tauri/mock";
 import type { AppStatus } from "@/lib/types";
-import { describeToolCall, useResearchStore } from "@/stores/researchStore";
+import { runResearch } from "@/ai/research";
+import { describeProgress, describeToolCall, useResearchStore } from "@/stores/researchStore";
 import { setupMockApp } from "./helpers";
 
 function status(partial: Partial<AppStatus> = {}): AppStatus {
@@ -45,8 +46,12 @@ describe("researchStore", () => {
     });
     expect(useResearchStore.getState().active).toMatchObject({ message: "Reading a page…", toolCalls: 2 });
 
-    mock.emit("research.event", { type: "progress", jobId: "job-1", message: "Comparing sources" });
-    expect(useResearchStore.getState().active?.message).toBe("Comparing sources");
+    mock.emit("research.event", {
+      type: "progress",
+      jobId: "job-1",
+      message: "firecrawl_scrape: fetched https://www.example.com/pricing",
+    });
+    expect(useResearchStore.getState().active?.message).toBe("Read example.com");
 
     mock.emit("research.event", { type: "text_delta", jobId: "job-1", text: "The" });
     expect(useResearchStore.getState().active?.message).toBe("Writing up findings…");
@@ -86,6 +91,45 @@ describe("researchStore", () => {
       jobId: "job-2",
       error: { kind: "cancelled", code: "cancelled", message: "cancelled", recoverable: false },
     });
+    expect(useResearchStore.getState().active).toBeNull();
+  });
+
+  it("shows friendly progress instead of the agent's developer strings (UX-030)", () => {
+    expect(describeProgress("agent session started (model gemini-3.5-pro, 2 tool(s))")).toBeNull();
+    expect(describeProgress('exa_search: 8 result(s) for "vercel pricing"')).toBe("Found 8 sources");
+    expect(describeProgress("firecrawl_scrape: fetched https://a.com/x")).toBe("Read a.com");
+    expect(describeProgress("writing the report")).toBe("Writing up findings…");
+
+    mock.emit("research.event", { type: "started", jobId: "job-3" });
+    mock.emit("research.event", {
+      type: "progress",
+      jobId: "job-3",
+      message: "agent session started (model m, 2 tool(s))",
+    });
+    expect(useResearchStore.getState().active?.message).toBe("Researching…");
+  });
+
+  it("Skip ends an in-engine web search at once, leaving no stale status (LIVE-006)", async () => {
+    const pending = runResearch("search_scrape", "vercel pricing", {
+      jobId: "res_local",
+      api: {
+        research: {
+          search: () => new Promise(() => {}),
+          scrape: () => new Promise(() => {}),
+          deepStart: async () => undefined,
+          deepCancel: async () => false,
+        },
+      },
+      bus: { on: () => () => undefined, emit: (_name, event) => useResearchStore.getState().apply(event) },
+    });
+    expect(useResearchStore.getState().active).toMatchObject({
+      jobId: "res_local",
+      message: "Searching the web…",
+    });
+
+    await useResearchStore.getState().skip();
+
+    expect(await pending).toBeNull();
     expect(useResearchStore.getState().active).toBeNull();
   });
 
