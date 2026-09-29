@@ -162,7 +162,8 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   ("Update Available" in the reference; Bluey shows the current **mode name** pill or the
   state pill `● Listening`); center — icon buttons 32×32 radius 8, 18px icons: *Screen*
   (image icon, tooltip "Uses Screen" / "Screen off"), *Visibility* (eye / eye-off, tooltip
-  "Detectable" / "Content-protected"), *Mode* (grid 2×2, tooltip = mode name, opens the mode
+  "Detectable" / "Content-protected", or "Privacy mode: hidden from legacy capture only" when
+  the platform reports `partial`), *Mode* (grid 2×2, tooltip = mode name, opens the mode
   menu), thin vertical divider, *Audio* (waveform, tooltip "Start Audio Session" /
   "Stop Audio Session", pulsing green dot when listening), *Session* (timer icon, blue dot
   while a session runs, grey when paused; opens the session menu: title · duration, Pause /

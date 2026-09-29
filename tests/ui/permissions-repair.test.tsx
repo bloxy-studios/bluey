@@ -37,7 +37,10 @@ describe("Permissions repair card after an update (MAC-001)", () => {
     render(<PermissionsTab />);
 
     const card = screen.getByRole("region", { name: "macOS turned off some permissions after the update" });
-    expect(card.textContent).toContain("not signed with an Apple Developer ID");
+    // Rust flags lost grants from a version change alone: the card must not claim this build is
+    // unsigned (a Developer-ID release after an unsigned one loses grants too).
+    expect(card.textContent).toMatch(/changes Bluey.s code signature/);
+    expect(card.textContent).not.toContain("This build of Bluey is not signed");
     expect(card.textContent).toContain("Keychain");
     expect(card.textContent).not.toContain("Microphone");
 

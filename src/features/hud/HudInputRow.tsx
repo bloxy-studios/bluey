@@ -114,6 +114,7 @@ export function HudComposer({ expanded, streaming = false, onBack, onStop, ...in
       ) : null}
       <input
         ref={inputRef}
+        data-hud-composer
         {...compositionProps}
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -145,20 +146,4 @@ export function HudComposer({ expanded, streaming = false, onBack, onStop, ...in
       )}
     </div>
   );
-}
-
-/** The idle composer. */
-export function HudIdleRow(props: BaseInputRowProps) {
-  return <HudComposer {...props} expanded={false} />;
-}
-
-export interface FollowUpHeaderProps extends BaseInputRowProps {
-  streaming: boolean;
-  onBack: () => void;
-  onStop: () => void;
-}
-
-/** The expanded composer. */
-export function FollowUpHeader(props: FollowUpHeaderProps) {
-  return <HudComposer {...props} expanded />;
 }

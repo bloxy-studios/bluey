@@ -65,7 +65,7 @@ function ModelRoleRow({
   role: ModelRole;
   label: string;
   hint: string;
-  providers: AIProviderConfig[];
+  providers: RoutableProvider[];
 }) {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
@@ -173,9 +173,14 @@ function ModelRoleRow({
   );
 }
 
+/** A provider the roles can use: settings providers, plus connected accounts and their limit. */
+type RoutableProvider = AIProviderConfig & { rateLimited?: boolean };
+
 /** A role's provider option says why it can't answer yet (UX-008). */
-function providerOptionLabel(p: AIProviderConfig): string {
+function providerOptionLabel(p: RoutableProvider): string {
   if (!p.enabled) return `${p.name} (disabled)`;
+  // Still signed in: waiting for the plan window, not a sign-in or a key.
+  if (p.rateLimited) return `${p.name} (rate limited)`;
   if (p.hasApiKey) return p.name;
   return p.authMethod === "oauth_subscription" ? `${p.name} (not connected)` : `${p.name} (no key)`;
 }
@@ -197,7 +202,7 @@ export default function AITab() {
   const providers = sortProviders(ai.providers);
   // Connected subscription accounts are providers to the router too (ADR 0009 §3.6): they
   // appear in the role and default-provider selects, never in the API-key provider list.
-  const accountProviders: AIProviderConfig[] = settings.experimental.subscriptionAccounts
+  const accountProviders: RoutableProvider[] = settings.experimental.subscriptionAccounts
     ? accounts
         .filter((a) => a.status.state === "connected" || a.status.state === "rate_limited")
         .map((a) => ({
@@ -208,9 +213,10 @@ export default function AITab() {
           enabled: true,
           hasApiKey: a.status.state === "connected",
           authMethod: "oauth_subscription",
+          rateLimited: a.status.state === "rate_limited",
         }))
     : [];
-  const routable = [...providers, ...accountProviders];
+  const routable: RoutableProvider[] = [...providers, ...accountProviders];
   const enabledProviders = routable.filter((p) => p.enabled);
   const defaultProviderId =
     ai.bootstrapProvider && routable.some((p) => p.id === ai.bootstrapProvider)
@@ -301,7 +307,7 @@ export default function AITab() {
               .filter((p) => p.enabled || p.id === defaultProviderId)
               .map((p) => ({
                 value: p.id,
-                label: p.hasApiKey ? p.name : `${p.name} (no key)`,
+                label: p.rateLimited ? providerOptionLabel(p) : p.hasApiKey ? p.name : `${p.name} (no key)`,
                 disabled: !p.hasApiKey || !p.enabled,
               })),
           ]}

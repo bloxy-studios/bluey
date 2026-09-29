@@ -17,7 +17,7 @@ describe("HUD menu trigger composition", () => {
       </TooltipProvider>,
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Content protection (on|off)$/ })).not.toBeDisabled(),
+      expect(screen.getByRole("button", { name: "Content protection" })).not.toBeDisabled(),
     );
     for (const name of ["Mode: General", "Session menu"]) {
       const trigger = screen.getByRole("button", { name });
@@ -38,7 +38,7 @@ describe("HUD menu trigger composition", () => {
       </TooltipProvider>,
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Content protection (on|off)$/ })).not.toBeDisabled(),
+      expect(screen.getByRole("button", { name: "Content protection" })).not.toBeDisabled(),
     );
     const button = screen.getByRole("button", { name: /New Chat/ });
     expect(fireEvent.keyDown(button, { key: "Enter", repeat: true })).toBe(false);
@@ -55,7 +55,7 @@ describe("HUD menu trigger composition", () => {
       </TooltipProvider>,
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Content protection (on|off)$/ })).not.toBeDisabled(),
+      expect(screen.getByRole("button", { name: "Content protection" })).not.toBeDisabled(),
     );
     for (const name of ["Mode: General", "Session menu"]) {
       const trigger = screen.getByRole("button", { name });

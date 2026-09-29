@@ -9,6 +9,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
 import { toBlueyError, type ConnectionTestResult, type ScreenFrame } from "@/lib/types";
+import { providerCopy } from "@/features/settings/accounts/account-copy";
 import { useAiReadiness } from "@/hooks/useAiReadiness";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranscriptStore } from "@/stores/transcriptStore";
@@ -105,18 +106,20 @@ export function TestAIStep(_props: StepProps) {
   const [busy, setBusy] = useState(false);
 
   // Test exactly what an answer would use (the router's choice), not a guess from the settings.
-  const provider = readiness?.ok
-    ? settings?.ai.providers.find((p) => p.id === readiness.providerId)
+  // The router also picks connected subscription accounts, which are not in settings.ai.providers.
+  const providerId = readiness?.ok ? readiness.providerId : undefined;
+  const providerName = providerId
+    ? (settings?.ai.providers.find((p) => p.id === providerId)?.name ??
+      providerCopy(providerId)?.name ??
+      providerId)
     : undefined;
 
   const test = async () => {
-    if (!provider) return;
+    if (!providerId) return;
     setBusy(true);
     setResult(null);
     try {
-      setResult(
-        await bluey.ai.testConnection({ providerId: provider.id, model: readiness?.model }),
-      );
+      setResult(await bluey.ai.testConnection({ providerId, model: readiness?.model }));
     } catch (error) {
       showErrorToast(toBlueyError(error, "ai"));
     } finally {
@@ -132,7 +135,7 @@ export function TestAIStep(_props: StepProps) {
     );
   }
 
-  if (!provider) {
+  if (!providerId) {
     return (
       <StepShell
         title="Connect an AI provider"
@@ -155,7 +158,7 @@ export function TestAIStep(_props: StepProps) {
   return (
     <StepShell
       title="Test your AI provider"
-      body={`Bluey will send a tiny request to ${provider.name} to verify the connection.`}
+      body={`Bluey will send a tiny request to ${providerName} to verify the connection.`}
     >
       <div className="flex flex-col items-center gap-4">
         {result ? (

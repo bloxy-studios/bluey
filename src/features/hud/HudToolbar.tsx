@@ -5,6 +5,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { Keycaps } from "@/components/ui/Keycap";
 import { showErrorToast } from "@/components/ui/toast-store";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { useCaptureProtection } from "@/hooks/useCaptureProtection";
 import { bluey } from "@/lib/tauri/api";
 import { toBlueyError } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
@@ -49,6 +50,13 @@ export function HudToolbar({
   const displayMode = useSettingsStore((s) => s.settings?.privacy.displayMode);
   const updateSettings = useSettingsStore((s) => s.update);
   const protection = displayMode === "privacy";
+  // What the platform guarantees for that mode: never "protected" on macOS 15+ (SEC-004).
+  const guarantee = useCaptureProtection();
+  const protectionLabel = !protection
+    ? "Detectable"
+    : guarantee && !guarantee.partial
+      ? "Content-protected"
+      : "Privacy mode: hidden from legacy capture only";
 
   const audioActive = status?.audioActive ?? false;
   const activeModeName = modeById(modes, status?.modeId)?.name ?? "General";
@@ -89,7 +97,7 @@ export function HudToolbar({
         <div className="flex items-center gap-1">
           <Tooltip label={screenEnabled ? "Uses Screen" : "Screen off"}>
             <IconButton
-              aria-label={screenEnabled ? "Screen context on" : "Screen context off"}
+              aria-label="Screen context"
               active={screenEnabled}
               aria-pressed={screenEnabled}
               onClick={onToggleScreen}
@@ -103,9 +111,9 @@ export function HudToolbar({
             </IconButton>
           </Tooltip>
 
-          <Tooltip label={protection ? "Content-protected" : "Detectable"}>
+          <Tooltip label={protectionLabel}>
             <IconButton
-              aria-label={protection ? "Content protection on" : "Content protection off"}
+              aria-label="Content protection"
               aria-pressed={protection}
               onClick={toggleProtection}
               disabled={!displayMode}

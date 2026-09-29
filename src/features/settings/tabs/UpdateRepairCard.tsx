@@ -37,8 +37,8 @@ export function UpdateRepairCard({ lost, onOpenSystemSettings }: Props) {
             macOS turned off {lost.length === 1 ? "a permission" : "some permissions"} after the update
           </h3>
           <p className="mt-1 text-[12.5px] leading-relaxed text-fg-muted">
-            This build of Bluey is not signed with an Apple Developer ID, so macOS treats each update as a new app:
-            permissions and Keychain approvals given to the previous version no longer apply. Turn these back on in
+            When an update changes Bluey’s code signature (builds without an Apple Developer ID do), macOS treats
+            it as a new app: permissions and Keychain approvals given to the previous version no longer apply. Turn these back on in
             System Settings. If Bluey is already listed there, remove it with “–” and add it again. macOS may also
             ask once more before Bluey can read your saved API keys.
           </p>

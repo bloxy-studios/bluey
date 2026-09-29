@@ -1,7 +1,7 @@
 import { act, createEvent, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { FollowUpHeader, HudIdleRow } from "@/features/hud/HudInputRow";
+import { HudComposer } from "@/features/hud/HudInputRow";
 import { useHudShortcuts, type HudShortcutHandlers } from "@/features/hud/useHudShortcuts";
 import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
@@ -26,16 +26,14 @@ function InputHarness({
   shortcuts: HudShortcutHandlers;
 }) {
   useHudShortcuts(shortcuts);
-  return followUp ? (
-    <FollowUpHeader
-      streaming={false}
+  return (
+    <HudComposer
+      expanded={followUp}
       onSubmit={submit}
       onAssist={assist}
       onBack={shortcuts.onNewChat}
       onStop={shortcuts.onEscape}
     />
-  ) : (
-    <HudIdleRow onSubmit={submit} onAssist={assist} />
   );
 }
 
@@ -163,16 +161,33 @@ for (const followUp of [false, true]) {
       expect(assist).not.toHaveBeenCalled();
     });
 
-    it("keeps native text editing shortcuts unconsumed and leaves editable Command+R alone", () => {
+    it("keeps native text editing shortcuts unconsumed", () => {
       const { input, submit, assist, shortcuts } = setup();
       for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
-        for (const key of ["a", "c", "v", "x", "z", "Z", "y", "r"]) {
+        for (const key of ["a", "c", "v", "x", "z", "Z", "y"]) {
           expect(fireEvent.keyDown(input, { key, ...modifier, shiftKey: key === "Z" })).toBe(true);
         }
       }
       expect(submit).not.toHaveBeenCalled();
       expect(assist).not.toHaveBeenCalled();
       for (const handler of Object.values(shortcuts)) expect(handler).not.toHaveBeenCalled();
+    });
+
+    // The composer is focused whenever the HUD shows and ⌘R has no editing meaning
+    // there; with the global New Chat binding off by default it is the only way in (UX-001).
+    it("starts a new chat on Command+R in the focused composer, once, and leaves Shift/Option variants alone", () => {
+      const { input, shortcuts } = setup();
+      fireEvent.change(input, { target: { value: "draft" } });
+      expect(input).toHaveFocus();
+      for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+        expect(fireEvent.keyDown(input, { key: "r", ...modifier })).toBe(false);
+        expect(fireEvent.keyDown(input, { key: "r", ...modifier, repeat: true })).toBe(false);
+      }
+      expect(fireEvent.keyDown(input, { key: "R", metaKey: true, shiftKey: true })).toBe(true);
+      expect(fireEvent.keyDown(input, { key: "®", code: "KeyR", metaKey: true, altKey: true })).toBe(true);
+      expect(fireEvent.keyDown(input, { key: "r", metaKey: true, altKey: true })).toBe(true);
+      expect(shortcuts.onNewChat).toHaveBeenCalledTimes(2);
+      expect(shortcuts.onCaptureAnalyze).not.toHaveBeenCalled();
     });
 
     it("prevents repeated button activation without disabling a fresh click", () => {

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { Toasts } from "@/components/ui/Toast";
 import { useToastStore } from "@/components/ui/toast-store";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import AITab from "@/features/settings/tabs/AITab";
@@ -13,6 +14,7 @@ function renderTab() {
   return render(
     <TooltipProvider>
       <AITab />
+      <Toasts />
     </TooltipProvider>,
   );
 }
@@ -308,10 +310,10 @@ describe("AITab — a provider's first key (FEATURE-004)", () => {
 
     await waitFor(() => expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBe("anthropic"));
     expect(models()?.default).toEqual({ providerId: "anthropic", model: "claude-sonnet-5" });
-    const toast = undoToast();
-    expect(toast?.message).toBe("Roles now use Claude (Foundry)'s recommended models");
+    const toast = await screen.findByText("Roles now use Claude (Foundry)'s recommended models");
 
-    await toast?.action?.run();
+    // Undo as the Settings window renders it, not through the store (the info toast used to drop it).
+    await user.click(within(toast.closest("[role=status]") as HTMLElement).getByRole("button", { name: "Undo" }));
     await waitFor(() => expect(models()?.default).toBeNull());
     expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBeNull();
   });

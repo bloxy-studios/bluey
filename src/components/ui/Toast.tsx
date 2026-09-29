@@ -4,6 +4,25 @@ import { runRecovery } from "@/lib/errors/present";
 import { cn } from "@/lib/utils/cn";
 import { useToastStore, type ToastItem } from "./toast-store";
 
+/** The toast's action (a recovery, or Undo): dismisses the toast, then runs it. */
+function ToastAction({ toast, className }: { toast: ToastItem; className?: string }) {
+  const dismiss = useToastStore((state) => state.dismiss);
+  if (!toast.action) return null;
+  const { label, run } = toast.action;
+  return (
+    <button
+      type="button"
+      className={cn("font-medium text-accent hover:text-accent-hover", className)}
+      onClick={() => {
+        dismiss(toast.id);
+        void runRecovery(run);
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 function ErrorToast({ toast }: { toast: ToastItem }) {
   const dismiss = useToastStore((state) => state.dismiss);
   return (
@@ -18,18 +37,7 @@ function ErrorToast({ toast }: { toast: ToastItem }) {
       <div className="min-w-0 flex-1">
         {toast.title ? <div className="text-[13px] font-medium">{toast.title}</div> : null}
         <p className="m-0 mt-0.5 text-[12.5px] leading-snug text-white/70">{toast.message}</p>
-        {toast.action ? (
-          <button
-            type="button"
-            className="mt-1.5 text-[12.5px] font-medium text-accent hover:text-accent-hover"
-            onClick={() => {
-              dismiss(toast.id);
-              if (toast.action) void runRecovery(toast.action.run);
-            }}
-          >
-            {toast.action.label}
-          </button>
-        ) : null}
+        <ToastAction toast={toast} className="mt-1.5 text-[12.5px]" />
       </div>
       <button
         type="button"
@@ -49,8 +57,8 @@ export interface ToastsProps {
 }
 
 /**
- * Toast host: fixed bottom-center. Transient confirmations ("Copied") and error
- * toasts with a recovery link — unless an inline host (the HUD notice row) shows the errors.
+ * Toast host: fixed bottom-center. Transient confirmations ("Copied", or with an Undo) and
+ * error toasts with a recovery link — unless an inline host (the HUD notice row) shows the errors.
  */
 export function Toasts({ limit }: ToastsProps = {}) {
   const all = useToastStore((state) => state.toasts);
@@ -67,9 +75,14 @@ export function Toasts({ limit }: ToastsProps = {}) {
           <div
             key={toast.id}
             role="status"
-            className="rounded-full bg-tooltip-bg px-3.5 py-1.5 text-[13px] font-medium text-white shadow-lg shadow-black/30 motion-safe:animate-rise-in"
+            className={cn(
+              "flex items-center gap-3 rounded-full bg-tooltip-bg px-3.5 py-1.5 text-[13px] font-medium text-white shadow-lg shadow-black/30 motion-safe:animate-rise-in",
+              // Only a toast with an action (e.g. Undo) takes clicks.
+              toast.action && "pointer-events-auto",
+            )}
           >
             {toast.message}
+            <ToastAction toast={toast} />
           </div>
         ),
       )}

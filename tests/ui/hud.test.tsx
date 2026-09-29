@@ -109,7 +109,7 @@ describe("HudPanel", () => {
     const user = userEvent.setup();
     renderHud();
     try {
-      await user.click(screen.getByRole("button", { name: "Screen context on" }));
+      await user.click(screen.getByRole("button", { name: "Screen context", pressed: true }));
       await user.keyboard("{Meta>}{Enter}{/Meta}");
       expect(engine.asks).toHaveLength(1);
       expect(engine.asks[0]?.trigger).toBe("shortcut_capture");

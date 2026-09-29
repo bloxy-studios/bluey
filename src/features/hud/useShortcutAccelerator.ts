@@ -4,9 +4,11 @@ import { useSettingsStore } from "@/stores/settingsStore";
 /**
  * Keys the HUD handles itself while it has focus (useHudShortcuts), whatever the
  * global binding says: New Chat and Settings are HUD-local by default so the
- * frontmost app keeps ⌘R and ⌘, (UX-001).
+ * frontmost app keeps ⌘R and ⌘, (UX-001); ⌘↵ and ⌘⇧↵ keep working there too.
  */
 const HUD_LOCAL_ACCELERATORS: Partial<Record<ShortcutId, string>> = {
+  capture_analyze: "CmdOrCtrl+Enter",
+  generate_response: "CmdOrCtrl+Shift+Enter",
   new_chat: "CmdOrCtrl+KeyR",
   open_settings: "CmdOrCtrl+Comma",
 };

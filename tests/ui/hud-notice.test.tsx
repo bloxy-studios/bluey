@@ -48,6 +48,17 @@ describe("HUD notice row (UX-013)", () => {
     expect(alert.compareDocumentPosition(audio) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  // The message carries the instruction (which System Settings pane): an error may wrap to a
+  // second line instead of hiding it behind a hover-only title.
+  it("lets an error's instruction wrap instead of truncating it to one line", async () => {
+    renderHudWindow();
+    act(() => showErrorToast(micDenied));
+
+    const text = (await screen.findByRole("alert")).querySelector("p");
+    expect(text).toHaveClass("line-clamp-2");
+    expect(text).not.toHaveClass("truncate");
+  });
+
   it("runs the recovery and dismisses the notice", async () => {
     const user = userEvent.setup();
     renderHudWindow();
@@ -122,10 +133,10 @@ describe("screen context notice (UX-002)", () => {
 
     act(() => mock.emit("context.updated", { snapshot: deniedSnapshot, reason: "manual" }));
     expect(await screen.findByText("Screen not included")).toBeInTheDocument();
-    const toggle = screen.getByRole("button", { name: "Screen context on" });
+    const toggle = screen.getByRole("button", { name: "Screen context" });
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     await user.click(toggle);
-    expect(screen.getByRole("button", { name: "Screen context off" })).toHaveAttribute("aria-pressed", "false");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByText("Screen not included")).not.toBeInTheDocument();
   });
 });

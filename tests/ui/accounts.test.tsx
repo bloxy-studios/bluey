@@ -206,6 +206,23 @@ describe("Settings → AI → Accounts (MockTransport)", () => {
     expect(await bluey.ai.listModels({ providerId: "chatgpt", role: "embedding" })).toEqual([]);
   });
 
+  it("labels a rate-limited account as rate limited in the role pickers, not as not connected", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByTestId("accounts-list");
+    await acceptConsents("chatgpt");
+
+    mock.nextAccountOutcome = "rate_limited";
+    await user.click(within(card("chatgpt")).getByRole("button", { name: "Connect ChatGPT" }));
+    await waitFor(() => expect(within(card("chatgpt")).getByText(/5h limit · resets/)).toBeInTheDocument());
+
+    // It is still signed in: "not connected" or "no key" would point at the wrong fix.
+    for (const label of ["Default provider", "Default AI provider"]) {
+      const picker = screen.getByLabelText(label);
+      expect(within(picker).getByRole("option", { name: "ChatGPT (rate limited)" })).toBeInTheDocument();
+    }
+  });
+
   it("the switch hides the cards and blocks new sign-ins without a rebuild", async () => {
     const user = userEvent.setup();
     renderTab();
