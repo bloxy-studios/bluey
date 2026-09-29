@@ -511,58 +511,91 @@ impl SecretsStore {
 
 /// Load `.env.local` and then `.env` into the process environment. Variables
 /// that are already set win, and an earlier file wins over a later one (so
-/// `.env.local` overrides `.env`, as with Vite and Bun). Directories searched,
-/// in order: for development builds the repository root and `src-tauri` — the
-/// Tauri CLI runs the app from `src-tauri`, so a plain relative `.env` would
-/// miss the repository's files — then the current directory and the directory
-/// of the executable.
+/// `.env.local` overrides `.env`, as with Vite and Bun). Files read, in order:
+/// an explicit `BLUEY_ENV_FILE`; then, for development builds only, the
+/// repository root and `src-tauri` — the Tauri CLI runs the app from
+/// `src-tauri`, so a plain relative `.env` would miss the repository's files —
+/// the current directory and the directory of the executable. A release build
+/// never picks up an `.env` from wherever it was launched (SEC-015).
 ///
 /// Values are never logged. The loaded paths are returned so the caller can log
 /// them once logging is up (this runs first: `BLUEY_LOG_LEVEL` may live here).
 pub fn load_dotenv() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    #[cfg(debug_assertions)]
-    {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        if let Some(root) = manifest.parent() {
-            dirs.push(root.to_path_buf());
-        }
-        dirs.push(manifest.to_path_buf());
-    }
-    dirs.push(PathBuf::from("."));
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-    {
-        dirs.push(dir);
-    }
+    let explicit = std::env::var_os("BLUEY_ENV_FILE").map(PathBuf::from);
+    let dirs = dotenv_dirs(cfg!(debug_assertions));
+    let files = dotenv_files(explicit, &dirs);
 
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut loaded = Vec::new();
-    for dir in dirs {
-        for name in [".env.local", ".env"] {
-            let path = dir.join(name);
-            let Ok(contents) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            // The current directory may be one of the directories above.
-            if !seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())) {
-                continue;
-            }
-            for (key, value) in crate::dotenv::parse(&contents) {
-                if std::env::var_os(&key).is_none() {
-                    std::env::set_var(&key, &value);
-                }
-            }
-            loaded.push(path);
+    for path in files {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // The current directory may be one of the directories above.
+        if !seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())) {
+            continue;
         }
+        for (key, value) in crate::dotenv::parse(&contents) {
+            if std::env::var_os(&key).is_none() {
+                std::env::set_var(&key, &value);
+            }
+        }
+        loaded.push(path);
     }
     loaded
+}
+
+/// Where a development build looks for `.env` files; a release build looks
+/// nowhere (only `BLUEY_ENV_FILE`).
+fn dotenv_dirs(development: bool) -> Vec<PathBuf> {
+    if !development {
+        return Vec::new();
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    manifest
+        .parent()
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain([manifest.to_path_buf(), PathBuf::from(".")])
+        .chain(exe_dir)
+        .collect()
+}
+
+/// The env files [`load_dotenv`] tries, in priority order: the explicit file,
+/// then `.env.local` and `.env` of each search directory.
+fn dotenv_files(explicit: Option<PathBuf>, dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let searched = dirs
+        .iter()
+        .flat_map(|dir| [dir.join(".env.local"), dir.join(".env")]);
+    explicit.into_iter().chain(searched).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn debug_builds_never_share_the_installed_apps_keychain_service() {
+        use crate::storage::BUNDLE_ID;
+        assert_ne!(SERVICE, BUNDLE_ID);
+        assert!(SERVICE.starts_with(BUNDLE_ID));
+    }
+
+    #[test]
+    fn release_builds_read_only_an_explicit_env_file() {
+        assert!(dotenv_dirs(false).is_empty(), "no cwd / exe-dir .env");
+        let explicit = PathBuf::from("/tmp/bluey.env");
+        assert_eq!(dotenv_files(Some(explicit.clone()), &[]), vec![explicit]);
+        assert!(dotenv_dirs(true).contains(&PathBuf::from(".")));
+        assert_eq!(
+            dotenv_files(None, &[PathBuf::from("d")]),
+            vec![PathBuf::from("d/.env.local"), PathBuf::from("d/.env")]
+        );
+    }
 
     #[test]
     fn the_webview_gate_mirrors_secret_keys_in_commands_ts() {
