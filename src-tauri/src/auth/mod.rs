@@ -41,7 +41,7 @@ use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
-use crate::secrets::{SecretsStore, CLERK_OAUTH_TOKENS_KEY, CLERK_TOKEN_KEY};
+use crate::secrets::{SecretState, SecretsStore, CLERK_OAUTH_TOKENS_KEY, CLERK_TOKEN_KEY};
 use crate::state::{AppCore, StateHub};
 use crate::storage::Storage;
 
@@ -571,6 +571,21 @@ impl AuthManager {
         let Some(config) = self.config.clone() else {
             return;
         };
+        // Never prompt at boot (ADR 0011): only an item the silent probe could
+        // read (and so cached) is checked now. A locked item (an update changed
+        // Bluey's code identity) or a failed probe keeps the cached user, as
+        // offline does; the token is read on first use or via Allow access.
+        match self.secrets.state(CLERK_OAUTH_TOKENS_KEY).await {
+            Ok(SecretState::Present) => {}
+            Ok(state) => {
+                tracing::debug!(?state, "sign-in check deferred");
+                return;
+            }
+            Err(error) => {
+                tracing::debug!(code = %error.code, "sign-in check deferred");
+                return;
+            }
+        }
         let Some(mut tokens) = self.load_tokens().await else {
             return;
         };

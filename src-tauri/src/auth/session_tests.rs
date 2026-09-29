@@ -146,6 +146,11 @@ async fn restoring_a_valid_sign_in_does_not_rewrite_the_keychain_item() {
     auth.restore().await;
 
     assert!(auth.user.lock().is_some(), "the sign-in was restored");
+    assert_eq!(
+        fake.reads(),
+        0,
+        "the boot probe's silent read is the only one"
+    );
     assert_eq!(fake.writes(), 0, "unchanged tokens are never re-saved");
     assert_eq!(fake.count(crate::secrets::backend::fake::Op::Remove), 0);
 }
@@ -168,5 +173,34 @@ async fn restoring_while_offline_keeps_the_stored_sign_in() {
         fake.value(CLERK_OAUTH_TOKENS_KEY).is_some(),
         "not signed out"
     );
+    assert_eq!(fake.count(crate::secrets::backend::fake::Op::Remove), 0);
+}
+
+#[tokio::test]
+async fn boot_never_reads_a_locked_sign_in() {
+    let fake = Arc::new(CountingFake::with_items(&[(
+        CLERK_OAUTH_TOKENS_KEY,
+        &stored_tokens(),
+    )]));
+    // An update changed Bluey's code identity: reading would show the prompt.
+    fake.lock_item(CLERK_OAUTH_TOKENS_KEY, -25308);
+    let auth = restoring(&fake, "http://127.0.0.1:9".into());
+    let user = bluey_core::types::AuthUser {
+        id: "user_1".into(),
+        email: None,
+        first_name: None,
+        last_name: None,
+        image_url: None,
+    };
+    *auth.user.lock() = Some(user.clone());
+
+    auth.restore().await;
+
+    assert_eq!(
+        fake.reads(),
+        0,
+        "a read here is a Keychain prompt at launch"
+    );
+    assert_eq!(auth.user.lock().as_ref(), Some(&user), "the user is kept");
     assert_eq!(fake.count(crate::secrets::backend::fake::Op::Remove), 0);
 }
