@@ -25,7 +25,9 @@ pub async fn updates_install(core: State<'_, AppCore>) -> BlueyResult<UpdateStat
     core.updates.install().await
 }
 
+/// Async so it runs off the main thread: shutdown awaits the helper and the
+/// restart request reaches the event loop (MAC-014).
 #[tauri::command]
-pub fn updates_relaunch(core: State<'_, AppCore>) -> BlueyResult<()> {
-    core.updates.relaunch()
+pub async fn updates_relaunch(core: State<'_, AppCore>) -> BlueyResult<()> {
+    core.updates.relaunch().await
 }
