@@ -44,12 +44,33 @@ async function cancelStreaming(): Promise<void> {
   ]);
 }
 
-/** A turn's request; turns shown from the prepared cache fall back to their question. */
+/**
+ * A turn's request; turns shown from the prepared cache fall back to their
+ * question. A heard question goes back as the detected question it was, never
+ * as a typed instruction: it is speech, not my words (AI-004).
+ */
 function requestOf(turn: ChatTurn): TurnRequest {
   if (turn.request) return turn.request;
+  if (turn.suggestion) {
+    const { question, speaker } = turn.suggestion;
+    return {
+      trigger: "detected_event",
+      promptLabel: turn.promptLabel,
+      detectedEvent: {
+        id: `suggestion:${turn.id}`,
+        type: "question",
+        confidence: 1,
+        requiresResponse: true,
+        text: question,
+        segmentIds: [],
+        ...(speaker ? { speaker } : {}),
+        detectedAt: turn.response?.createdAt ?? new Date().toISOString(),
+      },
+    };
+  }
   return {
     trigger: "regenerate",
-    instruction: turn.prompt ?? turn.suggestion?.question,
+    instruction: turn.prompt,
     promptLabel: turn.promptLabel,
     captureScreen: false,
   };

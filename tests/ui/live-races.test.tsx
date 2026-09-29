@@ -178,6 +178,23 @@ describe("live suggestion races", () => {
     expect(useChatStore.getState().turns.at(-1)?.suggestion?.question).toBe("Question q1?");
   });
 
+  it("Regenerate and Retry on a prepared answer send its heard question as heard, not as typed", async () => {
+    const { result } = renderHook(() => useAsk());
+    engine.preparedQueue.push(makeResponse({ id: "prep-y", prompt: "Why us?", prepared: true }));
+    act(() => result.current.generateOrTakePrepared());
+    await flush();
+    const shown = useChatStore.getState().turns.at(-1);
+    expect(shown?.suggestion?.question).toBe("Why us?");
+
+    act(() => result.current.regenerate(shown?.id));
+    expect(engine.asks.at(-1)).toMatchObject({ trigger: "regenerate", detectedEvent: { text: "Why us?" } });
+    expect(engine.asks.at(-1)?.instruction).toBeUndefined();
+
+    act(() => result.current.retry(shown?.id));
+    expect(engine.asks.at(-1)).toMatchObject({ trigger: "detected_event", detectedEvent: { text: "Why us?" } });
+    expect(engine.asks.at(-1)?.instruction).toBeUndefined();
+  });
+
   it("a hidden HUD gets no live turn; the newest question is prepared when it is shown", async () => {
     setHudVisible(false);
     mock.emit("question.detected", detected("q1"));
