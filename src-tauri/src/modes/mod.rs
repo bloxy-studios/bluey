@@ -250,12 +250,16 @@ mod tests {
             let paths = Arc::new(AppPaths {
                 db_path: dir.join("bluey.db"),
                 frames_dir: dir.join("frames"),
+                screenshots_dir: dir.join("screenshots"),
                 logs_dir: dir.join("logs"),
                 data_dir: dir.clone(),
             });
             let storage = Arc::new(Storage::open(paths).unwrap());
             let bus = Arc::new(EventBus::new());
-            let secrets = Arc::new(SecretsStore::new());
+            // Never the real Keychain in unit tests.
+            let secrets = Arc::new(SecretsStore::with_backend(Arc::new(
+                crate::secrets::backend::fake::CountingFake::default(),
+            )));
             let settings =
                 Arc::new(SettingsManager::load(storage.clone(), secrets, bus.clone()).unwrap());
             let hub = Arc::new(StateHub::new(DEFAULT_MODE_ID, bus.clone()));

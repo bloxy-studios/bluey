@@ -92,6 +92,7 @@ impl Storage {
             paths: Arc::new(AppPaths {
                 db_path: dir.join("bluey.db"),
                 frames_dir: dir.join("frames"),
+                screenshots_dir: dir.join("screenshots"),
                 logs_dir: dir.join("logs"),
                 data_dir: dir,
             }),
