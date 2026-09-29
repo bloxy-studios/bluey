@@ -195,27 +195,43 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
 const FLUSH_TIMEOUT_MS = 10_000;
 
 /**
- * Resolve once everything written to `stream` so far has been handed to the
- * OS. `write()` returning true only means the chunk was queued — on a pipe the
+ * A line sink that remembers when its latest frame has left the process.
+ * `write()` returning true only means the chunk was queued — on a pipe the
  * final `research.completed` frame can still be in flight, and exiting then
- * cuts it off (AI-014). Writes complete in order, so the callback of an empty
- * write fires after every earlier chunk.
+ * cuts it off (AI-014). Only a frame's own write callback proves it left: Bun
+ * calls an empty write's callback at once, before earlier chunks reach the pipe.
  */
-export function flushStream(stream: Pick<NodeJS.WritableStream, "write">): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
-    (timer as { unref?: () => void }).unref?.();
-    stream.write("", () => {
-      clearTimeout(timer);
-      resolve();
+export class FlushingSink implements LineSink {
+  private latest: Promise<void> = Promise.resolve();
+
+  constructor(private readonly stream: Pick<NodeJS.WritableStream, "write">) {}
+
+  write(chunk: string): boolean {
+    let queued = false;
+    this.latest = new Promise<void>((resolve) => {
+      queued = this.stream.write(chunk, () => resolve());
     });
-  });
+    return queued;
+  }
+
+  /** Resolves once the latest frame was handed to the OS (or after a timeout). */
+  flushed(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
+      (timer as { unref?: () => void }).unref?.();
+      void this.latest.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
 }
 
 /** Process entrypoint used by main.ts (dev) and the compiled per-target entries. */
 export async function runSidecarProcess(options: StartSidecarOptions = {}): Promise<never> {
-  const code = await startSidecar(options);
-  await flushStream(process.stdout);
+  const output = new FlushingSink(process.stdout);
+  const code = await startSidecar({ output, ...options });
+  await output.flushed();
   process.exit(code);
 }
 
