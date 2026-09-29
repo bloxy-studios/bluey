@@ -4,14 +4,39 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { OnboardingFlow } from "@/features/onboarding/OnboardingFlow";
+import { readOnboardingStep } from "@/features/onboarding/progress";
 import { ConnectAIStep } from "@/features/onboarding/steps/connect";
 import type { MockTransport } from "@/lib/tauri/mock";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { setupMockApp } from "./helpers";
 
+/** The onboarding window's localStorage (Node's own global has none without a backing file). */
+function stubLocalStorage(): void {
+  const memory = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => memory.get(key) ?? null,
+    setItem: (key: string, value: string) => void memory.set(key, value),
+    removeItem: (key: string) => void memory.delete(key),
+  });
+}
+
 describe("OnboardingFlow (MockTransport)", () => {
   beforeEach(async () => {
+    stubLocalStorage();
     await setupMockApp();
+  });
+
+  it("resumes at the step it reached after a relaunch, and forgets it on completion (ONB-004)", async () => {
+    const user = userEvent.setup();
+    const first = render(<TooltipProvider><OnboardingFlow /></TooltipProvider>);
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByText("Sign in")).toBeInTheDocument();
+    first.unmount(); // "Quit & Reopen"
+
+    render(<TooltipProvider><OnboardingFlow /></TooltipProvider>);
+    expect(screen.getByText("Sign in")).toBeInTheDocument();
+    expect(screen.queryByText("Welcome to Bluey")).not.toBeInTheDocument();
+    expect(readOnboardingStep()).toBe("sign-in");
   });
 
   it("keeps one 44px drag strip and stationary controls outside the step's scroll surface", async () => {
@@ -145,6 +170,7 @@ describe("OnboardingFlow (MockTransport)", () => {
     expect(screen.getByText(/is ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open Bluey" }));
     await waitFor(() => expect(useSettingsStore.getState().settings?.general.onboardingCompleted).toBe(true));
+    await waitFor(() => expect(readOnboardingStep()).toBeNull()); // the next run starts at Welcome
   });
 });
 

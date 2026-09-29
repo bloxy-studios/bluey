@@ -19,6 +19,7 @@ import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
 import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
+import { clearOnboardingStep } from "@/features/onboarding/progress";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { signOutEverywhere } from "@/lib/auth/auth-actions";
 import { OUTPUT_LANGUAGES, outputLanguageCode } from "@/lib/output-languages";
@@ -157,6 +158,7 @@ export default function GeneralTab() {
             variant="ghost"
             size="sm"
             onClick={() => {
+              clearOnboardingStep();
               void update({ general: { onboardingCompleted: false } }).then(() =>
                 bluey.window.open({ label: "onboarding" }),
               );
