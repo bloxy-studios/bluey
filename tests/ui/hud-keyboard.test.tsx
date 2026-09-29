@@ -200,6 +200,14 @@ for (const followUp of [false, true]) {
       fireEvent.click(button);
       expect(submit).toHaveBeenCalledExactlyOnceWith("question");
     });
+
+    it("focuses the input when a second toggle-panel press hands the HUD the keyboard (UX-015)", () => {
+      const { input } = setup();
+      input.blur();
+      expect(input).not.toHaveFocus();
+      act(() => eventBus.emit("panel.focusInput", {}));
+      expect(input).toHaveFocus();
+    });
   });
 }
 
