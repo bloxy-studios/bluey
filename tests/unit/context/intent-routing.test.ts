@@ -161,12 +161,16 @@ describe("the voice follows the deliverable (MODE-002)", () => {
     const intent = ask("explain what a mutex is so I understand it", interview, "typed");
     expect(intent.answerShape).toBe("explain");
     expect(intent.voice).toBe("explain-to-user");
+    // The conversational schema's `content` is "exactly what I say": an explanation uses the plain answer.
+    expect(intent.schemaId).toBe("answer");
+    expect(intent.responseType).toBe("answer");
   });
 
   it("keeps a typed interview question addressed to me as words to say", () => {
     const intent = ask("Why do you want to leave your current role?", interview, "typed");
     expect(intent.answerShape).toBe("spoken");
     expect(intent.voice).toBe("speak-as-user");
+    expect(intent.schemaId).toBe("suggested-response");
   });
 
   it("speaks as me on ⌘⇧↵", () => {

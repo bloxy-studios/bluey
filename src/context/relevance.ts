@@ -469,11 +469,20 @@ export function classifyIntent(input: IntentInput): Intent {
   const latency = slowerOf(mode.preferredLatency, minimumLatencyFor(task));
 
   const behavioral = detectedEvent?.type === "behavioral_question" || BEHAVIORAL_MARKERS.test(question);
-  const schemaId = schemaFor(mode, task, { debugging, spokenTrigger, behavioral });
-  const responseType = responseTypeFor(schemaId, task);
-  const answerShape = detectAnswerShape({ question, screenText, task, schemaId, trigger, debugging });
-
+  const modeSchema = schemaFor(mode, task, { debugging, spokenTrigger, behavioral });
+  const answerShape = detectAnswerShape({
+    question,
+    screenText,
+    task,
+    schemaId: modeSchema,
+    trigger,
+    debugging,
+  });
   const voice = voiceFor(answerShape, trigger);
+  // An explanation for me has no words to say: a conversational schema's
+  // "`content` is exactly what I say" would contradict the voice line (MODE-002).
+  const schemaId = voice === "explain-to-user" && SPOKEN_SCHEMAS.has(modeSchema) ? "answer" : modeSchema;
+  const responseType = responseTypeFor(schemaId, task);
 
   return { task, visionRequired, reasoning, latency, responseType, schemaId, answerShape, voice };
 }
