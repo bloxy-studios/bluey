@@ -11,7 +11,7 @@
 import { createInterface } from "node:readline";
 
 import { startResearchJob, type AgentRunDeps, type ResearchJobHandle } from "./agent";
-import { loadConfig, type BuildVariant } from "./config";
+import { agentInfo, loadConfig, type BuildVariant } from "./config";
 import { createMockExaClient, createMockFirecrawlClient } from "./mock";
 import {
   deepResearchRequestSchema,
@@ -76,7 +76,11 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
       if (job) {
         writer.error(
           id,
-          wireError("job_already_running", "this sidecar already ran a research job (one job per process)", "sidecar"),
+          wireError(
+            "job_already_running",
+            "this sidecar already ran a research job (one job per process)",
+            "sidecar",
+          ),
         );
         return;
       }
@@ -103,7 +107,10 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
         return;
       }
       if (!job || job.jobId !== parsed.data.jobId) {
-        writer.error(id, wireError("unknown_job", `no running job with id "${parsed.data.jobId}"`, "sidecar"));
+        writer.error(
+          id,
+          wireError("unknown_job", `no running job with id "${parsed.data.jobId}"`, "sidecar"),
+        );
         return;
       }
       writer.result(id, { cancelled: true });
@@ -138,6 +145,16 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
           break;
         case "research.cancel":
           handleCancel(id, params);
+          break;
+        case "agent.info":
+          // Credential-free capability probe the host caches (lite builds cannot run Claude).
+          writer.result(
+            id,
+            agentInfo(config, {
+              variant: baseDeps.buildVariant,
+              embeddedClaudePath: baseDeps.embeddedClaudePath,
+            }),
+          );
           break;
         case "document.response":
           handleDocumentResponse(id, params);

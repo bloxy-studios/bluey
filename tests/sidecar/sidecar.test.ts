@@ -492,3 +492,19 @@ describe("sidecar protocol errors", () => {
     expect(await harness.done).toBe(0);
   });
 });
+
+describe("sidecar agent.info", () => {
+  it.each([
+    { variant: "lite" as const, env: {}, backends: ["gemini"] },
+    { variant: "lite" as const, env: { BLUEY_CLAUDE_CLI: "/opt/claude" }, backends: ["gemini", "claude"] },
+    { variant: "full" as const, env: {}, backends: ["gemini", "claude"] },
+  ])(
+    "reports the $variant build's backends without credentials ($backends)",
+    async ({ variant, env, backends }) => {
+      const harness = makeHarness({ env, buildVariant: variant });
+      harness.send({ id: 7, method: "agent.info", params: {} });
+      const reply = await harness.waitFor((f) => f["id"] === 7, "agent.info reply");
+      expect(reply["result"]).toEqual({ variant, backends });
+    },
+  );
+});

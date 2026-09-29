@@ -306,7 +306,17 @@ const PROVIDER_ENV_VARS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
+  // Tool keys: the MCP tools run in this process, the CLI never needs them.
+  "EXA_API_KEY",
+  "FIRECRAWL_API_KEY",
 ] as const;
+
+/** Claude Code's own opt-outs: no telemetry, error reports or update checks (SEC-017). */
+const CLI_PRIVACY_ENV = {
+  DISABLE_TELEMETRY: "1",
+  DISABLE_ERROR_REPORTING: "1",
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+} as const;
 
 /**
  * Build the environment handed to the Claude Code subprocess. The SDK's `env`
@@ -322,6 +332,7 @@ export function buildSubprocessEnv(
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...baseEnv,
+    ...CLI_PRIVACY_ENV,
     CLAUDE_AGENT_SDK_CLIENT_APP: "bluey-agent/0.1.0",
   };
   for (const name of PROVIDER_ENV_VARS) delete env[name];
