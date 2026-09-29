@@ -28,8 +28,14 @@ interface BlueyMode {
 | Team Meeting | meeting | fast | transcript, session_memory | live: Important / Decision / Action item / Question; after: Summary … |
 | Lecture | lecture | fast | transcript, screen, session_memory | concepts, definitions, notes, study guide, questions |
 
-Definitions live in `bluey_core::modes::built_in_modes` and are seeded into SQLite on first
-run; users can edit instructions and attach files. *Reset to default* restores the original.
+Definitions live in `bluey_core::modes::built_in_modes` and are seeded into SQLite at every
+launch; users can edit instructions and attach files. Each built-in row keeps a `seed_hash`
+fingerprint of the shipped definition it matches: a built-in the user never edited is refreshed
+to the new definition when a release changes it, an edited one keeps the user's text.
+*Reset to default* restores the shipped definition (files are kept) and makes the mode
+refreshable again. The TS side never copies these definitions: `tests/fixtures/rust/built-in-modes.json`
+is generated from Rust (`BLUEY_UPDATE_FIXTURES=1 cargo test -p bluey-core --test ts_fixtures`,
+which fails on drift) and feeds the mock transport and the TS tests.
 
 **Built-in instructions are judgment only** (90–180 words each, enforced by
 `bluey_core::modes` tests): what a strong answer in that situation gets right — which story to
@@ -42,7 +48,27 @@ not the format.
 Settings → Modes → **New Mode**: name, description, instructions ("Meeting context"), response
 style, preferred output schema, attached context files, preferred model role, latency
 preference. Persisted in the `modes` table. Actions: duplicate, edit, delete, set default,
-set active. Validation: `validateModeDraft` (name 1–48 chars, instructions ≤ 8k chars).
+set active.
+
+- **Limits** (the Rust `ModeRepository` enforces them on create and update with
+  `internal.invalid_params`; the editor checks the same rules with `validateModeDraft` and shows
+  the error inline without saving): name 1–60 characters, description ≤ 300, instructions
+  ≤ 4000, a kebab-case icon name, and a preferred model role among default, fast, reasoning,
+  vision and research. Blank instructions mean no mode-specific instructions.
+- **Clearing**: in `modes_update` an absent field is kept and `null` clears the sidebar group or
+  the preferred model role ("Auto model"); a blank group is no group.
+- **Files** are the mode-scoped documents (`documents.scope = 'mode'`, `scope_id` = the mode);
+  `attachedDocumentIds` is derived from them. *Duplicate* copies each file (with its chunks and
+  embeddings) to the new mode; *Delete* removes the mode's files with it.
+
+## Default and active mode
+
+`general.defaultModeId` is the mode Bluey starts in. Bluey launches in the default mode, except
+when an active session is being resumed: that session keeps the mode it was running in. Setting
+the default (onboarding or Settings) also switches to it right away when no session is running;
+a running session keeps its mode until it ends. Deleting the mode that is the default resets the
+default to `general`; deleting the active mode switches to the default (or `general` when the
+default no longer exists). A stored mode that no longer exists always falls back to `general`.
 
 ## How a mode shapes a response
 1. **Prompt** — the system message is, in order: identity + safety rules · the **response
