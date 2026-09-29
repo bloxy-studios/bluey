@@ -70,25 +70,32 @@ describe("SessionsTab", () => {
 
   it("pages history 50 at a time and says how many sessions exist (UX-017)", async () => {
     const { transport } = await setupInterceptedApp();
-    for (let i = 1; i <= 58; i += 1) {
-      await bluey.session.start({ title: `Seeded ${i}` });
-      await bluey.session.end();
-    }
+    // The mock pages like Rust ...
+    const [template] = await bluey.session.search({ query: { limit: 1 } });
+    expect(await bluey.session.search({ query: { offset: 1 } })).toHaveLength(1);
+    // ... and 60 scripted sessions keep this test fast (no 58 start/end round trips).
+    const history = Array.from({ length: 60 }, (_, i) => ({
+      ...template,
+      session: { ...template.session, id: `paged-${i}`, title: `Paged ${i + 1}` },
+    }));
     const offsets: (number | undefined)[] = [];
-    transport.intercept("sessions_search", (args, next) => {
-      offsets.push(args.query.offset);
-      return next();
-    });
+    transport
+      .intercept("sessions_search", async ({ query }) => {
+        offsets.push(query.offset);
+        const from = query.offset ?? 0;
+        return history.slice(from, from + (query.limit ?? 50));
+      })
+      .intercept("data_usage_stats", async (_args, next) => ({ ...(await next()), sessions: history.length }));
     const user = userEvent.setup();
     withTooltips(<SessionsTab />);
 
     expect(await screen.findByText("Showing 50 of 60 sessions")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /^Delete session / })).toHaveLength(50);
+    expect(screen.getAllByText(/^Paged \d+$/)).toHaveLength(50);
 
     await user.click(screen.getByRole("button", { name: "Load more" }));
 
     expect(await screen.findByText("Showing 60 of 60 sessions")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /^Delete session / })).toHaveLength(60);
+    expect(screen.getAllByText(/^Paged \d+$/)).toHaveLength(60);
     expect(offsets).toContain(50);
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
