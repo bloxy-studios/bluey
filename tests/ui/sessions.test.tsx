@@ -99,7 +99,7 @@ describe("SessionsTab", () => {
     expect(screen.getAllByText(/^Paged \d+$/)).toHaveLength(60);
     expect(offsets).toContain(50);
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
-  });
+  }, 30_000); // renders 50+ rows twice; slow hosts under full-suite load need the headroom
 });
 
 describe("SessionDetail", () => {

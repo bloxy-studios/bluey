@@ -31,7 +31,9 @@ describe("Permissions repair card after an update (MAC-001)", () => {
   it("names the lost grants, explains the reset and opens each pane", async () => {
     const user = userEvent.setup();
     const open = vi.spyOn(bluey.permissions, "openSettings");
-    act(() => usePermissionsStore.getState().applyRemote(afterUpdate));
+    // Seed the backend (the tab refreshes live, ONB-002), not only the store.
+    const mock = await setupMockApp();
+    act(() => mock.simulateLostAfterUpdate(afterUpdate.lostAfterUpdate ?? []));
     render(<PermissionsTab />);
 
     const card = screen.getByRole("region", { name: "macOS turned off some permissions after the update" });
