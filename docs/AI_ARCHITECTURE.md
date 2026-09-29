@@ -63,6 +63,13 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   preserve code, caveats and citations. The length cap keeps the first paragraph and never
   applies to the spoken, written, code, design and summary shapes (the concise style line drops
   its ~120-word ceiling for design, code and summary answers too). Goal: the minimum text necessary to be useful.
+- **Prompt evaluation** (`tests/prompt-eval/`): the real engine composes one request per row of
+  the evaluation matrix over the fake transport. `invariants.test.ts` checks one `Task:`,
+  `Shape:` and `Voice:` line, the question once, untrusted text only inside the request's
+  nonce blocks, spoken transcript order and the static-layer token budget; `golden.test.ts`
+  snapshots six composed prompts (`__golden__/`, update with `-u` only after reading the diff);
+  `live.test.ts` grades real answers against each case's rubric only with
+  `BLUEY_PROMPT_EVAL_LIVE=1` and `ANTHROPIC_API_KEY` set.
 - **Proactive preparation**: when the classifier detects a likely question with
   `requiresResponse`, the loop in `src/stores/proactive.ts` calls `engine.prepare()`. With
   *Show suggestions = Live* (default) it first opens a suggestion turn in the HUD and passes
