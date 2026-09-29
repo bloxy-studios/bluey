@@ -97,8 +97,6 @@ export interface BlueyResponse {
   truncated?: boolean;
   /** Which model answered (in-memory provenance for the HUD; not persisted). */
   selection?: ResponseSelection;
-  /** A short note about the research step (e.g. why web research was skipped), when there is one. */
-  researchNote?: string;
   createdAt: string;
 }
 
