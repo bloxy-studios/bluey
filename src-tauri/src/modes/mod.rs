@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use bluey_core::events::BlueyEvent;
-use bluey_core::types::{AppEvent, BlueyMode, ModePatch};
+use bluey_core::types::{AppEvent, BlueyMode, ModePatch, Settings};
 use bluey_core::{now_iso, BlueyError, BlueyResult};
-use bluey_storage::{ModeRepository, SettingsRepository};
+use bluey_storage::{ModeRepository, SessionRepository, SettingsRepository};
 
 use crate::events::EventBus;
 use crate::settings::SettingsManager;
@@ -24,7 +24,10 @@ pub struct ModeManager {
 }
 
 impl ModeManager {
-    /// Seed built-ins and resolve the active mode (bootstrap, synchronous).
+    /// Seed built-ins and resolve the active mode (bootstrap, synchronous):
+    /// Bluey launches in the default mode, except that a session being
+    /// resumed keeps the mode it was running in. A mode that no longer
+    /// exists falls back to the built-in `general`.
     pub fn load(
         storage: Arc<Storage>,
         settings: Arc<SettingsManager>,
@@ -34,13 +37,16 @@ impl ModeManager {
         let built_ins = bluey_core::modes::built_in_modes(&now_iso());
         storage.run_sync(|db| ModeRepository::seed_built_in(db, &built_ins))?;
         let stored_active = storage.run_sync(SettingsRepository::get_active_mode_id)?;
+        let resuming_session = storage.run_sync(SessionRepository::get_active)?.is_some();
         let default_id = settings.get().general.default_mode_id;
-        let active_id = stored_active.unwrap_or(default_id);
-        // Fall back to the built-in default when the stored mode vanished.
-        let active_id = match storage.run_sync(|db| ModeRepository::get(db, &active_id)) {
-            Ok(_) => active_id,
-            Err(_) => bluey_core::types::DEFAULT_MODE_ID.to_string(),
+        let preferred = match stored_active.clone() {
+            Some(active) if resuming_session => active,
+            _ => default_id,
         };
+        let active_id = existing_or_general(&storage, preferred);
+        if stored_active.as_deref() != Some(active_id.as_str()) {
+            storage.run_sync(|db| SettingsRepository::set_active_mode_id(db, &active_id))?;
+        }
         let manager = Self {
             storage,
             settings,
@@ -131,13 +137,18 @@ impl ModeManager {
                 "built-in modes cannot be deleted",
             ));
         }
+        // The default falls back to `general` when its mode goes away.
+        let mut default_id = self.settings.get().general.default_mode_id;
+        if default_id == id {
+            default_id = bluey_core::types::DEFAULT_MODE_ID.to_string();
+            self.settings.set_default_mode(&default_id).await?;
+        }
         if id == self.active_id() {
-            // Switch to the default mode before deleting the active one.
-            let fallback = self.settings.get().general.default_mode_id;
-            let fallback = if fallback == id {
-                bluey_core::types::DEFAULT_MODE_ID.to_string()
+            // Switch to the default mode (when it still exists) first.
+            let fallback = if self.get(default_id.clone()).await.is_ok() {
+                default_id
             } else {
-                fallback
+                bluey_core::types::DEFAULT_MODE_ID.to_string()
             };
             self.set_active(fallback).await?;
         }
@@ -173,6 +184,18 @@ impl ModeManager {
         Ok(mode)
     }
 
+    /// Make `id` the default mode. With no session running Bluey also
+    /// switches to it now (a running session keeps its mode; the default
+    /// applies from the next launch).
+    pub async fn set_default(&self, id: String) -> BlueyResult<Settings> {
+        self.get(id.clone()).await?;
+        let settings = self.settings.set_default_mode(&id).await?;
+        if self.hub.status().session_id.is_none() && self.active_id() != id {
+            self.set_active(id).await?;
+        }
+        Ok(settings)
+    }
+
     /// Switch the active mode: persists, updates the state machine and
     /// publishes `mode.changed`. Returns the new app status.
     pub async fn set_active(&self, id: String) -> BlueyResult<bluey_core::types::AppStatus> {
@@ -193,5 +216,174 @@ impl ModeManager {
             session_id: status.session_id.clone(),
         });
         Ok(status)
+    }
+}
+
+/// `id` when that mode exists, else the built-in `general`.
+fn existing_or_general(storage: &Storage, id: String) -> String {
+    match storage.run_sync(|db| ModeRepository::get(db, &id)) {
+        Ok(_) => id,
+        Err(_) => bluey_core::types::DEFAULT_MODE_ID.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::SecretsStore;
+    use crate::storage::AppPaths;
+    use bluey_core::types::DEFAULT_MODE_ID;
+
+    /// A throwaway data directory with the managers `ModeManager` needs.
+    struct Harness {
+        dir: std::path::PathBuf,
+        storage: Arc<Storage>,
+        settings: Arc<SettingsManager>,
+        bus: Arc<EventBus>,
+        hub: Arc<StateHub>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(bluey_core::new_id("bluey-modes-test"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let paths = Arc::new(AppPaths {
+                db_path: dir.join("bluey.db"),
+                frames_dir: dir.join("frames"),
+                logs_dir: dir.join("logs"),
+                data_dir: dir.clone(),
+            });
+            let storage = Arc::new(Storage::open(paths).unwrap());
+            let bus = Arc::new(EventBus::new());
+            let secrets = Arc::new(SecretsStore::new());
+            let settings =
+                Arc::new(SettingsManager::load(storage.clone(), secrets, bus.clone()).unwrap());
+            let hub = Arc::new(StateHub::new(DEFAULT_MODE_ID, bus.clone()));
+            Self {
+                dir,
+                storage,
+                settings,
+                bus,
+                hub,
+            }
+        }
+
+        /// A freshly launched manager over the same data.
+        fn launch(&self) -> ModeManager {
+            ModeManager::load(
+                self.storage.clone(),
+                self.settings.clone(),
+                self.bus.clone(),
+                self.hub.clone(),
+            )
+            .unwrap()
+        }
+
+        fn default_mode_id(&self) -> String {
+            self.settings.get().general.default_mode_id
+        }
+    }
+
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    async fn custom_mode(modes: &ModeManager, name: &str) -> String {
+        let draft = ModePatch {
+            name: Some(name.into()),
+            ..Default::default()
+        };
+        modes.create(draft).await.unwrap().id
+    }
+
+    #[tokio::test]
+    async fn setting_the_default_switches_to_it_when_no_session_runs() {
+        let h = Harness::new();
+        let modes = h.launch();
+        let pitch = custom_mode(&modes, "Pitch").await;
+
+        let settings = modes.set_default(pitch.clone()).await.unwrap();
+
+        assert_eq!(settings.general.default_mode_id, pitch);
+        assert_eq!(modes.active_id(), pitch);
+        assert_eq!(h.hub.status().mode_id, pitch);
+    }
+
+    #[tokio::test]
+    async fn a_running_session_keeps_its_mode_when_the_default_changes() {
+        let h = Harness::new();
+        let modes = h.launch();
+        let pitch = custom_mode(&modes, "Pitch").await;
+        h.hub.transition_soft(AppEvent::SessionChanged {
+            session_id: Some("ses_running".into()),
+        });
+
+        modes.set_default(pitch.clone()).await.unwrap();
+
+        assert_eq!(h.default_mode_id(), pitch);
+        assert_eq!(modes.active_id(), DEFAULT_MODE_ID);
+    }
+
+    #[tokio::test]
+    async fn launch_uses_the_default_mode_unless_a_session_is_resumed() {
+        let h = Harness::new();
+        let modes = h.launch();
+        let pitch = custom_mode(&modes, "Pitch").await;
+        let notes = custom_mode(&modes, "Notes").await;
+        modes.set_default(pitch.clone()).await.unwrap();
+        modes.set_active(notes.clone()).await.unwrap();
+
+        assert_eq!(h.launch().active_id(), pitch);
+
+        // A session left active resumes in the mode it was running in.
+        modes.set_active(notes.clone()).await.unwrap();
+        let mode_id = notes.clone();
+        h.storage
+            .run_sync(|db| SessionRepository::create(db, &mode_id, None))
+            .unwrap();
+        assert_eq!(h.launch().active_id(), notes);
+    }
+
+    #[tokio::test]
+    async fn deleting_the_default_mode_resets_default_and_active_to_general() {
+        let h = Harness::new();
+        let modes = h.launch();
+        let pitch = custom_mode(&modes, "Pitch").await;
+        modes.set_default(pitch.clone()).await.unwrap();
+
+        modes.delete(pitch).await.unwrap();
+
+        assert_eq!(h.default_mode_id(), DEFAULT_MODE_ID);
+        assert_eq!(modes.active_id(), DEFAULT_MODE_ID);
+        assert_eq!(h.launch().active_id(), DEFAULT_MODE_ID);
+    }
+
+    #[tokio::test]
+    async fn deleting_the_active_mode_after_its_default_was_deleted_succeeds() {
+        let h = Harness::new();
+        let modes = h.launch();
+        let a = custom_mode(&modes, "A").await;
+        let b = custom_mode(&modes, "B").await;
+        modes.set_default(a.clone()).await.unwrap();
+        modes.set_active(b.clone()).await.unwrap();
+
+        modes.delete(a).await.unwrap();
+        assert_eq!(h.default_mode_id(), DEFAULT_MODE_ID);
+        modes.delete(b).await.unwrap();
+
+        assert_eq!(modes.active_id(), DEFAULT_MODE_ID);
+    }
+
+    #[tokio::test]
+    async fn a_default_that_no_longer_exists_launches_in_general() {
+        let h = Harness::new();
+        h.settings
+            .update(serde_json::json!({ "general": { "defaultModeId": "mode_gone" } }))
+            .await
+            .unwrap();
+
+        assert_eq!(h.launch().active_id(), DEFAULT_MODE_ID);
     }
 }
