@@ -161,7 +161,13 @@ pub async fn data_export_session(
 }
 
 async fn vacuum(core: &AppCore) {
-    if let Err(e) = core.storage.run(|db| db.vacuum()).await {
+    // The checkpoint empties the WAL, which VACUUM just filled with the
+    // rewritten database (DATA-010).
+    if let Err(e) = core
+        .storage
+        .run(|db| db.vacuum().and_then(|()| db.checkpoint()))
+        .await
+    {
         tracing::warn!(error = %e, "vacuum after deletion failed");
     }
 }

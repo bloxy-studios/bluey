@@ -1,6 +1,8 @@
 //! Deletion & retention policies. Deletion must **really** delete: every
 //! function here removes rows (and reports file paths for the caller to unlink)
-//! rather than soft-deleting.
+//! rather than soft-deleting. `secure_delete` (see `Database::configure`)
+//! zeroes the freed pages, and each deletion ends with a WAL checkpoint so the
+//! deleted text does not linger in `bluey.db-wal` either (DATA-010).
 
 use std::path::{Path, PathBuf};
 
@@ -90,28 +92,38 @@ fn dir_size_bytes(dir: &Path) -> u64 {
 
 /// Delete one session (cascade). Returns screenshot image paths to unlink.
 pub fn delete_session(db: &Database, session_id: &str) -> Result<Vec<PathBuf>, BlueyError> {
-    SessionRepository::delete(db, session_id)
+    let paths = SessionRepository::delete(db, session_id)?;
+    db.checkpoint()?;
+    Ok(paths)
 }
 
 /// Delete every session. Returns `(deleted_sessions, image_paths)`.
 pub fn delete_all_sessions(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyError> {
-    SessionRepository::delete_all(db)
+    let deleted = SessionRepository::delete_all(db)?;
+    db.checkpoint()?;
+    Ok(deleted)
 }
 
 /// Delete every screen snapshot row. Returns `(deleted_rows, image_paths)` —
 /// the rows are gone; the caller unlinks the files.
 pub fn delete_screenshots(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyError> {
-    SnapshotRepository::delete_all_screens(db)
+    let deleted = SnapshotRepository::delete_all_screens(db)?;
+    db.checkpoint()?;
+    Ok(deleted)
 }
 
 /// Delete every transcript segment. Returns rows removed.
 pub fn clear_transcripts(db: &Database) -> Result<u64, BlueyError> {
-    TranscriptRepository::clear(db, None)
+    let deleted = TranscriptRepository::clear(db, None)?;
+    db.checkpoint()?;
+    Ok(deleted)
 }
 
 /// Delete every AI cache entry. Returns rows removed.
 pub fn clear_ai_cache(db: &Database) -> Result<u64, BlueyError> {
-    AiCacheRepository::clear(db)
+    let deleted = AiCacheRepository::clear(db)?;
+    db.checkpoint()?;
+    Ok(deleted)
 }
 
 /// Wipe **every** row in every table except `schema_migrations`. Nothing is
@@ -188,6 +200,7 @@ pub fn apply_retention(
     }
     report.image_paths.sort();
     report.image_paths.dedup();
+    db.checkpoint()?;
     Ok(report)
 }
 
@@ -353,6 +366,42 @@ mod tests {
         ] {
             assert_eq!(testutil::count(db, table), 0, "{table} still has rows");
         }
+    }
+
+    /// Whether `needle` is readable anywhere in the database or its WAL.
+    fn db_files_contain(db_path: &Path, needle: &str) -> bool {
+        ["", "-wal"].iter().any(|suffix| {
+            let mut path = db_path.as_os_str().to_owned();
+            path.push(suffix);
+            std::fs::read(&path)
+                .map(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes()))
+                .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn deleted_session_text_is_not_left_in_the_database_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bluey.db");
+        let db = Database::open(&path).unwrap();
+        ModeRepository::seed_built_in(&db, &[testutil::mode("general", "General")]).unwrap();
+        // One token, so the full-text index stores it whole too.
+        let secret = "zebraquartzsecret";
+        let s = SessionRepository::create(&db, "general", None).unwrap();
+        TranscriptRepository::insert(&db, &testutil::segment(Some(&s.id), secret, 0, true))
+            .unwrap();
+        ResponseRepository::save(&db, &testutil::response(Some(&s.id), secret)).unwrap();
+        db.checkpoint().unwrap();
+        assert!(
+            db_files_contain(&path, secret),
+            "fixture: the text is on disk"
+        );
+
+        delete_session(&db, &s.id).unwrap();
+        assert!(
+            !db_files_contain(&path, secret),
+            "deleted text is still on disk"
+        );
     }
 
     #[test]

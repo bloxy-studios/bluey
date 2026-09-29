@@ -107,7 +107,12 @@ impl DocumentsManager {
         let doc = self.get(id.clone()).await?;
         let deleted = self
             .storage
-            .run(move |db| DocumentRepository::delete(db, &id))
+            .run(move |db| {
+                let deleted = DocumentRepository::delete(db, &id)?;
+                // Deleted text must not linger in the WAL (DATA-010).
+                db.checkpoint()?;
+                Ok(deleted)
+            })
             .await?;
         if !deleted {
             return Err(BlueyError::storage("not_found", "document was not found"));
@@ -122,7 +127,11 @@ impl DocumentsManager {
     pub async fn delete_all(&self, scope: Option<DocumentScope>) -> BlueyResult<u64> {
         let removed = self
             .storage
-            .run(move |db| DocumentRepository::delete_all(db, scope))
+            .run(move |db| {
+                let removed = DocumentRepository::delete_all(db, scope)?;
+                db.checkpoint()?;
+                Ok(removed)
+            })
             .await?;
         if removed > 0 && scope.is_none_or(|s| s == DocumentScope::Mode) {
             self.publish_modes_changed().await;
