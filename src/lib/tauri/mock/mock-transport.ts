@@ -14,6 +14,8 @@ import type {
   AppStatus,
   AudioStatus,
   AuthStatus,
+  CredentialCategory,
+  CredentialHealth,
   AuthUser,
   BlueyDocument,
   BlueyError,
@@ -41,10 +43,11 @@ import type {
   ConnectFlowKind,
   ProviderAccount,
   ProviderModelCatalog,
+  SecretState,
 } from "../../types";
 import { applyPresets, MODEL_ROLES, presetForKind } from "../../ai/provider-presets";
 import { createId } from "../../utils/id";
-import type { CommandArgs, CommandName, CommandResult } from "../commands";
+import { SECRET_KEYS, type CommandArgs, type CommandName, type CommandResult } from "../commands";
 import type { EventName, EventPayload } from "../events";
 import type { StreamChannel, Transport, Unlisten } from "../transport";
 import {
@@ -126,6 +129,27 @@ import type { UpdateStatus } from "@/lib/types/updates";
 
 /** What the mock's in-app updater believes it runs; the update it "finds" is one minor ahead. */
 const MOCK_APP_VERSION = "0.1.0-dev";
+
+/**
+ * Rust `validate_webview_key`: the WebView manages API keys only — sign-in
+ * and account tokens are rejected before the store is touched.
+ */
+function assertWebviewSecretKey(key: string): void {
+  const apiKeys: string[] = [SECRET_KEYS.exaApiKey, SECRET_KEYS.firecrawlApiKey, SECRET_KEYS.anthropicAgentApiKey];
+  if (apiKeys.includes(key) || /^provider:.+:api_key$/.test(key)) return;
+  throw blueyError({
+    kind: "internal",
+    code: "internal.invalid_params",
+    message: "this secret is not managed from the settings UI",
+  });
+}
+
+/** Rust `secrets::key_category`, for the keys the mock can hold. */
+function secretCategory(key: string): CredentialCategory {
+  if (key.startsWith("provider:")) return "provider_key";
+  if (key.startsWith("research:")) return "research_key";
+  return "agent_key";
+}
 
 /** The mock's monotonic clock (ms since the transport module loaded) — stands in for Rust's. */
 const MONO_ORIGIN = Date.now();
@@ -645,6 +669,33 @@ export class MockTransport implements Transport {
     }
     if (provider.kind === "mock") return "mock-default";
     return presetForKind(provider.kind)?.models.default ?? null;
+  }
+
+  /** Rust `refresh_provider_keys`: a provider key's save/delete flips `hasApiKey`. */
+  private setProviderKeyFlag(key: string, hasApiKey: boolean): void {
+    const match = /^provider:(.+):api_key$/.exec(key);
+    if (!match) return;
+    this.settings = {
+      ...this.settings,
+      ai: {
+        ...this.settings.ai,
+        providers: this.settings.ai.providers.map((p) => (p.id === match[1] ? { ...p, hasApiKey } : p)),
+      },
+    };
+    this.emitSettings();
+  }
+
+  private secretLabel(key: string): string {
+    const provider = /^provider:(.+):api_key$/.exec(key)?.[1];
+    if (provider) {
+      return this.settings.ai.providers.find((p) => p.id === provider)?.name ?? `${provider} (removed provider)`;
+    }
+    const labels: Record<string, string> = {
+      [SECRET_KEYS.exaApiKey]: "Exa",
+      [SECRET_KEYS.firecrawlApiKey]: "Firecrawl",
+      [SECRET_KEYS.anthropicAgentApiKey]: "Anthropic (agent)",
+    };
+    return labels[key] ?? key;
   }
 
   /**
@@ -2000,25 +2051,33 @@ export class MockTransport implements Transport {
       return this.emitSettings();
     },
     secrets_set: (args) => {
+      assertWebviewSecretKey(args.key);
       this.secrets.set(args.key, args.value);
-      const match = /^provider:(.+):api_key$/.exec(args.key);
-      if (match) {
-        this.settings = {
-          ...this.settings,
-          ai: {
-            ...this.settings.ai,
-            providers: this.settings.ai.providers.map((p) =>
-              p.id === match[1] ? { ...p, hasApiKey: true } : p,
-            ),
-          },
-        };
-        this.emitSettings();
-      }
+      this.setProviderKeyFlag(args.key, true);
     },
-    secrets_has: (args) => this.secrets.has(args.key),
+    secrets_has: (args) => {
+      assertWebviewSecretKey(args.key);
+      return this.secrets.has(args.key);
+    },
     secrets_delete: (args) => {
+      assertWebviewSecretKey(args.key);
       this.secrets.delete(args.key);
+      this.setProviderKeyFlag(args.key, false);
     },
+    secrets_state: (args): SecretState => {
+      assertWebviewSecretKey(args.key);
+      return this.secrets.has(args.key) ? "present" : "absent";
+    },
+    // The mock keeps only WebView-set API keys, all readable (no Keychain).
+    secrets_health: (): CredentialHealth[] =>
+      [...this.secrets.keys()].sort().map((key) => ({
+        key,
+        category: secretCategory(key),
+        label: this.secretLabel(key),
+        state: "present",
+        removable: true,
+      })),
+    secrets_allow_access: (args): SecretState => (this.secrets.has(args.key) ? "present" : "absent"),
 
     // Shortcuts
     shortcuts_list: () => this.settings.shortcuts,

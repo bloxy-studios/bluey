@@ -13,6 +13,7 @@
 //!   that boundary in either direction.
 
 pub mod backend;
+pub mod health;
 pub mod keychain;
 
 use std::collections::{HashMap, HashSet};
@@ -726,5 +727,32 @@ mod tests {
         assert_eq!(fake.reads(), 0);
         assert_eq!(store.get_sync(GEMINI).unwrap(), None);
         assert_eq!(fake.reads(), 0, "the reset left nothing cached");
+    }
+
+    #[test]
+    fn credential_health_probes_without_prompting_and_lists_owned_items_only() {
+        let (fake, store) = store(&[
+            (GEMINI, "g"),
+            (EXA_KEY, "e"),
+            (&account_tokens_key("claude"), "{}"),
+            ("not-ours", "x"),
+        ]);
+        fake.lock_item(EXA_KEY, ERR_AUTH_FAILED);
+        let states = store.states_sync().unwrap();
+        assert_eq!(
+            states,
+            vec![
+                (account_tokens_key("claude"), SecretState::Present),
+                (GEMINI.to_string(), SecretState::Present),
+                (EXA_KEY.to_string(), SecretState::Locked),
+            ]
+        );
+        assert_eq!(fake.reads(), 0, "health never shows the Keychain prompt");
+        assert_eq!(fake.count(Op::Probe), 3);
+        // A second look re-probes only the locked item (the user may have
+        // allowed access meanwhile); the rest is answered from memory.
+        store.states_sync().unwrap();
+        assert_eq!(fake.count(Op::Probe), 4);
+        assert_eq!(fake.reads(), 0);
     }
 }
