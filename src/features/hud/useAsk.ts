@@ -191,7 +191,11 @@ export function useAsk() {
     [ask],
   );
 
-  /** Ask a turn's question again for a different answer, keeping its context (UX-011). */
+  /**
+   * Ask a turn's question again for a different answer (UX-011): the same
+   * request, question and heard question. A turn that read the screen reads
+   * it again, so the answer is about what is on screen now.
+   */
   const regenerate = useCallback(
     (turnId?: string) => {
       const turn = findTurn(turnId);

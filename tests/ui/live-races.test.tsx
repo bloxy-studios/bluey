@@ -188,6 +188,19 @@ describe("live suggestion races", () => {
     expect(engine.asks.at(-1)?.instruction).toBeUndefined();
   });
 
+  it("Regenerate on a screen turn reads the screen again", async () => {
+    const { result } = renderHook(() => useAsk());
+    act(() => {
+      result.current.ask({ trigger: "shortcut_capture", captureScreen: true, promptLabel: "Assist" });
+    });
+    act(() => engine.complete(makeResponse({ id: "answer-s" })));
+
+    act(() => result.current.regenerate(useChatStore.getState().turns[0]?.id));
+
+    expect(engine.asks.at(-1)).toMatchObject({ trigger: "regenerate", captureScreen: true });
+    expect(engine.asks.at(-1)?.snapshot).toBeUndefined();
+  });
+
   it("Regenerate on a suggestion turn keeps its detected question", async () => {
     const { result } = renderHook(() => useAsk());
     mock.emit("question.detected", detected("q1"));

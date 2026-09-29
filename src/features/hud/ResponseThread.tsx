@@ -129,7 +129,7 @@ const TURN_FALLBACK = <div className="text-[13px] text-fg-subtle">This answer co
 export interface ResponseThreadProps {
   /** Re-send a failed turn's original request. */
   onRetry: (turnId: string) => void;
-  /** Ask a finished turn's question again (same screen/detected-question context). */
+  /** Ask a finished turn's question again (same request and heard question; the screen is read again). */
   onRegenerate: (turnId: string) => void;
 }
 
