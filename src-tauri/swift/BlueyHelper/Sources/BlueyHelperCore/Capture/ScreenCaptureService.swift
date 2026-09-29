@@ -25,7 +25,8 @@ public final class ScreenCaptureService {
         _ params: CaptureParams, completion: @escaping (Result<Frame, HelperError>) -> Void
     ) {
         let startedMs = Clock.monotonicMs()
-        ShareableContent.fetch { [weak self] result in
+        // PERF-015: a recent enumeration is reused; see fetchForDisplayCapture.
+        ShareableContent.fetchForDisplayCapture { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
@@ -37,9 +38,8 @@ public final class ScreenCaptureService {
                             .capture("display_not_found", "display \(params.displayId ?? "main") not found")))
                     return
                 }
-                let excluded = params.resolvedExcludeSelf ? ShareableContent.ownWindows(in: content) : []
-                // https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init(display:excludingwindows:)
-                let filter = SCContentFilter(display: display, excludingWindows: excluded)
+                let filter = ShareableContent.displayFilter(
+                    display, excludingSelf: params.resolvedExcludeSelf, in: content)
                 let scale = ShareableContent.scaleFactor(forDisplayID: display.displayID)
                 // SCDisplay.width/height are in points:
                 // https://developer.apple.com/documentation/screencapturekit/scdisplay/width

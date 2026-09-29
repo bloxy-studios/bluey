@@ -15,6 +15,10 @@
 * **Display with focus**: a request without a `displayId` captures the display that contains
   the midpoint of the frontmost app's front window, then the display under the mouse, then the
   main display (`FocusDisplay.resolve`).
+* **Enumeration cache**: a display capture reuses the `SCShareableContent` enumeration for up to
+  1.5 s while the active display list and bounds are unchanged, and excludes Bluey by app (so a
+  Bluey window opened after the enumeration still stays out of the frame). Window and region
+  captures always enumerate afresh.
 * **Multi-monitor / Retina**: displays enumerated with points, origin and scale factor; the
   frame is rendered at native pixels and downscaled so the longest side ≤ `maxImageDimension`
   (default 1600 px), JPEG q0.8. Frames are written to
