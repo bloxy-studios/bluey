@@ -254,6 +254,13 @@ function monoMs(): number {
   return Date.now() - MONO_ORIGIN;
 }
 
+/** Whether `query` and `text` share a word of three letters or more (a keyword match). */
+function sharesWord(query: string, text: string): boolean {
+  const words = (value: string) => value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2);
+  const inText = new Set(words(text));
+  return words(query).some((word) => inText.has(word));
+}
+
 /** A deterministic fast-path trace for one mock answer (numbers from the docs' baseline sketch). */
 function mockTrace(
   request: { requestId: string; trace?: { trigger?: string } },
@@ -2303,8 +2310,10 @@ export class MockTransport implements Transport {
       this.documents = args.scope ? this.documents.filter((d) => d.scope !== args.scope) : [];
       return before - this.documents.length;
     },
-    // Filters like Rust: requested scopes (+ scope id) and kinds; only
-    // `leading` answers an empty query.
+    // Filters like Rust: requested scopes (+ scope id) and kinds; `leading`
+    // lists documents whatever the query, any other strategy returns only a
+    // document that shares a word with the query (its title or kind stands in
+    // for the text the mock does not keep).
     documents_retrieve: ({ query }) =>
       this.documents
         .filter(
@@ -2313,7 +2322,7 @@ export class MockTransport implements Transport {
             query.scopes.some((s) => s.scope === doc.scope && (s.scopeId === undefined || s.scopeId === doc.scopeId)),
         )
         .filter((doc) => !query.kinds?.length || query.kinds.includes(doc.kind))
-        .filter(() => query.strategy === "leading" || query.query.trim().length > 0)
+        .filter((doc) => query.strategy === "leading" || sharesWord(query.query, `${doc.title} ${doc.kind}`))
         .slice(0, query.limit ?? 4)
         .map((doc, index) => ({
         chunkId: `${doc.id}-chunk-${index}`,
