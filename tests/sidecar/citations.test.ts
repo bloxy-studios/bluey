@@ -45,21 +45,43 @@ describe("CitationStore", () => {
     expect(citations[0]?.snippet).toBe("model snippet");
   });
 
-  it("finalize appends observed sources the model did not cite (deduped)", () => {
+  it("finalize returns only the cited sources, not every search hit", () => {
     const store = new CitationStore();
-    store.add({ title: "One", url: "https://example.com/1" });
-    store.add({ title: "Two", url: "https://example.com/2" });
+    for (let i = 0; i < 20; i += 1) store.add({ title: `Hit ${i}`, url: `https://example.com/${i}` });
 
-    const citations = store.finalize([{ title: "One (model)", url: "https://example.com/1/" }]);
+    const citations = store.finalize([
+      { title: "One (model)", url: "https://example.com/1/" },
+      { title: "Two", url: "https://example.com/2" },
+    ]);
     expect(citations.map((c) => c.url)).toEqual(["https://example.com/1", "https://example.com/2"]);
     expect(citations[0]?.title).toBe("One (model)");
   });
 
-  it("finalize without model citations returns every observed source", () => {
+  it("finalize adds known sources linked from the report body", () => {
     const store = new CitationStore();
     store.add({ title: "One", url: "https://example.com/1" });
     store.add({ title: "Two", url: "https://example.com/2" });
-    expect(store.finalize(undefined)).toHaveLength(2);
+    const report = "See [two](https://example.com/2) and https://invented.example/x.";
+    expect(store.finalize([], report).map((c) => c.url)).toEqual(["https://example.com/2"]);
+  });
+
+  it("finalize with nothing cited falls back to the pages read in full", () => {
+    const store = new CitationStore();
+    store.add({ title: "Snippet only", url: "https://example.com/1" });
+    store.add({ title: "Scraped", url: "https://example.com/2" }, { fetched: true });
+    expect(store.finalize(undefined).map((c) => c.title)).toEqual(["Scraped"]);
+  });
+
+  it("sanitizeReport de-links URLs the tools never returned and keeps known ones", () => {
+    const store = new CitationStore();
+    store.add({ title: "Seen", url: "https://example.com/seen" });
+    const report =
+      "Per [the study](https://example.com/seen/), growth doubled [src](https://made.up/a). " +
+      "More at https://www.invented.example/page, and https://example.com/seen.";
+    expect(store.sanitizeReport(report)).toBe(
+      "Per [the study](https://example.com/seen/), growth doubled src. " +
+        "More at invented.example, and https://example.com/seen.",
+    );
   });
 
   it("clamps very long snippets", () => {

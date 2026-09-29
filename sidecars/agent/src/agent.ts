@@ -374,18 +374,23 @@ export function startResearchJob(
     writer.event("research.failed", { jobId, error: { code, message, kind } });
   };
 
+  /**
+   * Links the tools never returned are de-linked in the report, and the
+   * citation list holds only validated sources the model used (AI-009).
+   */
   const emitCompleted = (data: {
     report: string;
-    citations: WireCitation[];
+    modelCitations?: WireCitation[];
     turns: number;
     usage: { inputTokens: number; outputTokens: number };
   }): void => {
     if (finished) return;
     finished = true;
+    const report = store.sanitizeReport(data.report);
     writer.event("research.completed", {
       jobId,
-      report: data.report,
-      citations: data.citations,
+      report,
+      citations: store.finalize(data.modelCitations, report),
       turns: data.turns,
       totalMs: Date.now() - startedAt,
       usage: data.usage,
@@ -415,7 +420,12 @@ export function startResearchJob(
         if (!parsed.ok) return parsed.failure;
         const { query: queryText, numResults, startPublishedDate } = parsed.data;
         try {
-          const results = await exa.search({ query: queryText, numResults, startPublishedDate });
+          const results = await exa.search({
+            query: queryText,
+            numResults,
+            startPublishedDate,
+            signal: abortController.signal,
+          });
           for (const r of results) store.add({ title: r.title, url: r.url, snippet: r.snippet });
           progress(`exa_search: ${results.length} result(s) for "${queryText}"`);
           return toolText(
@@ -459,8 +469,11 @@ export function startResearchJob(
           return toolFailure(new ToolError("invalid_arguments", urlProblem), "firecrawl_scrape");
         }
         try {
-          const page = await firecrawl.scrape(url);
-          store.add({ title: page.title, url: page.url, snippet: page.markdown.slice(0, 300) });
+          const page = await firecrawl.scrape(url, { signal: abortController.signal });
+          store.add(
+            { title: page.title, url: page.url, snippet: page.markdown.slice(0, 300) },
+            { fetched: true },
+          );
           progress(`firecrawl_scrape: fetched ${page.url}${page.truncated ? " (truncated)" : ""}`);
           const header = `# ${page.title ?? page.url}\nSource: ${page.url}\n\n`;
           return toolText(header + page.markdown);
@@ -557,7 +570,7 @@ export function startResearchJob(
         emitFailed("agent_empty_report", "the agent finished without producing a report", "research");
         return;
       }
-      emitCompleted({ report, citations: store.finalize(modelCitations), turns, usage });
+      emitCompleted({ report, modelCitations, turns, usage });
       return;
     }
 
@@ -748,7 +761,7 @@ export function startResearchJob(
     }
     emitCompleted({
       report,
-      citations: store.finalize(structured?.citations),
+      modelCitations: structured?.citations,
       turns: outcome.turns,
       usage: outcome.usage,
     });
@@ -825,6 +838,9 @@ export function startResearchJob(
     cancel(reason = "cancel requested"): void {
       if (finished) return;
       cancelRequested = true;
+      // The terminal event goes out now, not when an in-flight tool call or
+      // model stream eventually unwinds (LIVE-005).
+      emitCancelled();
       broker.close(reason);
       abortController.abort();
     },

@@ -156,12 +156,10 @@ describe.each(mockCases)("sidecar end-to-end (mock mode, $backend backend)", ({ 
     const completed = completedFrame["data"] as Frame;
     expect(completed["report"]).toBe(deltas);
 
-    // Citations: deduped, only tool-observed URLs, model citation first
+    // Citations: only the tool-observed sources the model used — the search
+    // hit it never cited is not padded in.
     const citations = completed["citations"] as Array<{ title: string; url: string }>;
-    expect(citations.length).toBeGreaterThanOrEqual(2);
-    expect(citations[0]?.url).toBe("https://example.org/bluey/overview");
-    const urls = citations.map((c) => c.url);
-    expect(new Set(urls).size).toBe(urls.length);
+    expect(citations.map((c) => c.url)).toEqual(["https://example.org/bluey/overview"]);
 
     expect(typeof completed["turns"]).toBe("number");
     expect(typeof completed["totalMs"]).toBe("number");
@@ -235,6 +233,26 @@ describe("sidecar cancellation", () => {
     expect(error["code"]).toBe("cancelled");
     expect(error["kind"]).toBe("cancelled");
     expect(await harness.done).toBe(0);
+  });
+
+  it("answers research.cancel with the terminal event even when the run never unwinds", async () => {
+    // A tool call or model stream that ignores the abort must not hold back
+    // the cancellation: the host is waiting for a terminal event (LIVE-005).
+    const stuckQueryFn: QueryFn = () => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "system", subtype: "init", model: "stuck-model", tools: [] };
+        await new Promise<never>(() => {});
+      },
+    });
+    const harness = makeHarness({ env: { ...stubKeys }, deps: { queryFn: stuckQueryFn } });
+    harness.send(baseRun);
+    await harness.waitFor(isEvent("research.progress"), "job start");
+
+    harness.send({ id: 2, method: "research.cancel", params: { jobId: "job-1" } });
+
+    const failed = await harness.waitFor(isEvent("research.failed"), "failed event");
+    expect(((failed["data"] as Frame)["error"] as Frame)["code"]).toBe("cancelled");
+    expect(harness.eventsNamed("research.failed")).toHaveLength(1);
   });
 
   it("rejects cancels for unknown jobs", async () => {

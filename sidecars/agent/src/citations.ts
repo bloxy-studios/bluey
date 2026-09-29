@@ -2,9 +2,10 @@
  * Citation collection for the research job.
  *
  * Every URL returned by an exa_search / firecrawl_scrape call during the run
- * is recorded here. The final `research.completed` citation list is built from
- * these observed sources, so the sidecar can never emit a URL the tools did
- * not actually return — even if the model invents one.
+ * is recorded here. The `research.completed` citation list and every link in
+ * the report body are checked against these observed sources, so the sidecar
+ * never emits a URL the tools did not actually return — even if the model
+ * invents one.
  */
 
 import type { WireCitation } from "./protocol";
@@ -38,12 +39,21 @@ function clampSnippet(snippet: string | undefined): string | undefined {
 
 export class CitationStore {
   private readonly byUrl = new Map<string, WireCitation>();
+  /** Pages whose full text reached the model (firecrawl_scrape), by normalised URL. */
+  private readonly fetched = new Set<string>();
 
-  /** Record a source observed in a tool result. First title wins; a missing snippet can be back-filled. */
-  add(citation: { title?: string; url: string; snippet?: string }): void {
+  /**
+   * Record a source observed in a tool result. First title wins; a missing
+   * snippet can be back-filled. `fetched` marks a page the model read in full.
+   */
+  add(
+    citation: { title?: string; url: string; snippet?: string },
+    options: { fetched?: boolean } = {},
+  ): void {
     const url = citation.url?.trim();
     if (!url) return;
     const key = normalizeUrl(url);
+    if (options.fetched) this.fetched.add(key);
     const existing = this.byUrl.get(key);
     if (existing) {
       if (!existing.snippet) {
@@ -72,39 +82,67 @@ export class CitationStore {
   }
 
   /**
-   * Build the final citation list for `research.completed`.
+   * Build the final citation list for `research.completed`: the sources the
+   * model says it used, not everything it saw.
    *
-   * Model-provided citations (structured output) are validated against the
-   * observed set — an invented URL is dropped. Validated model citations come
-   * first (the model picked their titles/snippets deliberately), then every
-   * remaining observed source is appended so the list covers every exa /
-   * firecrawl result actually used. Deduped by normalised URL.
+   * Model-provided citations (structured output) and the links left in the
+   * report body are validated against the observed set — an invented URL is
+   * dropped. When neither names a known source, the pages the model read in
+   * full are the fallback. Deduped by normalised URL.
    */
-  finalize(modelCitations?: Array<{ title: string; url: string; snippet?: string }>): WireCitation[] {
+  finalize(
+    modelCitations?: Array<{ title: string; url: string; snippet?: string }>,
+    report = "",
+  ): WireCitation[] {
     const out: WireCitation[] = [];
     const seen = new Set<string>();
-
-    for (const c of modelCitations ?? []) {
-      const key = normalizeUrl(c.url ?? "");
-      if (!key || seen.has(key)) continue;
+    const push = (key: string, title?: string, snippet?: string): void => {
       const observed = this.byUrl.get(key);
-      if (!observed) continue; // never emit a URL the tools did not return
+      if (!observed || seen.has(key)) return; // never emit a URL the tools did not return
       seen.add(key);
-      const entry: WireCitation = {
-        title: c.title?.trim() || observed.title,
-        url: observed.url,
-      };
-      const snippet = clampSnippet(c.snippet) ?? observed.snippet;
-      if (snippet) entry.snippet = snippet;
+      const entry: WireCitation = { title: title?.trim() || observed.title, url: observed.url };
+      const clamped = clampSnippet(snippet) ?? observed.snippet;
+      if (clamped) entry.snippet = clamped;
       out.push(entry);
-    }
+    };
 
-    for (const [key, citation] of this.byUrl) {
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ ...citation });
-    }
-
+    for (const c of modelCitations ?? []) push(normalizeUrl(c.url ?? ""), c.title, c.snippet);
+    for (const url of reportUrls(report)) push(normalizeUrl(url));
+    if (out.length === 0) for (const key of this.fetched) push(key);
     return out;
+  }
+
+  /**
+   * De-link every URL in `report` the tools never returned: a Markdown link
+   * keeps its text, a bare URL is reduced to its host (no longer a link).
+   */
+  sanitizeReport(report: string): string {
+    const known = (url: string): boolean => this.has(url);
+    const withoutLinks = report.replace(MARKDOWN_LINK, (match, text: string, url: string) =>
+      known(url) ? match : text,
+    );
+    return withoutLinks.replace(BARE_URL, (url: string, offset: number, whole: string) => {
+      // Skip the URL half of a Markdown link that survived the first pass.
+      if (whole.slice(Math.max(0, offset - 2), offset) === "](") return url;
+      return known(url) ? url : hostOf(url);
+    });
+  }
+}
+
+/** `[text](url)` / `[text](url "title")` with an http(s) target. */
+const MARKDOWN_LINK = /\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+"[^"]*")?\)/g;
+/** A bare http(s) URL; trailing sentence punctuation is not part of it. */
+const BARE_URL = /https?:\/\/[^\s<>()[\]"']+[^\s<>()[\]"'.,;:!?]/g;
+
+/** Every http(s) URL in `report` (Markdown link targets and bare URLs), in order. */
+export function reportUrls(report: string): string[] {
+  return report.match(BARE_URL) ?? [];
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, "");
+  } catch {
+    return "";
   }
 }

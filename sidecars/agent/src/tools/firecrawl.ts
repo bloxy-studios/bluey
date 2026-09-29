@@ -20,7 +20,8 @@ export interface FirecrawlScrapeResult {
 }
 
 export interface FirecrawlClient {
-  scrape(url: string): Promise<FirecrawlScrapeResult>;
+  /** `signal` aborts the request when the job is cancelled. */
+  scrape(url: string, options?: { signal?: AbortSignal }): Promise<FirecrawlScrapeResult>;
 }
 
 export interface FirecrawlClientOptions {
@@ -60,9 +61,7 @@ export function mapFirecrawlResponse(
       : {};
   const sourceUrl = typeof metadata["sourceURL"] === "string" ? metadata["sourceURL"] : requestedUrl;
   const title =
-    typeof metadata["title"] === "string" && metadata["title"].trim()
-      ? metadata["title"].trim()
-      : undefined;
+    typeof metadata["title"] === "string" && metadata["title"].trim() ? metadata["title"].trim() : undefined;
 
   const truncated = markdownRaw.length > maxMarkdownChars;
   const markdown = truncated
@@ -82,7 +81,7 @@ export function createFirecrawlClient(options: FirecrawlClientOptions): Firecraw
     throw new ToolError("missing_api_key", "FIRECRAWL_API_KEY is not set");
   }
   return {
-    async scrape(url: string): Promise<FirecrawlScrapeResult> {
+    async scrape(url: string, scrapeOptions: { signal?: AbortSignal } = {}): Promise<FirecrawlScrapeResult> {
       const json = await postJson({
         url: baseUrl ?? FIRECRAWL_SCRAPE_URL,
         headers: { authorization: `Bearer ${apiKey}` },
@@ -90,6 +89,7 @@ export function createFirecrawlClient(options: FirecrawlClientOptions): Firecraw
         timeoutMs,
         fetchImpl,
         label: "firecrawl scrape",
+        signal: scrapeOptions.signal,
       });
       return mapFirecrawlResponse(json, url, maxMarkdownChars);
     },

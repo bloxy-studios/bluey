@@ -165,9 +165,10 @@ describe("Gemini backend (injected generateContentStream)", () => {
     expect(data["report"]).toBe(report);
     expect(data["turns"]).toBe(3);
     expect(data["usage"]).toEqual({ inputTokens: 900, outputTokens: 235 });
-    // Model citations validated against tool-observed URLs; the invented one is dropped.
+    // Model citations validated against tool-observed URLs; the invented one
+    // is dropped and the uncited search hit is not padded in.
     const citations = data["citations"] as Array<{ url: string }>;
-    expect(citations.map((c) => c.url)).toEqual(["https://example.org/a", "https://example.org/b"]);
+    expect(citations.map((c) => c.url)).toEqual(["https://example.org/a"]);
 
     // Request shapes: tool turns carry declarations + low thinking; the report turn has no tools.
     expect(seen).toHaveLength(3);
