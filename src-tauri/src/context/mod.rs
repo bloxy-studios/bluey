@@ -261,6 +261,11 @@ pub async fn build_snapshot_with(
         } else {
             None
         };
+        // OCR is done and the image travels inline: the helper's temp file is
+        // no longer needed (DATA-001).
+        if image.is_some() {
+            core.capture.release_frame_file(&frame.id, image.as_deref());
+        }
         snapshot.screen = Some(ScreenSummary {
             image,
             mime_type: Some(mime_str(frame.mime_type)),

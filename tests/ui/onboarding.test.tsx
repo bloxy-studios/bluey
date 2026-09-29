@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { OnboardingFlow } from "@/features/onboarding/OnboardingFlow";
 import { ConnectAIStep } from "@/features/onboarding/steps/connect";
+import { ShortcutsStep } from "@/features/onboarding/steps/setup";
 import type { MockTransport } from "@/lib/tauri/mock";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { setupMockApp } from "./helpers";
@@ -239,5 +240,28 @@ describe("ConnectAIStep — subscription branch (ADR 0009)", () => {
     );
     await screen.findByRole("heading", { name: "Connect Gemini" });
     expect(screen.queryByRole("button", { name: "Use a subscription I already pay for" })).not.toBeInTheDocument();
+  });
+});
+
+describe("ShortcutsStep", () => {
+  beforeEach(async () => {
+    await setupMockApp();
+  });
+
+  it("lists only global chords and says when macOS did not register one (UX-001, UX-039)", () => {
+    const settings = useSettingsStore.getState().settings;
+    if (!settings) throw new Error("settings not loaded");
+    useSettingsStore.setState({
+      settings: {
+        ...settings,
+        shortcuts: settings.shortcuts.map((s) =>
+          s.id === "capture_analyze" ? { ...s, registrationError: "registration failed: HotKey already registered" } : s,
+        ),
+      },
+    });
+    render(<ShortcutsStep onReady={() => {}} />);
+    expect(screen.queryByText("Start a new chat")).not.toBeInTheDocument();
+    expect(screen.getByText(/macOS did not register this shortcut/)).toBeInTheDocument();
+    expect(screen.getAllByText(/macOS did not register this shortcut/)).toHaveLength(1);
   });
 });

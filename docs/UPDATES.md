@@ -36,6 +36,21 @@ independent of Apple code-signing and works for unsigned developer builds too.
   ship one release signed with the **old** key whose config carries the **new** public key, then
   switch CI to the new key.
 
+### Unsigned builds reset macOS permissions
+
+The minisign check says nothing about Apple code-signing. A build without a Developer ID is
+signed ad hoc, so its designated requirement is its own `cdhash`: every update is a new code
+identity to macOS. Screen Recording, Accessibility, Microphone and Speech Recognition grants and
+the Keychain approvals of saved API keys were given to the previous identity and stop applying.
+Signing every feed build with one stable identity (Developer ID) is the fix and an owner action.
+
+Until then the app detects the loss (MAC-001): `PermissionManager` persists the last-known
+granted set with the app version (`permission_snapshot` settings key). On the first refresh of a
+run with a different version, identity-bound grants that are now denied or not requested fill
+`PermissionState.lostAfterUpdate`, boot opens *Settings → Permissions*, and one card names the
+lost permissions, explains why, and links each System Settings pane. A permission leaves the
+card as soon as it is granted again; the card is shown in that first run only.
+
 ## What the app does
 
 `crate::updates::UpdatesManager` (app crate) owns the cycle and publishes every transition as the
@@ -59,6 +74,13 @@ independent of Apple code-signing and works for unsigned developer builds too.
   prepared suggestion (`derivePill`, `src/features/hud/state-pill.ts`).
 - The current version keeps running through every failure; errors are `update.check_failed`
   and `update.install_failed` (copy in `src/lib/errors/present.ts`), shown in the Settings row.
+- **Restart to update** stops audio, the agent sidecar and the helper, then asks the event loop to
+  restart (`request_restart`), so nothing is orphaned (MAC-014).
+- **First launch of the new version**: when the database has migrations pending, `bluey.db` is
+  first copied to `bluey.db.bak-<version>` next to it (`VACUUM INTO`). If startup still fails
+  (database, migration, settings), a dialog shows the error and the log folder and offers
+  *Reveal Data Folder* or *Quit* instead of the app vanishing (CRIT-003). The backup holds
+  everything the database held, so *Reset all data* deletes the `.bak-*` copies too.
 - **Debug builds** (`tauri dev`) report `supported: false`: a manual check answers, nothing is
   installed and no background check runs. The browser mock simulates the whole cycle (it always
   "finds" `0.2.0`, or `0.2.0-nightly.…` on the Nightly channel).

@@ -9,8 +9,8 @@ the mode you're in, and prepares concise, useful help before you even ask.
 > "Bluey already understands what's happening."
 
 ## What it does
-* **Screen understanding** — on-demand capture (⌘↵) of a display, window or region with
-  ScreenCaptureKit, Vision OCR and Accessibility semantics; optional low-frequency smart
+* **Screen understanding** — on-demand capture (⌘↵) of the display or the active window
+  with ScreenCaptureKit, Vision OCR and Accessibility semantics; optional low-frequency smart
   observation with change detection.
 * **Live transcription** — microphone and system audio (separate channels), on-device Apple
   Speech by default or a cloud realtime provider, speaker labels with honest confidence.
@@ -29,7 +29,8 @@ the mode you're in, and prepares concise, useful help before you even ask.
 * **Research** — Exa / Firecrawl for current information and a Claude Agent SDK sidecar for
   deep, multi-step research with strictly scoped tools.
 * **Privacy by design** — nothing captured silently; minimal retention defaults; raw audio never
-  stored; Privacy display mode (platform content protection); one-click disable; real deletion.
+  stored; Privacy display mode (platform content protection, partial on macOS 15+); one-click
+  disable; real deletion.
 * **Native macOS feel** — NSPanel HUD across Spaces and fullscreen apps, menu bar item,
   configurable global shortcuts, Retina/multi-display aware, dark/light, reduced motion.
 * **Self-updating** — signed in-app updates on a **Latest** (stable) or **Nightly** channel,
@@ -69,8 +70,9 @@ Then press **⌘ \\** to toggle Bluey, **⌘ ↵** to ask about your screen, **�
 
 ## Default shortcuts
 ⌘ \\ toggle · ⌘ ↵ capture + analyze · ⌘ ⇧ ↵ generate response · ⌘ ⇧ L toggle listening ·
-⌘ R new chat · ⌘ , settings · ⌘ ↑↓←→ move panel · ⌘ ⇧ ↑↓ scroll response. All remappable, with
-conflict detection.
+⌃ ⌥ ↑↓←→ move panel · ⌥ ⌘ ↑↓ scroll response. ⌘ R (new chat) and ⌘ , (settings) work while the
+HUD has focus; their global versions are off by default so they never take those chords from
+other apps. All remappable, with conflict detection (standard editing chords such as ⌘ ← warn).
 
 ## Documentation
 [Architecture](docs/ARCHITECTURE.md) · [Development](docs/DEVELOPMENT.md) ·
@@ -82,8 +84,10 @@ conflict detection.
 [Provider accounts](docs/PROVIDER_ACCOUNTS.md) · [Latency](docs/LATENCY.md) · [ADRs](docs/adr/)
 
 ## Platform limitations (honest list)
-* Content protection hides the panel from most capture APIs but macOS does not guarantee it for
-  every capture path; Bluey never attempts to defeat monitoring software.
+* Privacy mode hides Bluey only from apps that honour macOS window protection (legacy capture).
+  Modern ScreenCaptureKit screen sharing and recording on macOS 15+ may still show Bluey, and
+  its native menus are never hidden ([ADR 0006](docs/adr/0006-privacy-mode-and-content-protection.md)).
+  Bluey never attempts to defeat monitoring software.
 * System audio capture requires Screen Recording permission (ScreenCaptureKit).
 * Speaker identification is derived from audio channel (you vs. others) — not true diarization.
 * Sign-in runs in the system browser (Clerk as OAuth/OIDC provider, PKCE, `bluey://` deep link

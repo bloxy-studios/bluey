@@ -119,6 +119,9 @@ impl ShortcutManager {
                 at: now_iso(),
             });
         }
+        // Show each failure on its row in Settings and onboarding (UX-039).
+        self.settings
+            .set_shortcuts(with_registration_errors(&bindings, &failed));
         *self.failed.lock() = failed;
         Ok(())
     }
@@ -157,8 +160,8 @@ impl ShortcutManager {
     pub async fn reset(&self) -> BlueyResult<Vec<ShortcutBinding>> {
         let defaults = self.storage.run(ShortcutRepository::reset).await?;
         self.settings.set_shortcuts(defaults.clone());
-        self.apply_bindings(defaults.clone()).await?;
-        Ok(defaults)
+        self.apply_bindings(defaults).await?;
+        Ok(self.list())
     }
 
     /// Conflict check for the keybind recorder. Registration failures of the
@@ -197,9 +200,27 @@ impl ShortcutManager {
             .run(move |db| ShortcutRepository::save_all(db, &to_store))
             .await?;
         self.settings.set_shortcuts(reconciled.clone());
-        self.apply_bindings(reconciled.clone()).await?;
-        Ok(reconciled)
+        self.apply_bindings(reconciled).await?;
+        Ok(self.list())
     }
+}
+
+/// `bindings` with the reason each failed binding did not register; every
+/// other binding's earlier error is cleared.
+fn with_registration_errors(
+    bindings: &[ShortcutBinding],
+    failed: &[(ShortcutId, String)],
+) -> Vec<ShortcutBinding> {
+    bindings
+        .iter()
+        .map(|binding| ShortcutBinding {
+            registration_error: failed
+                .iter()
+                .find(|(id, _)| *id == binding.id)
+                .map(|(_, reason)| reason.clone()),
+            ..binding.clone()
+        })
+        .collect()
 }
 
 /// Native reaction to a shortcut press. Everything the frontend handles itself
@@ -289,6 +310,23 @@ fn id_str(id: ShortcutId) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_registration_is_reported_on_its_binding_and_cleared_on_success() {
+        let mut bindings = rules::default_bindings();
+        bindings[1].registration_error = Some("stale".into());
+        let failed = vec![(
+            ShortcutId::TogglePanel,
+            "registration failed: HotKey already registered".to_string(),
+        )];
+        let annotated = with_registration_errors(&bindings, &failed);
+        assert_eq!(
+            annotated[0].registration_error.as_deref(),
+            Some("registration failed: HotKey already registered")
+        );
+        assert_eq!(annotated[1].registration_error, None, "registered now");
+        assert_eq!(annotated[0].accelerator, bindings[0].accelerator);
+    }
 
     #[test]
     fn every_default_accelerator_parses_for_the_plugin() {

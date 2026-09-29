@@ -21,6 +21,7 @@ pub async fn data_usage_stats(core: State<'_, AppCore>) -> BlueyResult<UsageStat
 pub async fn data_delete_screenshots(core: State<'_, AppCore>) -> BlueyResult<u64> {
     let (deleted, paths) = core.storage.run(bluey_storage::delete_screenshots).await?;
     crate::platform::remove_files(&paths);
+    clear_screenshot_dirs(&core);
     vacuum(&core).await;
     Ok(deleted)
 }
@@ -75,6 +76,8 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
         Ok(paths) => crate::platform::remove_files(&paths),
         Err(error) => failures.push("database", error),
     }
+    clear_screenshot_dirs(&core);
+    crate::storage::Storage::remove_db_backups(&core.paths.db_path);
 
     // Re-seed built-in modes and restore defaults in memory + on disk.
     failures.note(
@@ -105,6 +108,13 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
     failures.note("sign-in", core.auth.clear_session().await.map(|_| ()));
     vacuum(&core).await;
     failures.into_result()
+}
+
+/// Temp frames the helper wrote and any screenshot copy no row points at any
+/// more: deleting screenshots means every image file goes (DATA-001).
+fn clear_screenshot_dirs(core: &AppCore) {
+    crate::storage::Storage::clear_dir(&core.paths.frames_dir);
+    crate::storage::Storage::clear_dir(&core.paths.screenshots_dir);
 }
 
 /// Failures collected while resetting, reported together so the user learns

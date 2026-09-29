@@ -147,7 +147,7 @@ export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
     if (atBottomRef.current) scrollToBottom(false);
   }, [lastContent, turns.length, scrollToBottom]);
 
-  // Global scroll shortcuts (⇧⌘↑ / ⇧⌘↓ forwarded by the backend).
+  // Global scroll shortcuts (⌥⌘↑ / ⌥⌘↓ by default, forwarded by the backend).
   useEffect(() => {
     return eventBus.on("panel.scroll", ({ direction }) => {
       const el = scrollRef.current;

@@ -6,7 +6,7 @@ import { LucideIcon } from "@/components/ui/LucideIcon";
 import { bluey } from "@/lib/tauri/api";
 import type { ShortcutId } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
-import { eventToAccelerator } from "@/lib/utils/keyboard";
+import { eventToAccelerator, registrationFailureMessage } from "@/lib/utils/keyboard";
 import { useModesStore } from "@/stores/modesStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { StepProps } from "../OnboardingFlow";
@@ -44,7 +44,8 @@ export function DefaultModeStep(_props: StepProps) {
   );
 }
 
-const ONBOARDING_SHORTCUTS: ShortcutId[] = ["toggle_panel", "capture_analyze", "generate_response", "new_chat", "toggle_listening"];
+// The global chords only: New Chat (⌘R) is HUD-local by default (UX-001).
+const ONBOARDING_SHORTCUTS: ShortcutId[] = ["toggle_panel", "capture_analyze", "generate_response", "toggle_listening"];
 
 export function ShortcutsStep(_props: StepProps) {
   const shortcuts = useSettingsStore((s) => s.settings?.shortcuts ?? []);
@@ -82,22 +83,29 @@ export function ShortcutsStep(_props: StepProps) {
         {shortcuts
           .filter((s) => ONBOARDING_SHORTCUTS.includes(s.id))
           .map((binding) => (
-            <button
-              key={binding.id}
-              type="button"
-              onClick={() => setRecordingId(binding.id)}
-              className={cn(
-                "flex h-11 items-center justify-between rounded-[10px] px-3.5 transition-colors",
-                recordingId === binding.id ? "bg-accent-soft/50" : "bg-bg-elevated hover:bg-bg-hover",
-              )}
-            >
-              <span className="text-[13.5px] text-fg">{binding.label}</span>
-              {recordingId === binding.id ? (
-                <span className="text-[12.5px] font-medium text-accent">Press shortcut…</span>
-              ) : (
-                <Keycaps accelerator={binding.accelerator} />
-              )}
-            </button>
+            <div key={binding.id} className="flex flex-col">
+              <button
+                type="button"
+                onClick={() => setRecordingId(binding.id)}
+                className={cn(
+                  "flex h-11 items-center justify-between rounded-[10px] px-3.5 transition-colors",
+                  recordingId === binding.id ? "bg-accent-soft/50" : "bg-bg-elevated hover:bg-bg-hover",
+                )}
+              >
+                <span className="text-[13.5px] text-fg">{binding.label}</span>
+                {recordingId === binding.id ? (
+                  <span className="text-[12.5px] font-medium text-accent">Press shortcut…</span>
+                ) : (
+                  <Keycaps accelerator={binding.accelerator} />
+                )}
+              </button>
+              {/* A chord macOS did not register does nothing: say so (UX-039). */}
+              {binding.enabled && binding.registrationError ? (
+                <p className="px-3.5 pb-1 pt-0.5 text-[12.5px] text-danger">
+                  {registrationFailureMessage(binding.registrationError)}
+                </p>
+              ) : null}
+            </div>
           ))}
       </div>
       {warning ? (

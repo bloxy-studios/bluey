@@ -308,7 +308,7 @@ impl UpdatesManager {
     }
 
     /// Restart into the installed update (only meaningful in `Ready`).
-    pub fn relaunch(&self) -> BlueyResult<()> {
+    pub async fn relaunch(&self) -> BlueyResult<()> {
         if self.status().phase != UpdatePhase::Ready {
             return Err(BlueyError::new(
                 BlueyErrorKind::Internal,
@@ -317,7 +317,11 @@ impl UpdatesManager {
             ));
         }
         tracing::info!("relaunching into the installed update");
-        self.app.restart();
+        // Stop audio, the agent and the helper first (MAC-014): `restart()`
+        // from the main thread skipped `RunEvent::Exit`, and with it shutdown.
+        crate::app::shutdown(&self.app).await;
+        self.app.request_restart();
+        Ok(())
     }
 
     /// Settings → General → Updates changed. A new channel drops what the old

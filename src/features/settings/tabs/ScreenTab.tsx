@@ -50,7 +50,6 @@ export default function ScreenTab() {
           options={[
             { value: "display", label: "Full display" },
             { value: "active_window", label: "Active window" },
-            { value: "region", label: "Selected region" },
           ]}
         />
       </SettingRow>

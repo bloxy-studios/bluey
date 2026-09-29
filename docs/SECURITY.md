@@ -179,8 +179,11 @@ API keys, auth tokens, raw audio, screenshots, resume text, transcript text (unl
 `privacy.debugLogTranscripts` is enabled for local debugging), provider request bodies.
 
 ## Privacy display mode
-See ADR 0006. Content protection uses `NSWindow.sharingType = .none` via Tauri; Bluey reports
-platform limits honestly and does not attempt to defeat monitoring software.
+See ADR 0006 and its 2026-09-28 addendum. Content protection uses `NSWindow.sharingType = .none`
+via Tauri, which hides Bluey only from apps that honour macOS window protection (legacy capture):
+modern ScreenCaptureKit screen sharing on macOS 15+ may still show Bluey, and native menus are
+never hidden, so `CaptureProtection.partial` is reported there. Bluey does not attempt to defeat
+monitoring software.
 
 ## Data deletion
 `data_delete_screenshots`, `data_clear_transcripts`, `data_clear_ai_cache`,

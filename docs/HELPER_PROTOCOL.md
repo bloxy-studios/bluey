@@ -163,7 +163,8 @@ Handled in Rust via `tauri-plugin-notification`; not part of this protocol.
 * Requests time out on the Rust side (capture 3 s, ocr 5 s, ax 1 s, audio.start 5 s).
 * The helper must handle `SIGTERM` by stopping streams and flushing stdout.
 * Temp frames live in `~/Library/Caches/com.codewithabdul.bluey/frames/` and are deleted by
-  Rust after use (`capture.discard`) or by the helper on startup (stale > 1 h).
+  Rust after use or eviction (`capture.discard`, or directly inside that directory), and by the
+  helper at startup and every 5 minutes (stale > 10 min).
 
 ## Versioning
 `helper.version.protocol` = `1`. Rust refuses to start with an incompatible major version.

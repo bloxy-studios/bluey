@@ -327,6 +327,7 @@ mod tests {
     use super::*;
     use crate::testutil;
     use bluey_core::types::ai::AiProviderKind;
+    use bluey_core::types::settings::ShortcutId;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -401,6 +402,38 @@ mod tests {
             Some(serde_json::json!({"a": 1}))
         );
         assert_eq!(SettingsRepository::get_json(&db, "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn shortcut_migration_moves_only_untouched_old_defaults() {
+        // UX-001: rows saved with the first defaults (⌘ arrows, ⌘R, ⌘,) move to
+        // the new defaults; a customised row is left alone.
+        let db = testutil::db();
+        db.with_conn(|c| {
+            c.execute_batch(
+                "INSERT INTO shortcuts (id, accelerator, enabled, updated_at) VALUES
+                   ('move_up', 'CmdOrCtrl+ArrowUp', 1, 'x'),
+                   ('move_left', 'Cmd+Alt+KeyJ', 1, 'x'),
+                   ('scroll_down', 'CmdOrCtrl+Shift+ArrowDown', 1, 'x'),
+                   ('new_chat', 'CmdOrCtrl+KeyR', 1, 'x'),
+                   ('open_settings', 'Cmd+Alt+KeyS', 1, 'x');
+                 DELETE FROM schema_migrations WHERE name = '0006_shortcut_defaults';",
+            )
+            .sql()
+        })
+        .unwrap();
+        assert_eq!(db.run_migrations().unwrap(), 1);
+
+        let listed = ShortcutRepository::list(&db).unwrap();
+        let get = |id: ShortcutId| listed.iter().find(|b| b.id == id).unwrap();
+        assert_eq!(get(ShortcutId::MoveUp).accelerator, "Ctrl+Alt+ArrowUp");
+        assert_eq!(get(ShortcutId::MoveLeft).accelerator, "Cmd+Alt+KeyJ");
+        assert_eq!(
+            get(ShortcutId::ScrollDown).accelerator,
+            "CmdOrCtrl+Alt+ArrowDown"
+        );
+        assert!(!get(ShortcutId::NewChat).enabled);
+        assert!(get(ShortcutId::OpenSettings).enabled, "customised row kept");
     }
 
     #[test]

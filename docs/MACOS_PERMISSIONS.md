@@ -33,6 +33,14 @@ microphone.
    * Speech Recognition: `…?Privacy_SpeechRecognition`
    * Notifications: `x-apple.systempreferences:com.apple.preference.notifications`
 
+4. **After an update** (MAC-001): builds without a Developer ID get a new code identity with
+   every update, and macOS stops honouring the grants of the previous version. The first launch
+   of a new version compares the current state with the persisted snapshot of the last-known
+   grants; lost ones fill `PermissionState.lostAfterUpdate`, Settings opens on *Permissions*, and a
+   card names them, explains that unsigned updates reset permissions and Keychain approvals, and
+   offers *Open System Settings* for each (remove Bluey with "–" and add it again if it is listed).
+   See [UPDATES.md](UPDATES.md#unsigned-builds-reset-macos-permissions).
+
 ## TCC attribution
 The native helper is a child process of Bluey.app inside the bundle (`Contents/MacOS/`). macOS
 attributes TCC checks of child processes to the *responsible* application, so prompts name

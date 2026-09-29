@@ -34,6 +34,10 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         "0005_modes_lifecycle",
         include_str!("../migrations/0005_modes_lifecycle.sql"),
     ),
+    (
+        "0006_shortcut_defaults",
+        include_str!("../migrations/0006_shortcut_defaults.sql"),
+    ),
 ];
 
 /// A single SQLite database handle shared by all repositories.
@@ -56,6 +60,25 @@ impl Database {
     /// `busy_timeout=5000`, `temp_store=MEMORY`, `recursive_triggers=ON`) and run
     /// any pending migrations. Parent directories are created automatically.
     pub fn open(path: &Path) -> Result<Self, BlueyError> {
+        let db = Self::open_unmigrated(path)?;
+        db.run_migrations()?;
+        Ok(db)
+    }
+
+    /// [`Database::open`], but an existing database with migrations pending is
+    /// first copied to `<path>.bak-<tag>` (the app passes its version), so a
+    /// migration that fails or goes wrong after an update can be rolled back
+    /// by hand (CRIT-003). A backup that cannot be written is logged, not fatal.
+    pub fn open_with_backup(path: &Path, tag: &str) -> Result<Self, BlueyError> {
+        let db = Self::open_unmigrated(path)?;
+        if let Err(e) = db.backup_before_migrations(tag) {
+            tracing::warn!(error = %e, "could not back up the database before migrating");
+        }
+        db.run_migrations()?;
+        Ok(db)
+    }
+
+    fn open_unmigrated(path: &Path) -> Result<Self, BlueyError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).map_err(|e| {
@@ -66,12 +89,47 @@ impl Database {
         let conn = Connection::open(path)
             .map_err(|e| BlueyError::storage("io", format!("cannot open database: {e}")))?;
         Self::configure(&conn)?;
-        let db = Self {
+        Ok(Self {
             conn: Mutex::new(conn),
             path: Some(path.to_path_buf()),
+        })
+    }
+
+    /// Copy the database to `<path>.bak-<tag>` when it already holds data and
+    /// has migrations pending. An existing backup with that tag is kept: it is
+    /// the older, pre-migration copy. Returns the backup path when there is one.
+    pub fn backup_before_migrations(&self, tag: &str) -> Result<Option<PathBuf>, BlueyError> {
+        let Some(path) = &self.path else {
+            return Ok(None);
         };
-        db.run_migrations()?;
-        Ok(db)
+        let applied: Vec<String> = self.with_conn(|conn| {
+            let has_table: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+                    [],
+                    |r| r.get(0),
+                )
+                .sql()?;
+            if !has_table {
+                return Ok(Vec::new());
+            }
+            let mut stmt = conn.prepare("SELECT name FROM schema_migrations").sql()?;
+            let rows = stmt.query_map([], |r| r.get(0)).sql()?;
+            rows.collect::<Result<Vec<String>, _>>().sql()
+        })?;
+        let pending = MIGRATIONS
+            .iter()
+            .any(|(name, _)| !applied.iter().any(|done| done == name));
+        if applied.is_empty() || !pending {
+            return Ok(None);
+        }
+        let backup = PathBuf::from(format!("{}.bak-{tag}", path.display()));
+        if !backup.exists() {
+            let target = backup.to_string_lossy().into_owned();
+            self.with_conn(|conn| conn.execute("VACUUM INTO ?1", [target]).map(|_| ()).sql())?;
+            tracing::info!(backup = %backup.display(), "backed up the database before migrating");
+        }
+        Ok(Some(backup))
     }
 
     /// In-memory database for tests: same PRAGMAs, migrations already applied.
@@ -246,10 +304,53 @@ mod tests {
                 "0002_fts_sync".to_string(),
                 "0003_embedding_model".to_string(),
                 "0004_ai_request_trace".to_string(),
-                "0005_modes_lifecycle".to_string()
+                "0005_modes_lifecycle".to_string(),
+                "0006_shortcut_defaults".to_string()
             ]
         );
         assert!(db.path().is_none());
+    }
+
+    #[test]
+    fn a_database_with_pending_migrations_is_backed_up_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bluey.db");
+        let backup = dir.path().join("bluey.db.bak-9.9.9");
+
+        // A fresh database has nothing to lose: no backup.
+        drop(Database::open_with_backup(&path, "9.9.9").unwrap());
+        assert!(!backup.exists());
+
+        // An update brings a migration this database has not applied yet.
+        let db = Database::open(&path).unwrap();
+        db.with_conn(|c| {
+            c.execute_batch(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('probe', '1', 'x');
+                 DELETE FROM schema_migrations WHERE name = '0006_shortcut_defaults';",
+            )
+            .sql()
+        })
+        .unwrap();
+        drop(db);
+        let db = Database::open_with_backup(&path, "9.9.9").unwrap();
+        assert_eq!(db.run_migrations().unwrap(), 0, "migrated after the backup");
+        drop(db);
+
+        let copy = Connection::open(&backup).unwrap();
+        let probe: String = copy
+            .query_row("SELECT value FROM settings WHERE key = 'probe'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(probe, "1");
+        let pre_migration: bool = copy
+            .query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE name = '0006_shortcut_defaults')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(pre_migration, "the copy is the pre-migration state");
     }
 
     #[test]

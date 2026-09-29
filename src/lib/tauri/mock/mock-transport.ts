@@ -26,6 +26,7 @@ import type {
   DetectedEvent,
   DevSimulation,
   LatencyMetrics,
+  PermissionKind,
   PermissionState,
   ScreenFrame,
   Session,
@@ -66,9 +67,20 @@ import {
   createMockAccounts,
   FIXTURE_ACCOUNT_IDENTITIES,
 } from "./fixtures";
+import { detectConflict, normalizeAccelerator } from "./accelerators";
 import { applyModePatch, createCustomMode, invalidParams } from "./modes";
 
 const now = () => new Date().toISOString();
+
+/** `capture::protection_status` as it reports on macOS 15+ (SEC-004). */
+const mockProtection = (enabled: boolean): CaptureProtection => ({
+  supported: true,
+  enabled,
+  partial: enabled,
+  note: enabled
+    ? "Bluey is hidden from apps that honour macOS window protection (legacy capture). Modern ScreenCaptureKit screen sharing and recording on macOS 15 and later may still show Bluey, and its menus are never hidden."
+    : "Bluey windows are visible in screen shares and recordings.",
+});
 
 /** The identity the simulated browser sign-in returns. */
 const MOCK_AUTH_USER: AuthUser = {
@@ -351,13 +363,10 @@ export class MockTransport implements Transport {
     notifications: "not_determined",
     speechRecognition: "granted",
     checkedAt: now(),
+    lostAfterUpdate: [],
   };
 
-  private protection: CaptureProtection = {
-    supported: true,
-    enabled: true,
-    note: "Bluey excludes its windows from screen recordings and screenshots on macOS 12.3+. Hardware capture cards and cameras pointed at the display can still see it.",
-  };
+  private protection: CaptureProtection = mockProtection(true);
 
   private status: AppStatus = {
     state: "ready",
@@ -432,6 +441,13 @@ export class MockTransport implements Transport {
 
   createChannel<T>(): StreamChannel<T> {
     return new MockStreamChannel<T>();
+  }
+
+  /** Tests: this launch follows an update that cost these grants (MAC-001). */
+  simulateLostAfterUpdate(kinds: PermissionKind[]): void {
+    const denied = Object.fromEntries(kinds.map((kind) => [kind, "denied"]));
+    this.permissions = { ...this.permissions, ...denied, lostAfterUpdate: [...kinds], checkedAt: now() };
+    this.emit("permissions.changed", this.permissions);
   }
 
   currentWindowLabel(): string {
@@ -1421,7 +1437,12 @@ export class MockTransport implements Transport {
     // Permissions
     permissions_get: () => this.permissions,
     permissions_request: (args) => {
-      this.permissions = { ...this.permissions, [args.kind]: "granted", checkedAt: now() };
+      this.permissions = {
+        ...this.permissions,
+        [args.kind]: "granted",
+        checkedAt: now(),
+        lostAfterUpdate: this.permissions.lostAfterUpdate.filter((kind) => kind !== args.kind),
+      };
       this.emit("permissions.changed", this.permissions);
       return this.permissions;
     },
@@ -1468,7 +1489,7 @@ export class MockTransport implements Transport {
     },
     capture_get_protection: () => this.protection,
     capture_set_protection: (args) => {
-      this.protection = { ...this.protection, enabled: args.enabled };
+      this.protection = mockProtection(args.enabled);
       return this.protection;
     },
 
@@ -2272,10 +2293,24 @@ export class MockTransport implements Transport {
     // Shortcuts
     shortcuts_list: () => this.settings.shortcuts,
     shortcuts_update: (args) => {
+      // Mirrors ShortcutManager::update: normalise, reject clashes with other Bluey
+      // bindings (a macOS-shortcut clash is only logged there).
+      const accelerator = normalizeAccelerator(args.accelerator);
+      if (!accelerator) {
+        throw blueyError({
+          kind: "internal",
+          code: "internal.invalid_params",
+          message: `\`${args.accelerator}\` is not a valid shortcut`,
+        });
+      }
+      const conflict = detectConflict(accelerator, this.settings.shortcuts, args.id);
+      if (conflict?.conflictsWith === "bluey") {
+        throw blueyError({ kind: "internal", code: "internal.invalid_params", message: conflict.detail });
+      }
       this.settings = {
         ...this.settings,
         shortcuts: this.settings.shortcuts.map((s) =>
-          s.id === args.id ? { ...s, accelerator: args.accelerator, enabled: args.enabled ?? s.enabled } : s,
+          s.id === args.id ? { ...s, accelerator, enabled: args.enabled ?? s.enabled } : s,
         ),
       };
       this.emitSettings();
@@ -2286,23 +2321,8 @@ export class MockTransport implements Transport {
       this.emitSettings();
       return this.settings.shortcuts;
     },
-    shortcuts_check_conflict: (args): ShortcutConflict | null => {
-      const system = ["CmdOrCtrl+Q", "CmdOrCtrl+W", "CmdOrCtrl+Space", "CmdOrCtrl+Tab"];
-      if (system.includes(args.accelerator)) {
-        return { accelerator: args.accelerator, conflictsWith: "system", detail: "Reserved by macOS." };
-      }
-      const clash = this.settings.shortcuts.find(
-        (s) => s.accelerator === args.accelerator && s.id !== args.ignoreId,
-      );
-      if (clash) {
-        return {
-          accelerator: args.accelerator,
-          conflictsWith: "bluey",
-          detail: `Already used by “${clash.label}”.`,
-        };
-      }
-      return null;
-    },
+    shortcuts_check_conflict: (args): ShortcutConflict | null =>
+      detectConflict(args.accelerator, this.settings.shortcuts, args.ignoreId),
 
     // Panel / windows
     panel_show: () => this.setPanel({ visible: true }),

@@ -3,7 +3,7 @@
 //! and window content protection.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use base64::Engine;
 use bluey_core::events::BlueyEvent;
 use bluey_core::types::{
     CaptureOptions, CaptureProtection, CaptureTarget, CaptureTargetPreference, DisplayInfo,
-    DisplayMode, OcrContext, OcrLevel, ScreenFrame,
+    DisplayMode, ImageMimeType, OcrContext, OcrLevel, ScreenFrame,
 };
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_protocols::helper::{self as helper_proto, CapturableWindow};
@@ -23,15 +23,46 @@ use crate::settings::SettingsManager;
 use crate::sidecar::HelperClient;
 use crate::storage::Storage;
 
-/// Honest ADR-0006 notes shown in the privacy centre.
-const PROTECTED_NOTE: &str = "Bluey is excluded from most screen sharing and recording \
-(ScreenCaptureKit and window-list capture). Hardware capture devices and some virtual \
-displays may still see it.";
+/// Honest ADR-0006 notes shown in the privacy centre (SEC-004). Protection is
+/// `NSWindow.sharingType = .none`, which ScreenCaptureKit on macOS 15 and
+/// later may not honour; NSMenu popups are separate windows and never covered.
+const PROTECTED_NOTE: &str = "Bluey is hidden from screen sharing and recording that honour \
+macOS window protection. Hardware capture devices, some virtual displays and Bluey's menus may \
+still show it.";
+const PARTIAL_NOTE: &str = "Bluey is hidden from apps that honour macOS window protection \
+(legacy capture). Modern ScreenCaptureKit screen sharing and recording on macOS 15 and later may \
+still show Bluey, and its menus are never hidden.";
 const UNPROTECTED_NOTE: &str = "Bluey windows are visible in screen shares and recordings.";
 
+/// First macOS whose ScreenCaptureKit may ignore `NSWindow.sharingType`.
+const SHARING_TYPE_PARTIAL_FROM: u32 = 15;
+
+/// The protection status to report: an unknown macOS version counts as
+/// partial, never as fully hidden.
+fn protection_status(
+    supported: bool,
+    enabled: bool,
+    macos_major: Option<u32>,
+) -> CaptureProtection {
+    let partial =
+        supported && enabled && macos_major.is_none_or(|major| major >= SHARING_TYPE_PARTIAL_FROM);
+    let note = match (enabled, partial) {
+        (false, _) => UNPROTECTED_NOTE,
+        (true, true) => PARTIAL_NOTE,
+        (true, false) => PROTECTED_NOTE,
+    };
+    CaptureProtection {
+        supported,
+        enabled,
+        partial,
+        note: note.to_string(),
+    }
+}
+
 /// Frames remembered per id. Inline captures carry their image here, so the
-/// bound keeps memory flat over a long session; the helper's temp files are
-/// its own concern (stale ones go at helper startup).
+/// bound keeps memory flat over a long session. A frame's helper temp file is
+/// deleted when the frame leaves the cache or once its image is held inline
+/// (DATA-001); the helper sweeps whatever is left.
 const FRAME_CACHE_CAPACITY: usize = 8;
 
 /// A captured frame the app still holds: the helper's temp file when it wrote
@@ -51,15 +82,31 @@ struct FrameCache {
 }
 
 impl FrameCache {
-    fn insert(&mut self, id: String, frame: CachedFrame) {
+    /// Remember `frame`; returns the frames pushed out past capacity so their
+    /// temp files can be deleted.
+    fn insert(&mut self, id: String, frame: CachedFrame) -> Vec<CachedFrame> {
         if self.entries.insert(id.clone(), frame).is_none() {
             self.order.push_back(id);
         }
+        let mut evicted = Vec::new();
         while self.order.len() > FRAME_CACHE_CAPACITY {
             if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
+                evicted.extend(self.entries.remove(&oldest));
             }
         }
+        evicted
+    }
+
+    /// Once the frame's image is held in memory (`image`, or the one it came
+    /// with) its temp file is redundant: returns the path to delete. A frame
+    /// without an image keeps its file, since it is the only copy.
+    fn release_file(&mut self, id: &str, image: Option<&str>) -> Option<PathBuf> {
+        let entry = self.entries.get_mut(id)?;
+        if entry.image.is_none() {
+            entry.image = image.map(str::to_string);
+        }
+        entry.image.as_ref()?;
+        entry.path.take()
     }
 
     fn get(&self, id: &str) -> Option<CachedFrame> {
@@ -135,8 +182,7 @@ impl CaptureManager {
         let screen = self.settings.get().screen;
         match screen.capture_target {
             CaptureTargetPreference::ActiveWindow => CaptureTarget::ActiveWindow,
-            CaptureTargetPreference::Region | CaptureTargetPreference::Display => {
-                // A region preference without a stored rect degrades to display.
+            CaptureTargetPreference::Display => {
                 let display_id = match screen.preferred_display.as_str() {
                     "" | "active" | "main" => None,
                     id => Some(id.to_string()),
@@ -213,13 +259,14 @@ impl CaptureManager {
         // `unknown_frame`. Remember whatever the helper returned — path, image
         // or both — so OCR and `read_frame` can always find the frame.
         if frame.path.is_some() || frame.image.is_some() {
-            self.frames.lock().insert(
+            let evicted = self.frames.lock().insert(
                 frame.id.clone(),
                 CachedFrame {
                     path: frame.path.as_deref().map(PathBuf::from),
                     image: frame.image.clone(),
                 },
             );
+            self.delete_temp_frames(evicted.into_iter().filter_map(|f| f.path).collect());
         }
 
         // The event mirrors the frame without the inline image (kept small).
@@ -227,20 +274,28 @@ impl CaptureManager {
         event_frame.image = None;
         self.bus.publish(BlueyEvent::ScreenCaptured(event_frame));
 
-        self.persist_snapshot(&frame);
+        self.persist_snapshot(&frame).await;
         Ok(frame)
     }
 
-    /// Save a `screen_snapshots` row when a session is active (image path only
-    /// when the privacy setting allows).
-    fn persist_snapshot(&self, frame: &ScreenFrame) {
+    /// Save a `screen_snapshots` row when a session is active. With
+    /// `storeScreenshots` on, the image is first copied out of the helper's
+    /// temp dir into `screenshots_dir`, so the row never points at a temp
+    /// file that is deleted after use or swept (DATA-001).
+    async fn persist_snapshot(&self, frame: &ScreenFrame) {
         let Some(session_id) = self.sessions.active_id() else {
             return;
         };
-        let store_image = self.settings.get().privacy.store_screenshots;
+        let mut frame = frame.clone();
+        frame.path = if self.settings.get().privacy.store_screenshots {
+            keep_screenshot(&self.storage.paths.screenshots_dir, &frame).await
+        } else {
+            None
+        };
+        frame.image = None;
+        let store_image = frame.path.is_some();
         let frontmost = self.ax.cached_frontmost();
         let storage = self.storage.clone();
-        let frame = frame.clone();
         tauri::async_runtime::spawn(async move {
             let result = storage
                 .run(move |db| {
@@ -259,6 +314,23 @@ impl CaptureManager {
                 tracing::warn!(error = %e, "failed to persist screen snapshot");
             }
         });
+    }
+
+    /// Delete helper temp frames in the background (DATA-001).
+    fn delete_temp_frames(&self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        let frames_dir = self.storage.paths.frames_dir.clone();
+        tauri::async_runtime::spawn(async move { remove_temp_frames(&frames_dir, paths).await });
+    }
+
+    /// The caller now holds the frame's image (a context snapshot inlined it),
+    /// so the helper's temp file can go (DATA-001). OCR and `read_frame` keep
+    /// working from the image.
+    pub fn release_frame_file(&self, frame_id: &str, image: Option<&str>) {
+        let path = self.frames.lock().release_file(frame_id, image);
+        self.delete_temp_frames(path.into_iter().collect());
     }
 
     fn cached_frame(&self, frame_id: &str) -> BlueyResult<CachedFrame> {
@@ -381,17 +453,11 @@ impl CaptureManager {
 
     /// Current content-protection status.
     pub fn protection(&self) -> CaptureProtection {
-        let enabled = self.protection.load(Ordering::SeqCst);
-        CaptureProtection {
-            supported: cfg!(target_os = "macos"),
-            enabled,
-            note: if enabled {
-                PROTECTED_NOTE
-            } else {
-                UNPROTECTED_NOTE
-            }
-            .to_string(),
-        }
+        protection_status(
+            cfg!(target_os = "macos"),
+            self.protection.load(Ordering::SeqCst),
+            crate::platform::macos_major_version(),
+        )
     }
 
     /// Toggle `NSWindow.sharingType`-based protection on every Bluey window.
@@ -403,6 +469,54 @@ impl CaptureManager {
         }
         self.protection.store(enabled, Ordering::SeqCst);
         Ok(self.protection())
+    }
+}
+
+/// Copy a frame the user chose to keep into `dir` — from the temp file, else
+/// from the inline image. Returns the stored path.
+async fn keep_screenshot(dir: &Path, frame: &ScreenFrame) -> Option<String> {
+    let safe_id = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    if frame.id.is_empty() || !frame.id.chars().all(safe_id) {
+        return None;
+    }
+    let ext = match frame.mime_type {
+        ImageMimeType::Png => "png",
+        ImageMimeType::Jpeg => "jpg",
+        ImageMimeType::Webp => "webp",
+    };
+    let target = dir.join(format!("{}.{ext}", frame.id));
+    let result = match (&frame.path, &frame.image) {
+        (Some(path), _) => tokio::fs::copy(path, &target).await.map(|_| ()),
+        (None, Some(image)) => match base64::engine::general_purpose::STANDARD.decode(image) {
+            Ok(bytes) => tokio::fs::write(&target, bytes).await,
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        },
+        (None, None) => return None,
+    };
+    match result {
+        Ok(()) => Some(target.to_string_lossy().into_owned()),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot keep the screenshot");
+            None
+        }
+    }
+}
+
+/// Delete temp frames the app no longer needs. Only files inside
+/// `frames_dir` are touched, whatever path the helper reported.
+async fn remove_temp_frames(frames_dir: &Path, paths: Vec<PathBuf>) {
+    for path in paths {
+        let inside = path.starts_with(frames_dir)
+            && !path.components().any(|c| matches!(c, Component::ParentDir));
+        if !inside {
+            tracing::warn!("not deleting a frame outside the frames directory");
+            continue;
+        }
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(error = %e, "cannot delete a temp frame");
+            }
+        }
     }
 }
 
@@ -431,6 +545,129 @@ mod tests {
         assert_eq!(cache.remove("f-2"), Some(frame(None, Some("QUJD"))));
         assert_eq!(cache.get("f-2"), None);
         assert_eq!(cache.order.len(), 1);
+    }
+
+    #[test]
+    fn protection_is_reported_as_partial_where_screencapturekit_may_ignore_it() {
+        let sequoia = protection_status(true, true, Some(15));
+        assert!(sequoia.partial);
+        assert!(sequoia
+            .note
+            .contains("macOS 15 and later may still show Bluey"));
+        assert!(protection_status(true, true, Some(26)).partial);
+        assert!(
+            protection_status(true, true, None).partial,
+            "unknown is never full"
+        );
+        let sonoma = protection_status(true, true, Some(14));
+        assert!(!sonoma.partial);
+        assert!(!sonoma.note.contains("ScreenCaptureKit"));
+        assert!(sonoma.note.contains("menus"));
+        let off = protection_status(true, false, Some(26));
+        assert!(!off.partial);
+        assert_eq!(off.note, UNPROTECTED_NOTE);
+        assert!(!protection_status(false, true, None).partial);
+    }
+
+    #[test]
+    fn eviction_hands_back_the_frames_whose_files_must_go() {
+        let mut cache = FrameCache::default();
+        let mut evicted = Vec::new();
+        for i in 0..(FRAME_CACHE_CAPACITY + 2) {
+            evicted
+                .extend(cache.insert(format!("f-{i}"), frame(Some(&format!("/f/{i}.jpg")), None)));
+        }
+        assert_eq!(
+            evicted,
+            vec![frame(Some("/f/0.jpg"), None), frame(Some("/f/1.jpg"), None)]
+        );
+    }
+
+    #[test]
+    fn a_frame_releases_its_file_only_once_its_image_is_held() {
+        let mut cache = FrameCache::default();
+        cache.insert("f-1".into(), frame(Some("/f/1.jpg"), None));
+        cache.insert("f-2".into(), frame(Some("/f/2.jpg"), Some("QUJD")));
+        cache.insert("f-3".into(), frame(Some("/f/3.jpg"), None));
+        // Inlined by the caller: the image moves into the cache, the file goes.
+        assert_eq!(
+            cache.release_file("f-1", Some("QUJD")),
+            Some("/f/1.jpg".into())
+        );
+        assert_eq!(cache.get("f-1"), Some(frame(None, Some("QUJD"))));
+        // Captured inline: the file is redundant already.
+        assert_eq!(cache.release_file("f-2", None), Some("/f/2.jpg".into()));
+        // No image anywhere: the file is the only copy and stays.
+        assert_eq!(cache.release_file("f-3", None), None);
+        assert_eq!(cache.get("f-3"), Some(frame(Some("/f/3.jpg"), None)));
+        assert_eq!(cache.release_file("f-unknown", Some("QUJD")), None);
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bluey-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn temp_frames_are_deleted_inside_the_frames_dir_only() {
+        let root = scratch_dir("frames");
+        let frames = root.join("frames");
+        std::fs::create_dir_all(&frames).unwrap();
+        let inside = frames.join("f-1.jpg");
+        let outside = root.join("keep.jpg");
+        for path in [&inside, &outside] {
+            std::fs::write(path, b"jpeg").unwrap();
+        }
+        let sneaky = frames.join("..").join("keep.jpg");
+        remove_temp_frames(&frames, vec![inside.clone(), outside.clone(), sneaky]).await;
+        assert!(!inside.exists());
+        assert!(
+            outside.exists(),
+            "a path outside the frames dir is never deleted"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_kept_screenshot_is_copied_out_of_the_temp_dir() {
+        let dir = scratch_dir("screenshots");
+        let temp = dir.join("f-1.tmp");
+        std::fs::write(&temp, b"jpeg").unwrap();
+        let mut shot = ScreenFrame {
+            id: "f-1".into(),
+            image: None,
+            mime_type: ImageMimeType::Jpeg,
+            path: Some(temp.to_string_lossy().into_owned()),
+            width: 1,
+            height: 1,
+            display_id: None,
+            scale_factor: 1.0,
+            captured_at: String::new(),
+            hash: None,
+            changed: true,
+            target: CaptureTarget::ActiveWindow,
+            duration_ms: None,
+        };
+        let kept = keep_screenshot(&dir, &shot).await.expect("copied");
+        std::fs::remove_file(&temp).unwrap();
+        assert_eq!(
+            std::fs::read(&kept).unwrap(),
+            b"jpeg",
+            "survives the temp file"
+        );
+
+        // An inline-only frame is written from its image.
+        shot.id = "f-2".into();
+        shot.path = None;
+        shot.image = Some("QUJD".into());
+        let kept = keep_screenshot(&dir, &shot).await.expect("written");
+        assert_eq!(std::fs::read(&kept).unwrap(), b"ABC");
+
+        shot.id = "../f-3".into();
+        assert_eq!(keep_screenshot(&dir, &shot).await, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

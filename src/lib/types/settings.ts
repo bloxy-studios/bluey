@@ -12,7 +12,8 @@ export type PanelPositionPreference = "remember" | "center" | "top" | "bottom" |
 export type DisplayMode = "standard" | "privacy";
 export type RawAudioRetention = "never" | "until_session_end" | "custom";
 export type ObservationMode = "manual" | "smart";
-export type CaptureTargetPreference = "display" | "active_window" | "region";
+/** Rust reads a legacy stored `"region"` as `"active_window"` (FEATURE-006). */
+export type CaptureTargetPreference = "display" | "active_window";
 export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 
 export interface GeneralSettings {
@@ -116,6 +117,8 @@ export interface ShortcutBinding {
   accelerator: string;
   defaultAccelerator: string;
   enabled: boolean;
+  /** Why macOS did not register it the last time it was applied (UX-039). */
+  registrationError?: string;
 }
 
 export type ShortcutId =

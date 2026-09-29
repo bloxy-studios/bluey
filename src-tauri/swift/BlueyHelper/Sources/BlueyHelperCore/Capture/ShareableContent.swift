@@ -38,19 +38,78 @@ public enum ShareableContent {
         return app.bundleIdentifier == blueyBundleId
     }
 
+    /// PERF-015: display captures reuse an enumeration for up to 1.5 s while the
+    /// display configuration is unchanged. Only content that lists Bluey's own
+    /// app is kept, so `displayFilter` can exclude Bluey by app and a Bluey
+    /// window opened after the fetch is still left out of the frame.
+    static let displayCaptureContent = ContentCache<SCShareableContent>(
+        ttlMs: 1500, now: Clock.monotonicMs, key: displayConfigurationKey,
+        shouldCache: { !ownApplications(in: $0).isEmpty },
+        fetch: { fetch(completion: $0) })
+
+    public static func fetchForDisplayCapture(
+        completion: @escaping (Result<SCShareableContent, HelperError>) -> Void
+    ) {
+        guard CGPreflightScreenCaptureAccess() else {
+            displayCaptureContent.invalidate()
+            completion(.failure(.permissionDenied("screenRecording", message: "Screen Recording not granted")))
+            return
+        }
+        displayCaptureContent.get(completion: completion)
+    }
+
+    /// Active displays and their bounds: cheap to read, and it changes whenever
+    /// a display is added, removed, re-arranged or changes resolution.
+    static func displayConfigurationKey() -> String {
+        var count: UInt32 = 0
+        // https://developer.apple.com/documentation/coregraphics/1454603-cggetactivedisplaylist
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return "" }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return "" }
+        return ids.prefix(Int(count)).map { id -> String in
+            let b = CGDisplayBounds(id)
+            return "\(id):\(b.origin.x),\(b.origin.y),\(b.width),\(b.height)"
+        }.joined(separator: ";")
+    }
+
+    public static func ownApplications(in content: SCShareableContent) -> [SCRunningApplication] {
+        content.applications.filter { app in
+            app.processID == getpid() || app.processID == getppid() || app.bundleIdentifier == blueyBundleId
+        }
+    }
+
+    /// A display filter without Bluey: by app when Bluey is enumerated (covers
+    /// windows created later), else by the windows in `content`.
+    public static func displayFilter(
+        _ display: SCDisplay, excludingSelf: Bool, in content: SCShareableContent
+    ) -> SCContentFilter {
+        guard excludingSelf else { return SCContentFilter(display: display, excludingWindows: []) }
+        let apps = ownApplications(in: content)
+        guard !apps.isEmpty else {
+            return SCContentFilter(display: display, excludingWindows: ownWindows(in: content))
+        }
+        // https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init(display:excludingapplications:exceptingwindows:)
+        return SCContentFilter(display: display, excludingApplications: apps, exceptingWindows: [])
+    }
+
     public static func ownWindows(in content: SCShareableContent) -> [SCWindow] {
         content.windows.filter { isOwnWindow($0) }
     }
 
-    /// Resolve a display by its stringified CGDirectDisplayID; nil → main display.
+    /// Resolve a display by its stringified CGDirectDisplayID; nil → the display
+    /// with focus (see FocusDisplay), not simply the menu-bar display.
     public static func display(
         withId id: String?, in content: SCShareableContent
     ) -> SCDisplay? {
         if let id, let numeric = UInt32(id) {
             return content.displays.first { $0.displayID == numeric }
         }
-        let main = CGMainDisplayID()
-        return content.displays.first { $0.displayID == main } ?? content.displays.first
+        let focused = FocusDisplay.resolve(
+            displays: content.displays.map { (id: $0.displayID, frame: $0.frame) },
+            focusedWindow: FocusDisplay.focusedWindowBounds(),
+            mouse: FocusDisplay.mouseLocation(),
+            mainDisplayID: CGMainDisplayID())
+        return content.displays.first { $0.displayID == focused } ?? content.displays.first
     }
 
     public static func window(withId id: UInt32, in content: SCShareableContent) -> SCWindow? {

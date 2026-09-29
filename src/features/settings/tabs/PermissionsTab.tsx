@@ -8,6 +8,7 @@ import { bluey } from "@/lib/tauri/api";
 import type { PermissionKind, PermissionStatus, SetupCheck } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { usePermissionsStore } from "@/stores/permissionsStore";
+import { UpdateRepairCard } from "./UpdateRepairCard";
 
 const CARDS: Array<{ kind: PermissionKind; label: string; icon: LucideIcon; why: string }> = [
   { kind: "screenRecording", label: "Screen Recording", icon: MonitorUp, why: "Lets Bluey see your screen when you ask about it. Frames stay on this Mac unless you send a question." },
@@ -50,6 +51,11 @@ export default function PermissionsTab() {
           {running ? <Spinner size={12} /> : null} Run setup checks
         </Button>
       </div>
+
+      <UpdateRepairCard
+        lost={permissions?.lostAfterUpdate ?? []}
+        onOpenSystemSettings={(kind) => void openSystemSettings(kind)}
+      />
 
       <div className="mt-4 grid grid-cols-2 gap-3">
         {CARDS.map(({ kind, label, icon: Icon, why }) => {

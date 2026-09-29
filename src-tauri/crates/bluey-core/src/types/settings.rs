@@ -66,8 +66,11 @@ pub enum ObservationMode {
 pub enum CaptureTargetPreference {
     #[default]
     Display,
+    /// `region` was offered before a region picker existed and silently captured
+    /// the whole display; a stored `region` now reads as the narrower active
+    /// window, never a wider target (FEATURE-006).
+    #[serde(alias = "region")]
     ActiveWindow,
-    Region,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -373,6 +376,10 @@ pub struct ShortcutBinding {
     pub accelerator: String,
     pub default_accelerator: String,
     pub enabled: bool,
+    /// Why the binding did not register the last time it was applied
+    /// (UX-039); absent while it works or is switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -570,6 +577,13 @@ mod tests {
         assert!(v["shortcuts"].as_array().unwrap().len() == 12);
         assert_eq!(v["updates"]["channel"], "latest");
         assert_eq!(v["updates"]["automatic"], true);
+    }
+
+    #[test]
+    fn a_stored_region_target_reads_as_the_active_window() {
+        let parsed: CaptureTargetPreference = serde_json::from_str("\"region\"").unwrap();
+        assert_eq!(parsed, CaptureTargetPreference::ActiveWindow);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), "active_window");
     }
 
     #[test]

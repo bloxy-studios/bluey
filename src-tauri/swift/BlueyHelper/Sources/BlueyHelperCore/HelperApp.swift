@@ -40,7 +40,7 @@ public final class HelperApp {
     // MARK: lifecycle
 
     public func run() {
-        tempFrames.cleanupStale()
+        tempFrames.startPeriodicSweep()
         installSignalHandlers()
 
         io.onLine = { [weak self] line in

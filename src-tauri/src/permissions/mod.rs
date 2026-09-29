@@ -8,9 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bluey_core::events::BlueyEvent;
-use bluey_core::types::{PermissionKind, PermissionState, PermissionStatus};
+use bluey_core::types::{PermissionKind, PermissionSnapshot, PermissionState, PermissionStatus};
 use bluey_core::{now_iso, BlueyError, BlueyResult};
 use bluey_protocols::helper::{permission_wire_kind, WirePermissions};
+use bluey_storage::SettingsRepository;
 use serde_json::json;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
@@ -19,16 +20,24 @@ use tauri_plugin_opener::OpenerExt;
 use crate::events::EventBus;
 use crate::sidecar::HelperClient;
 use crate::state::StateHub;
+use crate::storage::Storage;
 
 /// How often permissions are re-checked while listening (spec: 30 s).
 const ACTIVE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Settings key of the persisted [`PermissionSnapshot`] (MAC-001).
+const SNAPSHOT_KEY: &str = "permission_snapshot";
 
 pub struct PermissionManager {
     app: AppHandle,
     helper: Arc<HelperClient>,
     bus: Arc<EventBus>,
     hub: Arc<StateHub>,
+    storage: Arc<Storage>,
     last: parking_lot::Mutex<Option<PermissionState>>,
+    /// Grants the last update cost, computed once per run against the snapshot
+    /// the previous version left behind (MAC-001). `None` until the first refresh.
+    lost_after_update: tokio::sync::Mutex<Option<Vec<PermissionKind>>>,
 }
 
 impl PermissionManager {
@@ -37,13 +46,16 @@ impl PermissionManager {
         helper: Arc<HelperClient>,
         bus: Arc<EventBus>,
         hub: Arc<StateHub>,
+        storage: Arc<Storage>,
     ) -> Self {
         Self {
             app,
             helper,
             bus,
             hub,
+            storage,
             last: parking_lot::Mutex::new(None),
+            lost_after_update: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -81,8 +93,49 @@ impl PermissionManager {
             }
         }
 
+        state.lost_after_update = self.track_grants(&state).await;
         self.store(state.clone());
         Ok(state)
+    }
+
+    /// On the first refresh of a run, compare with the snapshot the previous
+    /// version left (an ad-hoc signed update resets TCC grants), then keep the
+    /// snapshot current. A storage failure only costs the repair card.
+    async fn track_grants(&self, state: &PermissionState) -> Vec<PermissionKind> {
+        let version = self.app.package_info().version.to_string();
+        let mut lost = self.lost_after_update.lock().await;
+        let previous: PermissionSnapshot = self
+            .storage
+            .run(|db| SettingsRepository::get_json(db, SNAPSHOT_KEY))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "permission snapshot unavailable");
+                None
+            })
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        let lost = lost.get_or_insert_with(|| {
+            let computed = previous.lost_after_update(&version, state);
+            if !computed.is_empty() {
+                tracing::warn!(lost = ?computed, %version, "grants from before the update are off now");
+            }
+            computed
+        });
+        let next = previous.observe(&version, state);
+        if next != previous {
+            let value = serde_json::to_value(&next).unwrap_or_default();
+            let result = self
+                .storage
+                .run(move |db| SettingsRepository::set_json(db, SNAPSHOT_KEY, &value))
+                .await;
+            if let Err(e) = result {
+                tracing::debug!(error = %e, "cannot persist the permission snapshot");
+            }
+        }
+        lost.iter()
+            .copied()
+            .filter(|kind| !state.get(*kind).is_granted())
+            .collect()
     }
 
     /// Request one permission (shows the system prompt where macOS allows it)
