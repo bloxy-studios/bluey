@@ -685,6 +685,15 @@ export class MockTransport implements Transport {
     this.emitSettings();
   }
 
+  /** Rust `side_effects::apply`: a removed provider takes its API key with it. */
+  private dropRemovedProviderKeys(before: Settings): void {
+    for (const provider of before.ai.providers) {
+      if (!this.settings.ai.providers.some((p) => p.id === provider.id)) {
+        this.secrets.delete(`provider:${provider.id}:api_key`);
+      }
+    }
+  }
+
   private secretLabel(key: string): string {
     const provider = /^provider:(.+):api_key$/.exec(key)?.[1];
     if (provider) {
@@ -2043,11 +2052,15 @@ export class MockTransport implements Transport {
     // Settings & secrets
     settings_get: () => this.settings,
     settings_update: (args) => {
+      const before = this.settings;
       this.settings = this.withKeyFlags(mergeSettings(this.settings, args.patch));
+      this.dropRemovedProviderKeys(before);
       return this.emitSettings();
     },
     settings_reset: () => {
-      this.settings = createDefaultSettings();
+      const before = this.settings;
+      this.settings = this.withKeyFlags(createDefaultSettings());
+      this.dropRemovedProviderKeys(before);
       return this.emitSettings();
     },
     secrets_set: (args) => {
