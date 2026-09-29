@@ -87,6 +87,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Native helper (Swift)
         run: bash scripts/build-helper.sh host
+      - name: Native helper unit tests (Swift)
+        run: bash scripts/test-helper.sh
       - name: Research agent sidecar (lite = Gemini backend, no embedded Claude CLI)
         run: BLUEY_AGENT_VARIANT=lite bash scripts/build-agent.sh host
       - name: App crate unit tests
