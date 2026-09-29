@@ -32,14 +32,16 @@ const TASK_LINES: Record<AskTrigger, string> = {
 const SHAPE_LINES: Record<AnswerShape, string> = {
   choice:
     "Shape: multiple choice. First line: the option to pick — its letter or number and its text. Then at most one sentence on why. Nothing else.",
-  boolean: "Shape: yes/no. First word: yes or no (or true/false). Then one sentence of reason.",
+  boolean:
+    'Shape: yes/no. First word: yes or no (or true/false) — or "Neither"/"It depends" only when the premise is wrong. Then the one fact that decides it.',
   fill_in:
     "Shape: fill in the blank. First line: the missing word(s) or value exactly as they should be entered. At most one sentence after it, only if a reason is needed.",
   calculation:
     "Shape: calculation. First line: the final result with its unit. Then the working, one step per line.",
   compare:
     "Shape: comparison. First sentence: which one is better, named the way the source names it (Response A, option 2…). Then the concrete reasons it wins, most decisive first, and what the weaker one gets wrong. No scores unless asked.",
-  short_answer: "Shape: short answer. One to three sentences, answer first.",
+  short_answer:
+    "Shape: short answer. One to three sentences, answer first; for a prediction, the best estimate and what it hinges on.",
   explain:
     "Shape: explanation. First sentence: the direct answer. Then the reasons or steps that make it usable, in order — no recap at the end.",
   spoken: "Shape: spoken. Natural spoken rhythm. No headings, no bullets, no stage directions.",

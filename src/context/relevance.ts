@@ -109,6 +109,11 @@ const FILL_IN_SCREEN_CUES = /\b(fill in the blanks?|complete the (sentence|state
 
 const BOOLEAN_CUES = /\b(true or false|yes or no|correct or incorrect|valid or invalid)\b/i;
 const YES_NO_OPENER = /^(is|are|was|were|do|does|did|can|could|should|would|will|has|have|had|am|shall|must)\b/i;
+/** "A or B?" is a pick, not a yes/no ("… or not" still is one) (AI-005). */
+const EITHER_OR = /\bor\b(?!\s+not\b)/i;
+/** A prediction has no yes/no answer yet: a best estimate and what it hinges on. */
+const FORECAST_CUES =
+  /\b(predict|forecast|likely|likelihood|odds|chances?)\b|\bwill\b.*\b(next|tomorrow|soon|by 20\d\d|in 20\d\d|this (week|month|quarter|year))\b/i;
 
 const CALCULATION_CUES =
   /\b(calculate|compute|how (many|much)|what is the (total|sum|difference|product|average|mean|median|mode|probability|percentage|percent|value|result|remainder|area|volume|distance|speed|rate)|solve for|evaluate the expression|round(ed)? to|to the nearest)\b|\d\s*[+\-*/×÷^=%]\s*\d/i;
@@ -179,7 +184,9 @@ export function detectAssessmentShape(
   if (options.spoken) return null;
   if (FILL_IN_CUES.test(q) || FILL_IN_SCREEN_CUES.test(screen)) return "fill_in";
   if (BOOLEAN_CUES.test(q)) return "boolean";
-  if (YES_NO_OPENER.test(q) && q.length <= 160 && !EXPLAIN_CUES.test(q)) return "boolean";
+  if (YES_NO_OPENER.test(q) && q.length <= 160 && !EXPLAIN_CUES.test(q) && !EITHER_OR.test(q) && !FORECAST_CUES.test(q)) {
+    return "boolean";
+  }
   if (CALCULATION_CUES.test(q) && /\d/.test(both)) return "calculation";
   return null;
 }
@@ -213,6 +220,8 @@ export function detectAnswerShape(input: AnswerShapeInput): AnswerShape {
   if (spoken) return "spoken";
   if (EXPLAIN_CUES.test(q)) return "explain";
   if (q.length > 0 && q.length <= 120 && SHORT_ANSWER_OPENER.test(q)) return "short_answer";
+  // An either/or or a forecast phrased as yes/no: the pick or the best estimate (AI-005).
+  if (YES_NO_OPENER.test(q) && q.length <= 160 && (EITHER_OR.test(q) || FORECAST_CUES.test(q))) return "short_answer";
   return "explain";
 }
 

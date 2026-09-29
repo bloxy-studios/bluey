@@ -21,7 +21,7 @@ const TONE_LINES: Record<ResponseTone, string> = {
   professional: "Tone: professional — polished and composed, suitable to repeat verbatim in a business setting.",
   technical: "Tone: technical — precise terminology, no simplification for its own sake.",
   conversational: "Tone: conversational — relaxed, spoken rhythm, first person.",
-  direct: "Tone: direct — the answer, zero hedging, zero filler.",
+  direct: "Tone: direct — the answer, zero filler; real uncertainty in one clause at most.",
 };
 
 export function styleBlock(style: ResponseStyle): string {

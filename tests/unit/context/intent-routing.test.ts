@@ -187,3 +187,22 @@ describe("the voice follows the deliverable (MODE-002)", () => {
     );
   });
 });
+
+describe("yes/no only for real yes/no questions (AI-005)", () => {
+  const shapeOf = (instruction: string) => intentFor({ screen: "", instruction }).answerShape;
+
+  it("does not force yes or no on an either/or question", () => {
+    expect(shapeOf("Should I use Postgres or Mongo for this?")).toBe("short_answer");
+    expect(shapeOf("Is the capital Sydney or Canberra?")).toBe("short_answer");
+  });
+
+  it("keeps 'or not' and plain yes/no questions boolean", () => {
+    expect(shapeOf("Is this endpoint idempotent or not?")).toBe("boolean");
+    expect(shapeOf("Does Python pass arguments by reference?")).toBe("boolean");
+  });
+
+  it("answers a forecast with a best estimate, not a yes or no", () => {
+    expect(shapeOf("Will the Fed cut rates next month?")).toBe("short_answer");
+    expect(shapeOf("Is it likely to rain tomorrow?")).toBe("short_answer");
+  });
+});

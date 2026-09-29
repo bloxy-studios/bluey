@@ -116,13 +116,13 @@ shapes. Detection order — the first match wins:
 | 1 | `compare` | "which response/answer/option … is better", compare/evaluate/rate the two, `vs`, or two labelled candidates on screen (Response A / Response B, Option 1 / 2) next to a verb of judgement | which one is better, then the concrete reasons it wins |
 | 2 | `choice` | "which of the following", select/choose/pick, "correct answer", "all that apply", or ≥ 2 lettered options (`A.` `B)` `c:`) / radio glyphs at line starts on screen | the option — letter/number and text — then at most one sentence |
 | 3 | `fill_in` | `____`, `[blank]`, "fill in the blank", "complete the sentence" | the missing words, exactly as entered |
-| 4 | `boolean` | "true or false", "yes or no", or a short question opening with is/are/does/can/should… (not when it also asks how/why) | yes or no, then one reason |
+| 4 | `boolean` | "true or false", "yes or no", or a short question opening with is/are/does/can/should… (not when it also asks how/why, offers "A or B", or asks for a prediction) | yes or no — "Neither"/"It depends" only when the premise is wrong — then the fact that decides it |
 | 5 | `calculation` | calculate/compute/how many/what is the total … with digits present | the result with its unit, then the working |
 | 6 | `debug` | code on screen (or a coding cue) with an error, failing test or stack trace, or "why … fail/error/bug", "debug", "what's wrong with" — never a problem statement or a spoken trigger; uses the `answer` schema | the exact fix, then the cause in one sentence, then only the changed lines |
 | 7 | `code` / `design` / `summary` | the task: coding, system_design, summarization | the solution / the design / the points |
 | 8 | `written` | write/draft/compose/reply to … an email/message/comment/essay | the text to send, ready to paste |
 | 9 | `spoken` | ⌘⇧↵, a detected question, or a suggestion schema (interview, behavioral, sales, recruiting) | exactly what I say, no headings or bullets |
-| 10 | `explain` / `short_answer` | how/why/explain/describe → explain; a ≤ 120-char what/who/when/where question → short answer; everything else → explain | the direct answer, then the reasons |
+| 10 | `explain` / `short_answer` | how/why/explain/describe → explain; a ≤ 120-char what/who/when/where question, or a yes/no-phrased either/or or forecast → short answer (a forecast gets the best estimate and what it hinges on); everything else → explain | the direct answer, then the reasons |
 
 In spoken contexts (row 9) only `compare` and `choice` override the spoken shape — an interviewer's
 "do you have Kubernetes experience?" is answered as speech, not as a bare yes/no. A

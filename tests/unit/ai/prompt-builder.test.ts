@@ -1,4 +1,5 @@
 import { PromptBuilder } from "@/ai/prompt-builder";
+import { answerShapeLine } from "@/ai/prompts";
 import { outputSchemaFor } from "@/modes/schemas";
 import type { ContextItem } from "@/lib/types";
 import { makeMode } from "../../fixtures/helpers/builders";
@@ -257,5 +258,25 @@ describe("PromptBuilder.buildMessages", () => {
   it("omits the image part otherwise", () => {
     const parts = builder().buildMessages()[1]?.content ?? [];
     expect(parts).toHaveLength(1);
+  });
+});
+
+describe("room for a non-binary truth (AI-005)", () => {
+  it("lets a yes/no answer say Neither or It depends when the premise is wrong", () => {
+    const line = answerShapeLine("boolean");
+    expect(line).toContain("Neither");
+    expect(line).toContain("It depends");
+    expect(line).toMatch(/premise is wrong/);
+  });
+
+  it("asks for a best estimate and what it hinges on in a short answer", () => {
+    expect(answerShapeLine("short_answer")).toMatch(/best estimate/);
+  });
+
+  it("keeps one clause of real uncertainty under the direct tone", () => {
+    const tone = builder().renderSystem().split("\n").find((line) => line.startsWith("Tone: direct"));
+    expect(tone).toBeDefined();
+    expect(tone).not.toMatch(/zero hedging/);
+    expect(tone).toMatch(/uncertainty in one clause/);
   });
 });
