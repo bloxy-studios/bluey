@@ -40,7 +40,10 @@ describe("Settings → AI → Accounts (MockTransport)", () => {
       expect(within(card(id)).getByText("Not connected")).toBeInTheDocument();
     }
     expect(within(card("chatgpt")).getByText(/Fingerprint codex\/0\.154\.0 · captured 2026-09-11/)).toBeInTheDocument();
-    expect(within(card("claude")).getByRole("button", { name: "Import Claude Code sign-in" })).toBeInTheDocument();
+    const importButton = within(card("claude")).getByRole("button", { name: "Import Claude Code sign-in" });
+    // Bluey never refreshes a rotating import, so the two sides cannot sign each other out.
+    expect(importButton).toHaveAttribute("title", expect.stringContaining("never refreshes"));
+    expect(importButton.getAttribute("title")).not.toMatch(/sign each other out/);
     // The API-key providers are untouched.
     expect(screen.getAllByRole("switch", { name: /^Enable / })).toHaveLength(3);
     expect(screen.getByTestId("accounts-list").compareDocumentPosition(screen.getByText("Providers"))).toBe(

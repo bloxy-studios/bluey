@@ -220,13 +220,35 @@ async fn disconnect_never_decrypts_and_completes_when_the_delete_fails() {
 }
 
 #[tokio::test]
+async fn the_next_launch_deletes_the_tokens_a_disconnect_left_behind() {
+    // The card offers no Disconnect once the account is disconnected, and
+    // Saved credentials no Remove for account tokens: the retry is Bluey's.
+    let (fake, _, manager) = connected(&tokens("a", unix_now() + 3_600), BROWSER).await;
+    fake.fail_remove(KEY, -25308);
+    manager.disconnect("claude").await.unwrap_err();
+    fake.allow_remove(KEY);
+    fake.reset_counts();
+    manager.restore().await;
+    assert_eq!(fake.value(KEY), None, "the leftover item is deleted");
+    assert_eq!(fake.reads(), 0, "without decrypting it");
+    manager.restore().await;
+    assert_eq!(
+        fake.count_for(Op::Remove, KEY),
+        1,
+        "and only while it exists"
+    );
+}
+
+#[tokio::test]
 async fn an_account_without_a_recorded_origin_is_never_refreshed() {
     // Connected before origins were recorded: it may be a Claude Code import,
     // and a refresh would rotate the token and sign Claude Code out.
     let (fake, profile, manager) = connected(&tokens("a", unix_now() - 10), None).await;
     let error = manager.credential_for("claude").await.unwrap_err();
     assert_eq!(error.code, "account.needs_reauth");
-    assert_eq!(error.details.as_ref().unwrap()["imported"], true);
+    // It may equally be a browser sign-in: the copy must not claim an import.
+    assert!(error.details.is_none(), "{:?}", error.details);
+    assert!(!error.message.contains("import"), "{}", error.message);
     assert!(!manager.refresh_rejected("claude", "a").await);
     assert_eq!(profile.refreshes(), 0);
     assert_eq!(fake.writes(), 0);

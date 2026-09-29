@@ -630,7 +630,8 @@ impl AccountsManager {
         }
         self.tokens.lock().remove(account_id);
         // The account is disconnected even when macOS refuses the delete; the
-        // leftover item is reported (Settings → Privacy → Saved credentials).
+        // leftover item is reported (Settings → Privacy → Saved credentials)
+        // and deleted at the next launch (`delete_leftover_tokens`).
         let deleted = self.secrets.delete(&account_tokens_key(account_id)).await;
         if let Err(error) = &deleted {
             tracing::warn!(account = account_id, code = %error.code, "cannot delete the account tokens");
@@ -867,6 +868,7 @@ impl AccountsManager {
         let profile = self.profile_for(&account.provider_id)?;
         let cache = self.token_cache(account_id).await?;
         let may_refresh = self.may_refresh(&account);
+        let origin = self.origins.read().get(account_id).copied();
         let refreshed = AtomicBool::new(false);
         let http = self.http.clone();
         let result = cache
@@ -874,7 +876,7 @@ impl AccountsManager {
                 let (refreshed, account) = (&refreshed, &account);
                 async move {
                     if !may_refresh {
-                        return Err(imported_session_expired(account));
+                        return Err(refresh_withheld(account, origin));
                     }
                     let fresh = profile.refresh(&http, &current).await?;
                     refreshed.store(true, Ordering::Relaxed);
@@ -934,7 +936,10 @@ impl AccountsManager {
         if self.may_refresh(account) {
             needs_reauth(&account.account_id, &account.provider_id)
         } else {
-            imported_session_expired(account)
+            refresh_withheld(
+                account,
+                self.origins.read().get(&account.account_id).copied(),
+            )
         }
     }
 
@@ -1019,6 +1024,7 @@ impl AccountsManager {
         if !self.enabled() {
             return;
         }
+        self.delete_leftover_tokens().await;
         let connected: Vec<String> = self
             .accounts
             .read()
@@ -1050,6 +1056,32 @@ impl AccountsManager {
                 }
                 Err(error) => {
                     tracing::debug!(account = %account_id, code = %error.code, "account check deferred (offline?)");
+                }
+            }
+        }
+    }
+
+    /// A disconnect whose Keychain delete failed left the tokens behind, and
+    /// nothing in the UI removes them (a disconnected card offers no
+    /// Disconnect): retry at boot. Presence comes from the attribute listing,
+    /// so this never decrypts, and an account without an item costs nothing.
+    async fn delete_leftover_tokens(&self) {
+        let disconnected: Vec<String> = self
+            .accounts
+            .read()
+            .iter()
+            .filter(|account| account.status == AccountStatus::Disconnected)
+            .map(|account| account.account_id.clone())
+            .collect();
+        for account_id in disconnected {
+            let key = account_tokens_key(&account_id);
+            if self.secrets.known_presence(&key) == Some(false) {
+                continue;
+            }
+            match self.secrets.delete(&key).await {
+                Ok(()) => tracing::info!(account = %account_id, "leftover account tokens deleted"),
+                Err(error) => {
+                    tracing::warn!(account = %account_id, code = %error.code, "cannot delete the leftover account tokens");
                 }
             }
         }
@@ -1109,6 +1141,24 @@ fn needs_reauth(account_id: &str, provider_id: &str) -> BlueyError {
         "the account's sign-in expired — reconnect it",
     )
     .recoverable(RecoveryAction::reconnect_account(account_id, provider_id))
+}
+
+/// An account Bluey will not refresh has expired. Without a recorded origin
+/// (connected before origins were recorded) it may as well be a browser
+/// sign-in, so the copy does not claim an import.
+fn refresh_withheld(account: &ProviderAccount, origin: Option<Origin>) -> BlueyError {
+    if origin.is_some() {
+        return imported_session_expired(account);
+    }
+    BlueyError::new(
+        BlueyErrorKind::Authentication,
+        codes::NEEDS_REAUTH,
+        "the account's sign-in expired, and it was connected before Bluey recorded how — reconnect it once to keep it refreshing",
+    )
+    .recoverable(RecoveryAction::reconnect_account(
+        &account.account_id,
+        &account.provider_id,
+    ))
 }
 
 /// An imported session Bluey must not refresh has expired: the official app

@@ -17,11 +17,16 @@ use crate::state::StateHub;
 use crate::storage::Storage;
 
 fn manager(fake: &Arc<CountingFake>) -> AuthManager {
+    manager_on(fake, Arc::new(Storage::in_memory()))
+}
+
+/// A manager as one launch builds it: `storage` outlives it, as the database
+/// outlives a restart.
+fn manager_on(fake: &Arc<CountingFake>, storage: Arc<Storage>) -> AuthManager {
     let secrets = Arc::new(SecretsStore::with_backend(fake.clone()));
     secrets.preload_presence().unwrap();
     let bus = Arc::new(EventBus::new());
     let hub = Arc::new(StateHub::new("default", bus.clone()));
-    let storage = Arc::new(Storage::in_memory());
     AuthManager::load(secrets, storage, hub, bus, reqwest::Client::new()).unwrap()
 }
 
@@ -101,7 +106,10 @@ async fn a_keychain_failure_does_not_fail_the_status() {
 
 /// A manager configured against `issuer`, holding an unexpired stored sign-in.
 fn restoring(fake: &Arc<CountingFake>, issuer: String) -> AuthManager {
-    let mut auth = manager(fake);
+    configured(manager(fake), issuer)
+}
+
+fn configured(mut auth: AuthManager, issuer: String) -> AuthManager {
     auth.config = Some(super::OAuthConfig {
         issuer,
         client_id: "client".into(),
@@ -203,4 +211,40 @@ async fn boot_never_reads_a_locked_sign_in() {
     );
     assert_eq!(auth.user.lock().as_ref(), Some(&user), "the user is kept");
     assert_eq!(fake.count(crate::secrets::backend::fake::Op::Remove), 0);
+}
+
+#[tokio::test]
+async fn a_sign_out_macos_refused_stays_signed_out_across_launches() {
+    use bluey_core::types::AuthState;
+    let fake = Arc::new(CountingFake::with_items(&[(
+        CLERK_OAUTH_TOKENS_KEY,
+        &stored_tokens(),
+    )]));
+    fake.fail_remove(CLERK_OAUTH_TOKENS_KEY, -25293);
+    let storage = Arc::new(Storage::in_memory());
+    let auth = manager_on(&fake, storage.clone());
+
+    auth.clear_session().await.unwrap_err();
+
+    let status = auth.status().await.unwrap();
+    assert_eq!(status.state, AuthState::SignedOut, "not a spinner forever");
+    assert!(!auth.has_stored_session());
+
+    // The next launch: Clerk would still accept the leftover tokens.
+    let issuer = one_shot_server(r#"{"sub":"user_1","email":"a@b.c"}"#).await;
+    let relaunched = configured(manager_on(&fake, storage.clone()), issuer);
+    assert!(!relaunched.has_stored_session(), "boots signed out");
+    relaunched.restore().await;
+    assert!(relaunched.user.lock().is_none(), "not signed back in");
+    assert_eq!(fake.reads(), 0, "the leftover tokens are never read");
+
+    // Once macOS allows the delete, the next launch finishes the sign-out.
+    fake.allow_remove(CLERK_OAUTH_TOKENS_KEY);
+    let relaunched = manager_on(&fake, storage);
+    relaunched.restore().await;
+    assert!(fake.value(CLERK_OAUTH_TOKENS_KEY).is_none());
+    assert_eq!(
+        relaunched.status().await.unwrap().state,
+        AuthState::SignedOut
+    );
 }

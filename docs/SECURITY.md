@@ -58,7 +58,7 @@ identity (an ad-hoc update, a rebuild) must be approved before it reads an item'
 | Boot, settings save, presence flags, *Saved credentials* | Attribute-only (enumerate / exists / non-interactive probe) — never prompts |
 | First use of a key or token in a process | One data read, then cached in memory (`Zeroizing`) for the process |
 | Save a key, persist a refreshed token | Attribute-only delete, then add (the running build owns the new item); an unchanged value is not rewritten |
-| Remove key, disconnect, sign out, reset | Attribute-only delete, status checked; local state is cleared even if the delete fails |
+| Remove key, disconnect, sign out, reset | Attribute-only delete, status checked; local state is cleared even if the delete fails, and a sign-in or account item left behind never counts as signed in and is deleted at the next launch |
 | *Allow access* (Settings) | The single deliberate interactive read — only of a listed item that is *locked* |
 | *Import* from Claude Code / Antigravity | One read of the other app's item, only on the Import click; a denial says macOS blocked it and to click Import again and choose Allow |
 
@@ -102,13 +102,14 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
 * **Imports are read-only.** Importing an existing sign-in from Claude Code, Codex CLI or the
   Antigravity app copies tokens into Bluey's own Keychain entry and never writes to `~/.claude`,
   `~/.codex`, Antigravity's data directory or their Keychain items. ChatGPT (PR 3a) reads
-  `$CODEX_HOME/auth.json` / `~/.codex/auth.json` and does **not** refresh at import time: OpenAI
-  rotates refresh tokens, so the copied session is shared with the CLI and whichever side
-  refreshes first signs the other out later — the Import button says so. Claude (PR 3b) reads the
+  `$CODEX_HOME/auth.json` / `~/.codex/auth.json` and never refreshes the copy: OpenAI rotates
+  refresh tokens, so a refresh by Bluey would sign the CLI out. Claude (PR 3b) reads the
   Keychain item `Claude Code-credentials` (macOS may ask for permission), else
   `~/.claude/.credentials.json`, plus `~/.claude.json` for the account uuid — read-only, and never
   refreshed by Bluey (Anthropic rotates refresh tokens too): an imported ChatGPT or Claude session
-  that expires moves to *needs sign-in*: sign in in the browser or import again.
+  that expires moves to *needs sign-in*: sign in in the browser or import again. An account
+  connected before Bluey recorded how (import or browser) is not refreshed either, and asks to be
+  reconnected once.
   Google AI (PR 3c) reads the Keychain item `gemini` / `antigravity` the standalone Antigravity app
   and `agy` keep (macOS may ask), never writes it; an expired access token is renewed, which is safe
   because Google refresh tokens do not rotate.

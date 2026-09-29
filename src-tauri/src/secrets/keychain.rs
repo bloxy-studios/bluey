@@ -30,6 +30,11 @@ impl KeychainBackend {
     }
 }
 
+/// Held while Keychain prompts are disabled (a probe) and around a read that
+/// must be free to prompt (a foreign import): disabling user interaction is
+/// process-wide, and foreign reads do not go through `SecretsStore`.
+static USER_INTERACTION: parking_lot::Mutex<()> = parking_lot::const_mutex(());
+
 /// Read another app's generic password (an explicit account import). Prompts
 /// when macOS has not been told to Always Allow Bluey for that item.
 #[cfg_attr(not(feature = "subscription-accounts"), allow(dead_code))]
@@ -37,7 +42,16 @@ pub fn read_foreign_item(
     service: &str,
     account: &str,
 ) -> Result<Option<Zeroizing<String>>, KeychainStatus> {
-    KeychainBackend::new(service).read(account)
+    read_prompting(&KeychainBackend::new(service), account)
+}
+
+#[cfg_attr(not(feature = "subscription-accounts"), allow(dead_code))]
+fn read_prompting(
+    backend: &impl SecretBackend,
+    account: &str,
+) -> Result<Option<Zeroizing<String>>, KeychainStatus> {
+    let _prompts_allowed = USER_INTERACTION.lock();
+    backend.read(account)
 }
 
 #[cfg(target_os = "macos")]
@@ -157,8 +171,10 @@ mod imp {
         }
 
         fn probe(&self, account: &str) -> Result<Option<Zeroizing<String>>, KeychainStatus> {
-            // Process-wide until the guard drops; `SecretsStore` serializes
-            // every backend call, so no other Bluey read is affected.
+            // Process-wide until the guard drops: `SecretsStore` serializes
+            // its own backend calls, and the lock keeps a foreign import
+            // (which prompts) from reading meanwhile.
+            let _exclusive = super::USER_INTERACTION.lock();
             let _no_prompts = SecKeychain::disable_user_interaction().map_err(status)?;
             self.read(account)
         }
@@ -197,6 +213,48 @@ mod imp {
         fn probe(&self, _: &str) -> Result<Option<Zeroizing<String>>, KeychainStatus> {
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use zeroize::Zeroizing;
+
+    use super::{read_prompting, USER_INTERACTION};
+    use crate::secrets::backend::{KeychainStatus, SecretBackend};
+
+    /// Answers a read only while the user-interaction lock is held.
+    struct NeedsLock;
+
+    impl SecretBackend for NeedsLock {
+        fn read(&self, _: &str) -> Result<Option<Zeroizing<String>>, KeychainStatus> {
+            assert!(
+                USER_INTERACTION.try_lock().is_none(),
+                "read while a probe may run"
+            );
+            Ok(Some(Zeroizing::new("token".into())))
+        }
+        fn exists(&self, _: &str) -> Result<bool, KeychainStatus> {
+            unreachable!()
+        }
+        fn add(&self, _: &str, _: &str) -> Result<(), KeychainStatus> {
+            unreachable!()
+        }
+        fn remove(&self, _: &str) -> Result<bool, KeychainStatus> {
+            unreachable!()
+        }
+        fn list(&self) -> Result<Vec<String>, KeychainStatus> {
+            unreachable!()
+        }
+        fn probe(&self, _: &str) -> Result<Option<Zeroizing<String>>, KeychainStatus> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_foreign_read_excludes_a_probe() {
+        assert!(read_prompting(&NeedsLock, "item").unwrap().is_some());
+        assert!(USER_INTERACTION.try_lock().is_some(), "released afterwards");
     }
 }
 

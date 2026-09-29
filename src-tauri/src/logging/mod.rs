@@ -20,6 +20,8 @@ use tracing_subscriber::{reload, EnvFilter, Layer, Registry};
 
 use crate::events::EventBus;
 
+pub mod panic_hook;
+
 type ReloadHandle = reload::Handle<EnvFilter, Registry>;
 
 /// Handle to the initialised logging stack.

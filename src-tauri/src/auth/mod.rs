@@ -24,6 +24,7 @@
 //! module owns what is Clerk's: configuration, redirect styles, the OIDC
 //! checks, `userinfo`, the Account Portal, and the state machine.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,10 @@ use crate::storage::Storage;
 
 /// Settings-table key remembering which cached user is signed in.
 const CURRENT_USER_KEY: &str = "auth_user_id";
+/// Settings-table flag: the user signed out but macOS refused to delete the
+/// token item. Until a delete succeeds (retried at launch) or the user signs in
+/// again, the leftover item is not a session.
+const SIGN_OUT_PENDING_KEY: &str = "auth_sign_out_pending";
 /// A browser sign-in that has not returned within this window is abandoned.
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -80,6 +85,8 @@ pub struct AuthManager {
     config: Option<OAuthConfig>,
     user: parking_lot::Mutex<Option<AuthUser>>,
     pending: parking_lot::Mutex<Option<PendingSignIn>>,
+    /// Mirrors [`SIGN_OUT_PENDING_KEY`].
+    sign_out_pending: AtomicBool,
 }
 
 fn iso_in(duration: Duration) -> String {
@@ -114,6 +121,10 @@ impl AuthManager {
                     .ok()
                     .flatten()
             });
+        let sign_out_pending = storage
+            .run_sync(|db| SettingsRepository::get_json(db, SIGN_OUT_PENDING_KEY))?
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         Ok(Self {
             secrets,
             storage,
@@ -123,6 +134,7 @@ impl AuthManager {
             config,
             user: parking_lot::Mutex::new(user),
             pending: parking_lot::Mutex::new(None),
+            sign_out_pending: AtomicBool::new(sign_out_pending),
         })
     }
 
@@ -134,21 +146,28 @@ impl AuthManager {
 
     /// Whether OAuth tokens are stored (bootstrap decides the initial state) —
     /// an attribute-only answer (the boot enumeration) that never prompts. A
-    /// saved session this build may not read yet still counts as stored.
+    /// saved session this build may not read yet still counts as stored; a
+    /// token item left behind by a sign-out does not.
     pub fn has_stored_session(&self) -> bool {
-        self.secrets
-            .has_sync(CLERK_OAUTH_TOKENS_KEY)
-            .unwrap_or(false)
+        !self.sign_out_pending.load(Ordering::Acquire)
+            && self
+                .secrets
+                .has_sync(CLERK_OAUTH_TOKENS_KEY)
+                .unwrap_or(false)
     }
 
     pub async fn status(&self) -> BlueyResult<AuthStatus> {
         // A Keychain hiccup must not fail the status (the UI would take it
         // for an unconfigured build): the item then counts as absent.
-        let has_stored_session = match self.secrets.has(CLERK_OAUTH_TOKENS_KEY).await {
-            Ok(present) => present,
-            Err(error) => {
-                tracing::warn!(code = %error.code, "could not check the stored sign-in");
-                false
+        let has_stored_session = if self.sign_out_pending.load(Ordering::Acquire) {
+            false
+        } else {
+            match self.secrets.has(CLERK_OAUTH_TOKENS_KEY).await {
+                Ok(present) => present,
+                Err(error) => {
+                    tracing::warn!(code = %error.code, "could not check the stored sign-in");
+                    false
+                }
             }
         };
         let user = self.user.lock().clone();
@@ -551,9 +570,12 @@ impl AuthManager {
                     db,
                     CURRENT_USER_KEY,
                     &serde_json::Value::String(cache.id.clone()),
-                )
+                )?;
+                // Signed in again: the stored tokens are this session's.
+                SettingsRepository::set_json(db, SIGN_OUT_PENDING_KEY, &false.into())
             })
             .await?;
+        self.sign_out_pending.store(false, Ordering::Release);
         *self.user.lock() = Some(user.clone());
         self.hub.transition_soft(AppEvent::Authenticated);
         Ok(())
@@ -567,6 +589,9 @@ impl AuthManager {
             && self.secrets.delete(CLERK_TOKEN_KEY).await.is_ok()
         {
             tracing::info!("removed the legacy Clerk client token");
+        }
+        if self.sign_out_pending.load(Ordering::Acquire) {
+            return self.finish_sign_out().await;
         }
         let Some(config) = self.config.clone() else {
             return;
@@ -633,6 +658,23 @@ impl AuthManager {
         Ok(fresh)
     }
 
+    /// Retry the delete a sign-out could not finish; the user stays signed out
+    /// either way.
+    async fn finish_sign_out(&self) {
+        if let Err(error) = self.secrets.delete(CLERK_OAUTH_TOKENS_KEY).await {
+            tracing::warn!(code = %error.code, "could not delete the stored sign-in");
+            return;
+        }
+        let cleared = self
+            .storage
+            .run(|db| SettingsRepository::set_json(db, SIGN_OUT_PENDING_KEY, &false.into()))
+            .await;
+        match cleared {
+            Ok(()) => self.sign_out_pending.store(false, Ordering::Release),
+            Err(error) => tracing::warn!(code = %error.code, "could not record the sign-out"),
+        }
+    }
+
     /// Only Clerk rejecting the sign-in signs the user out; a network or
     /// server failure keeps the cached user until the next launch.
     async fn after_failed_restore(&self, error: BlueyError) {
@@ -669,17 +711,21 @@ impl AuthManager {
         }
         // Signed out locally even when macOS refuses the delete; the error is
         // returned after the state is cleared (the item shows in Settings →
-        // Privacy → Saved credentials).
+        // Privacy → Saved credentials). The leftover item is flagged so it
+        // never counts as a session, and the delete is retried at launch.
         let deleted = self.secrets.delete(CLERK_OAUTH_TOKENS_KEY).await;
         if let Err(error) = &deleted {
             tracing::warn!(code = %error.code, "could not delete the stored sign-in");
         }
+        let pending = deleted.is_err();
         self.storage
-            .run(|db| {
+            .run(move |db| {
                 UserRepository::clear(db)?;
-                SettingsRepository::set_json(db, CURRENT_USER_KEY, &serde_json::Value::Null)
+                SettingsRepository::set_json(db, CURRENT_USER_KEY, &serde_json::Value::Null)?;
+                SettingsRepository::set_json(db, SIGN_OUT_PENDING_KEY, &pending.into())
             })
             .await?;
+        self.sign_out_pending.store(pending, Ordering::Release);
         *self.user.lock() = None;
         if self.auth_required() {
             self.hub.transition_soft(AppEvent::SignedOut);

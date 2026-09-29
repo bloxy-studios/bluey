@@ -32,11 +32,12 @@ printf 'bun' >> "$MOCK_LOG"; printf ' [%s]' "$@" >> "$MOCK_LOG"; printf '\\n' >>
 [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] || printf '%s\\n' "bun $*" >> "$MOCK_LOG.key"
 if [[ "${1:-}" == install && "${MOCK_FAIL:-}" == install ]]; then exit 19; fi
 if [[ "${1:-} ${2:-}" == 'run typecheck' && "${MOCK_FAIL:-}" == typecheck ]]; then exit 20; fi
-if [[ "${1:-} ${2:-} ${3:-}" == 'run tauri build' ]]; then
+if [[ "${1:-} ${2:-} ${3:-}" == 'run tauri build' || "${1:-} ${2:-} ${3:-}" == 'run tauri bundle' ]]; then
   printf 'identity=%s notary=%s\\n' "${APPLE_SIGNING_IDENTITY:-}" "${APPLE_ID:-}" >> "$MOCK_LOG"
   [[ "${MOCK_FAIL:-}" != build ]] || exit 21
-  # A real build leaves the DMG and the signed updater bundle; "silent-build" exits 0 without them.
-  if [[ "${MOCK_FAIL:-}" != silent-build ]]; then
+  # A real build leaves the DMG and the signed updater bundle (not with --no-bundle);
+  # "silent-build" exits 0 without them.
+  if [[ "${MOCK_FAIL:-}" != silent-build && " $* " != *" --no-bundle "* ]]; then
     bundle="src-tauri/target/$TARGET/release/bundle"
     mkdir -p "$bundle/dmg" "$bundle/macos"
     printf 'mock' > "$bundle/dmg/Bluey_0.0.0_aarch64.dmg"
@@ -92,14 +93,16 @@ bun install --os darwin --cpu '*'
                 "APPLE_SIGNING_IDENTITY": "Developer ID Application: Fixture (ABCDEFGHIJ)",
                 "APPLE_ID": "fixture@example.test", "APPLE_PASSWORD": "fixture-notary-password", "APPLE_TEAM_ID": "ABCDEFGHIJ"}
 
-    def test_updater_key_reaches_only_the_signing_tauri_build(self):
-        # SEC-008: package install scripts, tests and sidecar builds never see the key.
+    def test_updater_key_reaches_only_the_signing_tauri_bundle(self):
+        # SEC-008: package install scripts, tests, sidecar builds and the compile itself
+        # (Vite plugins in beforeBuildCommand, build.rs, proc macros) never see the key.
         result = self.run_shell()
         self.assertEqual(result.returncode, 0, result.stderr)
         seen = Path(str(self.log) + ".key").read_text().splitlines()
-        self.assertTrue(seen, "the Tauri build must still get the key")
+        self.assertTrue(seen, "the Tauri bundle step must still get the key")
         for line in seen:
-            self.assertTrue(line.startswith("bun run tauri build "), line)
+            self.assertTrue(line.startswith("bun run tauri bundle "), line)
+        self.assertIn("[tauri] [build] [--no-bundle]", self.commands())
 
     def test_no_credentials_cannot_publish_or_begin_install(self):
         result = self.run_shell(PUBLISH_RELEASE="true")
@@ -155,6 +158,9 @@ bun install --os darwin --cpu '*'
         builds = [line for line in self.commands().splitlines() if "[tauri] [build]" in line]
         self.assertEqual(len(builds), 1)
         self.assertIn('[--config] [{"version":"0.1.3-nightly.20260913"}]', builds[0])
+        bundles = [line for line in self.commands().splitlines() if "[tauri] [bundle]" in line]
+        self.assertEqual(len(bundles), 1)
+        self.assertIn('[--config] [{"version":"0.1.3-nightly.20260913"}]', bundles[0])
         for environment in ({"BLUEY_BUILD_VERSION": "1.2.3"}, {"BLUEY_BUILD_VERSION": "0.1.3-nightly.20260913; touch pwned"},
                             {"BLUEY_BUILD_VERSION": '0.1.3-nightly.20260913","bundle":{"active":false'},
                             {"BLUEY_BUILD_VERSION": "0.1.3-nightly.20260913", "PUBLISH_RELEASE": "true", **self.credentials()}):

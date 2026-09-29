@@ -11,6 +11,7 @@
 //! * [`shortcuts`] — default bindings, accelerator parsing, conflict detection.
 //! * [`modes`]  — built-in mode definitions as data.
 //! * [`presets`] — provider presets (reserved ids, recommended models) + `.env` import planning.
+//! * [`panic`]  — containment for third-party parser panics (all others abort).
 //! * [`session`] — session lifecycle rules.
 //! * [`context`] — native context snapshot assembly helpers (size limits, adapters).
 //! * [`text`]   — token estimation, chunking, dedupe utilities.
@@ -26,6 +27,7 @@ pub mod context;
 pub mod events;
 pub mod latency;
 pub mod modes;
+pub mod panic;
 pub mod presets;
 pub mod router;
 pub mod session;

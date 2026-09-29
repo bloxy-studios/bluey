@@ -18,8 +18,8 @@ case "$PUBLISH_RELEASE" in true|false) ;; *) fail 'PUBLISH_RELEASE must be true 
 # Every build signs its updater bundle (bundle.createUpdaterArtifacts); Tauri refuses to build without the key.
 [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]] \
   || fail 'TAURI_SIGNING_PRIVATE_KEY (or TAURI_SIGNING_PRIVATE_KEY_PATH) is required to sign the updater bundle (docs/UPDATES.md › Signing)'
-# Only the Tauri build that signs the bundle gets the key: package install scripts, tests and
-# sidecar builds run without it (SEC-008).
+# Only `tauri bundle`, which signs the updater bundle, gets the key: package install scripts,
+# tests, sidecar builds and the app compile run without it (SEC-008).
 without_updater_key() {
   env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PATH -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$@"
 }
@@ -121,10 +121,15 @@ fi
 # Config retains hardened runtime + entitlements.plist. No --no-sign/--skip-stapling,
 # no recursive re-signing. Tauri notarizes + staples the app before making the DMG, then
 # writes the signed updater bundle (`Bluey.app.tar.gz` + `.sig`) next to the app.
+# The compile (the Vite build in beforeBuildCommand, every build.rs and proc macro) runs
+# without the updater key; only `tauri bundle`, which signs the updater bundle, gets it.
 if [[ -n "$BUILD_VERSION" ]]; then
-  bun run tauri build --target "$TARGET" --bundles app,dmg --config "{\"version\":\"$BUILD_VERSION\"}" -- --locked
+  VERSION_CONFIG="{\"version\":\"$BUILD_VERSION\"}"
+  without_updater_key bun run tauri build --no-bundle --target "$TARGET" --config "$VERSION_CONFIG" -- --locked
+  bun run tauri bundle --target "$TARGET" --bundles app,dmg --config "$VERSION_CONFIG"
 else
-  bun run tauri build --target "$TARGET" --bundles app,dmg -- --locked
+  without_updater_key bun run tauri build --no-bundle --target "$TARGET" -- --locked
+  bun run tauri bundle --target "$TARGET" --bundles app,dmg
 fi
 
 # A build that exits 0 without its outputs must fail here, never at an upload step.
