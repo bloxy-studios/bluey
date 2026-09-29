@@ -240,7 +240,8 @@ describe("proactive preparation loop", () => {
     mock.emit("question.detected", detected("live-1"));
     await waitFor(() => expect(useProactiveStore.getState().liveEventId).toBe("live-1"));
     expect(useChatStore.getState().turns.at(-1)?.status).toBe("streaming");
-    expect(useChatStore.getState().turns.at(-1)?.response?.content).toBe("Prepared for"); // first draft
+    // The first draft lands on the next frame: streamed drafts are coalesced per frame (PERF-003).
+    await waitFor(() => expect(useChatStore.getState().turns.at(-1)?.response?.content).toBe("Prepared for"));
     mock.emit("question.detected", detected("live-2"));
     await flush();
     expect(engine.prepared).toHaveLength(1); // waiting behind the streaming one
