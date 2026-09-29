@@ -19,6 +19,7 @@ import type {
   ResponseType,
 } from "@/lib/types";
 import { defaultTaskFor } from "@/modes/registry";
+import { SPOKEN_SCHEMAS } from "@/modes/schemas";
 import { BEHAVIORAL_MARKERS } from "@/transcript/classifier";
 import { currentQuestionText } from "./fusion";
 
@@ -129,13 +130,6 @@ const EXPLAIN_TO_ME_CUES =
 /** A question put to the user ("why do you…", "tell me about your…") — words to say, not an explanation. */
 const ADDRESSED_TO_USER = /\b(you|your|yourself)\b/i;
 const SHORT_ANSWER_OPENER = /^(what|who|whom|when|where|which|name|define|state|list|give|identify|convert|translate)\b/i;
-
-const SPOKEN_SCHEMAS: ReadonlySet<ResponseSchemaId> = new Set<ResponseSchemaId>([
-  "suggested-response",
-  "behavioral",
-  "sales",
-  "recruiting",
-]);
 
 /** Distinct lettered option markers, or radio/checkbox glyphs, at line starts. */
 function distinctOptionMarkers(text: string): number {

@@ -3,6 +3,8 @@ import {
   parseJsonLoose,
   parseStructuredOutput,
   repairTrailingCommas,
+  SECTION_TITLES,
+  SPOKEN_SCHEMAS,
   stripWrappingFence,
 } from "@/modes/schemas";
 import type { ResponseSchemaId } from "@/lib/types";
@@ -247,5 +249,25 @@ describe("parseStructuredOutput never yields raw JSON", () => {
     expect(parseStructuredOutput("answer", "{not our envelope} but an answer")?.content).toBe(
       "{not our envelope} but an answer",
     );
+  });
+});
+
+describe("spoken answers only ever come from content (AI-012)", () => {
+  it.each(["suggested-response", "behavioral", "sales", "recruiting"] as const)(
+    "never speaks the %s rationale sections when content is empty",
+    (schemaId) => {
+      const raw = JSON.stringify({
+        responseType: "suggestion",
+        content: "",
+        sections: [{ title: "Why it works", content: "It mirrors the buyer's words." }],
+      });
+      expect(parseStructuredOutput(schemaId, raw)).toBeNull();
+    },
+  );
+
+  it("offers no section a spoken answer could hide in", () => {
+    for (const schemaId of SPOKEN_SCHEMAS) {
+      for (const title of SECTION_TITLES[schemaId] ?? []) expect(title).not.toMatch(/^Suggested/);
+    }
   });
 });

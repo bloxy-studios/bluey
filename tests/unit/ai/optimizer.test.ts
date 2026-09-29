@@ -212,3 +212,18 @@ describe("the optimizer agrees with the shape-aware ceiling (AI-006)", () => {
     expect(optimized.content).toContain("Part 19");
   });
 });
+
+describe("spoken and written answers carry only the words (AI-012)", () => {
+  const leaked = "## Suggested response\nHappy to walk you through the pricing.\n\n**Why it works:** it mirrors the buyer.";
+
+  it.each(["spoken", "written"] as const)("drops a leading heading and a trailing rationale from a %s answer", (shape) => {
+    const optimized = optimizeResponse(response(leaked), { style: STYLE_CONCISE, mode: makeMode(), shape });
+    expect(optimized.content).toBe("Happy to walk you through the pricing.");
+  });
+
+  it("keeps headings and rationale in an explanation", () => {
+    const optimized = optimizeResponse(response(leaked), { style: STYLE_CONCISE, mode: makeMode(), shape: "explain" });
+    expect(optimized.content).toContain("## Suggested response");
+    expect(optimized.content).toContain("Why it works");
+  });
+});

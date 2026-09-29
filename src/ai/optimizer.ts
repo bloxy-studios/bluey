@@ -11,6 +11,8 @@
  *  - length capped by style (concise ≈ 120 words of prose, code excluded) —
  *    never for spoken, written, code, design or summary shapes, never the
  *    first paragraph
+ *  - spoken and written answers lose a leaked leading heading and a trailing
+ *    "Why it works" rationale
  *  - `title` derived when missing; `code` populated for coding responses
  */
 
@@ -246,9 +248,21 @@ export interface OptimizeOptions {
   shape?: AnswerShape;
 }
 
+/** Shapes whose content is only the words to say or send (AI-012). */
+const WORDS_ONLY_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>(["spoken", "written"]);
+const LEADING_HEADINGS = /^(?:\s*#{1,6}\s[^\n]*\n+)+/;
+const TRAILING_RATIONALE = /\n{2,}(?:#{1,6}\s*|\*\*)?why (?:it|this) works\b[\s\S]*$/i;
+
+/** Drop section scaffolding that leaked into a spoken or written answer. */
+export function stripSpokenScaffolding(content: string): string {
+  const stripped = content.replace(LEADING_HEADINGS, "").replace(TRAILING_RATIONALE, "").trim();
+  return stripped.length > 0 ? stripped : content;
+}
+
 /** Clean and normalize a final response. Pure — returns a new object. */
 export function optimizeResponse(response: BlueyResponse, opts: OptimizeOptions): BlueyResponse {
-  const pieces = splitCodeBlocks(response.content);
+  const wordsOnly = opts.shape !== undefined && WORDS_ONLY_SHAPES.has(opts.shape);
+  const pieces = splitCodeBlocks(wordsOnly ? stripSpokenScaffolding(response.content) : response.content);
   const hasCode = pieces.some((p) => p.kind === "code");
 
   const seen = new Set<string>();

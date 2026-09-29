@@ -70,9 +70,20 @@ function structuredSchema(opts: SchemaShapeOptions) {
 
 // ── Per-schema definitions ──────────────────────────────────────────────────
 
+/**
+ * Schemas whose `content` is the words I say: the spoken line lives only in
+ * `content`, never in a section, and is never rebuilt from sections (AI-012).
+ */
+export const SPOKEN_SCHEMAS: ReadonlySet<ResponseSchemaId> = new Set<ResponseSchemaId>([
+  "suggested-response",
+  "behavioral",
+  "sales",
+  "recruiting",
+]);
+
 export const SECTION_TITLES: Partial<Record<ResponseSchemaId, readonly string[]>> = {
   "suggested-response": ["Why it works", "Key point"],
-  behavioral: ["Suggested answer", "Story used", "Key point"],
+  behavioral: ["Story used", "Key point"],
   coding: ["Approach", "Solution", "Complexity", "Edge cases"],
   "system-design": [
     "Requirements",
@@ -83,8 +94,8 @@ export const SECTION_TITLES: Partial<Record<ResponseSchemaId, readonly string[]>
     "Trade-offs",
   ],
   case: ["Clarify", "Framework", "Analyze", "Calculate", "Synthesize", "Recommend"],
-  sales: ["Suggested response", "Why it works", "Optional follow-up"],
-  recruiting: ["Suggested response", "Screening notes", "Next step"],
+  sales: ["Why it works", "Optional follow-up"],
+  recruiting: ["Screening notes", "Next step"],
   meeting: [
     "Important",
     "Decision detected",
@@ -290,6 +301,8 @@ function fromEnvelope(schemaId: ResponseSchemaId, json: object): StructuredModel
     ? (data.responseType as ResponseType)
     : RESPONSE_TYPE_FOR_SCHEMA[schemaId];
   const sections = coerceSections(data.sections);
+  // Sections hold rationale; a spoken answer is never rebuilt from them.
+  if (!data.content && SPOKEN_SCHEMAS.has(schemaId)) return null;
   let content =
     data.content && data.content.length > 0
       ? data.content
