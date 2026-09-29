@@ -23,7 +23,7 @@ interface ErrorBoundaryState {
  * the console itself; nothing here logs the content that failed to render.
  */
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { failed: false, resetKey: this.props.resetKey };
+  override state: ErrorBoundaryState = { failed: false, resetKey: this.props.resetKey };
 
   static getDerivedStateFromError(): Partial<ErrorBoundaryState> {
     return { failed: true };
@@ -36,7 +36,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     return Object.is(props.resetKey, state.resetKey) ? null : { failed: false, resetKey: props.resetKey };
   }
 
-  render(): ReactNode {
+  override render(): ReactNode {
     if (!this.state.failed) return this.props.children;
     return this.props.fallback ?? <WindowErrorFallback />;
   }
