@@ -319,9 +319,10 @@ export class MockTransport implements Transport {
     checkedAt: now(),
   };
 
+  // Like Rust (capture/mod.rs): protection starts from the saved display mode.
   private protection: CaptureProtection = {
     supported: true,
-    enabled: true,
+    enabled: this.settings.privacy.displayMode === "privacy",
     note: "Bluey excludes its windows from screen recordings and screenshots on macOS 12.3+. Hardware capture cards and cameras pointed at the display can still see it.",
   };
 
@@ -667,6 +668,12 @@ export class MockTransport implements Transport {
     this.status = { ...this.status, ...patch, updatedAt: now() };
     this.emit("app.state", this.status);
     return this.status;
+  }
+
+  /** Rust's settings side effect: the display mode drives content protection (settings/side_effects.rs). */
+  private applyDisplayMode(): void {
+    const enabled = this.settings.privacy.displayMode === "privacy";
+    if (this.protection.enabled !== enabled) this.protection = { ...this.protection, enabled };
   }
 
   private emitSettings(): Settings {
@@ -2154,10 +2161,12 @@ export class MockTransport implements Transport {
     settings_get: () => this.settings,
     settings_update: (args) => {
       this.settings = this.withKeyFlags(mergeSettings(this.settings, args.patch));
+      this.applyDisplayMode();
       return this.emitSettings();
     },
     settings_reset: () => {
       this.settings = createDefaultSettings();
+      this.applyDisplayMode();
       return this.emitSettings();
     },
     secrets_set: (args) => {
