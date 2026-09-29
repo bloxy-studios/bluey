@@ -38,8 +38,9 @@ pub async fn data_clear_ai_cache(core: State<'_, AppCore>) -> BlueyResult<u64> {
 }
 
 /// Wipe everything: sessions and their files, documents, responses, settings,
-/// shortcuts, provider configs, Keychain entries owned by Bluey and the Clerk
-/// session. Built-in modes are re-seeded so the app keeps working.
+/// shortcuts, provider configs, Keychain entries owned by Bluey, the Clerk
+/// session and the log files. Built-in modes are re-seeded so the app keeps
+/// working.
 ///
 /// Every step runs even when an earlier one fails — one stuck Keychain entry
 /// must not leave sessions, documents or settings in place — and the failures
@@ -104,6 +105,8 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
     }
     failures.note("sign-in", core.auth.clear_session().await.map(|_| ()));
     vacuum(&core).await;
+    // Last, so the logs this reset wrote go too (DEBT-009).
+    crate::app::delete_log_files();
     failures.into_result()
 }
 

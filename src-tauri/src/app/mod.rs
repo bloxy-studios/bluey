@@ -52,6 +52,13 @@ pub fn set_log_level(level: &str) {
     }
 }
 
+/// Delete every log file (Reset all data, DEBT-009).
+pub fn delete_log_files() {
+    if let Some(logging) = LOGGING.get() {
+        logging.delete_files();
+    }
+}
+
 /// Register plugins, run bootstrap in `setup`, keep the process alive as a
 /// menu-bar app and clean up sidecars on exit. The command handler is attached
 /// by the caller (`lib.rs`) so the parity test can read it there.

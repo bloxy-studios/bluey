@@ -34,8 +34,10 @@ Sidecars are spawned with a **cleared environment**: the helper and the research
 only `PATH`/`HOME`/`TMPDIR`/`USER`/`LANG` plus the variables Rust passes explicitly
 (`AgentManager::job_env` — exactly one research backend's credentials, the Exa/Firecrawl keys and
 documented `BLUEY_*` knobs). Keys that `.env` loads into Bluey's own process therefore never reach
-a child process that has no business with them. Log lines are redacted for `sk-…`, `fc-…`,
-`AIza…`, `Bearer …`, `api-key` values and `key=` URL queries.
+a child process that has no business with them. Log lines (file and debug stderr) are redacted
+for `sk-…`, `fc-…`, `AIza…`, `Bearer …`, JWTs, `api-key` / `access_token` / `refresh_token` /
+`id_token` / `client_secret` / `password` values — also inside JSON-escaped field values — and
+`key=` URL queries.
 
 Keys entered in Settings are written straight to the Keychain and the UI only shows
 "Key saved" (or "locked" — saved, but macOS wants the user's OK before this build reads it —
@@ -177,6 +179,8 @@ for Acme", never "John Doe, who worked at X per his resume, is interviewing at A
 `tracing` with levels error/warn/info/debug/trace; production default `info`. Never logged:
 API keys, auth tokens, raw audio, screenshots, resume text, transcript text (unless
 `privacy.debugLogTranscripts` is enabled for local debugging), provider request bodies.
+Logs are daily files in `~/Library/Logs/Bluey`; files older than 14 days are deleted at startup
+and Reset all data deletes all of them.
 
 ## Privacy display mode
 See ADR 0006. Content protection uses `NSWindow.sharingType = .none` via Tauri; Bluey reports
@@ -188,7 +192,6 @@ platform limits honestly and does not attempt to defeat monitoring software.
 files they reference (frame cache). The database runs with `PRAGMA secure_delete` (freed pages
 are zeroed) and FTS5 `secure-delete` (a deleted row's tokens leave the search index at once), and
 each of these deletions — plus retention pruning — ends with a `wal_checkpoint(TRUNCATE)`, so the
-deleted text is not left readable in `bluey.db` or `bluey.db-wal`; reset also runs `VACUUM`.
-Reset also deletes every Keychain item of
-Bluey's service — enumerated by attributes, so keys of providers removed earlier go too — and the
+deleted text is not left readable in `bluey.db` or `bluey.db-wal`; reset also runs `VACUUM`
+and deletes the log files. Reset also deletes every Keychain item of Bluey's service — enumerated by attributes, so keys of providers removed earlier go too — and the
 Clerk session; deletes never read the item first, so they never prompt.
