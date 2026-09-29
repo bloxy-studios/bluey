@@ -21,7 +21,7 @@ function StreamingStatus() {
   if (research) {
     return (
       <div className="flex items-center gap-2 py-1 text-[13px] text-fg-muted motion-safe:animate-fade-in">
-        <Spinner size={12} />
+        <Spinner size={12} decorative />
         <span className="min-w-0 flex-1 truncate">
           Researching · {research.message}
           {research.toolCalls > 0
@@ -41,7 +41,7 @@ function StreamingStatus() {
   }
   return (
     <div className="flex items-center gap-2 py-1 text-[13px] text-fg-muted motion-safe:animate-fade-in">
-      <Spinner size={12} />
+      <Spinner size={12} decorative />
       {phase === "capturing" || phase === "analyzing" ? "Reading screen…" : "Thinking…"}
     </div>
   );

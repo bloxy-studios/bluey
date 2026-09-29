@@ -210,7 +210,8 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   body shows "Researching · Searching the web… (2 lookups)" with an accent "Skip research"
   link that cancels the job and lets the answer continue without it),
   Preparing `◌ Preparing a suggestion` (proactive loop running) and Prepared (blue)
-  `Bluey has a suggestion · ⌘⇧↵` — both only when *Show suggestions* is **On request**, or
+  `Bluey has a suggestion · ⌘⇧↵` (a button that shows the prepared answer; the keys are the
+  saved Generate binding, omitted when it is disabled) — both only when *Show suggestions* is **On request**, or
   when a live suggestion had to stay silent because another answer was streaming; with the
   default **Live** a detected question opens a suggestion turn at once and the pill simply
   reads `◌ Thinking` while it streams, then returns to `● Listening` — Update (blue, only while otherwise idle — never over

@@ -47,6 +47,13 @@ function isModifier(part: string): boolean {
   return part in MODIFIER_GLYPHS;
 }
 
+/** "R", or a key code as saved by the Rust defaults ("KeyR", "Digit1"), as one keycap. */
+function keyGlyph(key: string): string {
+  const code = /^(?:Key|Digit)([A-Za-z0-9])$/.exec(key)?.[1];
+  const glyph = code ?? key;
+  return glyph.length === 1 ? glyph.toUpperCase() : glyph;
+}
+
 /** "CmdOrCtrl+Shift+Enter" → ["⌘", "⇧", "↵"] (modifiers first, canonical order). */
 export function acceleratorToGlyphs(accelerator: string): string[] {
   const parts = accelerator.split("+").filter(Boolean);
@@ -55,7 +62,7 @@ export function acceleratorToGlyphs(accelerator: string): string[] {
   modifiers.sort((a, b) => MODIFIER_ORDER.indexOf(a as (typeof MODIFIER_ORDER)[number]) - MODIFIER_ORDER.indexOf(b as (typeof MODIFIER_ORDER)[number]));
   return [
     ...modifiers.map((m) => MODIFIER_GLYPHS[m] ?? m),
-    ...keys.map((k) => KEY_GLYPHS[k] ?? (k.length === 1 ? k.toUpperCase() : k)),
+    ...keys.map((k) => KEY_GLYPHS[k] ?? keyGlyph(k)),
   ];
 }
 

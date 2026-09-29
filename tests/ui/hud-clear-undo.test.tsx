@@ -48,8 +48,7 @@ describe("clearing the HUD chat (UX-012)", () => {
     showAnswer();
     await user.keyboard("{Escape}");
 
-    const notice = await screen.findByRole("status");
-    expect(notice).toHaveTextContent("Chat cleared");
+    expect(await screen.findByText("Chat cleared")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Undo" }));
 
     expect(useChatStore.getState().turns).toHaveLength(1);

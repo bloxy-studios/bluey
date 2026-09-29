@@ -38,12 +38,17 @@ describe("HUD content-protection eye (UX-004)", () => {
 
   it("shows the saved display mode, and follows it when it changes elsewhere", async () => {
     renderHud();
-    expect(await screen.findByRole("button", { name: "Content protection off" })).toBeEnabled();
+    const eye = await screen.findByRole("button", { name: "Content protection off" });
+    expect(eye).toBeEnabled();
+    expect(eye).toHaveAttribute("aria-pressed", "false");
 
     // Settings → Privacy or the tray saved it: settings.changed carries the new mode.
     const settings = useSettingsStore.getState().settings!;
     act(() => mock.emit("settings.changed", { ...settings, privacy: { ...settings.privacy, displayMode: "privacy" } }));
-    expect(await screen.findByRole("button", { name: "Content protection on" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Content protection on" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("saves the toggle as the display mode, so it survives a relaunch", async () => {

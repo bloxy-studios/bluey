@@ -15,6 +15,7 @@ import { preventRepeatedActivation } from "./hud-keyboard";
 import { ModeMenu } from "./ModeMenu";
 import { SessionMenu } from "./SessionMenu";
 import { StatePill } from "./StatePill";
+import { useShortcutAccelerator } from "./useShortcutAccelerator";
 
 export interface HudToolbarProps {
   screenEnabled: boolean;
@@ -23,13 +24,23 @@ export interface HudToolbarProps {
   onNewChat: () => void;
   /** Re-asks the last question when an error offers "Retry". */
   onRetry?: () => void;
+  /** Shows the prepared answer when its pill is clicked. */
+  onTakePrepared?: () => void;
 }
 
 /**
  * HUD bottom row (52px): logo + state pill · screen / visibility / mode / |
  * / audio + session cluster · "New Chat ⌘R" or "History ↓".
  */
-export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat, onRetry }: HudToolbarProps) {
+export function HudToolbar({
+  screenEnabled,
+  onToggleScreen,
+  hasChat,
+  onNewChat,
+  onRetry,
+  onTakePrepared,
+}: HudToolbarProps) {
+  const newChatKeys = useShortcutAccelerator("new_chat");
   const status = useAppStore((s) => s.status);
   const modes = useModesStore((s) => s.modes);
   const session = useSessionStore((s) => s.active);
@@ -72,7 +83,7 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat, 
       >
         <div data-tauri-drag-region className="hud-status flex min-w-0 flex-1 items-center gap-2.5">
           <BlueyMark size={22} className="ml-1 shrink-0 text-fg" />
-          <StatePill onRetry={onRetry} />
+          <StatePill onRetry={onRetry} onTakePrepared={onTakePrepared} />
         </div>
 
         <div className="flex items-center gap-1">
@@ -95,6 +106,7 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat, 
           <Tooltip label={protection ? "Content-protected" : "Detectable"}>
             <IconButton
               aria-label={protection ? "Content protection on" : "Content protection off"}
+              aria-pressed={protection}
               onClick={toggleProtection}
               disabled={!displayMode}
             >
@@ -155,7 +167,7 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat, 
           className="hud-trailing flex min-w-0 flex-1 items-center justify-end gap-2"
         >
           {hasChat ? (
-            <Tooltip label="New Chat" shortcut="CmdOrCtrl+R">
+            <Tooltip label="New Chat" shortcut={newChatKeys ?? undefined}>
               <button
                 type="button"
                 aria-label="New Chat"
@@ -164,7 +176,7 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat, 
                 className="hud-new-chat-button flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-[13px] text-fg-muted transition-colors hover:bg-hud-chip hover:text-fg"
               >
                 <span className="hud-new-chat-label flex items-center gap-1.5">
-                  New Chat <Keycaps accelerator="CmdOrCtrl+R" />
+                  New Chat {newChatKeys ? <Keycaps accelerator={newChatKeys} /> : null}
                 </span>
                 <RotateCcw className="hud-new-chat-icon size-4" aria-hidden />
               </button>

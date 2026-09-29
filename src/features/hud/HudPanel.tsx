@@ -7,6 +7,7 @@ import { usePanelStore } from "@/stores/panelStore";
 import { hasTauriRuntime } from "@/lib/tauri/transport";
 import { cn } from "@/lib/utils/cn";
 import { HUD_FRAME_INSETS, hudFrameWidth, hudSurfaceMaxHeight } from "./geometry";
+import { HudAnnouncer } from "./HudAnnouncer";
 import { HudComposer } from "./HudInputRow";
 import { HudNotice } from "./HudNotice";
 import { HudToolbar } from "./HudToolbar";
@@ -99,6 +100,7 @@ export function HudPanel() {
           hasChat={expanded}
           onNewChat={newChat}
           onRetry={retry}
+          onTakePrepared={generateOrTakePrepared}
         />
       </div>
     </>
@@ -141,6 +143,7 @@ export function HudPanel() {
         {expanded ? <ResponseThread onRetry={retryTurn} onRegenerate={regenerate} /> : null}
         <TranscriptStrip />
         {toolbar}
+        <HudAnnouncer />
       </div>
     </div>
   );

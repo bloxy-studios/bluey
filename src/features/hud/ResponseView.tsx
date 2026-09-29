@@ -163,7 +163,7 @@ export const ResponseView = memo(function ResponseView({
 
       {pendingCode ? (
         <div className="my-3 flex items-center gap-2 rounded-[10px] border border-hud-border bg-code-bg px-3.5 py-3 text-[13px] text-fg-muted">
-          <Spinner size={12} />
+          <Spinner size={12} decorative />
           Writing code…
         </div>
       ) : null}
