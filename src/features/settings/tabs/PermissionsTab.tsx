@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Spinner } from "@/components/ui/Spinner";
+import { useLivePermissions } from "@/hooks/useLivePermissions";
 import { bluey } from "@/lib/tauri/api";
 import type { PermissionKind, PermissionStatus, SetupCheck } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
@@ -29,6 +30,7 @@ export default function PermissionsTab() {
   const permissions = usePermissionsStore((s) => s.permissions);
   const request = usePermissionsStore((s) => s.request);
   const openSystemSettings = usePermissionsStore((s) => s.openSystemSettings);
+  useLivePermissions();
   const [checks, setChecks] = useState<SetupCheck[] | null>(null);
   const [running, setRunning] = useState(false);
 

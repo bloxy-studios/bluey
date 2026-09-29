@@ -4,15 +4,40 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { OnboardingFlow } from "@/features/onboarding/OnboardingFlow";
+import { readOnboardingStep } from "@/features/onboarding/progress";
 import { ConnectAIStep } from "@/features/onboarding/steps/connect";
 import { ShortcutsStep } from "@/features/onboarding/steps/setup";
 import type { MockTransport } from "@/lib/tauri/mock";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { setupMockApp } from "./helpers";
 
+/** The onboarding window's localStorage (Node's own global has none without a backing file). */
+function stubLocalStorage(): void {
+  const memory = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => memory.get(key) ?? null,
+    setItem: (key: string, value: string) => void memory.set(key, value),
+    removeItem: (key: string) => void memory.delete(key),
+  });
+}
+
 describe("OnboardingFlow (MockTransport)", () => {
   beforeEach(async () => {
+    stubLocalStorage();
     await setupMockApp();
+  });
+
+  it("resumes at the step it reached after a relaunch, and forgets it on completion (ONB-004)", async () => {
+    const user = userEvent.setup();
+    const first = render(<TooltipProvider><OnboardingFlow /></TooltipProvider>);
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByText("Sign in")).toBeInTheDocument();
+    first.unmount(); // "Quit & Reopen"
+
+    render(<TooltipProvider><OnboardingFlow /></TooltipProvider>);
+    expect(screen.getByText("Sign in")).toBeInTheDocument();
+    expect(screen.queryByText("Welcome to Bluey")).not.toBeInTheDocument();
+    expect(readOnboardingStep()).toBe("sign-in");
   });
 
   it("keeps one 44px drag strip and stationary controls outside the step's scroll surface", async () => {
@@ -146,6 +171,7 @@ describe("OnboardingFlow (MockTransport)", () => {
     expect(screen.getByText(/is ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open Bluey" }));
     await waitFor(() => expect(useSettingsStore.getState().settings?.general.onboardingCompleted).toBe(true));
+    await waitFor(() => expect(readOnboardingStep()).toBeNull()); // the next run starts at Welcome
   });
 });
 
@@ -167,9 +193,15 @@ describe("ConnectAIStep", () => {
   it("verifies a freshly saved key and shows an error banner instead of 'connected' when it fails", async () => {
     const user = userEvent.setup();
     await mock.invoke("dev_simulate", { simulation: { type: "ai_failure", code: "config.api_key_invalid" } });
+    // Only Gemini could answer: no other keyed provider unlocks Continue.
+    const current = useSettingsStore.getState().settings;
+    await useSettingsStore.getState().update({
+      ai: { providers: (current?.ai.providers ?? []).map((p) => (p.id === "gemini" ? p : { ...p, hasApiKey: false })) },
+    });
+    const onReady = vi.fn();
     render(
       <TooltipProvider>
-        <ConnectAIStep onReady={() => {}} />
+        <ConnectAIStep onReady={onReady} />
       </TooltipProvider>,
     );
     expect(screen.queryByText("Gemini is connected")).not.toBeInTheDocument();
@@ -179,6 +211,9 @@ describe("ConnectAIStep", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("API key rejected");
     expect(screen.queryByText("Gemini is connected")).not.toBeInTheDocument();
+    // A rejected key does not unlock Continue (ONB-001): Retry, fix it, or Skip.
+    expect(onReady).toHaveBeenLastCalledWith(false);
+    expect(screen.getByRole("button", { name: "Skip for now" })).toBeInTheDocument();
     expect(useSettingsStore.getState().settings?.ai.providers.find((p) => p.id === "gemini")?.hasApiKey).toBe(
       true,
     );
@@ -187,6 +222,7 @@ describe("ConnectAIStep", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await screen.findByText("Gemini is connected");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(onReady).toHaveBeenLastCalledWith(true);
   });
 
   it("shows 'connected' only after the saved key passes the connection test", async () => {

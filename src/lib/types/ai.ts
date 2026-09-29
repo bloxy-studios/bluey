@@ -183,6 +183,22 @@ export interface ConnectionTestResult {
   error?: BlueyError;
 }
 
+/**
+ * Whether an answer can be routed right now — the Rust router run against the real provider
+ * state (keys, enabled flags, account states, Cloud AI). No network.
+ */
+export interface AiReadiness {
+  /** An answer request routes to a provider. */
+  ok: boolean;
+  /** Where it routes (`ok`): what a connection test should try. */
+  providerId?: string;
+  model?: string;
+  /** A question about the screen (images) routes too. */
+  vision: boolean;
+  /** Why an answer cannot be routed (`!ok`), e.g. `config.provider_unusable` with its cause. */
+  error?: BlueyError;
+}
+
 /** Research */
 export type ResearchDepth = "none" | "search" | "search_scrape" | "deep_agent";
 

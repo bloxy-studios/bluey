@@ -2,11 +2,13 @@ import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
 import { Slider } from "@/components/ui/Slider";
 import { Switch } from "@/components/ui/Switch";
 import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { useAiReadiness } from "@/hooks/useAiReadiness";
 import { presetForKind } from "@/lib/ai/provider-presets";
 import { bluey } from "@/lib/tauri/api";
 import { SECRET_KEYS } from "@/lib/tauri/commands";
@@ -133,7 +135,7 @@ function ModelRoleRow({
           ...(providerId ? [] : [{ value: "", label: "Choose provider" }]),
           ...providers.map((p) => ({
             value: p.id,
-            label: p.enabled ? p.name : `${p.name} (disabled)`,
+            label: providerOptionLabel(p),
             disabled: !p.enabled,
           })),
         ]}
@@ -171,6 +173,13 @@ function ModelRoleRow({
   );
 }
 
+/** A role's provider option says why it can't answer yet (UX-008). */
+function providerOptionLabel(p: AIProviderConfig): string {
+  if (!p.enabled) return `${p.name} (disabled)`;
+  if (p.hasApiKey) return p.name;
+  return p.authMethod === "oauth_subscription" ? `${p.name} (not connected)` : `${p.name} (no key)`;
+}
+
 export default function AITab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
@@ -181,6 +190,7 @@ export default function AITab() {
   );
   const [budget, setBudget] = useState<number | null>(null);
   const [switching, setSwitching] = useState(false);
+  const { readiness } = useAiReadiness();
 
   if (!settings) return null;
   const { ai } = settings;
@@ -232,6 +242,24 @@ export default function AITab() {
     setDialog(null);
   };
 
+  /**
+   * One patch drops the provider and unassigns the roles it served (UX-008); Rust's settings side
+   * effects delete its Keychain key with it. Nothing reroutes silently: the roles show as unassigned.
+   */
+  const removeProvider = async (provider: AIProviderConfig) => {
+    const models = Object.fromEntries(
+      ROLES.filter(({ role }) => ai.models[role]?.providerId === provider.id).map(({ role }) => [role, null]),
+    );
+    const saved = await update({
+      ai: {
+        providers: ai.providers.filter((p) => p.id !== provider.id),
+        models: { ...ai.models, ...models },
+        ...(ai.bootstrapProvider === provider.id ? { bootstrapProvider: null } : {}),
+      },
+    });
+    if (saved) showToast(`${provider.name} removed`, 2000);
+  };
+
   const switchDefaultProvider = async (providerId: string) => {
     if (!providerId || providerId === defaultProviderId) return;
     const provider = routable.find((p) => p.id === providerId);
@@ -252,6 +280,10 @@ export default function AITab() {
 
   return (
     <>
+      {readiness && !readiness.ok && readiness.error ? (
+        // The router's own verdict (ONB-001): why an answer can't be routed with these settings.
+        <ErrorBanner error={readiness.error} compact className="mb-4" />
+      ) : null}
       <SectionHeader
         title="Default provider"
         description="One switch for every role — the provider's recommended models are assigned to chat, vision, transcription, research and embeddings. Roles it doesn't serve keep their current model."
@@ -305,6 +337,8 @@ export default function AITab() {
                 ai: { providers: ai.providers.map((p) => (p.id === provider.id ? { ...p, enabled } : p)) },
               })
             }
+            usedBy={ROLES.filter(({ role }) => ai.models[role]?.providerId === provider.id).map((r) => r.label)}
+            onRemove={() => removeProvider(provider)}
           />
         ))}
       </div>

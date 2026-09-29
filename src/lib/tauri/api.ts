@@ -118,6 +118,8 @@ export const bluey = {
     reportTrace: call("ai_report_trace"),
     embed: call("ai_embed"),
     testConnection: call("ai_test_connection"),
+    /** Whether an answer routes right now (router against the real provider state; no network). */
+    readiness: callNoArgs("ai_readiness"),
     listModels: call("ai_list_models"),
     applyProviderPresets: call("ai_apply_provider_presets"),
     transcribeFile: call("ai_transcribe_file"),

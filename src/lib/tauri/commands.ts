@@ -14,6 +14,7 @@
 
 import type {
   AccountConnectOptions,
+  AiReadiness,
   AIRequest,
   AudioDevice,
   AudioSessionConfig,
@@ -223,6 +224,7 @@ export interface CommandMap {
   /** `purpose` defaults to `document`; queries get the retrieval prompt prefix on gemini-embedding-2. */
   ai_embed: { args: { texts: string[]; purpose?: EmbedPurpose }; result: number[][] };
   ai_test_connection: { args: { providerId: string; model?: string }; result: ConnectionTestResult };
+  ai_readiness: { args: void; result: AiReadiness };
   /** `role` narrows the catalogue to models fit for that role (embedding, transcription, text). */
   ai_list_models: { args: { providerId: string; role?: ModelRole }; result: string[] };
   /** Point roles at the provider's recommended models; `overwrite: false` fills only unassigned roles. */
@@ -447,6 +449,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "ai_cancel_all",
   "ai_embed",
   "ai_test_connection",
+  "ai_readiness",
   "ai_list_models",
   "ai_apply_provider_presets",
   "ai_transcribe_file",

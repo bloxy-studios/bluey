@@ -9,6 +9,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
 import { toBlueyError, type ConnectionTestResult, type ScreenFrame } from "@/lib/types";
+import { useAiReadiness } from "@/hooks/useAiReadiness";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranscriptStore } from "@/stores/transcriptStore";
 import type { StepProps } from "../OnboardingFlow";
@@ -99,12 +100,14 @@ export function TestMicStep(_props: StepProps) {
 
 export function TestAIStep(_props: StepProps) {
   const settings = useSettingsStore((s) => s.settings);
+  const { readiness } = useAiReadiness();
   const [result, setResult] = useState<ConnectionTestResult | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const provider =
-    settings?.ai.providers.find((p) => p.id === settings.ai.models.default?.providerId) ??
-    settings?.ai.providers.find((p) => p.enabled);
+  // Test exactly what an answer would use (the router's choice), not a guess from the settings.
+  const provider = readiness?.ok
+    ? settings?.ai.providers.find((p) => p.id === readiness.providerId)
+    : undefined;
 
   const test = async () => {
     if (!provider) return;
@@ -112,7 +115,7 @@ export function TestAIStep(_props: StepProps) {
     setResult(null);
     try {
       setResult(
-        await bluey.ai.testConnection({ providerId: provider.id, model: settings?.ai.models.default?.model }),
+        await bluey.ai.testConnection({ providerId: provider.id, model: readiness?.model }),
       );
     } catch (error) {
       showErrorToast(toBlueyError(error, "ai"));
@@ -121,18 +124,30 @@ export function TestAIStep(_props: StepProps) {
     }
   };
 
+  if (!readiness) {
+    return (
+      <StepShell title="Test your AI provider" body="Checking your AI setup…">
+        <Spinner className="mx-auto" />
+      </StepShell>
+    );
+  }
+
   if (!provider) {
     return (
       <StepShell
         title="Connect an AI provider"
-        body="No provider is configured yet. Paste a Google AI Studio key in the previous step, or add Microsoft Foundry, Anthropic or an OpenAI-compatible endpoint in Settings → AI — keys stay in the macOS Keychain."
+        body="Bluey can't answer yet. Paste a Google AI Studio key in the previous step, or add Microsoft Foundry, Anthropic or an OpenAI-compatible endpoint in Settings → AI — keys stay in the macOS Keychain."
       >
-        <Button
-          variant="secondary"
-          onClick={() => void bluey.window.open({ label: "settings", route: "ai" })}
-        >
-          Open AI settings
-        </Button>
+        {readiness.error ? (
+          <ErrorBanner error={readiness.error} compact className="w-full text-left" />
+        ) : (
+          <Button
+            variant="secondary"
+            onClick={() => void bluey.window.open({ label: "settings", route: "ai" })}
+          >
+            Open AI settings
+          </Button>
+        )}
       </StepShell>
     );
   }
@@ -168,13 +183,24 @@ export function TestAIStep(_props: StepProps) {
 
 export function ReadyStep(_props: StepProps) {
   const blueyName = useSettingsStore((s) => s.settings?.general.blueyName ?? "Bluey");
+  const { readiness } = useAiReadiness();
+  // Only the router's answer makes the claim: "ready" while it cannot route would be a lie.
+  const unready = readiness !== null && !readiness.ok;
   return (
     <div className="flex flex-col items-center">
       <BlueyMark size={44} className="mb-6 text-fg" />
       <StepShell
-        title={`${blueyName} is ready`}
-        body="Press ⌘\ anytime to show or hide the HUD, and ⌘↵ to ask about your screen. Have a great session."
-      />
+        title={unready ? `${blueyName} can't answer yet` : `${blueyName} is ready`}
+        body={
+          unready
+            ? "Everything else is set up. Fix the AI provider below, or open Bluey and do it later in Settings → AI."
+            : "Press ⌘\\ anytime to show or hide the HUD, and ⌘↵ to ask about your screen. Have a great session."
+        }
+      >
+        {unready && readiness.error ? (
+          <ErrorBanner error={readiness.error} compact className="w-full text-left" />
+        ) : null}
+      </StepShell>
     </div>
   );
 }

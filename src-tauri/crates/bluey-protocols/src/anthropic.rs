@@ -38,6 +38,16 @@ pub struct MessagesBodyOptions<'a> {
     pub schema_as_prompt_fallback: bool,
 }
 
+/// The instruction that carries a schema in the prompt when an endpoint
+/// rejects native structured output (Anthropic and OpenAI-style alike).
+pub fn schema_prompt(spec: &JsonSchemaSpec) -> String {
+    format!(
+        "Respond with a single JSON object that validates against this JSON Schema \
+         (no prose, no markdown fences):\n{}",
+        spec.schema
+    )
+}
+
 /// Build the JSON body for `POST /v1/messages`. System messages are extracted
 /// into the top-level `system` string; remaining messages become user/assistant
 /// turns with text/image content blocks.
@@ -58,11 +68,7 @@ pub fn build_messages_body(opts: &MessagesBodyOptions<'_>) -> Value {
 
     if opts.schema_as_prompt_fallback {
         if let Some(spec) = opts.output_schema {
-            system_parts.push(format!(
-                "Respond with a single JSON object that validates against this JSON Schema \
-                 (no prose, no markdown fences):\n{}",
-                spec.schema
-            ));
+            system_parts.push(schema_prompt(spec));
         }
     }
 

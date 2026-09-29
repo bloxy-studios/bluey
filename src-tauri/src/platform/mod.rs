@@ -26,17 +26,21 @@ const MENU_SESSIONS: &str = "view_sessions";
 const MENU_PREFERENCES: &str = "preferences";
 const MENU_QUIT: &str = "quit";
 
-/// Enable/disable launch at login (best effort, logged).
-pub fn set_autostart(app: &AppHandle, enabled: bool) {
+/// Enable/disable launch at login.
+pub fn set_autostart(app: &AppHandle, enabled: bool) -> BlueyResult<()> {
     let manager = app.autolaunch();
     let result = if enabled {
         manager.enable()
     } else {
         manager.disable()
     };
-    if let Err(e) = result {
+    result.map_err(|e| {
         tracing::warn!(enabled, error = %e, "cannot change launch-at-login");
-    }
+        BlueyError::configuration(
+            "autostart_failed",
+            "macOS did not accept the login item change",
+        )
+    })
 }
 
 /// Show + focus a window. For `settings`/`onboarding` an optional `route`

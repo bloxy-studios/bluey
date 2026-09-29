@@ -498,7 +498,9 @@ async fn finish_boot(app: &AppHandle) {
         Ok(_) => {}
         Err(e) => tracing::debug!(error = %e, "initial permission refresh failed"),
     }
-    crate::platform::set_autostart(app, settings.general.launch_at_login);
+    // Logged inside; nobody toggled it now, so no toast at launch. (Privacy mode is
+    // applied earlier, before the HUD is first shown — SEC-012.)
+    let _ = crate::platform::set_autostart(app, settings.general.launch_at_login);
     if settings.screen.observation == ObservationMode::Smart {
         if let Err(e) = core
             .capture

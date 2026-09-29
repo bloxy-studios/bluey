@@ -2,8 +2,8 @@
 //! embeddings, connection tests, model listing and provider presets.
 
 use bluey_core::types::{
-    AiChunk, AiRequest, ConnectionTestResult, LatencyTrace, ModelRole, Settings, TraceStamps,
-    TranscribeFileResult,
+    AiChunk, AiReadiness, AiRequest, ConnectionTestResult, LatencyTrace, ModelRole, Settings,
+    TraceStamps, TranscribeFileResult,
 };
 use bluey_core::BlueyResult;
 use serde::Deserialize;
@@ -73,6 +73,13 @@ pub async fn ai_test_connection(
     model: Option<String>,
 ) -> BlueyResult<ConnectionTestResult> {
     core.ai.test_connection(&provider_id, model).await
+}
+
+/// Whether an answer routes right now (router against the real provider
+/// state; no network). Onboarding's last step and Settings → AI show it.
+#[tauri::command]
+pub fn ai_readiness(core: State<'_, AppCore>) -> AiReadiness {
+    core.ai.readiness()
 }
 
 /// Models one provider can serve; `role` narrows the list to models fit for it

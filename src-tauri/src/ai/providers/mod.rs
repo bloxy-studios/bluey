@@ -9,6 +9,8 @@ pub mod chatgpt;
 pub mod gemini;
 pub mod mock;
 pub mod openai;
+#[cfg(test)]
+mod test_http;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -19,6 +21,7 @@ use bluey_core::types::{
     LatencyBudget, ModelRole, ProviderModelCatalog, ReasoningLevel,
 };
 use bluey_core::{BlueyError, BlueyErrorKind, BlueyResult};
+use bluey_protocols::api_error;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
@@ -360,6 +363,78 @@ pub fn build_provider(
             }
         }
     }
+}
+
+/// Send an API-key request, retrying 408/429/5xx before the first byte (the
+/// server's retry hint when it is within the cap, else exponential backoff).
+/// Returns the last response whatever its status; cancellation wins a wait.
+pub(super) async fn send_with_retry(
+    build: impl Fn() -> reqwest::RequestBuilder,
+    token: &CancellationToken,
+    provider_hint: &str,
+) -> BlueyResult<reqwest::Response> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let response = tokio::select! {
+            _ = token.cancelled() => return Err(BlueyError::cancelled()),
+            sent = build().send() => sent.map_err(|e| map_transport_error(&e, provider_hint))?,
+        };
+        let status = response.status().as_u16();
+        let server_delay = api_error::retry_after(&header_pairs(response.headers()));
+        if attempt >= gemini::MAX_ATTEMPTS
+            || !bluey_protocols::gemini::is_retryable_status(status)
+            || server_delay.is_some_and(|d| d > gemini::BACKOFF_CAP)
+        {
+            return Ok(response);
+        }
+        let delay = server_delay.unwrap_or_else(|| gemini::backoff(attempt)) + gemini::jitter();
+        tracing::info!(
+            status,
+            attempt,
+            provider = provider_hint,
+            "request failed; retrying"
+        );
+        tokio::select! {
+            _ = token.cancelled() => return Err(BlueyError::cancelled()),
+            _ = tokio::time::sleep(delay) => {}
+        }
+    }
+}
+
+/// Endpoints (`{base URL}|{model}`) that rejected native structured output in
+/// this process: their requests carry the schema in the prompt from then on
+/// instead of paying a failed round-trip on every structured ask.
+static SCHEMA_IN_PROMPT: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    OnceLock::new();
+
+pub(super) fn schema_in_prompt(endpoint: &str) -> bool {
+    SCHEMA_IN_PROMPT
+        .get()
+        .and_then(|set| set.lock().ok().map(|set| set.contains(endpoint)))
+        .unwrap_or(false)
+}
+
+pub(super) fn remember_schema_in_prompt(endpoint: &str) {
+    let set = SCHEMA_IN_PROMPT.get_or_init(Default::default);
+    if let Ok(mut set) = set.lock() {
+        set.insert(endpoint.to_string());
+    }
+}
+
+/// A non-2xx answer from an OpenAI-style or Anthropic API-key endpoint → the
+/// contract error. The body is read capped, only for its code and message,
+/// and never logged (it can echo the prompt).
+pub(super) async fn api_error_from(
+    response: reqwest::Response,
+    provider_hint: &str,
+    model: &str,
+) -> BlueyError {
+    let status = response.status().as_u16();
+    let delay = api_error::retry_after(&header_pairs(response.headers()));
+    let body = read_limited(response).await;
+    let parsed = api_error::parse_error_body(&body);
+    api_error::map_api_error(status, parsed.as_ref(), delay, provider_hint, model)
 }
 
 /// Map an HTTP status onto the contract errors: 401/403 → configuration with

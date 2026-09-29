@@ -2,8 +2,10 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { useToastStore } from "@/components/ui/toast-store";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import AITab from "@/features/settings/tabs/AITab";
+import { bluey } from "@/lib/tauri/api";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { setupInterceptedApp, setupMockApp } from "./helpers";
 
@@ -231,5 +233,100 @@ describe("AITab", () => {
       expect(models()?.fast).toEqual({ providerId: "azure-foundry", model: "gpt-5.6-luna" }),
     );
     expect(screen.queryByRole("button", { name: "Use gpt-5.6-luna" })).not.toBeInTheDocument();
+  });
+
+  it("says why an answer can't be routed, and clears once the provider is fixed (ONB-001)", async () => {
+    await patchAi((ai) => ({
+      providers: ai.providers.map((p) => (p.id === "gemini" ? { ...p, enabled: false } : p)),
+    }));
+    renderTab();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Google Gemini");
+
+    await patchAi((ai) => ({ providers: ai.providers.map((p) => ({ ...p, enabled: true })) }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+});
+
+describe("AITab — removing a provider (UX-008)", () => {
+  it("confirms with the roles it serves, then drops it, unassigns them and deletes its key", async () => {
+    const mock = await setupMockApp();
+    await mock.invoke("secrets_set", { key: "provider:gemini:api_key", value: "AIza-test" });
+    const user = userEvent.setup();
+    renderTab();
+    const card = (await screen.findByText("Google Gemini", { selector: "span" })).closest("div.rounded-card");
+    if (!(card instanceof HTMLElement)) throw new Error("Gemini card not found");
+    expect(within(card).getByText(/^Used by Default, Fast/)).toBeInTheDocument();
+
+    await user.click(within(card).getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("deleted from the macOS Keychain");
+    expect(dialog).toHaveTextContent("Default, Fast, Reasoning, Vision, Research, Transcription, Embedding");
+    await user.click(within(dialog).getByRole("button", { name: "Remove provider" }));
+
+    await waitFor(() =>
+      expect(useSettingsStore.getState().settings?.ai.providers.map((p) => p.id)).not.toContain("gemini"),
+    );
+    expect(models()?.default).toBeNull();
+    expect(models()?.embedding).toBeNull();
+    expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBeNull();
+    expect(await mock.invoke("secrets_has", { key: "provider:gemini:api_key" })).toBe(false);
+  });
+
+  it("marks keyless providers in the card and in the role pickers", async () => {
+    await setupMockApp();
+    renderTab();
+    const card = (await screen.findByText("Claude (Foundry)", { selector: "span" })).closest(
+      "div.rounded-card",
+    );
+    if (!(card instanceof HTMLElement)) throw new Error("Anthropic card not found");
+    expect(within(card).getByText("No key")).toBeInTheDocument();
+    const picker = screen.getByLabelText("Default provider");
+    expect(within(picker).getByRole("option", { name: "Claude (Foundry) (no key)" })).toBeInTheDocument();
+  });
+});
+
+describe("AITab — a provider's first key (FEATURE-004)", () => {
+  beforeEach(() => useToastStore.setState({ toasts: [] }));
+  const saveKey = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+    await user.type(await screen.findByLabelText(`${name} API key`), "sk-test-key");
+    const card = screen.getByText(name, { selector: "span" }).closest("div.rounded-card");
+    if (!(card instanceof HTMLElement)) throw new Error(`${name} card not found`);
+    await user.click(within(card).getByRole("button", { name: "Save" }));
+  };
+  const undoToast = () =>
+    useToastStore.getState().toasts.find((t) => t.message.includes("recommended models"));
+
+  it("fills unassigned roles with its presets, makes it the default, and offers Undo", async () => {
+    await setupMockApp();
+    await patchAi((ai) => ({
+      models: Object.fromEntries(Object.keys(ai.models).map((role) => [role, null])) as typeof ai.models,
+      bootstrapProvider: null,
+    }));
+    const user = userEvent.setup();
+    renderTab();
+    await saveKey(user, "Claude (Foundry)");
+
+    await waitFor(() => expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBe("anthropic"));
+    expect(models()?.default).toEqual({ providerId: "anthropic", model: "claude-sonnet-5" });
+    const toast = undoToast();
+    expect(toast?.message).toBe("Roles now use Claude (Foundry)'s recommended models");
+
+    await toast?.action?.run();
+    await waitFor(() => expect(models()?.default).toBeNull());
+    expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBeNull();
+  });
+
+  it("leaves assigned roles and the default provider alone", async () => {
+    await setupMockApp();
+    const before = models();
+    const user = userEvent.setup();
+    renderTab();
+    await saveKey(user, "Claude (Foundry)");
+
+    await waitFor(async () =>
+      expect(await bluey.secrets.has({ key: "provider:anthropic:api_key" })).toBe(true),
+    );
+    expect(models()).toEqual(before);
+    expect(undoToast()).toBeUndefined();
   });
 });

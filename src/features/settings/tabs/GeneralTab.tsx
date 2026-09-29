@@ -19,8 +19,10 @@ import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
 import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
+import { clearOnboardingStep } from "@/features/onboarding/progress";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { signOutEverywhere } from "@/lib/auth/auth-actions";
+import { OUTPUT_LANGUAGES, outputLanguageCode } from "@/lib/output-languages";
 import { bluey } from "@/lib/tauri/api";
 import { UPDATE_CHANNELS, UPDATE_CHANNEL_LABELS, type UpdateChannel } from "@/lib/types";
 import { describeUpdateStatus, primaryUpdateAction } from "@/lib/updates/describe";
@@ -28,7 +30,12 @@ import { useModesStore } from "@/stores/modesStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUpdatesStore } from "@/stores/updatesStore";
 
-const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Japanese", "Korean", "Chinese"];
+/** Codes as values, names as labels (UX-042); a code Bluey doesn't list stays selectable as is. */
+function languageOptions(current: string) {
+  const options = OUTPUT_LANGUAGES.map((l) => ({ value: l.code, label: l.name }));
+  const code = outputLanguageCode(current);
+  return options.some((o) => o.value === code) ? options : [...options, { value: code, label: code }];
+}
 
 export default function GeneralTab() {
   const settings = useSettingsStore((s) => s.settings);
@@ -138,9 +145,9 @@ export default function GeneralTab() {
       <SettingRow icon={Globe} title="Output language" description="Your preferred language for AI answers and notes.">
         <Select
           aria-label="Output language"
-          value={general.outputLanguage}
+          value={outputLanguageCode(general.outputLanguage)}
           onChange={(e) => void update({ general: { outputLanguage: e.target.value } })}
-          options={LANGUAGES.map((l) => ({ value: l, label: l }))}
+          options={languageOptions(general.outputLanguage)}
         />
       </SettingRow>
 
@@ -151,6 +158,7 @@ export default function GeneralTab() {
             variant="ghost"
             size="sm"
             onClick={() => {
+              clearOnboardingStep();
               void update({ general: { onboardingCompleted: false } }).then(() =>
                 bluey.window.open({ label: "onboarding" }),
               );
