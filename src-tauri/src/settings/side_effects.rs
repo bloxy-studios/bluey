@@ -2,18 +2,22 @@
 //! appearance, content protection, autostart, observation mode, log level and
 //! retention enforcement.
 
+use bluey_core::error::{BlueyError, RecoveryAction};
+use bluey_core::events::BlueyEvent;
 use bluey_core::types::{DisplayMode, ObservationMode, Settings};
 use tauri::State;
 
+use crate::events::EventBus;
 use crate::state::AppCore;
 
 /// Apply every observable difference between `old` and `new`. Errors are
-/// logged, never propagated — the settings write already succeeded.
+/// never propagated — the settings write already succeeded — but the ones the
+/// user must act on are published as `app.error` (see [`report`]).
 pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
     // Shortcuts: bindings changed → persist + re-register.
     if old.shortcuts != new.shortcuts {
         if let Err(e) = core.shortcuts.apply_bindings(new.shortcuts.clone()).await {
-            tracing::warn!(error = %e, "failed to re-register shortcuts");
+            report(&core.bus, "keybinds", e);
         }
     }
 
@@ -32,7 +36,7 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
     if old.privacy.display_mode != new.privacy.display_mode {
         let enabled = new.privacy.display_mode == DisplayMode::Privacy;
         if let Err(e) = core.capture.set_protection(enabled) {
-            tracing::warn!(error = %e, "failed to toggle content protection");
+            report(&core.bus, "privacy", e);
         }
     }
 
@@ -44,7 +48,10 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
 
     // Launch at login.
     if old.general.launch_at_login != new.general.launch_at_login {
-        crate::platform::set_autostart(&core.panel.app_handle(), new.general.launch_at_login);
+        let app = core.panel.app_handle();
+        if let Err(e) = crate::platform::set_autostart(&app, new.general.launch_at_login) {
+            report(&core.bus, "general", e);
+        }
     }
 
     // In-app updates: a new channel re-checks; automatic on installs a waiting update.
@@ -56,16 +63,16 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
     if old.screen.observation != new.screen.observation
         || old.screen.observation_interval_ms != new.screen.observation_interval_ms
     {
-        match new.screen.observation {
+        let result = match new.screen.observation {
             ObservationMode::Smart => {
-                let _ = core
-                    .capture
+                core.capture
                     .observe_start(Some(new.screen.observation_interval_ms), None)
-                    .await;
+                    .await
             }
-            ObservationMode::Manual => {
-                let _ = core.capture.observe_stop().await;
-            }
+            ObservationMode::Manual => core.capture.observe_stop().await,
+        };
+        if let Err(e) = result {
+            report(&core.bus, "screen", e);
         }
     }
 
@@ -111,6 +118,7 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
     if retention_tightened {
         let privacy = new.privacy.clone();
         let storage = core.storage.clone();
+        let bus = core.bus.clone();
         tauri::async_runtime::spawn(async move {
             let result = storage
                 .run(move |db| bluey_storage::apply_retention(db, &privacy))
@@ -125,9 +133,27 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
                         "retention enforced after settings change"
                     );
                 }
-                Err(e) => tracing::warn!(error = %e, "retention sweep failed"),
+                Err(e) => report(&bus, "privacy", e),
             }
         });
+    }
+}
+
+/// A side effect the user must act on failed (UX-037): publish it as
+/// `app.error`, whose toast action opens the settings tab that controls it —
+/// unless the error already carries its own recovery (a permission error
+/// opens System Settings). Only the code is logged.
+fn report(bus: &EventBus, tab: &str, error: BlueyError) {
+    tracing::warn!(code = %error.code, tab, "settings side effect failed");
+    bus.publish(BlueyEvent::AppError(with_settings_recovery(error, tab)));
+}
+
+fn with_settings_recovery(error: BlueyError, tab: &str) -> BlueyError {
+    match error.recovery {
+        Some(RecoveryAction::None) | None => {
+            error.recoverable(RecoveryAction::OpenSettings { tab: tab.into() })
+        }
+        Some(_) => error,
     }
 }
 
@@ -145,7 +171,7 @@ fn removed_provider_ids(old: &Settings, new: &Settings) -> Vec<String> {
 mod tests {
     use super::*;
 
-    use bluey_core::types::{AiProviderConfig, AiProviderKind};
+    use bluey_core::types::{AiProviderConfig, AiProviderKind, PermissionKind};
 
     fn provider(id: &str) -> AiProviderConfig {
         AiProviderConfig {
@@ -172,5 +198,35 @@ mod tests {
             vec!["custom-1".to_string()]
         );
         assert!(removed_provider_ids(&old, &old).is_empty());
+    }
+
+    #[test]
+    fn a_failed_side_effect_is_published_with_a_way_to_fix_it() {
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+
+        report(
+            &bus,
+            "privacy",
+            BlueyError::storage("sweep_failed", "disk I/O error"),
+        );
+        let Ok(BlueyEvent::AppError(error)) = events.try_recv() else {
+            panic!("expected an app.error event");
+        };
+        assert_eq!(error.code, "storage.sweep_failed");
+        assert_eq!(
+            error.recovery,
+            Some(RecoveryAction::OpenSettings {
+                tab: "privacy".into()
+            })
+        );
+
+        // A permission error keeps its own System Settings action.
+        let denied = BlueyError::permission(PermissionKind::ScreenRecording, "not granted");
+        report(&bus, "screen", denied.clone());
+        let Ok(BlueyEvent::AppError(error)) = events.try_recv() else {
+            panic!("expected an app.error event");
+        };
+        assert_eq!(error.recovery, denied.recovery);
     }
 }

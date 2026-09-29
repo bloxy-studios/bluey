@@ -80,6 +80,11 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "Provider not found",
     message: "This role points at a provider that no longer exists. Pick another provider in Settings → AI.",
   },
+  "config.autostart_failed": {
+    title: "Launch at login didn't change",
+    message:
+      "macOS didn't accept the login item change. Try the toggle again, or manage Bluey in System Settings → General → Login Items.",
+  },
   "config.no_preset": {
     title: "No recommended models",
     message: "Bluey has no recommended models for this provider kind. Assign models per role in Settings → AI → Models.",

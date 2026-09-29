@@ -286,4 +286,17 @@ describe("subscription accounts (ADR 0009)", () => {
     void useKey.action?.();
     expect(opened).toEqual(["ai"]);
   });
+
+  it("points a failed settings side effect at the tab that controls it (UX-037)", () => {
+    const presented = presentError(
+      error({
+        kind: "configuration",
+        code: "config.autostart_failed",
+        recovery: { type: "open_settings", tab: "general" },
+      }),
+    );
+    expect(presented.title).toBe("Launch at login didn't change");
+    expect(presented.message).toContain("Login Items");
+    expect(presented.actionLabel).toBe("Open Settings");
+  });
 });

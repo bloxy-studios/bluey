@@ -397,7 +397,8 @@ async fn finish_boot(app: &AppHandle) {
     if let Err(e) = core.permissions.refresh().await {
         tracing::debug!(error = %e, "initial permission refresh failed");
     }
-    crate::platform::set_autostart(app, settings.general.launch_at_login);
+    // Logged inside; nobody toggled it now, so no toast at launch.
+    let _ = crate::platform::set_autostart(app, settings.general.launch_at_login);
     if settings.privacy.display_mode == DisplayMode::Privacy {
         if let Err(e) = core.capture.set_protection(true) {
             tracing::warn!(error = %e, "cannot enable content protection");
