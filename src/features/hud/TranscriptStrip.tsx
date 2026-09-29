@@ -17,7 +17,7 @@ import { buildTranscriptLines, COLLAPSED_LINES, EXPANDED_LINES } from "./transcr
 export function TranscriptStrip() {
   const status = useAppStore((s) => s.status);
   const segments = useTranscriptStore((s) => s.segments);
-  const partial = useTranscriptStore((s) => s.partial);
+  const partials = useTranscriptStore((s) => s.partials);
   const questions = useTranscriptStore((s) => s.questions);
   const modes = useModesStore((s) => s.modes);
   const collapsed = useHudUiStore((s) => s.transcriptCollapsed);
@@ -28,7 +28,7 @@ export function TranscriptStrip() {
   const mode = modeById(modes, status.modeId);
   const lines = buildTranscriptLines(
     segments,
-    partial,
+    Object.values(partials),
     questions,
     mode,
     collapsed ? COLLAPSED_LINES : EXPANDED_LINES,

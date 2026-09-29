@@ -66,6 +66,43 @@ describe("error toasts", () => {
     await screen.findByText("Helper restarted");
   });
 
+  it("announces an automatic helper restart as a notice, not a failure", async () => {
+    render(<Toasts />);
+    // The supervisor is already spawning a replacement (MAC-004 / UX-041).
+    mock.emit("helper.status", { running: false, restarted: true });
+    await screen.findByText("Restarting the native helper…");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows the on-device fallback once as a notice, not an error (UX-023)", async () => {
+    render(<Toasts />);
+    const fallback = {
+      kind: "audio" as const,
+      code: "audio.stt_fallback",
+      message: "no key configured for gemini",
+      recoverable: false,
+    };
+    mock.emit("audio.error", fallback);
+    await screen.findByText(/so Bluey is transcribing on-device/);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    useToastStore.setState({ toasts: [] });
+    mock.emit("audio.error", fallback);
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
+  it("says when Apple Speech transcribes on Apple's servers, as a notice (MAC-007)", async () => {
+    render(<Toasts />);
+    mock.emit("audio.error", {
+      kind: "audio",
+      code: "audio.speech_server",
+      message: "Apple Speech has no on-device model for de-DE, so it transcribes on Apple's servers",
+      recoverable: false,
+    });
+    await screen.findByText(/sends audio to Apple to transcribe it/);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("stays silent for cancellations and can be dismissed manually", async () => {
     const user = userEvent.setup();
     render(<Toasts />);
