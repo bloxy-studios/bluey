@@ -48,6 +48,16 @@ public final class SpeechTranscriber {
 
     static let fallbackLocale = "en-US"
 
+    /// `requiresOnDeviceRecognition` for a request, or `nil` when it may not
+    /// run at all: on-device is required (Cloud AI is off) and the locale has
+    /// no on-device model, so the only way left is Apple's servers.
+    static func onDeviceRecognition(
+        onDevice: Bool, requireOnDevice: Bool, supportsOnDevice: Bool
+    ) -> Bool? {
+        if requireOnDevice && !supportsOnDevice { return nil }
+        return (onDevice || requireOnDevice) && supportsOnDevice
+    }
+
     /// The locale for `language: auto`: the user's own when Apple Speech
     /// supports it, else en-US.
     static func defaultLocale(
@@ -72,6 +82,8 @@ public final class SpeechTranscriber {
     private let source: String
     private let localeId: String
     private let onDevice: Bool
+    /// Privacy → Cloud AI is off: never fall back to Apple's servers.
+    private let requireOnDevice: Bool
     private let sampleRate: Double
     private let emit: Emit
     private let queue: DispatchQueue
@@ -96,12 +108,13 @@ public final class SpeechTranscriber {
     private static let maxConsecutiveErrors = 5
 
     public init(
-        source: String, locale: String, onDevice: Bool, sampleRate: Double = 16000,
-        emit: @escaping Emit
+        source: String, locale: String, onDevice: Bool, requireOnDevice: Bool = false,
+        sampleRate: Double = 16000, emit: @escaping Emit
     ) {
         self.source = source
         self.localeId = locale
         self.onDevice = onDevice
+        self.requireOnDevice = requireOnDevice
         self.sampleRate = sampleRate
         self.emit = emit
         self.queue = DispatchQueue(label: "com.codewithabdul.bluey.helper.speech.\(source)")
@@ -122,6 +135,16 @@ public final class SpeechTranscriber {
                 recognizer.isAvailable
             else {
                 reportUnavailable("speech recognizer unavailable for locale \(localeId)")
+                return
+            }
+            guard
+                Self.onDeviceRecognition(
+                    onDevice: onDevice, requireOnDevice: requireOnDevice,
+                    supportsOnDevice: recognizer.supportsOnDeviceRecognition) != nil
+            else {
+                reportUnavailable(
+                    "no on-device speech model for \(localeId), and Cloud AI is off",
+                    code: "speech_on_device_unavailable")
                 return
             }
             self.recognizer = recognizer
@@ -190,7 +213,10 @@ public final class SpeechTranscriber {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         // https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/requiresondevicerecognition
-        request.requiresOnDeviceRecognition = onDevice && recognizer.supportsOnDeviceRecognition
+        request.requiresOnDeviceRecognition =
+            Self.onDeviceRecognition(
+                onDevice: onDevice, requireOnDevice: requireOnDevice,
+                supportsOnDevice: recognizer.supportsOnDeviceRecognition) ?? true
         // Question detection keys off "?" (macOS 13+; off by default).
         // https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/addspunctuation
         request.addsPunctuation = true
@@ -286,12 +312,11 @@ public final class SpeechTranscriber {
             startMs: Int(startMs.rounded()), endMs: Int(endMs.rounded()), confidence: confidence)
     }
 
-    private func reportUnavailable(_ message: String) {
+    private func reportUnavailable(_ message: String, code: String = "speech_unavailable") {
         guard !unavailableReported else { return }
         unavailableReported = true
         emit(
             "audio.error",
-            AnyEncodable(
-                SpeechErrorEvent(code: "speech_unavailable", message: message, kind: "audio")))
+            AnyEncodable(SpeechErrorEvent(code: code, message: message, kind: "audio")))
     }
 }

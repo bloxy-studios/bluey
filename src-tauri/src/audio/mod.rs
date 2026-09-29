@@ -241,8 +241,15 @@ fn on_session_timeline(mut wire: WireTranscript, offset_ms: u64) -> WireTranscri
     wire
 }
 
-/// Build the helper `audio.start` params from a session config.
-pub fn helper_start_params(config: &AudioSessionConfig, route: TranscriptionRoute) -> Value {
+/// Build the helper `audio.start` params from a session config. With Privacy
+/// → Cloud AI off (`cloud_allowed == false`) Apple Speech must stay on the Mac:
+/// `requireOnDevice` makes the helper refuse its server fallback and report
+/// `speech_on_device_unavailable` instead.
+pub fn helper_start_params(
+    config: &AudioSessionConfig,
+    route: TranscriptionRoute,
+    cloud_allowed: bool,
+) -> Value {
     let mut sources = Vec::new();
     if config.microphone.enabled {
         sources.push("microphone");
@@ -253,6 +260,7 @@ pub fn helper_start_params(config: &AudioSessionConfig, route: TranscriptionRout
     let mut transcription = json!({
         "enabled": route == TranscriptionRoute::Apple,
         "onDevice": true,
+        "requireOnDevice": !cloud_allowed,
         "sources": sources,
     });
     if config.transcription.language != "auto" && !config.transcription.language.is_empty() {
@@ -413,7 +421,7 @@ impl AudioManager {
             cloud_allowed,
             cloud.is_some(),
         );
-        let params = helper_start_params(&config, route);
+        let params = helper_start_params(&config, route, cloud_allowed);
         // Reset per-session state and install the cloud transcription sink
         // *before* the helper starts capturing, so the first PCM chunks are not
         // dropped for lack of a session.
@@ -1441,7 +1449,7 @@ mod tests {
         let mut config = AudioSessionConfig::default();
         config.transcription.language = "auto".into();
         config.vad.sensitivity = VadSensitivity::High;
-        let params = helper_start_params(&config, TranscriptionRoute::Apple);
+        let params = helper_start_params(&config, TranscriptionRoute::Apple, true);
         assert_eq!(params["sampleRate"], 16_000);
         assert_eq!(params["emitPcm"], false);
         assert_eq!(params["chunkMs"], 200);
@@ -1457,6 +1465,16 @@ mod tests {
         );
         assert_eq!(params["vad"]["sensitivity"], "high");
         assert_eq!(params["levels"]["enabled"], true);
+        // Cloud AI on: the helper may fall back to Apple's servers (and says so).
+        assert_eq!(params["transcription"]["requireOnDevice"], false);
+    }
+
+    #[test]
+    fn with_cloud_ai_off_apple_speech_may_not_use_apples_servers() {
+        let config = AudioSessionConfig::default();
+        let params = helper_start_params(&config, TranscriptionRoute::Apple, false);
+        assert_eq!(params["transcription"]["onDevice"], true);
+        assert_eq!(params["transcription"]["requireOnDevice"], true);
     }
 
     #[test]
@@ -1465,7 +1483,7 @@ mod tests {
         config.system_audio.enabled = false;
         config.transcription.language = "en-US".into();
         config.microphone.device_id = Some("mic-1".into());
-        let params = helper_start_params(&config, TranscriptionRoute::Pcm);
+        let params = helper_start_params(&config, TranscriptionRoute::Pcm, true);
         assert_eq!(params["emitPcm"], true);
         assert_eq!(params["transcription"]["enabled"], false);
         assert_eq!(params["transcription"]["locale"], "en-US");

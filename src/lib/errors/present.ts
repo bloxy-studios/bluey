@@ -128,6 +128,12 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     message:
       "This Mac has no on-device speech model for your language, so Apple Speech sends audio to Apple to transcribe it.",
   },
+  // Privacy → Cloud AI is off and the locale has no on-device model: nothing is transcribed.
+  "audio.speech_on_device_unavailable": {
+    title: "No on-device speech model",
+    message:
+      "Cloud AI is off and this Mac has no on-device speech model for your language, so Bluey isn't transcribing. Turn Cloud AI on in Settings → Privacy, or pick a language with an on-device model.",
+  },
   // Cloud speech-to-text lost its connection; it reconnects on its own.
   "audio.stt_degraded": {
     title: "Reconnecting transcription",

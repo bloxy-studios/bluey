@@ -41,4 +41,25 @@ final class SpeechCapabilityTests: XCTestCase {
             current: Locale(identifier: "tlh_001"), supported: supported)
         XCTAssertEqual(klingon.identifier, "en-US")
     }
+
+    /// With Cloud AI off, a locale without an on-device model must not fall
+    /// back to Apple's servers: the request does not run at all.
+    func testRequiredOnDeviceRefusesTheServerFallback() {
+        XCTAssertNil(
+            SpeechTranscriber.onDeviceRecognition(
+                onDevice: true, requireOnDevice: true, supportsOnDevice: false))
+        XCTAssertEqual(
+            SpeechTranscriber.onDeviceRecognition(
+                onDevice: true, requireOnDevice: true, supportsOnDevice: true), true)
+    }
+
+    /// With Cloud AI on, the server fallback stays (and is reported as such).
+    func testOptionalOnDeviceFallsBackToTheServer() {
+        XCTAssertEqual(
+            SpeechTranscriber.onDeviceRecognition(
+                onDevice: true, requireOnDevice: false, supportsOnDevice: false), false)
+        XCTAssertEqual(
+            SpeechTranscriber.onDeviceRecognition(
+                onDevice: true, requireOnDevice: false, supportsOnDevice: true), true)
+    }
 }
