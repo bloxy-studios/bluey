@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,18 +27,28 @@ describe("ResponseView", () => {
   });
 
   it("renders a fenced code block with language header and copy", async () => {
-    const user = userEvent.setup();
-    const clipboardSpy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
-    render(
-      <ResponseView response={makeResponse({ content: "Before\n\n```python\nprint('hi')\n```\n\nAfter" })} />,
-    );
-    expect(screen.getByText("python")).toBeInTheDocument();
-    expect(screen.getByText("print('hi')")).toBeInTheDocument();
+    // Fake timers: the "Copied" label lasts 1 s, which a slow run could miss.
+    userEvent.setup(); // installs the clipboard stub
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const clipboardSpy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+      render(
+        <ResponseView response={makeResponse({ content: "Before\n\n```python\nprint('hi')\n```\n\nAfter" })} />,
+      );
+      expect(screen.getByText("python")).toBeInTheDocument();
+      expect(screen.getByText("print('hi')")).toBeInTheDocument();
 
-    await user.click(screen.getByLabelText("Copy code"));
-    await waitFor(() => expect(screen.getByText("Copied")).toBeInTheDocument());
-    expect(clipboardSpy).toHaveBeenCalledWith("print('hi')");
-    clipboardSpy.mockRestore();
+      fireEvent.click(screen.getByLabelText("Copy code"));
+      await act(async () => {});
+      expect(screen.getByText("Copied")).toBeInTheDocument();
+      expect(clipboardSpy).toHaveBeenCalledWith("print('hi')");
+
+      act(() => vi.advanceTimersByTime(1000));
+      expect(screen.getByText("Copy")).toBeInTheDocument();
+      clipboardSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("buffers an unclosed code fence while streaming", () => {
