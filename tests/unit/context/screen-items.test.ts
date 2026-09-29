@@ -63,6 +63,7 @@ function render(items: ContextItem[]): string {
     schemaId: "answer",
     trigger: "shortcut_generate",
     items,
+    nonce: "n0",
   }).renderContext();
 }
 
@@ -73,7 +74,9 @@ describe("app and window identity (CTX-012)", () => {
     expect(identity).toHaveLength(1);
     expect(identity[0]!.content).toBe("App: Google Chrome (chrome) — Window: Two Sum - LeetCode");
     expect(identity[0]!.tokens).toBeLessThanOrEqual(20);
-    expect(render(items)).toContain(`### ${SECTION_LABELS.active_app}\nApp: Google Chrome`);
+    expect(render(items)).toContain(
+      `<context source="${SECTION_LABELS.active_app}" id="n0">\nApp: Google Chrome`,
+    );
   });
 
   it("leaves the identity out when no screen context was captured (screen off, text-only mode)", () => {
@@ -107,7 +110,7 @@ describe("window text de-duplication (PERF-005)", () => {
     });
     const windowText = items.find((item) => item.source === "window_text");
     expect(windowText?.content).toBe(visibleText.split("\n").slice(1).join("\n"));
-    expect(render(items)).toContain(`### ${SECTION_LABELS.window_text}\nConstraints:`);
+    expect(render(items)).toContain(`<context source="${SECTION_LABELS.window_text}" id="n0">\nConstraints:`);
   });
 
   it("matches across different line wrapping and case", () => {

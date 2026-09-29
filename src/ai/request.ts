@@ -45,6 +45,7 @@ const SHAPE_FLOOR_TOKENS: Record<AnswerShape, number> = {
   spoken: 700,
   written: 700,
   code: 2000,
+  debug: 1200,
   design: 3000,
   summary: 1600,
 };

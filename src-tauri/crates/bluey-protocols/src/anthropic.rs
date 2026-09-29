@@ -83,13 +83,14 @@ pub fn build_messages_body(opts: &MessagesBodyOptions<'_>) -> Value {
     }
     if let Some(spec) = opts.output_schema {
         if !opts.schema_as_prompt_fallback {
-            // zod's top-level `$schema` is metadata the validator does not need.
+            // zod's top-level `$schema` is metadata the validator does not need,
+            // and numeric/length bounds are unsupported (a 400 on every ask).
             obj.insert(
                 "output_config".into(),
                 json!({
                     "format": {
                         "type": "json_schema",
-                        "schema": crate::json_schema::strip_meta(&spec.schema)
+                        "schema": crate::json_schema::anthropic_variant(&spec.schema)
                     }
                 }),
             );
@@ -380,6 +381,26 @@ mod tests {
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
         assert!(body.get("system").is_none());
+
+        // Numeric bounds (zod's `.min/.max`) never reach output_config.
+        let bounded = JsonSchemaSpec {
+            name: "bounded".into(),
+            schema: serde_json::json!({"type":"object","properties":{"confidence":{"type":"number","minimum":0,"maximum":1}}}),
+            strict: Some(true),
+        };
+        let body = build_messages_body(&MessagesBodyOptions {
+            model: "m",
+            messages: &messages,
+            stream: false,
+            max_output_tokens: None,
+            temperature: None,
+            output_schema: Some(&bounded),
+            schema_as_prompt_fallback: false,
+        });
+        assert_eq!(
+            body["output_config"]["format"]["schema"]["properties"]["confidence"],
+            serde_json::json!({"type":"number"})
+        );
 
         let fallback = build_messages_body(&MessagesBodyOptions {
             model: "m",

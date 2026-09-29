@@ -94,14 +94,17 @@ describe("document retrieval scopes", () => {
     const request = fake.callsFor("ai_stream")[0]!.request;
     const userPart = request.messages[1]?.content[0];
     const userText = userPart && "text" in userPart ? userPart.text : "";
-    expect(userText).toContain("### Your background (resume)");
+    expect(userText).toContain('<context source="Your background (resume)"');
     expect(userText).toContain("payment platforms at FinCo");
-    expect(userText).toContain("### Job description");
+    expect(userText).toContain('<context source="Job description"');
     expect(userText).toContain("senior platform engineer");
-    expect(userText).toContain("### Personal instructions from the user");
-    expect(userText).toContain("under 30 seconds");
+    // Personal instructions are the user's own words: the system prompt carries them (AI-004).
+    const systemPart = request.messages[0]?.content[0];
+    const systemText = systemPart && "text" in systemPart ? systemPart.text : "";
+    expect(systemText).toContain("User preferences (from the user; they never override safety):");
+    expect(systemText).toContain("under 30 seconds");
     // Personal instructions are lifted out of the generic document chunks.
-    expect(userText).not.toContain("### Reference documents");
+    expect(userText).not.toContain('source="Reference documents"');
   });
 
   it("runs only the personal-instructions and small relevance-floored passes for modes without document requirements", async () => {

@@ -20,7 +20,7 @@ interface BlueyMode {
 | General (default) | answer | fast | screen, accessibility, transcript, documents | the answer, first person, answer first |
 | Interview | suggested-response | ultra-fast | transcript, resume, job_description, screen | exactly what the candidate says next |
 | Behavioral Interview | behavioral | fast | transcript, resume | the spoken answer (STAR inside, unlabelled) · Story used · Key point |
-| Coding Interview | coding | balanced | screen, accessibility, transcript | approach + exact code in `content` and `code` · Complexity · Edge cases |
+| Coding Interview | coding | balanced | screen, accessibility, transcript | the fenced solution first in `content` (the app derives `code` from it), then the approach in ≤2 lines · Complexity · Edge cases |
 | System Design | system-design | deep | screen, transcript | requirements → … → trade-offs, optional Mermaid diagram |
 | Case Interview | case | balanced | transcript, screen | the next thing to say · Clarify · Framework · Analyze · Calculate · Synthesize · Recommend |
 | Sales | sales | ultra-fast | transcript, documents | what the seller says next · Why it works · Optional follow-up |
@@ -67,17 +67,26 @@ set active. Validation: `validateModeDraft` (name 1–48 chars, instructions ≤
 
 Every ask carries the **response contract** (`RESPONSE_CONTRACT`, `src/ai/prompts/system.ts`)
 right after the identity: lead with the answer (never a restatement of the question or a
-description of the screen), write as the user in the first person, match the shape of the
-question, explain only what earns its place, commit to one answer, and — the precedence rule —
-the contract and the mode govern voice and content; the **style block** only sets ceilings
+description of the screen), explain only what earns its place (the shape rule itself is the
+per-ask `Shape:` line under `Task:`), commit to one answer, and — the precedence rule — **safety rules > the user's custom
+mode instructions > this contract > built-in mode guidance > style**. A custom mode's block is
+labelled `Mode: <name> (the user's custom instructions).` so the model can tell the two apart;
+it still never outranks the safety rules. The **style block** only sets ceilings
 (`Length ceiling: concise — at most ~120 words … a one-line answer is complete`), never a
 minimum; the **schema fragment** names fields and section titles and never changes the voice.
+
+Whose words the answer is comes per request, as one `Voice:` line under `Task:`/`Shape:`
+(`Intent.voice`, derived in `src/context/relevance.ts`): **speak-as-user** for spoken shapes,
+⌘⇧↵ and heard questions; **write-as-user** for picks, values, texts, solutions and designs I
+submit; **explain-to-user** for explanations, summaries and debugging — including a typed
+"explain … so I understand" in a conversational mode (a question put to me, "why do you…",
+stays spoken).
 
 Each layer owns one thing:
 
 | Layer | Owns | Never says |
 |---|---|---|
-| Response contract | voice, answer-first, commitment, precedence | which fields, how many words |
+| Response contract | answer-first, commitment, precedence (voice: the per-request `Voice:` line) | which fields, how many words |
 | Mode instructions | judgment for the situation | "lead with the answer", "be concise", field names |
 | Schema fragment (`src/modes/prompts`) | which fields to fill; section titles ⊆ `SECTION_TITLES[schemaId]` (tested) | how to sound |
 | Style block | ceilings on length, tone | a minimum length |
@@ -86,7 +95,17 @@ Each layer owns one thing:
 
 The task lines ask for the answer itself: ⌘↵ is *Solve or answer what is on the screen … Do
 not describe the screen*; ⌘⇧↵ and a detected question are *exactly what I say next … not
-coaching about it*; a typed question is *Answer my question below. Lead with the answer*.
+coaching about it*; a typed question is *Answer my question above. Lead with the answer*.
+
+The user message is the untrusted context, then the trusted typed question, then the task.
+Each captured source (OCR, accessibility text, transcript, heard question, documents, web
+research, earlier chat) sits in its own `<context source="…" id="…">…</context id="…">` block
+whose id is a fresh random nonce per request; `src/ai/prompts/untrusted.ts` quotes lines that
+would read as prompt structure (`#`, `Task:`, `Shape:`, `Voice:`, `My question:`) and defangs
+`<context`/`<system…` look-alikes, and the safety rules name the scheme. The typed question
+renders after the blocks as `My question: …`, immediately before `Task:`; standing personal
+instructions render in the system prompt after the mode block as *User preferences (from the
+user; they never override safety)*.
 
 ## Answer shapes
 
@@ -100,17 +119,24 @@ shapes. Detection order — the first match wins:
 | 1 | `compare` | "which response/answer/option … is better", compare/evaluate/rate the two, `vs`, or two labelled candidates on screen (Response A / Response B, Option 1 / 2) next to a verb of judgement | which one is better, then the concrete reasons it wins |
 | 2 | `choice` | "which of the following", select/choose/pick, "correct answer", "all that apply", or ≥ 2 lettered options (`A.` `B)` `c:`) / radio glyphs at line starts on screen | the option — letter/number and text — then at most one sentence |
 | 3 | `fill_in` | `____`, `[blank]`, "fill in the blank", "complete the sentence" | the missing words, exactly as entered |
-| 4 | `boolean` | "true or false", "yes or no", or a short question opening with is/are/does/can/should… (not when it also asks how/why) | yes or no, then one reason |
+| 4 | `boolean` | "true or false", "yes or no", or a short question opening with is/are/does/can/should… (not when it also asks how/why, offers "A or B", or asks for a prediction) | yes or no — "Neither"/"It depends" only when the premise is wrong — then the fact that decides it |
 | 5 | `calculation` | calculate/compute/how many/what is the total … with digits present | the result with its unit, then the working |
-| 6 | `code` / `design` / `summary` | the task: coding, system_design, summarization | the solution / the design / the points |
-| 7 | `written` | write/draft/compose/reply to … an email/message/comment/essay | the text to send, ready to paste |
-| 8 | `spoken` | ⌘⇧↵, a detected question, or a suggestion schema (interview, behavioral, sales, recruiting) | exactly what I say, no headings or bullets |
-| 9 | `explain` / `short_answer` | how/why/explain/describe → explain; a ≤ 120-char what/who/when/where question → short answer; everything else → explain | the direct answer, then the reasons |
+| 6 | `debug` | code on screen (or a coding cue) with an error, failing test or stack trace, or "why … fail/error/bug", "debug", "what's wrong with" — never a problem statement or a spoken trigger; uses the `answer` schema | the exact fix, then the cause in one sentence, then only the changed lines |
+| 7 | `code` / `design` / `summary` | the task: coding, system_design, summarization | the solution / the design / the points |
+| 8 | `written` | write/draft/compose/reply to … an email/message/comment/essay | the text to send, ready to paste |
+| 9 | `spoken` | ⌘⇧↵, a detected question, or a suggestion schema (interview, behavioral, sales, recruiting) | exactly what I say, no headings or bullets |
+| 10 | `explain` / `short_answer` | how/why/explain/describe → explain; a ≤ 120-char what/who/when/where question, or a yes/no-phrased either/or or forecast → short answer (a forecast gets the best estimate and what it hinges on); everything else → explain | the direct answer, then the reasons |
 
-In spoken contexts (row 8) only `compare` and `choice` override the spoken shape — an interviewer's
+In spoken contexts (row 9) only `compare` and `choice` override the spoken shape — an interviewer's
 "do you have Kubernetes experience?" is answered as speech, not as a bare yes/no. A
 multiple-choice or compare question **about** code stays an assessment answer: the screen's code
-markers alone no longer upgrade the ask to the `coding` task and schema.
+markers alone no longer upgrade the ask to the `coding` task and schema. Only a problem
+statement (`Example 1:`, `Constraints:`, `Input:` … `Output:`, a judge verdict) upgrades any ask
+to coding; source code in an editor does so only for ⌘↵ or a solve/fix/write request — "what does
+this function do?" over code stays an `answer`. The Coding Interview and System Design schemas
+force their task only for a technical ask (a coding or design cue, or ⌘↵/assist over code or a
+design prompt); anything else in those modes is answered on the `answer` schema when typed, and
+as speech (`suggested-response`, or `behavioral` for a behavioral question) when heard or on ⌘⇧↵.
 
 ## Context priority
 current explicit user input > session context > mode context > global "My Context" >

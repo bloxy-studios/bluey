@@ -25,6 +25,10 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   shapes read off the question or the screen beat task-derived shapes, which beat the shapes
   the trigger and mode imply; the detection table is in `MODE_SYSTEM.md › Answer shapes`. A
   multiple-choice or compare question about code keeps the `answer` task and schema.
+  Classification reads the whole screen (OCR plus accessibility text, selection and focused
+  value). Vision is required when OCR has under 200 characters, the question points at a
+  visual, or — on ⌘↵/assist — the OCR reads like a chart or figure (legend, axis, figure…,
+  or a run of bare axis numbers); accessibility chrome never counts as screen content.
 - **Prompt architecture** (`src/ai/prompt-builder.ts`, `src/ai/prompts/*`,
   `src/modes/prompts/*`): separate parts — system (identity + safety + the **response
   contract**) · mode (judgment) + schema fragment (fields and section titles only) · style
@@ -53,9 +57,19 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
 - **Generations** (`src/ai/generations.ts`): stale-response protection (ADR 0005).
 - **Optimizer** (`src/ai/optimizer.ts`): remove repetition, filler openers and first sentences
   that restate the question or narrate the approach ("The question is asking…", "Let's break
-  this down.", "Looking at the screen, …" — only when an answer remains), respect length & tone,
+  this down.", "Looking at the screen, …" — only when an answer remains, never a sentence naming
+  an option, a number or code, and never for spoken, written, code, choice or debug answers),
+  respect length & tone,
   preserve code, caveats and citations. The length cap keeps the first paragraph and never
-  applies to the spoken, written and code shapes. Goal: the minimum text necessary to be useful.
+  applies to the spoken, written, code, design and summary shapes (the concise style line drops
+  its ~120-word ceiling for design, code and summary answers too). Goal: the minimum text necessary to be useful.
+- **Prompt evaluation** (`tests/prompt-eval/`): the real engine composes one request per row of
+  the evaluation matrix over the fake transport. `invariants.test.ts` checks one `Task:`,
+  `Shape:` and `Voice:` line, the question once, untrusted text only inside the request's
+  nonce blocks, spoken transcript order and the static-layer token budget; `golden.test.ts`
+  snapshots six composed prompts (`__golden__/`, update with `-u` only after reading the diff);
+  `live.test.ts` grades real answers against each case's rubric only with
+  `BLUEY_PROMPT_EVAL_LIVE=1` and `ANTHROPIC_API_KEY` set.
 - **Proactive preparation**: when the classifier detects a likely question with
   `requiresResponse`, the loop in `src/stores/proactive.ts` calls `engine.prepare()`. With
   *Show suggestions = Live* (default) it first opens a suggestion turn in the HUD and passes

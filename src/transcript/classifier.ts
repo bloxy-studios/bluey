@@ -38,7 +38,7 @@ const INTERROGATIVE_LEAD = new RegExp(
 );
 const RISING_PATTERNS = /\b(tell me about|walk me through|talk me through|how would you|what would you|can you (explain|describe|tell)|give me an example)\b/i;
 
-const BEHAVIORAL_MARKERS =
+export const BEHAVIORAL_MARKERS =
   /\b(tell me about a time|describe a (time|situation)|give (me |us )?an example of (a time|when)|walk me through a (time|situation)|a time (when|where) you|have you ever (had|faced|dealt))\b/i;
 
 const CODING_MARKERS =

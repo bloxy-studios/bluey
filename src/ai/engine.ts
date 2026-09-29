@@ -439,6 +439,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       instruction: input.instruction,
       detectedEvent: input.detectedEvent,
       answerShape: intent.answerShape,
+      voice: intent.voice,
       outputSchema,
       visionImage,
       omittedNote: budget.omittedNote,

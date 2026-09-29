@@ -4,20 +4,25 @@
  * Guarantees:
  *  - fenced code blocks are preserved verbatim (never reflowed or trimmed)
  *  - factual caveats and citations are preserved
- *  - filler openers and question-restating first sentences are stripped,
+ *  - filler openers and question-restating first sentences are stripped
+ *    (never one naming an option, number or code; never for the shapes
+ *    whose first sentence is the deliverable),
  *    duplicate paragraphs removed
  *  - length capped by style (concise ≈ 120 words of prose, code excluded) —
- *    never for spoken, written or code shapes, never the first paragraph
+ *    never for spoken, written, code, design or summary shapes, never the
+ *    first paragraph
+ *  - spoken and written answers lose a leaked leading heading and a trailing
+ *    "Why it works" rationale
  *  - `title` derived when missing; `code` populated for coding responses
  */
 
 import type { AnswerShape, BlueyMode, BlueyResponse, CodeBlock, ResponseStyle } from "@/lib/types";
 
 const FILLER_OPENERS = [
-  /^certainly[!,.]?\s*/i,
-  /^sure(?: thing)?[!,.]?\s*/i,
-  /^of course[!,.]?\s*/i,
-  /^absolutely[!,.]?\s*/i,
+  /^certainly[!,.]\s*/i,
+  /^sure(?: thing)?[!,.]\s*/i,
+  /^of course[!,.]\s*/i,
+  /^absolutely[!,.]\s*/i,
   /^great question[!,.]?\s*/i,
   /^good question[!,.]?\s*/i,
   /^happy to help[!,.]?\s*/i,
@@ -33,13 +38,19 @@ const FILLER_OPENERS = [
  * punctuation; a sentence is only removed when an answer remains after it.
  */
 const RESTATEMENT_OPENERS = [
-  /^(?:the|this|your) (?:question|prompt|task|problem|screen|screenshot|image|code|snippet|passage|text|error)(?: here| above| shown| below)? (?:is asking|asks|is about|shows|displays|describes|presents|wants|requires|refers to|relates to)\b[^.!?\n]*[.!?:]\s*/i,
-  /^(?:you(?:'re| are) (?:asking|looking at|being asked)|you want to know|you asked|you'?d like to know)\b[^.!?\n]*[.!?:]\s*/i,
+  /^(?:the|this|your) (?:question|prompt|task|problem|screen|screenshot|image|code|snippet|passage|text|error)(?: here| above| shown| below)? (?:is asking|asks|wants|requires)\b[^.!?:\n]*[.!?:]\s*/i,
+  /^(?:you(?:'re| are) (?:asking|looking at|being asked)|you want to know|you asked|you'?d like to know)\b[^.!?:\n]*[.!?:]\s*/i,
   // Approach preambles end at their first comma or colon ("Looking at the screen, …").
   /^(?:to answer (?:this|your|the) question|to solve this|in order to answer|looking at (?:the|this|your) (?:screen|question|code|image|problem|options|error)|based on (?:the|your|this) (?:screen|screenshot|image|question|context|information provided))\b[^.!?,:\n]*[,.:!]\s*/i,
-  /^(?:let'?s|let me) (?:break|walk|look|take|start|dive|begin|see|analy[sz]e|think|go)\b[^.!?\n]*[.!?:]\s*/i,
-  /^i(?:'ll| will| can)(?: help| explain| walk| break)\b[^.!?\n]*[.!?:]\s*/i,
+  /^(?:let'?s|let me) (?:break|walk|look|dive|begin|see|analy[sz]e|think)\b[^.!?:\n]*[.!?:]\s*/i,
+  /^i(?:'ll| will| can)(?: help| explain| walk| break)\b[^.!?:\n]*[.!?:]\s*/i,
 ];
+
+/** A sentence naming an option, a number or code carries the answer: never stripped. */
+const ANSWER_MARKERS = /\b[A-E]\b|\boption\b|\d|`/;
+
+/** Shapes whose first sentence is the deliverable: only exact filler is stripped. */
+const VERBATIM_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>(["spoken", "written", "code", "choice", "debug"]);
 
 const MIN_WORDS_AFTER_STRIP = 3;
 
@@ -133,9 +144,10 @@ function recapitalize(text: string): string {
 /**
  * Strip filler openers ("Sure!", "Great question!") and restating first
  * sentences ("The question is asking…"). A restatement is only removed when
- * at least a few words of answer remain; the text is never stripped to nothing.
+ * it names no option, number or code and at least a few words of answer
+ * remain; spoken, written, code, choice and debug answers keep theirs (AI-003).
  */
-export function stripFillerOpeners(text: string): string {
+export function stripFillerOpeners(text: string, shape?: AnswerShape): string {
   let result = text.trimStart();
   let changed = true;
   while (changed) {
@@ -148,12 +160,14 @@ export function stripFillerOpeners(text: string): string {
       }
     }
   }
-  changed = true;
+  changed = shape === undefined || !VERBATIM_SHAPES.has(shape);
   while (changed) {
     changed = false;
     for (const pattern of RESTATEMENT_OPENERS) {
-      const next = result.replace(pattern, "").trimStart();
-      if (next !== result && countWords(next) >= MIN_WORDS_AFTER_STRIP) {
+      const removed = pattern.exec(result)?.[0] ?? "";
+      if (!removed || ANSWER_MARKERS.test(removed)) continue;
+      const next = result.slice(removed.length).trimStart();
+      if (countWords(next) >= MIN_WORDS_AFTER_STRIP) {
         result = next;
         changed = true;
       }
@@ -170,7 +184,13 @@ const LENGTH_WORD_CAPS: Record<ResponseStyle["length"], number> = {
 };
 
 /** Shapes whose text is the deliverable itself — cutting them mid-way would destroy it. */
-const UNCAPPED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>(["spoken", "written", "code"]);
+const UNCAPPED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>([
+  "spoken",
+  "written",
+  "code",
+  "design",
+  "summary",
+]);
 
 function mustKeepParagraph(paragraph: string): boolean {
   return CAVEAT_MARKERS.test(paragraph) || CITATION_MARKER.test(paragraph);
@@ -224,13 +244,25 @@ export function deriveTitle(content: string, prompt?: string): string | undefine
 export interface OptimizeOptions {
   style: ResponseStyle;
   mode: BlueyMode;
-  /** The detected answer shape; spoken, written and code answers are never length-capped. */
+  /** The detected answer shape; spoken, written, code, design and summary answers are never length-capped. */
   shape?: AnswerShape;
+}
+
+/** Shapes whose content is only the words to say or send (AI-012). */
+const WORDS_ONLY_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>(["spoken", "written"]);
+const LEADING_HEADINGS = /^(?:\s*#{1,6}\s[^\n]*\n+)+/;
+const TRAILING_RATIONALE = /\n{2,}(?:#{1,6}\s*|\*\*)?why (?:it|this) works\b[\s\S]*$/i;
+
+/** Drop section scaffolding that leaked into a spoken or written answer. */
+export function stripSpokenScaffolding(content: string): string {
+  const stripped = content.replace(LEADING_HEADINGS, "").replace(TRAILING_RATIONALE, "").trim();
+  return stripped.length > 0 ? stripped : content;
 }
 
 /** Clean and normalize a final response. Pure — returns a new object. */
 export function optimizeResponse(response: BlueyResponse, opts: OptimizeOptions): BlueyResponse {
-  const pieces = splitCodeBlocks(response.content);
+  const wordsOnly = opts.shape !== undefined && WORDS_ONLY_SHAPES.has(opts.shape);
+  const pieces = splitCodeBlocks(wordsOnly ? stripSpokenScaffolding(response.content) : response.content);
   const hasCode = pieces.some((p) => p.kind === "code");
 
   const seen = new Set<string>();
@@ -243,12 +275,12 @@ export function optimizeResponse(response: BlueyResponse, opts: OptimizeOptions)
   if (firstProseIndex >= 0) {
     const piece = cleaned[firstProseIndex];
     if (piece) {
-      cleaned[firstProseIndex] = { kind: "prose", text: stripFillerOpeners(piece.text) };
+      cleaned[firstProseIndex] = { kind: "prose", text: stripFillerOpeners(piece.text, opts.shape) };
     }
   }
 
   // Cap prose length by style — never when the payload is primarily code, and
-  // never for the shapes whose text is the deliverable (spoken, written, code).
+  // never for the shapes whose text or structure is the deliverable.
   const cap = LENGTH_WORD_CAPS[opts.style.length];
   const uncapped = (hasCode && opts.style.length === "concise") || (opts.shape !== undefined && UNCAPPED_SHAPES.has(opts.shape));
   if (!uncapped) {

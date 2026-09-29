@@ -35,10 +35,11 @@ function render(items: ContextItem[]): string {
 }
 
 function sectionLines(context: string, heading: string): string[] {
-  const start = context.indexOf(`### ${heading}`);
+  const start = context.indexOf(`<context source="${heading}"`);
   if (start < 0) return [];
   const body = context.slice(start).split("\n\n")[0] ?? "";
-  return body.split("\n").slice(1);
+  // Drop the opening and the closing tag of the block.
+  return body.split("\n").slice(1, -1);
 }
 
 describe("transcript render order", () => {
@@ -106,11 +107,11 @@ describe("transcript render order", () => {
     });
     const context = render(allocateBudget(fuseContext(snapshot), 4_000).included);
 
-    const earlier = context.indexOf("### Earlier conversation");
-    const recent = context.indexOf("### Recent conversation");
+    const earlier = context.indexOf('source="Earlier conversation"');
+    const recent = context.indexOf('source="Recent conversation');
     expect(earlier).toBeGreaterThan(-1);
     expect(earlier).toBeLessThan(recent);
-    expect(context.indexOf("### Earlier in this session")).toBeGreaterThan(recent);
+    expect(context.indexOf('source="Earlier in this session"')).toBeGreaterThan(recent);
     expect(sectionLines(context, "Earlier conversation")).toEqual([
       "Earlier (summary): Intro small talk.",
       "Interviewer: Tell me about your background.",

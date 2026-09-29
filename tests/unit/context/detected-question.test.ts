@@ -100,12 +100,13 @@ describe("detected question", () => {
       trigger: "detected_event",
       items: allocateBudget(items, 4_000).included,
       detectedEvent: event,
+      nonce: "n0",
     });
     const context = builder.renderContext();
-    const heading = "### Question just asked (heard; may be mis-transcribed)";
+    const heading = '<context source="Question just asked (heard; may be mis-transcribed)" id="n0">';
     expect(context).toContain(`${heading}\nInterviewer: How did you handle exactly-once delivery?`);
-    expect(context.indexOf(heading)).toBeLessThan(context.indexOf("### Recent conversation"));
-    expect(context).not.toContain("### Current question");
+    expect(context.indexOf(heading)).toBeLessThan(context.indexOf('source="Recent conversation'));
+    expect(context).not.toContain("Current question");
     expect(builder.renderTask()).toContain('(see "Question just asked")');
   });
 });
