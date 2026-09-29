@@ -64,6 +64,8 @@ and budgets the context. Fusion then drops AX window-text lines already present 
 the focused value (whitespace- and case-insensitive).
 
 ## Privacy controls
-Capture target (display / active window / region), observation mode (manual only by default),
-screenshot retention (off by default), Privacy display mode (content protection — ADR 0006),
-and a visible `◌ Reading screen` state whenever a capture happens.
+Capture target (display / active window; the helper's region target has no picker yet, so
+Settings does not offer it and a stored `region` reads as the active window), observation
+mode (manual only by default), screenshot retention (off by default), Privacy display mode
+(content protection — ADR 0006), and a visible `◌ Reading screen` state whenever a capture
+happens.

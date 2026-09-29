@@ -182,8 +182,7 @@ impl CaptureManager {
         let screen = self.settings.get().screen;
         match screen.capture_target {
             CaptureTargetPreference::ActiveWindow => CaptureTarget::ActiveWindow,
-            CaptureTargetPreference::Region | CaptureTargetPreference::Display => {
-                // A region preference without a stored rect degrades to display.
+            CaptureTargetPreference::Display => {
                 let display_id = match screen.preferred_display.as_str() {
                     "" | "active" | "main" => None,
                     id => Some(id.to_string()),

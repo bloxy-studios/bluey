@@ -9,8 +9,8 @@ the mode you're in, and prepares concise, useful help before you even ask.
 > "Bluey already understands what's happening."
 
 ## What it does
-* **Screen understanding** — on-demand capture (⌘↵) of a display, window or region with
-  ScreenCaptureKit, Vision OCR and Accessibility semantics; optional low-frequency smart
+* **Screen understanding** — on-demand capture (⌘↵) of the display or the active window
+  with ScreenCaptureKit, Vision OCR and Accessibility semantics; optional low-frequency smart
   observation with change detection.
 * **Live transcription** — microphone and system audio (separate channels), on-device Apple
   Speech by default or a cloud realtime provider, speaker labels with honest confidence.

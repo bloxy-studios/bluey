@@ -54,7 +54,6 @@ function captureTargetFor(settings: Settings): CaptureTarget {
     case "active_window":
       return { type: "active_window" };
     case "display":
-    case "region":
     default: {
       const preferred = settings.screen.preferredDisplay;
       return preferred === "active" ? { type: "display" } : { type: "display", displayId: preferred };
