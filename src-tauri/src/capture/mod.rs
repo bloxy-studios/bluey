@@ -287,16 +287,26 @@ impl CaptureManager {
             return;
         };
         let mut frame = frame.clone();
-        frame.path = if self.settings.get().privacy.store_screenshots {
-            keep_screenshot(&self.storage.paths.screenshots_dir, &frame).await
+        let keep = self.settings.get().privacy.store_screenshots;
+        let dir = self.storage.paths.screenshots_dir.clone();
+        // A frame with only a temp file is copied now, before a released frame
+        // deletes the file; an inline image is written off the ⌘↵ path.
+        let copy_now = keep && frame.image.is_none();
+        let kept_now = if copy_now {
+            keep_screenshot(&dir, &frame).await
         } else {
             None
         };
-        frame.image = None;
-        let store_image = frame.path.is_some();
         let frontmost = self.ax.cached_frontmost();
         let storage = self.storage.clone();
         tauri::async_runtime::spawn(async move {
+            frame.path = if keep && !copy_now {
+                keep_screenshot(&dir, &frame).await
+            } else {
+                kept_now
+            };
+            frame.image = None;
+            let store_image = frame.path.is_some();
             let result = storage
                 .run(move |db| {
                     bluey_storage::SnapshotRepository::save_screen(
@@ -472,8 +482,9 @@ impl CaptureManager {
     }
 }
 
-/// Copy a frame the user chose to keep into `dir` — from the temp file, else
-/// from the inline image. Returns the stored path.
+/// Write a frame the user chose to keep into `dir` — from the inline image,
+/// else from the temp file (which a released frame may already have lost).
+/// Returns the stored path.
 async fn keep_screenshot(dir: &Path, frame: &ScreenFrame) -> Option<String> {
     let safe_id = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     if frame.id.is_empty() || !frame.id.chars().all(safe_id) {
@@ -485,12 +496,12 @@ async fn keep_screenshot(dir: &Path, frame: &ScreenFrame) -> Option<String> {
         ImageMimeType::Webp => "webp",
     };
     let target = dir.join(format!("{}.{ext}", frame.id));
-    let result = match (&frame.path, &frame.image) {
-        (Some(path), _) => tokio::fs::copy(path, &target).await.map(|_| ()),
-        (None, Some(image)) => match base64::engine::general_purpose::STANDARD.decode(image) {
+    let result = match (&frame.image, &frame.path) {
+        (Some(image), _) => match base64::engine::general_purpose::STANDARD.decode(image) {
             Ok(bytes) => tokio::fs::write(&target, bytes).await,
             Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         },
+        (None, Some(path)) => tokio::fs::copy(path, &target).await.map(|_| ()),
         (None, None) => return None,
     };
     match result {
@@ -663,6 +674,15 @@ mod tests {
         shot.path = None;
         shot.image = Some("QUJD".into());
         let kept = keep_screenshot(&dir, &shot).await.expect("written");
+        assert_eq!(std::fs::read(&kept).unwrap(), b"ABC");
+
+        // With an inline image the write runs off the ⌘↵ path, after the
+        // context snapshot may have released (deleted) the temp file.
+        shot.id = "f-4".into();
+        shot.path = Some(dir.join("f-4.released.tmp").to_string_lossy().into_owned());
+        let kept = keep_screenshot(&dir, &shot)
+            .await
+            .expect("written from the image");
         assert_eq!(std::fs::read(&kept).unwrap(), b"ABC");
 
         shot.id = "../f-3".into();
