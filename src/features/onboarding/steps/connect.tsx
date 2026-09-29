@@ -69,9 +69,11 @@ export function ConnectAIStep({ onReady }: StepProps) {
   const connectedAccounts = accounts.filter((a) => a.status.state === "connected");
   const accountReady = connectedAccounts.length > 0;
 
+  // A key that just failed its test does not count: Retry, fix it, or Skip (ONB-001).
+  const keyUsable = hasKey && status !== "failed";
   useEffect(() => {
-    onReady(hasKey || otherProviderReady || accountReady || skipped);
-  }, [hasKey, otherProviderReady, accountReady, skipped, onReady]);
+    onReady(keyUsable || otherProviderReady || accountReady || skipped);
+  }, [keyUsable, otherProviderReady, accountReady, skipped, onReady]);
 
   const startAccountConnect = (copy: ProviderCopy) => {
     const accepted = settings?.experimental.acceptedAccountConsents ?? [];
@@ -202,13 +204,13 @@ export function ConnectAIStep({ onReady }: StepProps) {
           >
             <Settings2 className="size-3.5" aria-hidden /> Use another provider
           </Button>
-          {!hasKey && !otherProviderReady && !skipped ? (
+          {!keyUsable && !otherProviderReady && !skipped ? (
             <Button variant="ghost" size="sm" onClick={() => setSkipped(true)}>
               Skip for now
             </Button>
           ) : null}
         </div>
-        {skipped && !hasKey ? (
+        {skipped && !keyUsable ? (
           <p className="text-[12.5px] text-fg-subtle">You can add a key later in Settings → AI.</p>
         ) : null}
         {subscriptionsEnabled ? (

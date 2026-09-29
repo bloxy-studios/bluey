@@ -16,9 +16,10 @@ use bluey_core::latency::{self, RustStamps};
 use bluey_core::presets;
 use bluey_core::router::{self, RoutingInput};
 use bluey_core::types::{
-    AccountStatus, AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent,
-    AppState, ConnectionTestResult, FinishReason, LatencyBudget, LatencyTrace, ModelAssignment,
-    ModelRole, ModelSelection, ProviderAuthMethod, ReasoningLevel, Settings, TraceStamps,
+    AccountStatus, AiChunk, AiProviderConfig, AiProviderKind, AiReadiness, AiRequest, AiTask,
+    AppEvent, AppState, ConnectionTestResult, FinishReason, LatencyBudget, LatencyTrace,
+    ModelAssignment, ModelRole, ModelSelection, ProviderAuthMethod, ReasoningLevel, Settings,
+    TraceStamps,
 };
 use bluey_core::{now_iso, BlueyError, BlueyErrorKind, BlueyResult};
 use bluey_protocols::gemini as gemini_proto;
@@ -289,6 +290,16 @@ impl AiManager {
         };
         router::select(&input, &settings.ai.models, &self.providers())
             .map_err(|error| self.name_account_state(error))
+    }
+
+    /// Whether an answer (and a screen question) routes right now: the same
+    /// router, providers and Cloud AI switch a real ask meets. Onboarding and
+    /// Settings show this instead of guessing from the settings.
+    pub fn readiness(&self) -> AiReadiness {
+        let preferred_role = self.modes.active_mode().preferred_model_role;
+        let mut readiness = readiness_of(&self.settings.get(), &self.providers(), preferred_role);
+        readiness.error = readiness.error.map(|error| self.name_account_state(error));
+        readiness
     }
 
     /// An account stop signal says "your API key is used meanwhile" only when
@@ -1202,6 +1213,45 @@ fn ensure_cloud_ai(settings: &Settings) -> BlueyResult<()> {
     }))
 }
 
+/// [`AiManager::readiness`] over explicit state: an Answer request (and one
+/// with images) through the router, behind the Cloud AI switch.
+fn readiness_of(
+    settings: &Settings,
+    providers: &[AiProviderConfig],
+    preferred_role: Option<ModelRole>,
+) -> AiReadiness {
+    let route = |vision_required: bool| {
+        ensure_cloud_ai(settings)?;
+        let input = RoutingInput {
+            task: AiTask::Answer,
+            latency: LatencyBudget::Fast,
+            reasoning: ReasoningLevel::None,
+            context_tokens: 0,
+            vision_required,
+            preferred_role,
+            model_override: None,
+        };
+        router::select(&input, &settings.ai.models, providers)
+    };
+    let vision = route(true).is_ok();
+    match route(false) {
+        Ok(selection) => AiReadiness {
+            ok: true,
+            provider_id: Some(selection.provider_id),
+            model: Some(selection.model),
+            vision,
+            error: None,
+        },
+        Err(error) => AiReadiness {
+            ok: false,
+            provider_id: None,
+            model: None,
+            vision,
+            error: Some(error),
+        },
+    }
+}
+
 /// Error code of a model call refused because Cloud AI is off (`present.ts` copy).
 pub const CLOUD_AI_DISABLED_CODE: &str = "privacy.cloud_ai_disabled";
 
@@ -1382,5 +1432,30 @@ mod tests {
         let error = batch_transcription_target(Some(&foundry), &providers).expect_err("none");
         assert_eq!(error.kind, BlueyErrorKind::NotSupported);
         assert!(error.message.contains("Google Gemini provider with a key"));
+    }
+
+    #[test]
+    fn readiness_names_why_an_answer_cannot_be_routed() {
+        let mut settings = Settings::default();
+        settings.ai.models.default = Some(assigned(presets::GEMINI_ID, "gemini-flash"));
+        let mut gemini = keyed(presets::GEMINI_ID, AiProviderKind::GoogleGemini);
+        gemini.has_api_key = false;
+
+        let keyless = readiness_of(&settings, &[gemini.clone()], None);
+        assert!(!keyless.ok && !keyless.vision);
+        let error = keyless.error.expect("cause");
+        assert_eq!(error.code, "config.provider_unusable");
+        assert_eq!(error.details.expect("details")["cause"], "missing_key");
+
+        gemini.has_api_key = true;
+        let ready = readiness_of(&settings, &[gemini.clone()], None);
+        assert!(ready.ok && ready.error.is_none());
+        assert_eq!(ready.provider_id.as_deref(), Some(presets::GEMINI_ID));
+        assert_eq!(ready.model.as_deref(), Some("gemini-flash"));
+
+        settings.privacy.cloud_ai_enabled = false;
+        let off = readiness_of(&settings, &[gemini], None);
+        assert!(!off.ok);
+        assert_eq!(off.error.expect("cause").code, CLOUD_AI_DISABLED_CODE);
     }
 }

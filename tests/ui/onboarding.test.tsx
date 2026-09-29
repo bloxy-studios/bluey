@@ -166,9 +166,15 @@ describe("ConnectAIStep", () => {
   it("verifies a freshly saved key and shows an error banner instead of 'connected' when it fails", async () => {
     const user = userEvent.setup();
     await mock.invoke("dev_simulate", { simulation: { type: "ai_failure", code: "config.api_key_invalid" } });
+    // Only Gemini could answer: no other keyed provider unlocks Continue.
+    const current = useSettingsStore.getState().settings;
+    await useSettingsStore.getState().update({
+      ai: { providers: (current?.ai.providers ?? []).map((p) => (p.id === "gemini" ? p : { ...p, hasApiKey: false })) },
+    });
+    const onReady = vi.fn();
     render(
       <TooltipProvider>
-        <ConnectAIStep onReady={() => {}} />
+        <ConnectAIStep onReady={onReady} />
       </TooltipProvider>,
     );
     expect(screen.queryByText("Gemini is connected")).not.toBeInTheDocument();
@@ -178,6 +184,9 @@ describe("ConnectAIStep", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("API key rejected");
     expect(screen.queryByText("Gemini is connected")).not.toBeInTheDocument();
+    // A rejected key does not unlock Continue (ONB-001): Retry, fix it, or Skip.
+    expect(onReady).toHaveBeenLastCalledWith(false);
+    expect(screen.getByRole("button", { name: "Skip for now" })).toBeInTheDocument();
     expect(useSettingsStore.getState().settings?.ai.providers.find((p) => p.id === "gemini")?.hasApiKey).toBe(
       true,
     );
@@ -186,6 +195,7 @@ describe("ConnectAIStep", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await screen.findByText("Gemini is connected");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(onReady).toHaveBeenLastCalledWith(true);
   });
 
   it("shows 'connected' only after the saved key passes the connection test", async () => {

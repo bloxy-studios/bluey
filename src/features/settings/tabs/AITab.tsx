@@ -2,11 +2,13 @@ import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
 import { Slider } from "@/components/ui/Slider";
 import { Switch } from "@/components/ui/Switch";
 import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { useAiReadiness } from "@/hooks/useAiReadiness";
 import { presetForKind } from "@/lib/ai/provider-presets";
 import { bluey } from "@/lib/tauri/api";
 import { SECRET_KEYS } from "@/lib/tauri/commands";
@@ -181,6 +183,7 @@ export default function AITab() {
   );
   const [budget, setBudget] = useState<number | null>(null);
   const [switching, setSwitching] = useState(false);
+  const { readiness } = useAiReadiness();
 
   if (!settings) return null;
   const { ai } = settings;
@@ -252,6 +255,10 @@ export default function AITab() {
 
   return (
     <>
+      {readiness && !readiness.ok && readiness.error ? (
+        // The router's own verdict (ONB-001): why an answer can't be routed with these settings.
+        <ErrorBanner error={readiness.error} compact className="mb-4" />
+      ) : null}
       <SectionHeader
         title="Default provider"
         description="One switch for every role — the provider's recommended models are assigned to chat, vision, transcription, research and embeddings. Roles it doesn't serve keep their current model."

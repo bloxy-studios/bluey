@@ -232,4 +232,15 @@ describe("AITab", () => {
     );
     expect(screen.queryByRole("button", { name: "Use gpt-5.6-luna" })).not.toBeInTheDocument();
   });
+
+  it("says why an answer can't be routed, and clears once the provider is fixed (ONB-001)", async () => {
+    await patchAi((ai) => ({
+      providers: ai.providers.map((p) => (p.id === "gemini" ? { ...p, enabled: false } : p)),
+    }));
+    renderTab();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Google Gemini");
+
+    await patchAi((ai) => ({ providers: ai.providers.map((p) => ({ ...p, enabled: true })) }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
 });

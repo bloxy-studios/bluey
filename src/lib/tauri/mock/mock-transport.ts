@@ -10,6 +10,7 @@
 import type {
   AIChunk,
   AIProviderConfig,
+  AiReadiness,
   AIRequest,
   AppStatus,
   AudioStatus,
@@ -26,6 +27,7 @@ import type {
   DetectedEvent,
   DevSimulation,
   LatencyMetrics,
+  ModelRole,
   PermissionState,
   ScreenFrame,
   Session,
@@ -164,6 +166,37 @@ function cloudAiDisabled(): BlueyError {
     message: "Cloud AI is turned off in Privacy settings, so Bluey cannot ask a model right now.",
     recoverable: true,
     recovery: { type: "open_settings", tab: "privacy" },
+  });
+}
+
+/** Rust `router::select`'s error when no role in the chain routes (`Blocked::into_error`). */
+function unroutable(blocked: AIProviderConfig | { id: string } | null, role: ModelRole): BlueyError {
+  const recovery = { type: "open_settings", tab: "ai" } as const;
+  if (!blocked) {
+    return blueyError({
+      kind: "configuration",
+      code: "config.no_model",
+      message: `no usable model for role ${role}; add a provider and assign models in Settings → AI`,
+      recoverable: true,
+      recovery,
+    });
+  }
+  const provider = "kind" in blocked ? blocked : null;
+  const cause = !provider
+    ? "not_configured"
+    : provider.authMethod === "oauth_subscription"
+      ? "account_unavailable"
+      : !provider.enabled
+        ? "disabled"
+        : "missing_key";
+  const name = provider?.name ?? blocked.id;
+  return blueyError({
+    kind: "configuration",
+    code: "config.provider_unusable",
+    message: `role ${role} is assigned to ${name}, which cannot serve requests (${cause})`,
+    details: { providerId: blocked.id, providerName: name, cause, role },
+    recoverable: true,
+    recovery,
   });
 }
 
@@ -757,6 +790,35 @@ export class MockTransport implements Transport {
     }
     if (provider.kind === "mock") return "mock-default";
     return presetForKind(provider.kind)?.models.default ?? null;
+  }
+
+  /**
+   * Mirror of Rust `readiness_of`: an Answer request (fast latency → role fast, falling back to
+   * default) and one with images, through the router's chain, behind the Cloud AI switch. The
+   * router's API-key stand-in for a stopped account is not mirrored, so the mock is never more
+   * ready than Rust.
+   */
+  private readiness(): AiReadiness {
+    if (!this.settings.privacy.cloudAiEnabled) {
+      return { ok: false, vision: false, error: cloudAiDisabled() };
+    }
+    type Routed = { provider: AIProviderConfig; model: string } | { error: BlueyError };
+    const route = (role: ModelRole): Routed => {
+      let blocked: AIProviderConfig | { id: string } | null = null;
+      for (const candidate of [role, "default"] as const) {
+        const assignment = this.settings.ai.models[candidate];
+        if (!assignment) continue;
+        const provider = this.settings.ai.providers.find((p) => p.id === assignment.providerId);
+        const usable = provider?.enabled && (provider.hasApiKey || provider.kind === "mock");
+        if (provider && usable) return { provider, model: assignment.model };
+        blocked ??= provider ?? { id: assignment.providerId };
+      }
+      return { error: unroutable(blocked, role) };
+    };
+    const vision = "provider" in route("vision");
+    const answer = route("fast");
+    if ("error" in answer) return { ok: false, vision, error: answer.error };
+    return { ok: true, providerId: answer.provider.id, model: answer.model, vision };
   }
 
   /** Rust `refresh_provider_keys`: a provider key's save/delete flips `hasApiKey`. */
@@ -1628,6 +1690,7 @@ export class MockTransport implements Transport {
         Array.from({ length: 8 }, (_, i) => ((text.length * (i + 3)) % 97) / 97),
       );
     },
+    ai_readiness: async () => this.readiness(),
     // Same contract as `AiCore::test_connection`: unknown provider / no model THROW; a provider
     // without a key answers `ok: false` with `config.missing_key`.
     ai_test_connection: async (args) => {

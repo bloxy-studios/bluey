@@ -334,6 +334,27 @@ pub struct ConnectionTestResult {
     pub error: Option<BlueyError>,
 }
 
+/// Mirrors `AiReadiness`: whether an answer can be routed right now — the
+/// router run against the real provider state (keys, enabled flags, account
+/// states, Cloud AI), not a guess from the settings. No network.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiReadiness {
+    /// An answer request routes to a provider.
+    pub ok: bool,
+    /// Where it routes (`ok`): the provider and model a connection test should try.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// A question about the screen (images) routes too.
+    pub vision: bool,
+    /// Why an answer cannot be routed (`!ok`): the router's error, e.g.
+    /// `config.provider_unusable` with its `cause`, or `config.no_model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<BlueyError>,
+}
+
 // ── Research ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]

@@ -107,6 +107,7 @@ pub fn run() {
         commands::ai::ai_cancel_all,
         commands::ai::ai_embed,
         commands::ai::ai_test_connection,
+        commands::ai::ai_readiness,
         commands::ai::ai_list_models,
         commands::ai::ai_apply_provider_presets,
         commands::ai::ai_transcribe_file,
