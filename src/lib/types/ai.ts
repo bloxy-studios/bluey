@@ -42,6 +42,12 @@ export type AnswerShape =
   | "design" // a system design with its trade-offs
   | "summary"; // the points themselves
 
+/**
+ * Whose words the answer is: what I say aloud, what I submit or send, or an
+ * explanation addressed to me. Rendered as the `Voice:` line under `Task:`.
+ */
+export type AnswerVoice = "speak-as-user" | "write-as-user" | "explain-to-user";
+
 export type LatencyBudget = "ultra-fast" | "fast" | "balanced" | "deep";
 export type ReasoningLevel = "none" | "light" | "deep";
 

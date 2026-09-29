@@ -64,17 +64,24 @@ set active. Validation: `validateModeDraft` (name 1–48 chars, instructions ≤
 
 Every ask carries the **response contract** (`RESPONSE_CONTRACT`, `src/ai/prompts/system.ts`)
 right after the identity: lead with the answer (never a restatement of the question or a
-description of the screen), write as the user in the first person, match the shape of the
-question, explain only what earns its place, commit to one answer, and — the precedence rule —
+description of the screen), match the shape of the question, explain only what earns its
+place, commit to one answer, and — the precedence rule —
 the contract and the mode govern voice and content; the **style block** only sets ceilings
 (`Length ceiling: concise — at most ~120 words … a one-line answer is complete`), never a
 minimum; the **schema fragment** names fields and section titles and never changes the voice.
+
+Whose words the answer is comes per request, as one `Voice:` line under `Task:`/`Shape:`
+(`Intent.voice`, derived in `src/context/relevance.ts`): **speak-as-user** for spoken shapes,
+⌘⇧↵ and heard questions; **write-as-user** for picks, values, texts, solutions and designs I
+submit; **explain-to-user** for explanations, summaries and debugging — including a typed
+"explain … so I understand" in a conversational mode (a question put to me, "why do you…",
+stays spoken).
 
 Each layer owns one thing:
 
 | Layer | Owns | Never says |
 |---|---|---|
-| Response contract | voice, answer-first, commitment, precedence | which fields, how many words |
+| Response contract | answer-first, commitment, precedence (voice: the per-request `Voice:` line) | which fields, how many words |
 | Mode instructions | judgment for the situation | "lead with the answer", "be concise", field names |
 | Schema fragment (`src/modes/prompts`) | which fields to fill; section titles ⊆ `SECTION_TITLES[schemaId]` (tested) | how to sound |
 | Style block | ceilings on length, tone | a minimum length |

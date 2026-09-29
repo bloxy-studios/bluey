@@ -11,6 +11,7 @@ import type {
   AIContentPart,
   AIMessage,
   AnswerShape,
+  AnswerVoice,
   BlueyMode,
   ContextItem,
   ContextSource,
@@ -32,6 +33,7 @@ import {
   structuredOutputBlock,
   styleBlock,
   taskLineFor,
+  voiceLine,
 } from "./prompts";
 
 export interface VisionAttachment {
@@ -49,6 +51,8 @@ export interface PromptBuilderParts {
   detectedEvent?: DetectedEvent;
   /** The detected answer shape; rendered as the `Shape:` line under `Task:`. */
   answerShape?: AnswerShape;
+  /** Whose words the answer is; rendered as the one `Voice:` line under the shape. */
+  voice?: AnswerVoice;
   /** JSON schema spec when structured output is requested. */
   outputSchema?: JsonSchemaSpec;
   /** Base64 screen image when the request needs vision. */
@@ -123,14 +127,17 @@ export class PromptBuilder {
     return sections.join("\n\n");
   }
 
-  /** Trigger-specific task instruction, followed by the answer-shape line when one was detected. */
+  /** Trigger-specific task instruction, then the answer-shape and voice lines when the intent set them. */
   renderTask(): string {
     const { trigger, items } = this.parts;
     // A follow-up with no earlier turn to build on is just a typed question.
     const followsNothing = trigger === "follow_up" && !items.some((item) => item.source === "conversation");
     const task = taskLineFor(followsNothing ? "typed" : trigger);
-    const shape = this.parts.answerShape;
-    return shape ? `${task}\n${answerShapeLine(shape)}` : task;
+    const { answerShape, voice } = this.parts;
+    const lines = [task];
+    if (answerShape) lines.push(answerShapeLine(answerShape));
+    if (voice) lines.push(voiceLine(voice));
+    return lines.join("\n");
   }
 
   /** Full message array for the provider (+ inline image when vision). */

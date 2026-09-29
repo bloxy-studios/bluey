@@ -46,7 +46,6 @@ describe("PromptBuilder.renderSystem", () => {
     const system = builder().renderSystem();
     expect(system).toContain("Response contract (every answer, every mode)");
     expect(system).toContain("Lead with the answer.");
-    expect(system).toContain("Write as the user, in the first person");
     const contractIndex = system.indexOf("Response contract");
     expect(contractIndex).toBeGreaterThan(system.indexOf("Security rules"));
     expect(contractIndex).toBeLessThan(system.indexOf("Mode: General."));
@@ -123,7 +122,22 @@ describe("PromptBuilder.buildMessages", () => {
     expect(lines[0]).toContain("Task: Answer my question below");
     expect(lines[1]).toContain("Shape: multiple choice");
     expect(builder({ answerShape: "compare" }).renderTask()).toContain("which one is better");
-    expect(builder({ answerShape: "spoken" }).renderTask()).toContain("Exactly what I say");
+    expect(builder({ answerShape: "spoken" }).renderTask()).toContain("Natural spoken rhythm");
+  });
+
+  it("renders exactly one voice line per request, from the intent (MODE-002)", () => {
+    const voiceLines = (text: string) => text.split("\n").filter((line) => line.startsWith("Voice:"));
+    const explain = builder({ answerShape: "explain", voice: "explain-to-user" }).renderTask();
+    expect(voiceLines(explain)).toEqual([expect.stringContaining("explain it to me")]);
+    const spoken = builder({ answerShape: "spoken", voice: "speak-as-user" }).renderTask();
+    expect(voiceLines(spoken)).toEqual([expect.stringContaining("say aloud")]);
+    const written = builder({ answerShape: "choice", voice: "write-as-user" }).renderTask();
+    expect(voiceLines(written)).toEqual([expect.stringContaining("submit or send")]);
+    expect(voiceLines(builder().renderTask())).toEqual([]);
+  });
+
+  it("no longer sends a global first-person rule that contradicts an explanation (MODE-002)", () => {
+    expect(builder().renderSystem()).not.toContain("Write as the user, in the first person");
   });
 
   it("appends an image part when a vision attachment is provided", () => {

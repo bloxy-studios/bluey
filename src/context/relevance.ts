@@ -9,6 +9,7 @@ import type { AskTrigger } from "@/lib/engine-contract";
 import type {
   AITask,
   AnswerShape,
+  AnswerVoice,
   BlueyMode,
   ContextSnapshot,
   DetectedEvent,
@@ -40,6 +41,7 @@ export interface Intent {
   responseType: ResponseType;
   schemaId: ResponseSchemaId;
   answerShape: AnswerShape;
+  voice: AnswerVoice;
 }
 
 const CODING_CUES =
@@ -116,6 +118,11 @@ const WRITTEN_CUES =
 
 const EXPLAIN_CUES =
   /\b(why|how (do|does|did|would|should|can|could|is|are|to|about)|explain|describe|walk (me )?through|what happens|difference between|what does .{1,40} mean|elaborate|in detail|tell me about)\b/i;
+/** An explanation the user wants for themselves ("so I understand", "what does … mean", "why …"). */
+const EXPLAIN_TO_ME_CUES =
+  /\b(explain|so (that )?I (can )?understand|help me understand|what does .{1,40} mean|what is meant by|in simple terms|eli5|why)\b/i;
+/** A question put to the user ("why do you…", "tell me about your…") — words to say, not an explanation. */
+const ADDRESSED_TO_USER = /\b(you|your|yourself)\b/i;
 const SHORT_ANSWER_OPENER = /^(what|who|whom|when|where|which|name|define|state|list|give|identify|convert|translate)\b/i;
 
 const SPOKEN_SCHEMAS: ReadonlySet<ResponseSchemaId> = new Set<ResponseSchemaId>([
@@ -191,8 +198,11 @@ export interface AnswerShapeInput {
 export function detectAnswerShape(input: AnswerShapeInput): AnswerShape {
   const { screenText, task, schemaId, trigger } = input;
   const q = input.question.trim();
-  const spoken =
-    trigger === "shortcut_generate" || trigger === "detected_event" || SPOKEN_SCHEMAS.has(schemaId);
+  const spokenTrigger = trigger === "shortcut_generate" || trigger === "detected_event";
+  // A typed request for an explanation in a conversational mode is for me to
+  // read, not words to say (MODE-002); a question put to me stays spoken.
+  const explainToMe = !spokenTrigger && EXPLAIN_TO_ME_CUES.test(q) && !ADDRESSED_TO_USER.test(q);
+  const spoken = spokenTrigger || (SPOKEN_SCHEMAS.has(schemaId) && !explainToMe);
   const assessment = detectAssessmentShape(q, screenText, { spoken });
   if (assessment) return assessment;
   if (input.debugging && !spoken) return "debug";
@@ -204,6 +214,28 @@ export function detectAnswerShape(input: AnswerShapeInput): AnswerShape {
   if (EXPLAIN_CUES.test(q)) return "explain";
   if (q.length > 0 && q.length <= 120 && SHORT_ANSWER_OPENER.test(q)) return "short_answer";
   return "explain";
+}
+
+const SUBMITTED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>([
+  "choice",
+  "boolean",
+  "fill_in",
+  "calculation",
+  "compare",
+  "short_answer",
+  "written",
+  "code",
+  "design",
+]);
+
+/**
+ * Whose words the answer is: speech for spoken shapes and heard questions,
+ * what I submit for picks, values, texts and solutions, and an explanation
+ * addressed to me for explain, summary and debug.
+ */
+export function voiceFor(shape: AnswerShape, trigger?: AskTrigger): AnswerVoice {
+  if (shape === "spoken" || trigger === "shortcut_generate" || trigger === "detected_event") return "speak-as-user";
+  return SUBMITTED_SHAPES.has(shape) ? "write-as-user" : "explain-to-user";
 }
 
 // ── Task / depth / schema ───────────────────────────────────────────────────
@@ -401,5 +433,7 @@ export function classifyIntent(input: IntentInput): Intent {
   const responseType = responseTypeFor(schemaId, task);
   const answerShape = detectAnswerShape({ question, screenText, task, schemaId, trigger, debugging });
 
-  return { task, visionRequired, reasoning, latency, responseType, schemaId, answerShape };
+  const voice = voiceFor(answerShape, trigger);
+
+  return { task, visionRequired, reasoning, latency, responseType, schemaId, answerShape, voice };
 }

@@ -150,3 +150,40 @@ describe("technical modes answer non-technical questions as speech (MODE-004)", 
     expect(intentFor({ screen: IDE_CODE, mode: codingMode }).schemaId).toBe("coding");
   });
 });
+
+describe("the voice follows the deliverable (MODE-002)", () => {
+  const interview = makeMode({ id: "interview", responseSchema: "suggested-response" });
+  const lecture = makeMode({ id: "lecture", responseSchema: "lecture" });
+  const ask = (instruction: string | undefined, mode: BlueyMode, trigger: AskTrigger) =>
+    classifyIntent({ snapshot: makeSnapshot(), mode, instruction, trigger, now: NOW });
+
+  it("explains to me when I type an explanation request in a conversational mode", () => {
+    const intent = ask("explain what a mutex is so I understand it", interview, "typed");
+    expect(intent.answerShape).toBe("explain");
+    expect(intent.voice).toBe("explain-to-user");
+  });
+
+  it("keeps a typed interview question addressed to me as words to say", () => {
+    const intent = ask("Why do you want to leave your current role?", interview, "typed");
+    expect(intent.answerShape).toBe("spoken");
+    expect(intent.voice).toBe("speak-as-user");
+  });
+
+  it("speaks as me on ⌘⇧↵", () => {
+    expect(ask(undefined, interview, "shortcut_generate").voice).toBe("speak-as-user");
+  });
+
+  it("writes as me for a pick or a text to send", () => {
+    expect(ask("Which of the following is true about TCP?", makeMode(), "typed").voice).toBe("write-as-user");
+    expect(ask("Write a reply to this email declining politely", makeMode(), "typed").voice).toBe(
+      "write-as-user",
+    );
+  });
+
+  it("explains to me for a lecture recap or a why question", () => {
+    expect(ask("Summarize the last five minutes", lecture, "typed").voice).toBe("explain-to-user");
+    expect(ask("Why does TCP need a three-way handshake?", makeMode(), "typed").voice).toBe(
+      "explain-to-user",
+    );
+  });
+});

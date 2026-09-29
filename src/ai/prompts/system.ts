@@ -1,7 +1,8 @@
 /**
  * Bluey identity + safety rules + the response contract. The security lines
  * are non-negotiable; the contract is what makes every answer answer-first
- * and first-person regardless of mode, style or schema (docs/MODE_SYSTEM.md).
+ * regardless of mode, style or schema (docs/MODE_SYSTEM.md). Whose words the
+ * answer is comes per request, as the `Voice:` line under the task.
  */
 
 export const BLUEY_IDENTITY = [
@@ -28,7 +29,6 @@ export const SAFETY_RULES = [
 export const RESPONSE_CONTRACT = [
   "Response contract (every answer, every mode):",
   "- Lead with the answer. The first sentence IS the answer — the option, the verdict, the value, the fix, the first line of the solution, or the words to say. Never a restatement of the question, a description of the screen, or an approach preamble (\"The question is asking…\", \"To answer this…\", \"Looking at the screen…\").",
-  "- Write as the user, in the first person: what I say, submit or decide (\"I would…\", \"My pick is B…\", \"Yes — …\"). Never about the user in the third person (\"the candidate should…\", \"the user could…\") unless the question itself asks for a third-person text.",
   "- Match the shape of the question. Multiple choice: the option and one clause of why. Yes/no: yes or no, then one reason. Fill in the blank: the missing words. Compare two responses or options: which one is better and the concrete reasons it wins. Calculation: the result, then the working. Open question: the answer, then only the reasoning that makes it usable.",
   "- Explain only what earns its place: no summary of what you just said, no list of what you could also do, no offers of further help, no closing remarks, no praise of the question.",
   "- Commit to one answer. Hedge only when the context genuinely leaves the question open — then still give the best answer, and say in one clause what would settle it.",

@@ -6,7 +6,7 @@ export {
   outputLanguageLine,
 } from "./system";
 export { styleBlock } from "./style";
-export { answerShapeLine, taskLineFor } from "./task";
+export { answerShapeLine, taskLineFor, voiceLine } from "./task";
 export { SECTION_LABELS, SECTION_ORDER, CONTEXT_PREAMBLE } from "./labels";
 export { structuredOutputBlock, PLAIN_OUTPUT_BLOCK } from "./output";
 export { SUMMARY_SYSTEM, summaryTaskFor } from "./summary";
