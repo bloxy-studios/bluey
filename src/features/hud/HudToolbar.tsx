@@ -1,4 +1,4 @@
-import { AudioLines, ChevronDown, Eye, EyeOff, Grid2x2, Image, RotateCcw, Timer } from "lucide-react";
+import { AudioLines, ChevronDown, Eye, EyeOff, Grid2x2, Image, ImageOff, RotateCcw, Timer } from "lucide-react";
 
 import { BlueyMark } from "@/components/BlueyMark";
 import { IconButton } from "@/components/ui/IconButton";
@@ -80,9 +80,15 @@ export function HudToolbar({ screenEnabled, onToggleScreen, hasChat, onNewChat, 
             <IconButton
               aria-label={screenEnabled ? "Screen context on" : "Screen context off"}
               active={screenEnabled}
+              aria-pressed={screenEnabled}
               onClick={onToggleScreen}
             >
-              <Image className="size-[18px]" strokeWidth={1.8} aria-hidden />
+              {/* Off reads at a glance, not only on hover: nothing reads the screen (UX-002). */}
+              {screenEnabled ? (
+                <Image className="size-[18px]" strokeWidth={1.8} aria-hidden />
+              ) : (
+                <ImageOff className="size-[18px]" strokeWidth={1.8} aria-hidden />
+              )}
             </IconButton>
           </Tooltip>
 

@@ -6,9 +6,10 @@ import { Toasts } from "@/components/ui/Toast";
 import { showErrorToast, showToast, useToastStore } from "@/components/ui/toast-store";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { HudPanel } from "@/features/hud/HudPanel";
-import type { BlueyError } from "@/lib/types";
+import type { MockTransport } from "@/lib/tauri/mock";
+import type { BlueyError, ContextSnapshot } from "@/lib/types";
 import { setEngine } from "@/stores/engine";
-import { FakeEngine, setupMockApp } from "./helpers";
+import { FakeEngine, setupInterceptedApp, setupMockApp } from "./helpers";
 
 const micDenied: BlueyError = {
   kind: "permission",
@@ -69,5 +70,62 @@ describe("HUD notice row (UX-013)", () => {
     render(<Toasts />);
     act(() => showErrorToast(micDenied));
     expect(await screen.findByRole("alert")).toHaveTextContent("Open System Settings");
+  });
+});
+
+describe("screen context notice (UX-002)", () => {
+  let mock: MockTransport;
+  let opened: string[];
+
+  const deniedSnapshot: ContextSnapshot = {
+    timestamp: new Date().toISOString(),
+    warnings: [
+      {
+        kind: "screen_unavailable",
+        code: "permission.screen_recording",
+        message: "Screen Recording permission is not granted.",
+        recovery: { type: "open_system_settings", pane: "screenRecording" },
+      },
+    ],
+  };
+
+  beforeEach(async () => {
+    const setup = await setupInterceptedApp();
+    mock = setup.mock;
+    opened = [];
+    setup.transport.intercept("permissions_open_settings", async (args) => {
+      opened.push(args.kind);
+    });
+    setEngine(new FakeEngine());
+    useToastStore.setState({ toasts: [] });
+  });
+
+  it("says the screen was not included and opens Screen Recording settings", async () => {
+    const user = userEvent.setup();
+    renderHudWindow();
+    act(() => mock.emit("context.updated", { snapshot: deniedSnapshot, reason: "manual" }));
+
+    const notice = (await screen.findByText("Screen not included")).closest<HTMLElement>('[role="status"]');
+    expect(notice).not.toBeNull();
+    await user.click(within(notice!).getByRole("button", { name: "Open System Settings" }));
+    await waitFor(() => expect(opened).toEqual(["screenRecording"]));
+    expect(screen.queryByText("Screen not included")).not.toBeInTheDocument();
+  });
+
+  it("clears when a later snapshot has the screen, or when Screen is turned off", async () => {
+    const user = userEvent.setup();
+    renderHudWindow();
+    act(() => mock.emit("context.updated", { snapshot: deniedSnapshot, reason: "manual" }));
+    expect(await screen.findByText("Screen not included")).toBeInTheDocument();
+    act(() => mock.emit("context.updated", { snapshot: { timestamp: deniedSnapshot.timestamp }, reason: "manual" }));
+    await waitFor(() => expect(screen.queryByText("Screen not included")).not.toBeInTheDocument());
+
+    act(() => mock.emit("context.updated", { snapshot: deniedSnapshot, reason: "manual" }));
+    expect(await screen.findByText("Screen not included")).toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "Screen context on" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await user.click(toggle);
+    expect(screen.getByRole("button", { name: "Screen context off" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByText("Screen not included")).not.toBeInTheDocument();
   });
 });
