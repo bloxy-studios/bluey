@@ -21,7 +21,7 @@ use bluey_storage::{
     DocumentRepository, ResponseRepository, SessionEventRepository, SessionNoteRepository,
 };
 
-use crate::state::AppCore;
+use crate::state::{AppCore, StateHub};
 
 /// Recent responses/events included in the session context.
 const RECENT_RESPONSES: u32 = 5;
@@ -155,6 +155,15 @@ fn ocr_pending_warning() -> SnapshotWarning {
     }
 }
 
+/// Move the state machine through a snapshot phase. A background build
+/// (proactive preparation, live suggestions) leaves it alone: its request never
+/// drives the state back out of Analyzing, so the pill would stay on "reading".
+fn mark_phase(hub: &StateHub, background: bool, event: AppEvent) {
+    if !background {
+        hub.transition_soft(event);
+    }
+}
+
 /// Build the snapshot for `options`. Failures of individual sources degrade
 /// gracefully (the field stays `None`); a failed screen capture leaves
 /// `screen` empty and records a `screen_unavailable` warning instead of
@@ -175,7 +184,8 @@ pub async fn build_snapshot_with(
     let started = Instant::now();
     let started_ms = crate::clock::mono_ms();
     let mut timings: BTreeMap<String, u64> = BTreeMap::new();
-    core.hub.transition_soft(AppEvent::CaptureStarted);
+    let background = options.background;
+    mark_phase(&core.hub, background, AppEvent::CaptureStarted);
 
     // Frontmost app + accessibility + capture + session reads run concurrently;
     // OCR follows the capture.
@@ -330,7 +340,7 @@ pub async fn build_snapshot_with(
         image_px,
     });
 
-    core.hub.transition_soft(AppEvent::AnalysisStarted);
+    mark_phase(&core.hub, background, AppEvent::AnalysisStarted);
 
     // The bus copy never carries the inline image (kept small for the WebView).
     let mut event_snapshot = snapshot.clone();
@@ -486,6 +496,44 @@ mod tests {
         let branch = screen_branch(&options, async { frame() }, Some(slow)).await;
         assert_eq!(branch.ocr.map(|o| o.text).as_deref(), Some("late"));
         assert!(branch.warning.is_none());
+    }
+
+    fn listening_hub() -> StateHub {
+        let bus = std::sync::Arc::new(crate::events::EventBus::new());
+        let hub = StateHub::new("default", bus);
+        hub.transition(AppEvent::BootCompleted {
+            authenticated: true,
+        })
+        .unwrap();
+        hub.transition(AppEvent::AudioStarted).unwrap();
+        hub
+    }
+
+    #[test]
+    fn a_background_snapshot_leaves_the_state_machine_alone() {
+        // Proactive preparation builds a snapshot per detected question; its
+        // request never drives the state, so nothing would leave Analyzing.
+        let hub = listening_hub();
+        mark_phase(&hub, true, AppEvent::CaptureStarted);
+        mark_phase(&hub, true, AppEvent::AnalysisStarted);
+        assert_eq!(hub.state(), bluey_core::types::AppState::Listening);
+
+        mark_phase(&hub, false, AppEvent::CaptureStarted);
+        mark_phase(&hub, false, AppEvent::AnalysisStarted);
+        assert_eq!(hub.state(), bluey_core::types::AppState::Analyzing);
+    }
+
+    #[test]
+    fn background_travels_on_the_wire_only_when_set() {
+        let parsed: SnapshotOptions = serde_json::from_value(serde_json::json!({
+            "includeScreen": false, "includeOcr": false,
+            "includeAccessibility": false, "includeTranscript": true,
+            "background": true
+        }))
+        .unwrap();
+        assert!(parsed.background);
+        let json = serde_json::to_value(SnapshotOptions::default()).unwrap();
+        assert!(json.get("background").is_none());
     }
 
     #[test]

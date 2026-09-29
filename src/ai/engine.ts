@@ -342,6 +342,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
         captureScreen: input.captureScreen,
         screenAllowed: input.screenAllowed,
         transcriptWindowSeconds: input.transcriptWindowSeconds,
+        background: opts.background,
         api,
       });
       const replyTs = perfNow();

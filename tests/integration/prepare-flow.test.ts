@@ -111,6 +111,8 @@ describe("prepare flow", () => {
     expect(fake.callsFor("ai_stream")).toHaveLength(1);
     expect(fake.callsFor("responses_save")).toHaveLength(0); // silent path
     expect(preparedEvents).toEqual([prepared!.id]);
+    // Silent work never moves the app state: Rust skips the Capturing/Analyzing edges.
+    expect(fake.callsFor("context_build_snapshot")[0]?.options.background).toBe(true);
 
     // Retrieval used the interview mode's document requirements.
     const declared = fake.callsFor("documents_retrieve").filter((call) => call.query.kinds?.includes("job_description"));

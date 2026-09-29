@@ -1686,7 +1686,9 @@ export class MockTransport implements Transport {
 
     // Context
     context_build_snapshot: async (args) => {
-      this.setAppState({ state: "capturing" });
+      // Rust `build_snapshot_with`: a background build leaves the state machine alone.
+      const drivesState = args.options.background !== true;
+      if (drivesState) this.setAppState({ state: "capturing" });
       await this.delay(this.streamDelayMs * 4);
       const snapshot = this.buildSnapshot(args);
       const replyMs = monoMs();
@@ -1697,7 +1699,7 @@ export class MockTransport implements Transport {
         imageBytes: snapshot.screen?.image ? 148_000 : undefined,
         imagePx: snapshot.screen ? 1512 : undefined,
       };
-      this.setAppState({ state: "analyzing" });
+      if (drivesState) this.setAppState({ state: "analyzing" });
       this.emit("context.updated", { snapshot, reason: "manual" });
       return snapshot;
     },

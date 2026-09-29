@@ -95,6 +95,18 @@ describe("MockTransport", () => {
     expect(appAfterStop.state).toBe("ready");
   });
 
+  it("a background context_build_snapshot leaves the app state alone, like Rust", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    await mock.invoke("audio_start", {});
+    const options = { includeScreen: false, includeOcr: false, includeAccessibility: false, includeTranscript: true };
+
+    await mock.invoke("context_build_snapshot", { options: { ...options, background: true } });
+    expect((await mock.invoke("app_get_status", undefined)).state).toBe("listening");
+
+    await mock.invoke("context_build_snapshot", { options });
+    expect((await mock.invoke("app_get_status", undefined)).state).toBe("analyzing");
+  });
+
   it("seeds the ten built-in modes with instructions and groups", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     const modes = await mock.invoke("modes_list", undefined);

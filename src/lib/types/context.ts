@@ -239,6 +239,8 @@ export interface SnapshotOptions {
   ocrLevel?: "fast" | "accurate";
   /** Inline the image (base64) so it can be sent to a vision model. */
   inlineImage?: boolean;
+  /** Silent work (proactive preparation, live suggestions): Rust leaves the app state alone. */
+  background?: boolean;
 }
 
 export type ContextSource =
