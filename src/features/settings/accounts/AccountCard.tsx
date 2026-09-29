@@ -193,7 +193,7 @@ export function AccountCard({
               variant="ghost"
               size="sm"
               onClick={onImport}
-              title="Copies the official client's sign-in into Bluey's Keychain (read-only). Sign-in tokens rotate on refresh, so the two may later sign each other out."
+              title="Copies the official client's sign-in into Bluey's Keychain (read-only). Bluey never refreshes a Codex or Claude Code copy: when it expires, import it again or sign in in the browser."
             >
               {copy.importLabel}
             </Button>
