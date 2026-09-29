@@ -44,8 +44,17 @@ export interface Intent {
 const CODING_CUES =
   /\b(implement|write (a|the) (function|method|program|algorithm)|leetcode|time complexity|space complexity|big[- ]o|debug|fix (this|the) (bug|code|test)|refactor|unit test|regex|algorithm)\b/i;
 
-const CODING_SCREEN_MARKERS =
-  /(Example \d+:|Constraints:|Input:|Output:|function\s+\w+\s*\(|def\s+\w+\s*\(|class\s+\w+|Time Limit Exceeded|```)/;
+/** A problem to solve: a judge's statement or verdict. Upgrades any ask to coding. */
+const PROBLEM_SCREEN_MARKERS = /(Example \d+:|Constraints:|Input:[\s\S]{0,400}Output:|Time Limit Exceeded|Wrong Answer)/;
+/** Source code in an editor. Upgrades to coding only when the ask is to solve, fix or write it. */
+const SOURCE_SCREEN_MARKERS =
+  /(\bfunction\s+\w+\s*\(|\bdef\s+\w+\s*\(|\bclass\s+[A-Z]\w*\s*(\(|\{|:|extends\b|implements\b)|```)/;
+/** A runtime or compiler error, a failing test or a stack trace. */
+const ERROR_SCREEN_MARKERS =
+  /(Traceback \(most recent call last\)|panicked at|error\[E\d{4}\]|\b[A-Z]\w*(Error|Exception)\b|Segmentation fault|\bFAILED\b|Uncaught )/;
+/** "why … fail/error/bug", "what's wrong with", "debug", "fix the bug". */
+const DEBUG_CUES =
+  /\b(debug|fix (this|the|my) (bug|error|test|crash)|what'?s wrong with|why\b[^?\n]{0,60}\b(fail\w*|error\w*|bug\w*|crash\w*|throw\w*|broken|wrong|not work\w*|doesn'?t work))/i;
 
 const SYSTEM_DESIGN_CUES =
   /\b(design (a|an|the) (system|url shortener|rate limiter|feed|chat|notification|search|cache|scheduler|queue)|system design|high[- ]level (architecture|design)|scal(e|ability|ing)|shard|load balanc|distributed|architecture for|design .{0,40}\b(like|similar to)\b)\b/i;
@@ -173,6 +182,8 @@ export interface AnswerShapeInput {
   task: AITask;
   schemaId: ResponseSchemaId;
   trigger?: AskTrigger;
+  /** A bug to fix (see `classifyIntent`): the debug shape beats the task's `code`. */
+  debugging?: boolean;
 }
 
 /** The shape the answer should take (see the detection order above). */
@@ -183,6 +194,7 @@ export function detectAnswerShape(input: AnswerShapeInput): AnswerShape {
     trigger === "shortcut_generate" || trigger === "detected_event" || SPOKEN_SCHEMAS.has(schemaId);
   const assessment = detectAssessmentShape(q, screenText, { spoken });
   if (assessment) return assessment;
+  if (input.debugging && !spoken) return "debug";
   if (task === "coding") return "code";
   if (task === "system_design") return "design";
   if (task === "summarization") return "summary";
@@ -234,9 +246,11 @@ export function mentionsExternalInfo(text: string, now: () => Date): boolean {
   return false;
 }
 
-function schemaFor(mode: BlueyMode, task: AITask): ResponseSchemaId {
+function schemaFor(mode: BlueyMode, task: AITask, debugging: boolean): ResponseSchemaId {
   // Modes with generic schemas get upgraded when the ask is clearly technical.
   const generic = mode.responseSchema === "answer" || mode.responseSchema === "suggested-response";
+  // A fix is an answer, not a full solution with complexity and edge cases.
+  if (debugging && (generic || mode.responseSchema === "coding")) return "answer";
   if (task === "coding" && generic) return "coding";
   if (task === "system_design" && generic) return "system-design";
   return mode.responseSchema;
@@ -309,7 +323,13 @@ export function classifyIntent(input: IntentInput): Intent {
   // ── Task ────────────────────────────────────────────────────────────────
   let task: AITask = defaultTaskFor(mode);
   const codingAsked = CODING_CUES.test(question) || detectedEvent?.type === "coding_problem";
-  const codingVisible = CODING_SCREEN_MARKERS.test(screenText) && screenText.length > 80;
+  const problemVisible = PROBLEM_SCREEN_MARKERS.test(screenText) && screenText.length > 80;
+  const sourceVisible = SOURCE_SCREEN_MARKERS.test(screenText);
+  // Code in an editor is the subject of a solve, fix or write request — not
+  // of "what does this do?" or "who wrote this?" (MODE-001).
+  const asksToSolve =
+    question.length === 0 || codingAsked || !(EXPLAIN_CUES.test(question) || SHORT_ANSWER_OPENER.test(question));
+  const codingVisible = problemVisible || (sourceVisible && asksToSolve);
   const designAsked = SYSTEM_DESIGN_CUES.test(question) || mode.responseSchema === "system-design";
   // A multiple-choice or compare-two-responses question about code is still
   // an assessment question: the screen's code markers alone must not turn it
@@ -319,12 +339,20 @@ export function classifyIntent(input: IntentInput): Intent {
   // A question heard in the live conversation is answered now, as speech; it
   // never goes out to the web ("my current role" is not a research cue).
   const spokenTrigger = trigger === "shortcut_generate" || trigger === "detected_event";
+  // A bug to fix — an error beside code, or "why is this failing" — wants the
+  // fix first and only the changed lines, not a fresh full solution.
+  const debugging =
+    !spokenTrigger &&
+    !problemVisible &&
+    assessment === null &&
+    (sourceVisible || codingAsked) &&
+    (ERROR_SCREEN_MARKERS.test(screenText) || DEBUG_CUES.test(question));
 
   if (SUMMARIZE_CUES.test(question)) {
     task = "summarization";
   } else if (designAsked) {
     task = "system_design";
-  } else if (codingAsked || codingFromScreen || mode.responseSchema === "coding") {
+  } else if (codingAsked || codingFromScreen || debugging || mode.responseSchema === "coding") {
     task = "coding";
   } else if (!spokenTrigger && mentionsExternalInfo(question, now)) {
     task = "research";
@@ -349,9 +377,9 @@ export function classifyIntent(input: IntentInput): Intent {
   const reasoning = reasoningFor(task, mode);
   const latency = slowerOf(mode.preferredLatency, minimumLatencyFor(task));
 
-  const schemaId = schemaFor(mode, task);
+  const schemaId = schemaFor(mode, task, debugging);
   const responseType = responseTypeFor(schemaId, task);
-  const answerShape = detectAnswerShape({ question, screenText, task, schemaId, trigger });
+  const answerShape = detectAnswerShape({ question, screenText, task, schemaId, trigger, debugging });
 
   return { task, visionRequired, reasoning, latency, responseType, schemaId, answerShape };
 }

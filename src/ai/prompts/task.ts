@@ -44,6 +44,8 @@ const SHAPE_LINES: Record<AnswerShape, string> = {
     "Shape: spoken. Exactly what I say, first person, natural spoken rhythm. No headings, no bullets, no stage directions.",
   written: "Shape: written. The text I would send or submit, first person, ready to paste as-is — no framing around it.",
   code: "Shape: code. The working solution is the deliverable; keep the prose to the approach, complexity and edge cases the mode asks for.",
+  debug:
+    "Shape: debug. First line: the exact fix. Then the cause in one sentence. Then only the changed lines in a fenced block — not the whole file.",
   design: "Shape: design. The design itself with the trade-offs I would state — quantified wherever numbers exist.",
   summary: "Shape: summary. The points themselves, grouped the way the mode asks — no introduction, no commentary about the summary.",
 };

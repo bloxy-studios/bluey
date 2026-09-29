@@ -38,6 +38,7 @@ export type AnswerShape =
   | "spoken" // exactly what to say, first person
   | "written" // the text to send or submit
   | "code" // the working solution
+  | "debug" // the exact fix, the cause, only the changed lines
   | "design" // a system design with its trade-offs
   | "summary"; // the points themselves
 
