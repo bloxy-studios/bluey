@@ -12,9 +12,7 @@ import {
   type Citation,
   type DeepResearchEvent,
   type DeepResearchRequest,
-  type DocumentKind,
   type ResearchDepth,
-  type RetrievedChunk,
   type ScrapeResult,
   type SearchResult,
   type Settings,
@@ -119,33 +117,6 @@ const URL_CUE = /https?:\/\/\S+/i;
 
 const CANDIDATE_SCHEMAS = new Set(["behavioral", "suggested-response"]);
 
-const PRIVATE_DOCUMENT_KINDS = new Set<DocumentKind>([
-  "resume",
-  "cv",
-  "bio",
-  "portfolio",
-  "skills",
-  "experience",
-  "personal_instructions",
-]);
-
-const PROPER_NOUN_STOP = new Set([
-  "The",
-  "And",
-  "For",
-  "With",
-  "From",
-  "This",
-  "That",
-  "Your",
-  "Our",
-  "Inc",
-  "LLC",
-  "Ltd",
-  "Team",
-  "Years",
-]);
-
 function isCandidateMode(mode: BlueyMode): boolean {
   return CANDIDATE_SCHEMAS.has(mode.responseSchema) || /interview/i.test(mode.id);
 }
@@ -206,24 +177,13 @@ function stripHandles(text: string): string {
   return text.replace(/(^|\s)@[A-Za-z0-9_]+/g, "$1");
 }
 
-function properNounsFrom(text: string): string[] {
-  const nouns: string[] = [];
-  for (const match of text.matchAll(/\b[A-Z][A-Za-z0-9.&'-]{1,}\b/g)) {
-    const token = match[0];
-    if (token.length < 3 || PROPER_NOUN_STOP.has(token)) continue;
-    nouns.push(token);
-  }
-  return nouns;
-}
-
 /**
- * What the public query must never carry, passed explicitly by the caller
- * (SEC-013): the snapshot is enriched with retrieved documents only after
- * research runs, so reading it here stripped nothing in production.
+ * Who the public query must never name, passed explicitly by the caller
+ * (SEC-013). Only identity is stripped: the rest of the query is what the
+ * user typed to search for, and words it shares with their résumé
+ * ("machine learning", a past employer) are the topic, not a leak.
  */
 export interface PrivateTerms {
-  /** Retrieved "My Context" / session chunks; nouns from private kinds are stripped. */
-  chunks?: readonly RetrievedChunk[];
   /** The signed-in user's names (display name, first/last name, email local part). */
   names?: readonly (string | null | undefined)[];
 }
@@ -235,10 +195,6 @@ function privateTerms(context?: PrivateTerms): string[] {
       if (part.length >= 2) terms.push(part);
     }
   }
-  for (const chunk of context?.chunks ?? []) {
-    if (!PRIVATE_DOCUMENT_KINDS.has(chunk.documentKind)) continue;
-    terms.push(...properNounsFrom(chunk.content), ...properNounsFrom(chunk.documentTitle));
-  }
   return terms;
 }
 
@@ -247,7 +203,7 @@ function stripTerm(text: string, term: string): string {
   return text.replace(new RegExp(`\\b${escaped}\\b`, "gi"), " ");
 }
 
-/** Public web query: no emails, phones, handles, the user's names, or private document nouns. */
+/** Public web query: no emails, phones, handles or the user's names. */
 export function buildPublicQuery(instruction: string, context?: PrivateTerms): string {
   let query = stripHandles(stripPhones(stripEmails(instruction)));
   for (const term of privateTerms(context)) {

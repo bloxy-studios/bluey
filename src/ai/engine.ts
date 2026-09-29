@@ -222,11 +222,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
 
   // ── Research (best-effort, never fails the ask) ───────────────────────────
 
-  async function maybeResearch(
-    input: AskInput,
-    retrieved: RetrievedChunk[],
-    opts: PipelineOptions,
-  ): Promise<ResearchOutcome | null> {
+  async function maybeResearch(input: AskInput, opts: PipelineOptions): Promise<ResearchOutcome | null> {
     const instruction = input.instruction?.trim();
     if (!instruction || !input.settings.ai.researchEnabled) return null;
     const policyDepth = decideResearch({
@@ -248,11 +244,9 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       now,
     });
     if (depth === "none") return null;
-    // Private terms go in explicitly: the snapshot only gains the retrieved
-    // documents after research (SEC-013).
+    // The user's names go in explicitly: the public query never carries them (SEC-013).
     const user = useAuthStore.getState().user;
     const query = buildPublicQuery(instruction, {
-      chunks: retrieved,
       names: [user?.firstName, user?.lastName, user?.email?.split("@")[0]],
     });
     if (query.length === 0) return null;
@@ -342,6 +336,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
         captureScreen: input.captureScreen,
         screenAllowed: input.screenAllowed,
         transcriptWindowSeconds: input.transcriptWindowSeconds,
+        detectedEvent: input.detectedEvent,
         api,
       });
       const replyTs = perfNow();
@@ -372,7 +367,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     const retrievalDoneMs = perfNow() - anchorTs;
     checkAlive(opts);
 
-    const research = await maybeResearch(input, retrieved, opts);
+    const research = await maybeResearch(input, opts);
     checkAlive(opts);
 
     snapshot = enrichSnapshot(snapshot, {

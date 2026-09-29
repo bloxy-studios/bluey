@@ -14,9 +14,16 @@ import { useAppStore } from "@/stores/appStore";
 import { useChatStore } from "@/stores/chatStore";
 import { setEngine } from "@/stores/engine";
 import { usePanelStore } from "@/stores/panelStore";
-import { useProactiveStore } from "@/stores/proactive";
+import { cancelLiveSuggestion, QUESTION_STALE_MS, useProactiveStore } from "@/stores/proactive";
+import type * as ProactiveModule from "@/stores/proactive";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { makeResponse, ProactiveFakeEngine, setupMockApp } from "./helpers";
+
+// Pass-through spy: which cancellations count as the user dismissing a suggestion.
+vi.mock("@/stores/proactive", async (importOriginal) => {
+  const actual = await importOriginal<typeof ProactiveModule>();
+  return { ...actual, cancelLiveSuggestion: vi.fn(actual.cancelLiveSuggestion) };
+});
 
 function detected(id: string): DetectedEvent {
   return {
@@ -137,6 +144,20 @@ describe("live suggestion races", () => {
     expect(engine.committed[0]?.prepared).toBeUndefined();
   });
 
+  it("taking the prepared answer or starting a new chat is not a dismissal; Stop is", async () => {
+    const { result } = renderHook(() => useAsk());
+    const cancel = vi.mocked(cancelLiveSuggestion);
+    engine.preparedQueue.push(makeResponse({ id: "prep-z", prompt: "Why us?", prepared: true }));
+    cancel.mockClear();
+
+    act(() => result.current.generateOrTakePrepared());
+    act(() => result.current.newChat());
+    expect(cancel.mock.calls.every(([options]) => !options?.dismissed)).toBe(true);
+
+    await act(() => result.current.stop());
+    expect(cancel).toHaveBeenLastCalledWith({ dismissed: true });
+  });
+
   it("a live suggestion continues the thread with the answers already given", async () => {
     const { result } = renderHook(() => useAsk());
     act(() => {
@@ -167,6 +188,19 @@ describe("live suggestion races", () => {
     expect(engine.asks.at(-1)?.instruction).toBeUndefined();
   });
 
+  it("Regenerate on a screen turn reads the screen again", async () => {
+    const { result } = renderHook(() => useAsk());
+    act(() => {
+      result.current.ask({ trigger: "shortcut_capture", captureScreen: true, promptLabel: "Assist" });
+    });
+    act(() => engine.complete(makeResponse({ id: "answer-s" })));
+
+    act(() => result.current.regenerate(useChatStore.getState().turns[0]?.id));
+
+    expect(engine.asks.at(-1)).toMatchObject({ trigger: "regenerate", captureScreen: true });
+    expect(engine.asks.at(-1)?.snapshot).toBeUndefined();
+  });
+
   it("Regenerate on a suggestion turn keeps its detected question", async () => {
     const { result } = renderHook(() => useAsk());
     mock.emit("question.detected", detected("q1"));
@@ -176,6 +210,23 @@ describe("live suggestion races", () => {
 
     expect(engine.asks.at(-1)).toMatchObject({ trigger: "regenerate", detectedEvent: { id: "q1" } });
     expect(useChatStore.getState().turns.at(-1)?.suggestion?.question).toBe("Question q1?");
+  });
+
+  it("Regenerate and Retry on a prepared answer send its heard question as heard, not as typed", async () => {
+    const { result } = renderHook(() => useAsk());
+    engine.preparedQueue.push(makeResponse({ id: "prep-y", prompt: "Why us?", prepared: true }));
+    act(() => result.current.generateOrTakePrepared());
+    await flush();
+    const shown = useChatStore.getState().turns.at(-1);
+    expect(shown?.suggestion?.question).toBe("Why us?");
+
+    act(() => result.current.regenerate(shown?.id));
+    expect(engine.asks.at(-1)).toMatchObject({ trigger: "regenerate", detectedEvent: { text: "Why us?" } });
+    expect(engine.asks.at(-1)?.instruction).toBeUndefined();
+
+    act(() => result.current.retry(shown?.id));
+    expect(engine.asks.at(-1)).toMatchObject({ trigger: "detected_event", detectedEvent: { text: "Why us?" } });
+    expect(engine.asks.at(-1)?.instruction).toBeUndefined();
   });
 
   it("a hidden HUD gets no live turn; the newest question is prepared when it is shown", async () => {
@@ -197,6 +248,20 @@ describe("live suggestion races", () => {
       setHudVisible(false);
       mock.emit("question.detected", detected("q-old"));
       vi.setSystemTime(Date.now() + PREPARED_TTL_MS + 1);
+      act(() => setHudVisible(true));
+      await flush();
+      expect(engine.prepared).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a question detected while hidden is dropped once the conversation moved past it (LIVE-009)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      setHudVisible(false);
+      mock.emit("question.detected", detected("q-past"));
+      vi.setSystemTime(Date.now() + QUESTION_STALE_MS + 1);
       act(() => setHudVisible(true));
       await flush();
       expect(engine.prepared).toHaveLength(0);

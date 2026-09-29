@@ -54,9 +54,14 @@ const PROBLEM_SCREEN_MARKERS =
 /** Source code in an editor. Upgrades to coding only when the ask is to solve, fix or write it. */
 const SOURCE_SCREEN_MARKERS =
   /(\bfunction\s+\w+\s*\(|\bdef\s+\w+\s*\(|\bclass\s+[A-Z]\w*\s*(\(|\{|:|extends\b|implements\b)|```)/;
-/** A runtime or compiler error, a failing test or a stack trace. */
+/**
+ * A runtime or compiler error, a failing test or a stack trace. An
+ * `XxxError`/`XxxException` counts only as a report line ("ValueError: …",
+ * "java.io.IOException: …"), not as a name in code (`raise ValueError(`,
+ * `throws IOException`).
+ */
 const ERROR_SCREEN_MARKERS =
-  /(Traceback \(most recent call last\)|panicked at|error\[E\d{4}\]|\b[A-Z]\w*(Error|Exception)\b|Segmentation fault|\bFAILED\b|Uncaught )/;
+  /(Traceback \(most recent call last\)|panicked at|error\[E\d{4}\]|^\s*(?:[\w$]+\.)*[A-Z]\w*(?:Error|Exception)(?::|\s*$)|Exception in thread|Segmentation fault|\bFAILED\b|Uncaught )/m;
 /** A stack frame or traceback: code failed even when its source is off screen. */
 const STACK_TRACE_MARKERS =
   /(Traceback \(most recent call last\)|^\s+at \S.*:\d+:\d+\)?\s*$|^\s*File ".+", line \d+|panicked at|error\[E\d{4}\])/m;
@@ -201,21 +206,36 @@ export function detectAssessmentShape(
   return null;
 }
 
+/**
+ * An ask that answers the live conversation, as words to say: ⌘⇧↵, a heard
+ * question, or Regenerate on a heard question (it keeps its detected event,
+ * UX-011).
+ */
+export function isSpokenAsk(trigger: AskTrigger | undefined, detectedEvent?: DetectedEvent): boolean {
+  return (
+    trigger === "shortcut_generate" ||
+    trigger === "detected_event" ||
+    (trigger === "regenerate" && detectedEvent !== undefined)
+  );
+}
+
 export interface AnswerShapeInput {
   question: string;
   screenText: string;
   task: AITask;
   schemaId: ResponseSchemaId;
   trigger?: AskTrigger;
+  /** The heard question the ask answers (see `isSpokenAsk`). */
+  detectedEvent?: DetectedEvent;
   /** A bug to fix (see `classifyIntent`): the debug shape beats the task's `code`. */
   debugging?: boolean;
 }
 
 /** The shape the answer should take (see the detection order above). */
 export function detectAnswerShape(input: AnswerShapeInput): AnswerShape {
-  const { screenText, task, schemaId, trigger } = input;
+  const { screenText, task, schemaId } = input;
   const q = input.question.trim();
-  const spokenTrigger = trigger === "shortcut_generate" || trigger === "detected_event";
+  const spokenTrigger = isSpokenAsk(input.trigger, input.detectedEvent);
   // A typed request for an explanation in a conversational mode is for me to
   // read, not words to say (MODE-002); a question put to me stays spoken.
   const sayCue = SAY_CUES.test(q);
@@ -254,9 +274,12 @@ const SUBMITTED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>([
  * what I submit for picks, values, texts and solutions, and an explanation
  * addressed to me for explain, summary and debug.
  */
-export function voiceFor(shape: AnswerShape, trigger?: AskTrigger): AnswerVoice {
-  if (shape === "spoken" || trigger === "shortcut_generate" || trigger === "detected_event")
-    return "speak-as-user";
+export function voiceFor(
+  shape: AnswerShape,
+  trigger?: AskTrigger,
+  detectedEvent?: DetectedEvent,
+): AnswerVoice {
+  if (shape === "spoken" || isSpokenAsk(trigger, detectedEvent)) return "speak-as-user";
   return SUBMITTED_SHAPES.has(shape) ? "write-as-user" : "explain-to-user";
 }
 
@@ -422,7 +445,7 @@ export function classifyIntent(input: IntentInput): Intent {
   const codingFromScreen = codingVisible && assessment === null;
   // A question heard in the live conversation is answered now, as speech; it
   // never goes out to the web ("my current role" is not a research cue).
-  const spokenTrigger = trigger === "shortcut_generate" || trigger === "detected_event";
+  const spokenTrigger = isSpokenAsk(trigger, detectedEvent);
   // A bug to fix — an error beside code, or "why is this failing" — wants the
   // fix first and only the changed lines, not a fresh full solution.
   const debugging =
@@ -476,9 +499,10 @@ export function classifyIntent(input: IntentInput): Intent {
     task,
     schemaId: modeSchema,
     trigger,
+    detectedEvent,
     debugging,
   });
-  const voice = voiceFor(answerShape, trigger);
+  const voice = voiceFor(answerShape, trigger, detectedEvent);
   // An explanation for me has no words to say: a conversational schema's
   // "`content` is exactly what I say" would contradict the voice line (MODE-002).
   const schemaId = voice === "explain-to-user" && SPOKEN_SCHEMAS.has(modeSchema) ? "answer" : modeSchema;

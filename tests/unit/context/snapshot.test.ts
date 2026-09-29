@@ -1,5 +1,5 @@
 import { enrichSnapshot, PERSONAL_INSTRUCTIONS_CHARS, snapshotOptionsFor } from "@/context/snapshot";
-import type { RetrievedChunk } from "@/lib/types";
+import type { DetectedEvent, RetrievedChunk } from "@/lib/types";
 import { makeMode, makeResponse, makeSession, makeSettings, makeSnapshot } from "../../fixtures/helpers/builders";
 
 describe("snapshotOptionsFor", () => {
@@ -32,6 +32,20 @@ describe("snapshotOptionsFor", () => {
     expect(snapshotOptionsFor({ mode: transcriptMode, settings, trigger: "typed" }).includeTranscript).toBe(true);
     expect(snapshotOptionsFor({ mode: silentMode, settings, trigger: "typed" }).includeTranscript).toBe(false);
     expect(snapshotOptionsFor({ mode: silentMode, settings, trigger: "shortcut_generate" }).includeTranscript).toBe(true);
+    // Regenerating a heard question answers it again: the conversation around it is still needed.
+    const heard: DetectedEvent = {
+      id: "e1",
+      type: "question",
+      confidence: 0.9,
+      requiresResponse: true,
+      text: "Why Go?",
+      segmentIds: [],
+      detectedAt: "2026-09-07T09:00:00.000Z",
+    };
+    const regenerate = (detectedEvent?: DetectedEvent) =>
+      snapshotOptionsFor({ mode: silentMode, settings, trigger: "regenerate", detectedEvent }).includeTranscript;
+    expect(regenerate(heard)).toBe(true);
+    expect(regenerate()).toBe(false);
     expect(
       snapshotOptionsFor({ mode: transcriptMode, settings, trigger: "typed", transcriptWindowSeconds: 60 })
         .transcriptWindowSeconds,

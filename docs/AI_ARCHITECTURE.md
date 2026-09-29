@@ -80,8 +80,9 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   saves it to the session). A pure `shouldSurface` gate drops back-channel, repeats, stale
   queued questions and (outside conversational modes) anything but direct questions; a
   counterpart's unfinished fragment is held ~900 ms and merged with the next final. Esc, Stop,
-  a manual ask or New chat cancel the live stream; nothing streams into a hidden HUD (the
-  newest question is prepared when it is shown). Team Meeting / Lecture detections that need
+  a manual ask, ⌘⇧↵ or New chat cancel the live stream (only Esc and Stop count as dismissing
+  it and raise the gate's bar); nothing streams into a hidden HUD (the newest question is
+  prepared when it is shown, unless it has gone stale meanwhile). Team Meeting / Lecture detections that need
   no answer go on the session timeline instead.
 
 ### Orchestration layer (Rust, `src-tauri/src/ai`)

@@ -31,25 +31,48 @@ const BUSY_PHASES: ReadonlySet<EnginePhase> = new Set(["capturing", "analyzing",
 
 /**
  * Stop whatever is streaming into the thread — the user's answer and a live suggestion —
- * so its turn reads "Stopped" and nothing it produced is saved (LIVE-001).
+ * so its turn reads "Stopped" and nothing it produced is saved (LIVE-001). `dismissed`
+ * when the user stopped it (Stop, Esc): only then does a live suggestion count against
+ * the proactive gate; taking the prepared answer or starting a new chat is no rejection.
  */
-async function cancelStreaming(): Promise<void> {
+async function cancelStreaming({ dismissed }: { dismissed: boolean }): Promise<void> {
   const chat = useChatStore.getState();
   if (chat.phase && BUSY_PHASES.has(chat.phase)) chat.markCancelled(chat.generation);
   const handle = currentHandle;
   currentHandle = null;
   await Promise.all([
     handle?.cancel().catch((error: unknown) => console.warn("[ask] cancel failed", error)),
-    cancelLiveSuggestion({ dismissed: true }),
+    cancelLiveSuggestion({ dismissed }),
   ]);
 }
 
-/** A turn's request; turns shown from the prepared cache fall back to their question. */
+/**
+ * A turn's request; turns shown from the prepared cache fall back to their
+ * question. A heard question goes back as the detected question it was, never
+ * as a typed instruction: it is speech, not my words (AI-004).
+ */
 function requestOf(turn: ChatTurn): TurnRequest {
   if (turn.request) return turn.request;
+  if (turn.suggestion) {
+    const { question, speaker } = turn.suggestion;
+    return {
+      trigger: "detected_event",
+      promptLabel: turn.promptLabel,
+      detectedEvent: {
+        id: `suggestion:${turn.id}`,
+        type: "question",
+        confidence: 1,
+        requiresResponse: true,
+        text: question,
+        segmentIds: [],
+        ...(speaker ? { speaker } : {}),
+        detectedAt: turn.response?.createdAt ?? new Date().toISOString(),
+      },
+    };
+  }
   return {
     trigger: "regenerate",
-    instruction: turn.prompt ?? turn.suggestion?.question,
+    instruction: turn.prompt,
     promptLabel: turn.promptLabel,
     captureScreen: false,
   };
@@ -116,7 +139,7 @@ export function useAsk() {
     return handle;
   }, []);
 
-  const stop = useCallback(() => cancelStreaming(), []);
+  const stop = useCallback(() => cancelStreaming({ dismissed: true }), []);
 
   /**
    * ⌘⇧↵ — show the response prepared for the question currently surfaced
@@ -131,7 +154,7 @@ export function useAsk() {
       useChatStore.getState().prepared;
     if (prepared) {
       // A turn still streaming is stopped, never left spinning above the answer (LIVE-011).
-      void cancelStreaming();
+      void cancelStreaming({ dismissed: false });
       // Shown as a suggestion turn: the question it answers (and who asked, when known).
       const detected = preparedEventId
         ? useTranscriptStore.getState().questions.find((question) => question.id === preparedEventId)
@@ -168,7 +191,11 @@ export function useAsk() {
     [ask],
   );
 
-  /** Ask a turn's question again for a different answer, keeping its context (UX-011). */
+  /**
+   * Ask a turn's question again for a different answer (UX-011): the same
+   * request, question and heard question. A turn that read the screen reads
+   * it again, so the answer is about what is on screen now.
+   */
   const regenerate = useCallback(
     (turnId?: string) => {
       const turn = findTurn(turnId);
@@ -183,10 +210,10 @@ export function useAsk() {
   );
 
   const newChat = useCallback(() => {
-    void stop();
+    void cancelStreaming({ dismissed: false });
     useChatStore.getState().newChat();
     void bluey.app.dismissResponse().catch(() => undefined);
-  }, [stop]);
+  }, []);
 
   return { ask, stop, generateOrTakePrepared, retry, regenerate, newChat };
 }

@@ -138,19 +138,23 @@ describe("relevance floor for unrelated typed asks (PERF-006)", () => {
     transcript: { segments, windowSeconds: 180, earlierSummary: "Kick-off and introductions." },
   });
 
-  it("keeps only the focused/selected UI and the last two turns when the ask shares nothing with the screen", () => {
+  it("keeps the focused/selected UI, the OCR headline and the last two turns when the ask shares nothing with the context", () => {
     const items = fuseContext(snapshot, { instruction: "What's the capital of Australia?" });
     const sources = new Set(items.map((item) => item.source));
-    expect(sources.has("ocr")).toBe(false);
+    const headline = items.find((item) => item.source === "ocr");
+    expect(headline?.content.startsWith("Row 0: quarterly revenue ledger entry 0\n")).toBe(true);
+    expect(headline?.tokens).toBeLessThanOrEqual(300);
     expect(sources.has("window_text")).toBe(false);
-    expect(sources.has("transcript_old")).toBe(false);
+    expect(items.filter((item) => item.source === "transcript_old").map((item) => item.ref)).toEqual([
+      "transcript:earlier-summary",
+    ]);
     expect(items.filter((item) => item.source === "transcript").map((item) => item.ref)).toEqual(
       expect.arrayContaining(["segment:s4", "segment:s5"]),
     );
     expect(items.filter((item) => item.source === "transcript")).toHaveLength(2);
     expect(items.some((item) => item.ref === "ax:selected")).toBe(true);
     const total = items.reduce((sum, item) => sum + item.tokens, 0);
-    expect(total).toBeLessThan(estimateTokens(longOcr) / 10);
+    expect(total).toBeLessThan(estimateTokens(longOcr) / 4);
   });
 
   it("keeps the screen when the ask points at it", () => {
@@ -178,6 +182,46 @@ describe("relevance floor for unrelated typed asks (PERF-006)", () => {
       },
     });
     expect(items.some((item) => item.source === "ocr")).toBe(true);
+  });
+
+  describe("asks about the content in view or the conversation keep it", () => {
+    const frenchOcr = [
+      "Compte rendu de la réunion",
+      "L’enveloppe prévue pour le troisième trimestre reste inchangée.",
+      "Les équipes livreront la nouvelle version en novembre.",
+    ].join("\n");
+    const turns = [
+      "The budget for Q3 is 40 thousand dollars.",
+      "Marketing wants a bigger share of that.",
+      "We'll revisit hiring next week.",
+      "Let's wrap up for today.",
+    ].map((text, i) => makeSegment({ id: `m${i}`, text, startTime: i * 5_000, endTime: i * 5_000 + 4_000 }));
+    const meeting = chromeSnapshot({
+      ocr: ocr(frenchOcr),
+      accessibility: ax({ visibleText: "", focusedElement: undefined }),
+      transcript: { segments: turns, windowSeconds: 180 },
+    });
+    const turnRefs = (items: ContextItem[]) =>
+      items.filter((item) => item.source === "transcript").map((item) => item.ref);
+
+    it.each(["Summarize", "Translate into English", "Explain", "Draft a reply"])(
+      "keeps the screen and every turn for %j",
+      (instruction) => {
+        const items = fuseContext(meeting, { instruction });
+        expect(items.find((item) => item.source === "ocr")?.content).toBe(frenchOcr);
+        expect(turnRefs(items)).toHaveLength(4);
+      },
+    );
+
+    it("keeps the older turn a question about the conversation needs", () => {
+      const items = fuseContext(meeting, { instruction: "What was the Q3 budget he mentioned?" });
+      expect(turnRefs(items)).toContain("segment:m0");
+    });
+
+    it("keeps the turns when the ask shares a keyword with them", () => {
+      const items = fuseContext(meeting, { instruction: "How much for hiring?" });
+      expect(turnRefs(items)).toHaveLength(4);
+    });
   });
 });
 
