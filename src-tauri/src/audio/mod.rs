@@ -1077,6 +1077,13 @@ impl AudioManager {
     /// A session was deleted: its finals leave the in-memory ring too (the
     /// database rows went with the session).
     pub fn forget_session(&self, session_id: &str) {
+        {
+            // Stopping must not try to end the deleted session (DATA-006).
+            let mut auto = self.auto_session.lock();
+            if auto.as_deref() == Some(session_id) {
+                *auto = None;
+            }
+        }
         self.ring.lock().forget_session(session_id);
         self.bus.publish(BlueyEvent::TranscriptCleared {
             session_id: Some(session_id.to_string()),
@@ -1085,6 +1092,7 @@ impl AudioManager {
 
     /// Every session was deleted.
     pub fn forget_all_sessions(&self) {
+        *self.auto_session.lock() = None;
         self.ring.lock().forget_all_sessions();
         self.bus
             .publish(BlueyEvent::TranscriptCleared { session_id: None });

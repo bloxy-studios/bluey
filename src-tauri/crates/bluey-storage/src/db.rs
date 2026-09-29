@@ -62,6 +62,7 @@ impl Database {
     pub fn open(path: &Path) -> Result<Self, BlueyError> {
         let db = Self::open_unmigrated(path)?;
         db.run_migrations()?;
+        db.enable_fts_secure_delete()?;
         Ok(db)
     }
 
@@ -75,6 +76,7 @@ impl Database {
             tracing::warn!(error = %e, "could not back up the database before migrating");
         }
         db.run_migrations()?;
+        db.enable_fts_secure_delete()?;
         Ok(db)
     }
 
@@ -143,6 +145,7 @@ impl Database {
             path: None,
         };
         db.run_migrations()?;
+        db.enable_fts_secure_delete()?;
         Ok(db)
     }
 
@@ -158,10 +161,28 @@ impl Database {
             "PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
              PRAGMA temp_store = MEMORY;
-             PRAGMA recursive_triggers = ON;",
+             PRAGMA recursive_triggers = ON;
+             PRAGMA secure_delete = ON;",
         )
         .sql()?;
         Ok(())
+    }
+
+    /// FTS5 `secure-delete` (persistent per table): a deleted row's tokens
+    /// leave the full-text index at once instead of lingering in old index
+    /// segments until a merge. With `PRAGMA secure_delete` and the WAL
+    /// checkpoints in `retention`, deleted text is really gone (DATA-010).
+    fn enable_fts_secure_delete(&self) -> Result<(), BlueyError> {
+        self.with_conn(|conn| {
+            for table in ["transcript_fts", "responses_fts", "document_chunks_fts"] {
+                conn.execute(
+                    &format!("INSERT INTO {table}({table}, rank) VALUES ('secure-delete', 1)"),
+                    [],
+                )
+                .sql()?;
+            }
+            Ok(())
+        })
     }
 
     /// Apply every migration from [`MIGRATIONS`] that has not been recorded in

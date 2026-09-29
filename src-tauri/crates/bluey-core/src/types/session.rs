@@ -52,6 +52,9 @@ pub enum SessionEventType {
     SummaryGenerated,
     /// A recording was transcribed into this session (`ai_transcribe_file`).
     RecordingImported,
+    /// The session was still live when Bluey last quit unexpectedly (crash,
+    /// force-quit, update relaunch) and was ended at the next launch.
+    SessionRecovered,
 }
 
 /// Mirrors `SessionEvent`.

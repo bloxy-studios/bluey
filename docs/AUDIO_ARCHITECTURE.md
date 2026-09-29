@@ -27,7 +27,7 @@
   hallucinations); on the cloud route every chunk is forwarded so the server VAD sees the silence.
 - **Retention**: raw audio is **never** written to disk. The `until_session_end`/`custom`
   values of `storeRawAudio` are accepted in settings but not implemented — nothing is retained
-  in any mode.
+  in any mode, and Settings → Privacy shows raw audio as "Never kept" with no retention choice.
 
 ## Transcription
 

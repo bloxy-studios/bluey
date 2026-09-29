@@ -5,7 +5,7 @@
 mod cache;
 pub(crate) mod documents;
 mod modes;
-mod responses;
+pub(crate) mod responses;
 mod sessions;
 mod settings;
 mod snapshots;

@@ -11,6 +11,12 @@ use quick_xml::events::Event;
 /// Hard input limit — larger blobs are rejected with `storage.document_too_large`.
 pub const MAX_DOCUMENT_BYTES: usize = 20 * 1024 * 1024;
 
+/// Most that `word/document.xml` may inflate to; beyond it the DOCX is refused
+/// with `storage.document_too_large` (a zip bomb, not a resume).
+const MAX_DOCX_XML_BYTES: usize = 4 * MAX_DOCUMENT_BYTES;
+/// Most that `docProps/core.xml` (title only) may inflate to.
+const MAX_DOCX_CORE_BYTES: usize = 1024 * 1024;
+
 /// Result of parsing a document.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ParsedDocument {
@@ -67,13 +73,35 @@ pub fn parse_document(bytes: &[u8], format: DocumentFormat) -> Result<ParsedDocu
     Ok(parsed)
 }
 
+// `pdf-extract` panics (`panic!()`, `unwrap()`) on many malformed or unusual
+// PDFs. Its panics are contained by `catch_unwind` below, which only works
+// when panics unwind: a `panic = "abort"` profile would turn one bad resume
+// into an app crash again (CRIT-002).
+#[cfg(not(panic = "unwind"))]
+compile_error!("document parsing needs panic = \"unwind\" to contain pdf-extract panics");
+
 fn parse_pdf(bytes: &[u8]) -> Result<ParsedDocument, BlueyError> {
-    let text = pdf_extract::extract_text_from_mem(bytes)
+    let text = contain_parser_panic("PDF", || pdf_extract::extract_text_from_mem(bytes))?
         .map_err(|e| BlueyError::storage("parse", format!("PDF text extraction failed: {e}")))?;
     Ok(ParsedDocument {
         text,
         title: None,
         metadata: serde_json::Map::new(),
+    })
+}
+
+/// Run a third-party parser, turning a panic into `storage.parse`. The panic
+/// payload is not echoed: it can quote document content.
+fn contain_parser_panic<T>(
+    kind: &str,
+    parse: impl FnOnce() -> T + std::panic::UnwindSafe,
+) -> Result<T, BlueyError> {
+    std::panic::catch_unwind(parse).map_err(|_| {
+        tracing::warn!(kind, "document parser panicked; import refused");
+        BlueyError::storage(
+            "parse",
+            format!("{kind} text extraction failed: the file is malformed or unsupported"),
+        )
     })
 }
 
@@ -101,22 +129,18 @@ fn parse_docx(bytes: &[u8]) -> Result<ParsedDocument, BlueyError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| {
         BlueyError::storage("parse", format!("DOCX is not a valid zip archive: {e}"))
     })?;
-    let mut xml = String::new();
-    archive
+    let entry = archive
         .by_name("word/document.xml")
-        .map_err(|e| BlueyError::storage("parse", format!("DOCX has no word/document.xml: {e}")))?
-        .read_to_string(&mut xml)
-        .map_err(|e| BlueyError::storage("parse", format!("cannot read word/document.xml: {e}")))?;
+        .map_err(|e| BlueyError::storage("parse", format!("DOCX has no word/document.xml: {e}")))?;
+    let xml = read_capped(entry, MAX_DOCX_XML_BYTES)?;
     let (text, paragraphs) = extract_docx_text(&xml)?;
 
     // Best-effort title from docProps/core.xml.
-    let mut title = None;
-    if let Ok(mut core) = archive.by_name("docProps/core.xml") {
-        let mut core_xml = String::new();
-        if core.read_to_string(&mut core_xml).is_ok() {
-            title = extract_docx_title(&core_xml);
-        }
-    }
+    let title = archive
+        .by_name("docProps/core.xml")
+        .ok()
+        .and_then(|core| read_capped(core, MAX_DOCX_CORE_BYTES).ok())
+        .and_then(|core_xml| extract_docx_title(&core_xml));
 
     let mut metadata = serde_json::Map::new();
     metadata.insert("paragraphs".into(), serde_json::json!(paragraphs));
@@ -125,6 +149,24 @@ fn parse_docx(bytes: &[u8]) -> Result<ParsedDocument, BlueyError> {
         title,
         metadata,
     })
+}
+
+/// Read a zip entry as UTF-8, refusing to inflate more than `cap` bytes: the
+/// 20 MB input limit alone lets a zip bomb expand to gigabytes (CRIT-002).
+fn read_capped(entry: impl Read, cap: usize) -> Result<String, BlueyError> {
+    let mut bytes = Vec::new();
+    entry
+        .take(cap as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| BlueyError::storage("parse", format!("cannot read the DOCX: {e}")))?;
+    if bytes.len() > cap {
+        return Err(BlueyError::storage(
+            "document_too_large",
+            format!("the DOCX expands past the {cap}-byte limit"),
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| BlueyError::storage("parse", "the DOCX text is not valid UTF-8"))
 }
 
 /// Walk `word/document.xml`: text from `<w:t>`, paragraph breaks on `</w:p>`,
@@ -253,6 +295,13 @@ mod tests {
     /// A minimal one-page PDF with a Helvetica text object, with a correct xref
     /// table computed at build time.
     pub(crate) fn build_pdf(text: &str) -> Vec<u8> {
+        build_pdf_with_font(
+            text,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        )
+    }
+
+    fn build_pdf_with_font(text: &str, font: &str) -> Vec<u8> {
         let stream = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
         let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
@@ -260,7 +309,7 @@ mod tests {
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
                 .to_string(),
             format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+            font.to_string(),
         ];
         let mut pdf = String::from("%PDF-1.4\n");
         let mut offsets = Vec::new();
@@ -388,5 +437,50 @@ mod tests {
     fn invalid_pdf_is_a_parse_error() {
         let err = parse_document(b"%PDF-1.4 garbage", DocumentFormat::Pdf).unwrap_err();
         assert_eq!(err.code, "storage.parse");
+    }
+
+    #[test]
+    fn pdf_parser_panic_is_a_parse_error_not_a_crash() {
+        // pdf-extract 0.9 `panic!`s on an encoding name it does not know.
+        let font =
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /BogusEncoding >>";
+        let pdf = build_pdf_with_font("Hi", font);
+        assert!(
+            std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(&pdf)).is_err(),
+            "fixture: pdf-extract panics on this file"
+        );
+
+        let err = parse_document(&pdf, DocumentFormat::Pdf).unwrap_err();
+        assert_eq!(err.code, "storage.parse");
+        assert!(!err.message.contains("BogusEncoding"), "{}", err.message);
+    }
+
+    #[test]
+    fn docx_zip_bomb_is_refused_before_inflating() {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        let chunk = vec![b' '; 1024 * 1024];
+        for _ in 0..=MAX_DOCX_XML_BYTES / chunk.len() {
+            writer.write_all(&chunk).unwrap();
+        }
+        let bomb = writer.finish().unwrap().into_inner();
+        assert!(bomb.len() < MAX_DOCUMENT_BYTES);
+
+        let err = parse_document(&bomb, DocumentFormat::Docx).unwrap_err();
+        assert_eq!(err.code, "storage.document_too_large");
+    }
+
+    #[test]
+    fn capped_read_allows_exactly_the_cap() {
+        assert_eq!(read_capped(&b"abcd"[..], 4).unwrap(), "abcd");
+        assert_eq!(
+            read_capped(&b"abcde"[..], 4).unwrap_err().code,
+            "storage.document_too_large"
+        );
     }
 }

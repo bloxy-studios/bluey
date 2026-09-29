@@ -35,7 +35,8 @@ export type SessionEventType =
   | "mode_changed"
   | "note_added"
   | "summary_generated"
-  | "recording_imported";
+  | "recording_imported"
+  | "session_recovered";
 
 export interface SessionEvent {
   id: string;

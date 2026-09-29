@@ -2,39 +2,25 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { clampRetentionMinutes } from "@/features/settings/privacy-retention";
 import PrivacyTab from "@/features/settings/tabs/PrivacyTab";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { setupMockApp } from "./helpers";
 
-describe("PrivacyTab raw audio retention", () => {
+describe("PrivacyTab raw audio and cloud AI", () => {
   beforeEach(async () => {
     await setupMockApp();
   });
 
-  it("reveals the retention window for a custom raw-audio policy and persists the minutes", async () => {
-    const user = userEvent.setup();
+  it("shows raw audio as never kept and offers no retention it cannot honour (FEATURE-003)", async () => {
+    // A value saved by an older build must not make the tab claim recordings are kept.
+    await useSettingsStore.getState().update({ privacy: { storeRawAudio: "custom", rawAudioRetentionMinutes: 45 } });
     render(<PrivacyTab />);
 
+    expect(await screen.findByText("Never kept")).toBeInTheDocument();
+    expect(screen.getByText(/never written to disk/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Raw audio retention")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Raw audio retention minutes")).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("Raw audio retention"), "custom");
-
-    const input = await screen.findByLabelText("Raw audio retention minutes");
-    await waitFor(() => {
-      const privacy = useSettingsStore.getState().settings?.privacy;
-      expect(privacy?.storeRawAudio).toBe("custom");
-      expect(privacy?.rawAudioRetentionMinutes).toBe(30); // sensible default the moment "custom" is chosen
-    });
-
-    await user.clear(input);
-    await user.type(input, "45");
-    await waitFor(
-      () => expect(useSettingsStore.getState().settings?.privacy.rawAudioRetentionMinutes).toBe(45),
-      {
-        timeout: 2000,
-      },
-    );
-    expect(screen.getByText(/discarded after 45 minutes/)).toBeInTheDocument();
+    expect(screen.queryByText(/discarded after/)).not.toBeInTheDocument();
   });
 
   it("does not promise that Privacy mode hides Bluey from modern screen sharing (SEC-004)", async () => {
@@ -43,13 +29,6 @@ describe("PrivacyTab raw audio retention", () => {
     render(<PrivacyTab />);
     await waitFor(() => expect(screen.getByText(/macOS 15 and later may still show Bluey/)).toBeInTheDocument());
     expect(screen.queryByText(/excludes its windows from screen recordings/)).not.toBeInTheDocument();
-  });
-
-  it("clamps the window to the supported range", () => {
-    expect(clampRetentionMinutes(0)).toBe(1);
-    expect(clampRetentionMinutes(999)).toBe(240);
-    expect(clampRetentionMinutes(12.6)).toBe(13);
-    expect(clampRetentionMinutes(Number.NaN)).toBe(30);
   });
 
   it("toggles Cloud AI", async () => {
