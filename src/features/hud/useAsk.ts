@@ -31,16 +31,18 @@ const BUSY_PHASES: ReadonlySet<EnginePhase> = new Set(["capturing", "analyzing",
 
 /**
  * Stop whatever is streaming into the thread — the user's answer and a live suggestion —
- * so its turn reads "Stopped" and nothing it produced is saved (LIVE-001).
+ * so its turn reads "Stopped" and nothing it produced is saved (LIVE-001). `dismissed`
+ * when the user stopped it (Stop, Esc): only then does a live suggestion count against
+ * the proactive gate; taking the prepared answer or starting a new chat is no rejection.
  */
-async function cancelStreaming(): Promise<void> {
+async function cancelStreaming({ dismissed }: { dismissed: boolean }): Promise<void> {
   const chat = useChatStore.getState();
   if (chat.phase && BUSY_PHASES.has(chat.phase)) chat.markCancelled(chat.generation);
   const handle = currentHandle;
   currentHandle = null;
   await Promise.all([
     handle?.cancel().catch((error: unknown) => console.warn("[ask] cancel failed", error)),
-    cancelLiveSuggestion({ dismissed: true }),
+    cancelLiveSuggestion({ dismissed }),
   ]);
 }
 
@@ -137,7 +139,7 @@ export function useAsk() {
     return handle;
   }, []);
 
-  const stop = useCallback(() => cancelStreaming(), []);
+  const stop = useCallback(() => cancelStreaming({ dismissed: true }), []);
 
   /**
    * ⌘⇧↵ — show the response prepared for the question currently surfaced
@@ -152,7 +154,7 @@ export function useAsk() {
       useChatStore.getState().prepared;
     if (prepared) {
       // A turn still streaming is stopped, never left spinning above the answer (LIVE-011).
-      void cancelStreaming();
+      void cancelStreaming({ dismissed: false });
       // Shown as a suggestion turn: the question it answers (and who asked, when known).
       const detected = preparedEventId
         ? useTranscriptStore.getState().questions.find((question) => question.id === preparedEventId)
@@ -204,10 +206,10 @@ export function useAsk() {
   );
 
   const newChat = useCallback(() => {
-    void stop();
+    void cancelStreaming({ dismissed: false });
     useChatStore.getState().newChat();
     void bluey.app.dismissResponse().catch(() => undefined);
-  }, [stop]);
+  }, []);
 
   return { ask, stop, generateOrTakePrepared, retry, regenerate, newChat };
 }

@@ -14,9 +14,16 @@ import { useAppStore } from "@/stores/appStore";
 import { useChatStore } from "@/stores/chatStore";
 import { setEngine } from "@/stores/engine";
 import { usePanelStore } from "@/stores/panelStore";
-import { QUESTION_STALE_MS, useProactiveStore } from "@/stores/proactive";
+import { cancelLiveSuggestion, QUESTION_STALE_MS, useProactiveStore } from "@/stores/proactive";
+import type * as ProactiveModule from "@/stores/proactive";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { makeResponse, ProactiveFakeEngine, setupMockApp } from "./helpers";
+
+// Pass-through spy: which cancellations count as the user dismissing a suggestion.
+vi.mock("@/stores/proactive", async (importOriginal) => {
+  const actual = await importOriginal<typeof ProactiveModule>();
+  return { ...actual, cancelLiveSuggestion: vi.fn(actual.cancelLiveSuggestion) };
+});
 
 function detected(id: string): DetectedEvent {
   return {
@@ -135,6 +142,20 @@ describe("live suggestion races", () => {
     expect(engine.cancelled).toBe(true);
     expect(engine.committed.map((response) => response.id)).toEqual(["prep-x"]);
     expect(engine.committed[0]?.prepared).toBeUndefined();
+  });
+
+  it("taking the prepared answer or starting a new chat is not a dismissal; Stop is", async () => {
+    const { result } = renderHook(() => useAsk());
+    const cancel = vi.mocked(cancelLiveSuggestion);
+    engine.preparedQueue.push(makeResponse({ id: "prep-z", prompt: "Why us?", prepared: true }));
+    cancel.mockClear();
+
+    act(() => result.current.generateOrTakePrepared());
+    act(() => result.current.newChat());
+    expect(cancel.mock.calls.every(([options]) => !options?.dismissed)).toBe(true);
+
+    await act(() => result.current.stop());
+    expect(cancel).toHaveBeenLastCalledWith({ dismissed: true });
   });
 
   it("a live suggestion continues the thread with the answers already given", async () => {
