@@ -6,7 +6,7 @@ use bluey_core::types::response::{
     BlueyResponse, FeedbackCategory, FeedbackRating, ResponseFeedback,
 };
 use bluey_core::types::LatencyTrace;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::{from_json_str, not_found, opt_to_json, to_enum_str, to_json_string};
@@ -172,6 +172,25 @@ impl ResponseRepository {
             .sql()
         })
     }
+
+    /// Delete every answer and request record asked outside a session
+    /// (`session_id IS NULL`). Returns the number of answers removed.
+    pub fn delete_sessionless(db: &Database) -> Result<u64, BlueyError> {
+        db.transaction(delete_sessionless_rows)
+    }
+}
+
+/// Delete the `ai_responses` and `ai_requests` rows that belong to no session
+/// (an Ask outside a session). A session delete never cascades to them, so the
+/// session-deletion and retention paths call this explicitly; feedback cascades
+/// and `responses_fts` follows by trigger. Returns the number of answers removed.
+pub(crate) fn delete_sessionless_rows(conn: &Connection) -> Result<u64, BlueyError> {
+    let answers = conn
+        .execute("DELETE FROM ai_responses WHERE session_id IS NULL", [])
+        .sql()?;
+    conn.execute("DELETE FROM ai_requests WHERE session_id IS NULL", [])
+        .sql()?;
+    Ok(answers as u64)
 }
 
 /// One row of the `ai_requests` latency/token metrics table.

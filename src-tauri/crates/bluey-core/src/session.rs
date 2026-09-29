@@ -56,6 +56,7 @@ pub fn event_title(event_type: SessionEventType) -> &'static str {
         T::NoteAdded => "Note added",
         T::SummaryGenerated => "Summary generated",
         T::RecordingImported => "Recording imported",
+        T::SessionRecovered => "Session ended after Bluey quit unexpectedly",
     }
 }
 

@@ -2019,21 +2019,26 @@ export class MockTransport implements Transport {
         .map((s) => this.sessionListItem(s, text ? `…${text}…` : undefined));
     },
     sessions_delete: (args) => {
+      const live = this.sessions.find((s) => s.id === args.id && s.id === this.status.sessionId);
       this.sessions = this.sessions.filter((s) => s.id !== args.id);
       this.events = this.events.filter((e) => e.sessionId !== args.id);
       this.notes = this.notes.filter((n) => n.sessionId !== args.id);
       this.summaries = this.summaries.filter((s) => s.sessionId !== args.id);
       this.responses = this.responses.filter((r) => r.sessionId !== args.id);
       this.segments = this.segments.filter((s) => s.sessionId !== args.id);
+      if (live) this.endDeletedLiveSession(live);
     },
     sessions_delete_all: () => {
       const count = this.sessions.length;
+      const live = this.sessions.find((s) => s.id === this.status.sessionId);
       this.sessions = [];
       this.events = [];
       this.notes = [];
       this.summaries = [];
-      this.responses = this.responses.filter((r) => !r.sessionId);
+      // Answers asked outside a session go too (Rust `SessionRepository::delete_all`).
+      this.responses = [];
       this.segments = this.segments.filter((s) => !s.sessionId);
+      if (live) this.endDeletedLiveSession(live);
       return count;
     },
     sessions_rename: (args) => {
@@ -2087,6 +2092,10 @@ export class MockTransport implements Transport {
 
     // Responses
     responses_save: (args) => {
+      // Rust keeps an answer asked outside a session only while history is on.
+      if (!args.response.sessionId && !this.settings.privacy.storeSessionHistory) {
+        return args.response;
+      }
       this.responses = [...this.responses.filter((r) => r.id !== args.response.id), args.response];
       return args.response;
     },
@@ -2442,6 +2451,12 @@ export class MockTransport implements Transport {
     if (!session)
       throw blueyError({ kind: "storage", code: "sessions.no_active", message: "No active session" });
     return session;
+  }
+
+  /** Rust `SessionManager::announce_deleted_active`: the deleted live session ended. */
+  private endDeletedLiveSession(session: Session): void {
+    this.setAppState({ sessionId: undefined });
+    this.emit("session.ended", { ...session, status: "completed", endedAt: now() });
   }
 
   private replaceSession(session: Session): void {

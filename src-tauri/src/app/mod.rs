@@ -180,11 +180,6 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         hub.clone(),
         modes.clone(),
     )?);
-    if let Some(session) = sessions.active() {
-        hub.transition_soft(AppEvent::SessionChanged {
-            session_id: Some(session.id),
-        });
-    }
     let capture = Arc::new(CaptureManager::new(
         handle.clone(),
         helper.clone(),

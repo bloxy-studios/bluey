@@ -20,6 +20,38 @@ use crate::settings::SettingsManager;
 use crate::state::StateHub;
 use crate::storage::Storage;
 
+/// End the sessions left live by an unexpected quit (see [`SessionManager::load`]).
+/// Each one gets a `session_recovered` timeline event at its end time; with
+/// session history off it is deleted like any ended session. Returns the
+/// screenshot files to unlink.
+fn end_interrupted_sessions(
+    db: &bluey_storage::Database,
+    store_session_history: bool,
+) -> BlueyResult<Vec<std::path::PathBuf>> {
+    let mut paths = Vec::new();
+    for session in SessionRepository::end_interrupted(db)? {
+        if !store_session_history {
+            paths.extend(bluey_storage::delete_session(db, &session.id)?);
+            continue;
+        }
+        tracing::info!(session_id = %session.id, "ended a session left live by an unexpected quit");
+        SessionEventRepository::add(
+            db,
+            &SessionEvent {
+                id: new_id("sev"),
+                session_id: session.id.clone(),
+                event_type: SessionEventType::SessionRecovered,
+                title: event_title(SessionEventType::SessionRecovered).to_string(),
+                detail: None,
+                refs: None,
+                confidence: None,
+                created_at: session.ended_at.clone().unwrap_or_else(now_iso),
+            },
+        )?;
+    }
+    Ok(paths)
+}
+
 pub struct SessionManager {
     storage: Arc<Storage>,
     settings: Arc<SettingsManager>,
@@ -30,7 +62,10 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    /// Restore the active session from the database (bootstrap, synchronous).
+    /// Bootstrap (synchronous). A session still active or paused in the
+    /// database was left behind by a crash, force-quit or update relaunch: it
+    /// is ended here rather than restored, so later listening never merges
+    /// into it (DATA-002). Bluey therefore always starts without a session.
     pub fn load(
         storage: Arc<Storage>,
         settings: Arc<SettingsManager>,
@@ -38,14 +73,16 @@ impl SessionManager {
         hub: Arc<StateHub>,
         modes: Arc<crate::modes::ModeManager>,
     ) -> BlueyResult<Self> {
-        let active = storage.run_sync(SessionRepository::get_active)?;
+        let store_history = settings.get().privacy.store_session_history;
+        let paths = storage.run_sync(|db| end_interrupted_sessions(db, store_history))?;
+        Storage::remove_files(&paths);
         Ok(Self {
             storage,
             settings,
             bus,
             hub,
             modes,
-            active: parking_lot::Mutex::new(active),
+            active: parking_lot::Mutex::new(None),
         })
     }
 
@@ -212,7 +249,12 @@ impl SessionManager {
             let id = session.id.clone();
             let paths = self
                 .storage
-                .run(move |db| bluey_storage::delete_session(db, &id))
+                .run(move |db| {
+                    let paths = bluey_storage::delete_session(db, &id)?;
+                    // Request records of asks made outside the session too.
+                    ResponseRepository::delete_sessionless(db)?;
+                    Ok(paths)
+                })
                 .await?;
             Storage::remove_files(&paths);
         }
@@ -254,17 +296,21 @@ impl SessionManager {
     }
 
     pub async fn delete(&self, id: String) -> BlueyResult<()> {
-        let was_active = self.active_id().as_deref() == Some(id.as_str());
         let delete_id = id.clone();
         let paths = self
             .storage
             .run(move |db| bluey_storage::delete_session(db, &delete_id))
             .await?;
         Storage::remove_files(&paths);
-        if was_active {
-            *self.active.lock() = None;
-            self.hub
-                .transition_soft(AppEvent::SessionChanged { session_id: None });
+        let removed = {
+            let mut active = self.active.lock();
+            match active.as_ref() {
+                Some(session) if session.id == id => active.take(),
+                _ => None,
+            }
+        };
+        if let Some(session) = removed {
+            self.announce_deleted_active(session);
         }
         Ok(())
     }
@@ -272,10 +318,28 @@ impl SessionManager {
     pub async fn delete_all(&self) -> BlueyResult<u64> {
         let (count, paths) = self.storage.run(bluey_storage::delete_all_sessions).await?;
         Storage::remove_files(&paths);
-        *self.active.lock() = None;
+        let removed = self.active.lock().take();
+        match removed {
+            Some(session) => self.announce_deleted_active(session),
+            None => {
+                self.hub
+                    .transition_soft(AppEvent::SessionChanged { session_id: None });
+            }
+        }
+        Ok(count)
+    }
+
+    /// The live session was deleted: it ended as far as every window is
+    /// concerned, so publish `session.ended` — the HUD clears its session and
+    /// stops attaching answers to an id that no longer exists (DATA-006).
+    fn announce_deleted_active(&self, session: Session) {
         self.hub
             .transition_soft(AppEvent::SessionChanged { session_id: None });
-        Ok(count)
+        self.bus.publish(BlueyEvent::SessionEnded(Session {
+            status: SessionStatus::Completed,
+            ended_at: Some(now_iso()),
+            ..session
+        }));
     }
 
     pub async fn rename(&self, id: String, title: String) -> BlueyResult<Session> {
@@ -409,3 +473,6 @@ impl SessionManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

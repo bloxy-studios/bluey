@@ -167,7 +167,7 @@ pub fn reset_all(db: &Database) -> Result<Vec<PathBuf>, BlueyError> {
 ///   their image paths for unlinking);
 /// * `store_transcripts = false` → delete all transcript segments;
 /// * `store_session_history = false` → delete completed sessions (active /
-///   paused sessions survive).
+///   paused sessions survive) and the answers asked outside any session.
 pub fn apply_retention(
     db: &Database,
     settings: &PrivacySettings,
@@ -221,6 +221,8 @@ fn prune_completed_sessions(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyE
         let deleted = conn
             .execute("DELETE FROM sessions WHERE status = 'completed'", [])
             .sql()?;
+        // Answers asked outside a session are history too.
+        crate::repositories::responses::delete_sessionless_rows(conn)?;
         Ok((
             deleted as u64,
             paths.into_iter().map(PathBuf::from).collect(),
@@ -232,11 +234,12 @@ fn prune_completed_sessions(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyE
 mod tests {
     use super::*;
     use crate::repositories::{
-        ModeRepository, ResponseRepository, SessionRepository, SettingsRepository,
-        TranscriptRepository,
+        AiRequestRecord, AiRequestRepository, ModeRepository, ResponseRepository,
+        SessionRepository, SettingsRepository, TranscriptRepository,
     };
     use crate::testutil;
     use bluey_core::types::documents::{DocumentKind, DocumentScope};
+    use bluey_core::types::response::FeedbackRating;
     use bluey_core::types::session::SessionStatus;
     use pretty_assertions::assert_eq;
 
@@ -322,6 +325,74 @@ mod tests {
         assert_eq!(testutil::count(&db, "sessions"), 0);
         assert_eq!(testutil::count(&db, "ai_responses"), 0);
         assert_eq!(testutil::count(&db, "responses_fts"), 0);
+    }
+
+    /// An Ask outside a session stores its answer and request record with
+    /// `session_id = NULL`; no session cascade reaches them (DATA-003).
+    fn seed_sessionless_answer(db: &Database) {
+        let response = testutil::response(None, "a quick ask");
+        ResponseRepository::save(db, &response).unwrap();
+        ResponseRepository::set_feedback(db, &response.id, FeedbackRating::Up, None, None).unwrap();
+        AiRequestRepository::record(
+            db,
+            &AiRequestRecord {
+                id: response.request_id.clone(),
+                task: "answer".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    fn assert_no_answers_left(db: &Database) {
+        for table in [
+            "ai_responses",
+            "responses_fts",
+            "response_feedback",
+            "ai_requests",
+        ] {
+            assert_eq!(testutil::count(db, table), 0, "{table} still has rows");
+        }
+    }
+
+    #[test]
+    fn delete_all_sessions_removes_answers_asked_outside_a_session() {
+        let db = testutil::db();
+        seed_everything(&db);
+        seed_sessionless_answer(&db);
+
+        let (deleted, _) = delete_all_sessions(&db).unwrap();
+        assert_eq!(deleted, 1);
+        assert_no_answers_left(&db);
+    }
+
+    #[test]
+    fn history_off_retention_removes_answers_asked_outside_a_session() {
+        let db = testutil::db();
+        seed_sessionless_answer(&db);
+        let live = SessionRepository::create(&db, "general", None).unwrap();
+        ResponseRepository::save(&db, &testutil::response(Some(&live.id), "live")).unwrap();
+
+        let settings = PrivacySettings {
+            store_session_history: false,
+            ..PrivacySettings::default()
+        };
+        apply_retention(&db, &settings).unwrap();
+        assert_eq!(
+            testutil::count(&db, "ai_responses"),
+            1,
+            "the live answer stays"
+        );
+        assert_eq!(testutil::count(&db, "ai_requests"), 0);
+
+        seed_sessionless_answer(&db);
+        assert_eq!(ResponseRepository::delete_sessionless(&db).unwrap(), 1);
+        assert_eq!(
+            testutil::count(&db, "ai_responses"),
+            1,
+            "the live answer stays"
+        );
+        assert_eq!(testutil::count(&db, "ai_requests"), 0);
     }
 
     #[test]

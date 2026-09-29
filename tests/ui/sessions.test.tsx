@@ -9,6 +9,7 @@ import { SessionDetail } from "@/features/settings/SessionDetail";
 import SessionsTab from "@/features/settings/tabs/SessionsTab";
 import { bluey } from "@/lib/tauri/api";
 import type { MockTransport } from "@/lib/tauri/mock";
+import { useSessionStore } from "@/stores/sessionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { setupInterceptedApp, setupMockApp } from "./helpers";
 
@@ -57,6 +58,15 @@ describe("SessionsTab", () => {
     expect(screen.getByText("Live")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete session Live one" })).toBeDisabled();
   });
+
+  it("clears the HUD's live session when 'Delete all sessions' removes it", async () => {
+    const live = await bluey.session.start({ title: "Live one" });
+    await waitFor(() => expect(useSessionStore.getState().active?.id).toBe(live.id));
+
+    await bluey.session.deleteAll();
+
+    await waitFor(() => expect(useSessionStore.getState().active).toBeNull());
+  });
 });
 
 describe("SessionDetail", () => {
@@ -64,6 +74,12 @@ describe("SessionDetail", () => {
 
   beforeEach(async () => {
     mock = await setupMockApp();
+  });
+
+  it("refuses to delete the live session from its detail view", async () => {
+    const live = await bluey.session.start({ title: "Live one" });
+    withTooltips(<SessionDetail sessionId={live.id} onBack={() => {}} />);
+    expect(await screen.findByRole("button", { name: /^Delete$/ })).toBeDisabled();
   });
 
   it("renames the session inline", async () => {
@@ -74,7 +90,9 @@ describe("SessionDetail", () => {
     await user.click(screen.getByRole("button", { name: "Rename session" }));
     const input = screen.getByLabelText("Session title");
     await user.clear(input);
-    await user.type(input, "Mock interview — round 2{Enter}");
+    // One paste instead of per-key typing: no per-character renders (TEST-022).
+    await user.paste("Mock interview — round 2");
+    await user.keyboard("{Enter}");
 
     await screen.findByRole("heading", { name: "Mock interview — round 2" });
     const detail = await bluey.session.get({ id: "session-coding-1" });
@@ -88,13 +106,14 @@ describe("SessionDetail", () => {
 
     await user.click(screen.getByRole("button", { name: "Rename session" }));
     await user.clear(screen.getByLabelText("Session title"));
-    await user.type(screen.getByLabelText("Session title"), "Abandoned title{Escape}");
+    await user.paste("Abandoned title");
+    await user.keyboard("{Escape}");
     expect(await screen.findByRole("heading", { name: "Coding interview practice" })).toBeInTheDocument();
     expect((await bluey.session.get({ id: "session-coding-1" })).session.title).toBe("Coding interview practice");
 
     await user.click(screen.getByRole("button", { name: "Rename session" }));
     await user.clear(screen.getByLabelText("Session title"));
-    await user.type(screen.getByLabelText("Session title"), "Committed on blur");
+    await user.paste("Committed on blur");
     await user.tab();
     await screen.findByRole("heading", { name: "Committed on blur" });
     expect((await bluey.session.get({ id: "session-coding-1" })).session.title).toBe("Committed on blur");

@@ -311,7 +311,13 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
         <Button variant="secondary" size="sm" onClick={() => void exportMarkdown()}>
           <Download className="size-3.5" aria-hidden /> Export markdown
         </Button>
-        <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
+        <Button
+          variant="danger"
+          size="sm"
+          disabled={session.status !== "completed"}
+          title={session.status !== "completed" ? "End the session before deleting it." : undefined}
+          onClick={() => setConfirmDelete(true)}
+        >
           <Trash2 className="size-3.5" aria-hidden /> Delete
         </Button>
       </div>
