@@ -12,7 +12,8 @@ export default function HudWindow() {
         <HudPanel />
       </AuthGate>
       <DevOverlayGate />
-      <Toasts />
+      {/* Errors show in the HUD's notice row; only a confirmation pill overlays. */}
+      <Toasts limit={1} />
     </TooltipProvider>
   );
 }

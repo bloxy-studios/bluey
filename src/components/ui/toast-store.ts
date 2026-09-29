@@ -32,8 +32,15 @@ export interface ToastInput {
 
 interface ToastStore {
   toasts: ToastItem[];
+  /**
+   * Surfaces that show error toasts inline (the HUD's notice row) instead of
+   * as overlays: while one is mounted, the overlay host renders info toasts only (UX-013).
+   */
+  inlineErrorHosts: number;
   push(input: string | ToastInput, durationMs?: number): string;
   dismiss(id: string): void;
+  /** Mount an inline error host; returns its release. */
+  claimInlineErrors(): () => void;
 }
 
 const DEFAULT_DURATION_MS = 1200;
@@ -45,6 +52,7 @@ const keys = new Map<string, string>();
 
 export const useToastStore = create<ToastStore>((set, get) => ({
   toasts: [],
+  inlineErrorHosts: 0,
   push: (input, durationMs) => {
     const item: ToastInput = typeof input === "string" ? { message: input, durationMs } : input;
     if (item.key) {
@@ -81,6 +89,15 @@ export const useToastStore = create<ToastStore>((set, get) => ({
       if (value === id) keys.delete(key);
     }
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }));
+  },
+  claimInlineErrors: () => {
+    set((state) => ({ inlineErrorHosts: state.inlineErrorHosts + 1 }));
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      set((state) => ({ inlineErrorHosts: Math.max(0, state.inlineErrorHosts - 1) }));
+    };
   },
 }));
 

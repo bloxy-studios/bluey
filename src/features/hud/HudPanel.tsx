@@ -8,6 +8,7 @@ import { hasTauriRuntime } from "@/lib/tauri/transport";
 import { cn } from "@/lib/utils/cn";
 import { HUD_FRAME_INSETS, hudFrameWidth, hudSurfaceMaxHeight } from "./geometry";
 import { FollowUpHeader, HudIdleRow } from "./HudInputRow";
+import { HudNotice } from "./HudNotice";
 import { HudToolbar } from "./HudToolbar";
 import { ResponseThread } from "./ResponseThread";
 import { TranscriptStrip } from "./TranscriptStrip";
@@ -81,15 +82,18 @@ export function HudPanel() {
   const blur = settings?.appearance.blur ?? true;
 
   const toolbar = (
-    <div className="shrink-0 border-t border-hud-border">
-      <HudToolbar
-        screenEnabled={screenEnabled}
-        onToggleScreen={toggleScreen}
-        hasChat={expanded}
-        onNewChat={newChat}
-        onRetry={retry}
-      />
-    </div>
+    <>
+      <HudNotice />
+      <div className="shrink-0 border-t border-hud-border">
+        <HudToolbar
+          screenEnabled={screenEnabled}
+          onToggleScreen={toggleScreen}
+          hasChat={expanded}
+          onNewChat={newChat}
+          onRetry={retry}
+        />
+      </div>
+    </>
   );
 
   return (
