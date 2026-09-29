@@ -78,7 +78,14 @@ export interface ModeDraft {
   preferredModelRole?: ModelRole;
 }
 
-export type ModePatch = Partial<ModeDraft>;
+/**
+ * Partial update. An absent key keeps the value; `null` clears the nullable
+ * `group` ("no sidebar group") and `preferredModelRole` ("Auto model").
+ */
+export type ModePatch = Partial<Omit<ModeDraft, "group" | "preferredModelRole">> & {
+  group?: string | null;
+  preferredModelRole?: ModelRole | null;
+};
 
 export const BUILT_IN_MODE_IDS = [
   "general",

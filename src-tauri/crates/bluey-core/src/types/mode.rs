@@ -140,12 +140,33 @@ pub struct ModePatch {
     pub preferred_latency: Option<PreferredLatency>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_requirements: Option<Vec<ContextRequirement>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<String>,
+    /// Sidebar group: absent keeps it, `null` (or blank) clears it.
+    #[serde(
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_style: Option<ResponseStylePatch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preferred_model_role: Option<ModelRole>,
+    /// Model role: absent keeps it, `null` clears it ("Auto model").
+    #[serde(
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub preferred_model_role: Option<Option<ModelRole>>,
+}
+
+/// Deserializes a field that is present — including an explicit `null` — as
+/// `Some(..)`, so `Option<Option<T>>` tells "absent: keep" (`None`) from
+/// "`null`: clear" (`Some(None)`).
+fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 pub type ModeDraft = ModePatch;
@@ -164,3 +185,31 @@ pub const BUILT_IN_MODE_IDS: [&str; 10] = [
 ];
 
 pub const DEFAULT_MODE_ID: &str = "general";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn patch(json: &str) -> ModePatch {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn nullable_patch_fields_tell_absent_from_cleared() {
+        let absent = patch("{}");
+        assert_eq!(absent.group, None);
+        assert_eq!(absent.preferred_model_role, None);
+
+        let cleared = patch(r#"{"group":null,"preferredModelRole":null}"#);
+        assert_eq!(cleared.group, Some(None));
+        assert_eq!(cleared.preferred_model_role, Some(None));
+
+        let set = patch(r#"{"group":"Work","preferredModelRole":"reasoning"}"#);
+        assert_eq!(set.group, Some(Some("Work".into())));
+        assert_eq!(set.preferred_model_role, Some(Some(ModelRole::Reasoning)));
+
+        // A clear survives a serialize/deserialize round trip.
+        let json = serde_json::to_string(&cleared).unwrap();
+        assert_eq!(patch(&json), cleared);
+    }
+}

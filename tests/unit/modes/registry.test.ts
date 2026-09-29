@@ -58,7 +58,7 @@ describe("validateModeDraft", () => {
       contextRequirements: ["transcript"],
       responseStyle: { length: "concise", tone: "direct" },
     });
-    expect(result).toEqual({ ok: true, errors: [] });
+    expect(result).toEqual({ ok: true, errors: [], fieldErrors: {} });
   });
 
   it("rejects empty and oversized names", () => {
@@ -77,5 +77,25 @@ describe("validateModeDraft", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.errors.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("keys the first error per field for inline messages", () => {
+    const result = validateModeDraft({
+      name: "x".repeat(61),
+      description: "d".repeat(301),
+      systemInstructions: "i".repeat(4001),
+    });
+    expect(result.fieldErrors).toEqual({
+      name: "Name must be 60 characters or fewer.",
+      description: "Description must be 300 characters or fewer.",
+      systemInstructions: "System instructions must be 4000 characters or fewer.",
+    });
+  });
+
+  it("only lets a mode prefer an answer-generating model, like Rust", () => {
+    expect(validateModeDraft({ name: "M", preferredModelRole: "research" }).ok).toBe(true);
+    for (const role of ["transcription", "embedding"] as const) {
+      expect(validateModeDraft({ name: "M", preferredModelRole: role }).fieldErrors.preferredModelRole).toBeDefined();
+    }
   });
 });

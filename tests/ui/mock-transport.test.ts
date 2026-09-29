@@ -4,6 +4,8 @@ import { COMMAND_NAMES } from "@/lib/tauri/commands";
 import { MockTransport } from "@/lib/tauri/mock";
 import type { AIChunk, AIRequest, DetectedEvent, TranscriptSegment } from "@/lib/types";
 
+import { rustBuiltInMode } from "../fixtures/helpers/fixtures";
+
 function makeRequest(): AIRequest {
   return {
     requestId: "req-test",
@@ -99,8 +101,10 @@ describe("MockTransport", () => {
     expect(modes).toHaveLength(10);
     expect(modes.map((m) => m.id)).toContain("coding-interview");
     const interview = modes.find((m) => m.id === "interview");
-    expect(interview?.group).toBe("Looking for work");
-    expect(interview?.systemInstructions).toContain("candidate in a job interview");
+    // The mock serves the Rust definitions (tests/fixtures/rust/built-in-modes.json).
+    expect(interview?.group).toBe(rustBuiltInMode("interview").group);
+    expect(interview?.systemInstructions).toBe(rustBuiltInMode("interview").systemInstructions);
+    expect(interview?.systemInstructions).toContain("candidate");
   });
 
   it("drops a removed provider's API key, as Rust's settings side effects do", async () => {

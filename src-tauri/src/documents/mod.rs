@@ -62,14 +62,10 @@ impl DocumentsManager {
             .run(move |db| bluey_storage::add_document(db, &stored_input, read_scoped))
             .await?;
 
-        if doc.scope == DocumentScope::Mode {
-            if let Some(mode_id) = doc.scope_id.clone() {
-                let doc_id = doc.id.clone();
-                self.storage
-                    .run(move |db| ModeRepository::attach_document(db, &mode_id, &doc_id))
-                    .await?;
-                self.publish_modes_changed().await;
-            }
+        // A mode's files are its mode-scoped documents; refresh the modes
+        // snapshot so `attachedDocumentIds` picks the new one up.
+        if doc.scope == DocumentScope::Mode && doc.scope_id.is_some() {
+            self.publish_modes_changed().await;
         }
 
         let mut doc = doc;

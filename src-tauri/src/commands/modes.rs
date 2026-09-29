@@ -42,8 +42,7 @@ pub async fn modes_duplicate(core: State<'_, AppCore>, id: String) -> BlueyResul
 
 #[tauri::command]
 pub async fn modes_set_default(core: State<'_, AppCore>, id: String) -> BlueyResult<Settings> {
-    core.modes.get(id.clone()).await?;
-    core.settings.set_default_mode(&id).await
+    core.modes.set_default(id).await
 }
 
 #[tauri::command]
