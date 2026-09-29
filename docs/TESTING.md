@@ -42,7 +42,7 @@ audio, accessibility and observation deterministically.
 **Permissions** — grant · deny · revoke while running (audio stops, repair flow) · retry · Open System Settings links.
 **Screen** — single monitor · multiple monitors · Retina scaling · fullscreen app · Spaces · mirrored/disconnected display · region capture · HUD excluded from captures.
 **Audio** — microphone · system audio · headphones · Bluetooth device · device disconnect mid-session · pause/resume · levels.
-**Panel** — move (⌘ arrows) · drag · resize · hide/show (⌘\) · always-on-top over fullscreen apps · remembers position per display · never off-screen · opacity/width settings · Privacy mode hides it from a screen share (Zoom/Meet/QuickTime) and the tooltip reports the state honestly.
+**Panel** — move (⌘ arrows) · drag · resize · hide/show (⌘\) · always-on-top over fullscreen apps · remembers position per display · never off-screen · opacity/width settings · Privacy mode hides it from legacy capture; on macOS 15+ a ScreenCaptureKit share (Zoom/Meet/QuickTime) may still show it, and the eye tooltip and Privacy Center note say so (they follow a toggle from the HUD, the tray or Settings).
 **Shortcuts** — defaults · remap · conflict warning · disabled shortcut · registration failure message.
 **AI** — fast answer · streaming · structured sections · code copy · vision (screen with little text) · failure · timeout · cancellation (new ⌘↵ while streaming) · offline banner · provider test connection.
 **Modes** — every built-in mode with its fixture scenario · custom mode create/duplicate/edit/delete/set default/set active · reset built-in.

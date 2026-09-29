@@ -122,10 +122,10 @@ describe("screen context notice (UX-002)", () => {
 
     act(() => mock.emit("context.updated", { snapshot: deniedSnapshot, reason: "manual" }));
     expect(await screen.findByText("Screen not included")).toBeInTheDocument();
-    const toggle = screen.getByRole("button", { name: "Screen context on" });
+    const toggle = screen.getByRole("button", { name: "Screen context" });
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     await user.click(toggle);
-    expect(screen.getByRole("button", { name: "Screen context off" })).toHaveAttribute("aria-pressed", "false");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByText("Screen not included")).not.toBeInTheDocument();
   });
 });

@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import PrivacyTab from "@/features/settings/tabs/PrivacyTab";
+import { bluey } from "@/lib/tauri/api";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { setupMockApp } from "./helpers";
+import { setupInterceptedApp, setupMockApp } from "./helpers";
 
 describe("PrivacyTab raw audio and cloud AI", () => {
   beforeEach(async () => {
@@ -36,5 +37,38 @@ describe("PrivacyTab raw audio and cloud AI", () => {
     render(<PrivacyTab />);
     await user.click(screen.getByLabelText("Cloud AI"));
     await waitFor(() => expect(useSettingsStore.getState().settings?.privacy.cloudAiEnabled).toBe(false));
+  });
+});
+
+describe("PrivacyTab display mode (UX-004, SEC-004)", () => {
+  it("follows a display mode saved from the HUD eye or the tray", async () => {
+    await setupMockApp();
+    render(<PrivacyTab />);
+    expect(await screen.findByText(/visible in screen shares/)).toBeInTheDocument();
+
+    // The HUD eye and the tray only patch settings; the tab must not keep the old note.
+    await act(() => useSettingsStore.getState().update({ privacy: { displayMode: "privacy" } }));
+    expect(await screen.findByText(/macOS 15 and later may still show Bluey/)).toBeInTheDocument();
+    expect(screen.queryByText(/visible in screen shares/)).not.toBeInTheDocument();
+  });
+
+  it("only saves the mode, so a failed save never flips native protection", async () => {
+    const { transport } = await setupInterceptedApp();
+    const applied: boolean[] = [];
+    transport.intercept("capture_set_protection", (args, next) => {
+      applied.push(args.enabled);
+      return next();
+    });
+    transport.intercept("settings_update", () => {
+      throw { kind: "storage", code: "storage.write", message: "The settings could not be saved.", recoverable: true };
+    });
+    const user = userEvent.setup();
+    render(<PrivacyTab />);
+
+    await user.click(await screen.findByRole("tab", { name: "Privacy" }));
+    await waitFor(() => expect(useSettingsStore.getState().lastError).not.toBeNull());
+    expect(applied).toEqual([]);
+    expect((await bluey.capture.getProtection()).enabled).toBe(false);
+    expect(screen.getByRole("tab", { name: "Standard" })).toHaveAttribute("aria-selected", "true");
   });
 });

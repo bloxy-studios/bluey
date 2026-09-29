@@ -13,7 +13,8 @@ never claim universal invisibility.
 (ScreenCaptureKit, CGWindowList-based capture used by Zoom/Meet/Teams/QuickTime) but macOS does
 **not** guarantee exclusion from every path (e.g. hardware capture cards, some virtual display
 drivers). The `CaptureProtection` object reports `supported`, `enabled` and an honest `note`
-shown in the Privacy Center and in the HUD tooltip ("Content-protected" vs "Detectable").
+shown in the Privacy Center; the HUD tooltip reads "Content-protected" only when `partial` is
+false ("Privacy mode: hidden from legacy capture only" otherwise, "Detectable" when off).
 
 Bluey excludes its own windows from its *own* captures via the ScreenCaptureKit content filter
 so screenshots sent to models never include the HUD.

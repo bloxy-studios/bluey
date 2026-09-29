@@ -8,9 +8,10 @@ import { SegmentedTabs } from "@/components/ui/Tabs";
 import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
 import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { useCaptureProtection } from "@/hooks/useCaptureProtection";
 import { bluey } from "@/lib/tauri/api";
 import type { DataUsageStats } from "@/lib/tauri/commands";
-import { toBlueyError, type CaptureProtection, type DisplayMode } from "@/lib/types";
+import { toBlueyError, type DisplayMode } from "@/lib/types";
 import { formatBytes } from "@/lib/utils/format";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { SavedCredentials } from "../SavedCredentials";
@@ -26,7 +27,8 @@ interface DangerAction {
 export default function PrivacyTab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
-  const [protection, setProtection] = useState<CaptureProtection | null>(null);
+  // Follows the saved display mode wherever it changes (HUD eye, tray, here) (SEC-004, UX-004).
+  const protection = useCaptureProtection();
   const [stats, setStats] = useState<DataUsageStats | null>(null);
   const [confirm, setConfirm] = useState<DangerAction | null>(null);
 
@@ -40,23 +42,14 @@ export default function PrivacyTab() {
 
   useEffect(() => {
     void refreshStats();
-    void bluey.capture
-      .getProtection()
-      .then(setProtection)
-      .catch(() => undefined);
   }, []);
 
   if (!settings) return null;
   const { privacy } = settings;
 
-  const setDisplayMode = async (mode: DisplayMode) => {
-    await update({ privacy: { displayMode: mode } });
-    try {
-      setProtection(await bluey.capture.setProtection({ enabled: mode === "privacy" }));
-    } catch (error) {
-      showErrorToast(toBlueyError(error, "capture"));
-    }
-  };
+  // Settings only: the Rust side effect applies content protection, so a failed save never
+  // leaves native protection disagreeing with the saved mode (UX-004).
+  const setDisplayMode = (mode: DisplayMode) => update({ privacy: { displayMode: mode } });
 
   const disableAllCapture = async () => {
     try {
