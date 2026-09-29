@@ -274,7 +274,11 @@ const SUBMITTED_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>([
  * what I submit for picks, values, texts and solutions, and an explanation
  * addressed to me for explain, summary and debug.
  */
-export function voiceFor(shape: AnswerShape, trigger?: AskTrigger, detectedEvent?: DetectedEvent): AnswerVoice {
+export function voiceFor(
+  shape: AnswerShape,
+  trigger?: AskTrigger,
+  detectedEvent?: DetectedEvent,
+): AnswerVoice {
   if (shape === "spoken" || isSpokenAsk(trigger, detectedEvent)) return "speak-as-user";
   return SUBMITTED_SHAPES.has(shape) ? "write-as-user" : "explain-to-user";
 }

@@ -195,9 +195,7 @@ describe("relevance floor for unrelated typed asks (PERF-006)", () => {
       "Marketing wants a bigger share of that.",
       "We'll revisit hiring next week.",
       "Let's wrap up for today.",
-    ].map((text, i) =>
-      makeSegment({ id: `m${i}`, text, startTime: i * 5_000, endTime: i * 5_000 + 4_000 }),
-    );
+    ].map((text, i) => makeSegment({ id: `m${i}`, text, startTime: i * 5_000, endTime: i * 5_000 + 4_000 }));
     const meeting = chromeSnapshot({
       ocr: ocr(frenchOcr),
       accessibility: ax({ visibleText: "", focusedElement: undefined }),
