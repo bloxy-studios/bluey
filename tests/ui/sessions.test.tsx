@@ -72,6 +72,7 @@ describe("SessionsTab", () => {
     const { transport } = await setupInterceptedApp();
     // The mock pages like Rust ...
     const [template] = await bluey.session.search({ query: { limit: 1 } });
+    if (!template) throw new Error("the mock seeds sessions");
     expect(await bluey.session.search({ query: { offset: 1 } })).toHaveLength(1);
     // ... and 60 scripted sessions keep this test fast (no 58 start/end round trips).
     const history = Array.from({ length: 60 }, (_, i) => ({
