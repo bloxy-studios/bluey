@@ -115,8 +115,31 @@ pub fn run(builder: tauri::Builder<Wry>) {
         RunEvent::Exit => {
             tauri::async_runtime::block_on(shutdown(app));
         }
+        // Opening Bluey.app again (Finder, Spotlight) brings it forward (UX-024).
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => reopen(app),
         _ => {}
     });
+}
+
+/// Show what a relaunch should: the onboarding wizard until it is done, the HUD after.
+#[cfg(target_os = "macos")]
+fn reopen(app: &AppHandle) {
+    let Some(core) = app.try_state::<AppCore>() else {
+        return;
+    };
+    let label = reopen_target(core.settings.get().general.onboarding_completed);
+    if let Err(e) = crate::platform::open_window(app, label, None) {
+        tracing::warn!(error = %e, "cannot bring Bluey forward on reopen");
+    }
+}
+
+fn reopen_target(onboarding_completed: bool) -> &'static str {
+    if onboarding_completed {
+        "main"
+    } else {
+        "onboarding"
+    }
 }
 
 /// Tell the user why Bluey cannot start and where the log is, then quit
@@ -382,6 +405,13 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         }
     }
 
+    // A menu-bar app: no Dock icon or ⌘-Tab entry (LSUIElement alone is
+    // overridden by the runtime). The app menu still serves ⌘C / ⌘V in
+    // Settings inputs (MAC-010).
+    #[cfg(target_os = "macos")]
+    if let Err(e) = handle.set_activation_policy(tauri::ActivationPolicy::Accessory) {
+        tracing::warn!(error = %e, "cannot switch to the accessory activation policy");
+    }
     // Windows: HUD becomes an NSPanel; first run shows the onboarding wizard.
     panel.attach(onboarding_completed)?;
     if !onboarding_completed {
@@ -494,6 +524,12 @@ pub async fn shutdown(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_shows_onboarding_until_it_is_done_then_the_hud() {
+        assert_eq!(reopen_target(false), "onboarding");
+        assert_eq!(reopen_target(true), "main");
+    }
 
     #[test]
     fn the_boot_failure_dialog_names_the_error_the_log_and_the_backup() {

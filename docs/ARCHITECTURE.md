@@ -65,7 +65,7 @@ src-tauri/                 Rust Tauri v2 application (macOS)
                            panel geometry, Clerk Frontend-API host derivation, OAuth primitives (PKCE, URLs, callbacks)
   crates/bluey-oauth/      platform-independent OAuth runtime (host-tested): one-shot loopback listener, device-code
                            polling, token sets with single-flight refresh — used by the Clerk sign-in and the provider accounts
-  Info.plist               usage strings (microphone, speech, accessibility, screen capture) + LSUIElement, merged by the bundler
+  Info.plist               usage strings (microphone, speech, accessibility, screen capture) + LSUIElement, merged by the bundler (bootstrap also sets the Accessory activation policy: no Dock icon or ⌘-Tab entry)
   src/                     app crate: commands/, state/, ai/ (providers, streaming, cancellation), sidecar/ (helper client),
                            agent/ (research sidecar client), research/ (Exa, Firecrawl), transcription/ (cloud realtime),
                            capture/ audio/ accessibility/ (helper-backed managers), overlay/ (NSPanel), shortcuts/, tray/,
