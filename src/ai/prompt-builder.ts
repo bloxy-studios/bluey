@@ -89,7 +89,9 @@ export class PromptBuilder {
 
     const modeInstructions = mode.systemInstructions.trim();
     const fragment = modePromptFor(schemaId).fragment;
-    blocks.push(`Mode: ${mode.name}.${modeInstructions ? `\n${modeInstructions}` : ""}\n${fragment}`);
+    // A custom mode is the user's own text and outranks the contract (AI-011).
+    const label = mode.builtIn ? mode.name : `${mode.name} (the user's custom instructions)`;
+    blocks.push(`Mode: ${label}.${modeInstructions ? `\n${modeInstructions}` : ""}\n${fragment}`);
 
     blocks.push(styleBlock(style));
 

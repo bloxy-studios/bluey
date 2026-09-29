@@ -251,9 +251,10 @@ const SPECS: [ModeSpec; 10] = [
 
 // ── System instructions ──────────────────────────────────────────────────────
 //
-// Judgment only. Voice (first person, answer first), length ceilings and the
-// output fields are owned by the response contract, the style block and the
-// schema fragment the WebView sends with every ask (`src/ai/prompts`,
+// Judgment only. Answer-first, precedence, whose words the answer is (the
+// per-ask `Voice:` line), length ceilings and the output fields are owned by
+// the response contract, the task lines, the style block and the schema
+// fragment the WebView sends with every ask (`src/ai/prompts`,
 // `src/modes/prompts`; docs/MODE_SYSTEM.md). A mode says what a strong answer
 // in this situation gets right — never "lead with the answer" again.
 
@@ -270,7 +271,7 @@ Judgment calls:
 "#;
 
 const INTERVIEW_INSTRUCTIONS: &str = r#"
-The user is a candidate in a live job interview; every answer is words they can say out loud, in a natural spoken register — contractions, plain words, varied sentence length. A person talking, never an essay.
+The user is a candidate in a live job interview; an answer to a question put to them is words they can say out loud, in a natural spoken register — contractions, plain words, varied sentence length. A person talking, never an essay.
 
 Judgment calls:
 - Ground truth is the resume and the job description when provided: only the employers, projects, technologies, dates and outcomes that appear there. When the resume lacks what the question needs, stay honestly generic ("in a previous role…") or leave a bracketed slot like [your example] to fill while speaking.
@@ -296,10 +297,11 @@ The user is in a live coding interview; the working solution is the deliverable 
 Judgment calls:
 - Infer the language from the visible editor, file extension or judge UI; Python only when nothing indicates otherwise. Conform exactly to any visible signature or harness: same function name, parameter order and return type.
 - Code is complete and runnable — exact, consistent indentation, never truncated or elided ("# rest omitted", "…"), meaningful names, comments only where the logic is genuinely non-obvious.
-- Name the pattern behind the approach (two pointers, sliding window, BFS, dynamic programming…) and why it beats the naive solution, in a few lines.
+- Name the pattern behind the approach (two pointers, sliding window, BFS, dynamic programming…) and why it beats the naive solution, in one or two lines.
 - Complexity: time and space with a one-line reason each. Edge cases: the inputs that break naive solutions (empty, single element, duplicates, negatives, overflow, ties) and how the code handles them.
 - A partially visible statement gets the most reasonable reading, with the assumption stated in one line — never stall.
 - Follow-ups ("optimize it", "what if it's sorted?") change only what changes: the delta and the updated code, not a re-derivation.
+- A question that is not about code ("why this company?") gets a brief plain spoken answer, not a forced solution.
 "##;
 
 const SYSTEM_DESIGN_INSTRUCTIONS: &str = r#"
@@ -311,6 +313,7 @@ Judgment calls:
 - Cover what this system actually turns on — requirements (functional and non-functional), the request flow through the components, the core APIs, the data model and where each entity lives, storage choices and why, caching and invalidation, async work, consistency, partitioning and replication, failure modes and rate limits, security — and skip what genuinely does not apply rather than padding.
 - Trade-offs are the substance: two to four decisions, each with the road not taken and why.
 - A Mermaid diagram of the architecture is welcome once the design has more than a handful of components.
+- A question that is not about the design gets a brief plain spoken answer, not a forced design.
 "#;
 
 const CASE_INSTRUCTIONS: &str = r#"
@@ -351,7 +354,7 @@ Warm, professional, efficient; the candidate leaves with a clear picture and a c
 "#;
 
 const MEETING_INSTRUCTIONS: &str = r#"
-The user is in a live meeting. Silence beats noise: surface only the genuinely significant moments, each as a single line the user can act on.
+The user is in a live meeting. Silence beats noise: surface only the genuinely significant moments, each as a single line the user can act on — and when there is none, the answer is "Nothing to flag."
 
 Judgment calls:
 - Important: a metric, commitment, risk or date worth remembering. Decision: what was decided in one sentence, plus who decided when that is clear. Action item: task — owner — deadline, the owner a speaker label from the transcript or "unassigned", the deadline only if one was actually said. Question: an open question aimed at the user or left hanging.
@@ -416,6 +419,19 @@ mod tests {
             );
             assert!(!m.description.is_empty());
         }
+    }
+
+    #[test]
+    fn mode_texts_leave_voice_to_the_request_and_answer_off_topic_asks() {
+        let text = |id: &str| mode_by_id(id).expect("built-in mode").system_instructions;
+        // Voice is per request (AI-011, MODE-002): a mode never claims every answer is speech.
+        assert!(!text("interview").contains("every answer is words"));
+        // A technical mode answers a non-technical question instead of forcing its task (MODE-004).
+        assert!(text("coding").contains("not about code"));
+        assert!(text("coding").contains("in one or two lines"));
+        assert!(text("system-design").contains("not about the design"));
+        // Silence is a quiet answer, never an empty one the parser rejects (AI-011).
+        assert!(text("meeting").contains("\"Nothing to flag.\""));
     }
 
     #[test]

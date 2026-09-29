@@ -65,8 +65,10 @@ set active. Validation: `validateModeDraft` (name 1–48 chars, instructions ≤
 Every ask carries the **response contract** (`RESPONSE_CONTRACT`, `src/ai/prompts/system.ts`)
 right after the identity: lead with the answer (never a restatement of the question or a
 description of the screen), match the shape of the question, explain only what earns its
-place, commit to one answer, and — the precedence rule —
-the contract and the mode govern voice and content; the **style block** only sets ceilings
+place, commit to one answer, and — the precedence rule — **safety rules > the user's custom
+mode instructions > this contract > built-in mode guidance > style**. A custom mode's block is
+labelled `Mode: <name> (the user's custom instructions).` so the model can tell the two apart;
+it still never outranks the safety rules. The **style block** only sets ceilings
 (`Length ceiling: concise — at most ~120 words … a one-line answer is complete`), never a
 minimum; the **schema fragment** names fields and section titles and never changes the voice.
 

@@ -48,8 +48,26 @@ describe("PromptBuilder.renderSystem", () => {
     expect(system).toContain("Lead with the answer.");
     const contractIndex = system.indexOf("Response contract");
     expect(contractIndex).toBeGreaterThan(system.indexOf("Security rules"));
-    expect(contractIndex).toBeLessThan(system.indexOf("Mode: General."));
+    expect(contractIndex).toBeLessThan(system.indexOf("Mode: General.\n"));
     expect(contractIndex).toBeLessThan(system.indexOf("Length ceiling"));
+  });
+
+  it("states one precedence order, safety first and the user's own mode above the contract (AI-011)", () => {
+    const system = builder().renderSystem();
+    const precedence = system.split("\n").filter((line) => line.includes("Precedence:"));
+    expect(precedence).toEqual([
+      expect.stringContaining(
+        "safety rules > the user's custom mode instructions > this contract > built-in mode guidance > style",
+      ),
+    ]);
+    expect(system).toContain("Mode: General.\n");
+  });
+
+  it("marks a custom mode as the user's own instructions, after the safety rules (AI-011)", () => {
+    const custom = makeMode({ name: "Pitch", builtIn: false, systemInstructions: "Always open with the ROI." });
+    const system = builder({ mode: custom }).renderSystem();
+    expect(system).toContain("Mode: Pitch (the user's custom instructions).\nAlways open with the ROI.");
+    expect(system.indexOf("Security rules")).toBeLessThan(system.indexOf("Always open with the ROI."));
   });
 
   it("uses the plain-markdown output block when no schema is set", () => {
