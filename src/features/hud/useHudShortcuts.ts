@@ -19,6 +19,11 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+/** The HUD composer (HudInputRow): focused whenever the HUD shows, and ⌘R has no editing meaning there. */
+function isHudComposer(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.dataset.hudComposer !== undefined;
+}
+
 /**
  * Wires global shortcut events (`shortcut.triggered` from the backend),
  * panel events, and local key handling (Esc, ⌘↵, ⌘⇧↵, ⌘R, ⌘, when the HUD
@@ -90,7 +95,13 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
         else handlersRef.current.onCaptureAnalyze();
         return;
       }
-      if ((event.key === "r" || event.key === "R") && !isEditableTarget(event.target)) {
+      // New Chat is HUD-local by default (UX-001), so plain ⌘R must work from the
+      // focused composer too; other inputs keep ⌘R, and ⌘⇧R/⌘⌥R stay the composer's.
+      const plain = !event.shiftKey && !event.altKey;
+      if (
+        (event.key === "r" || event.key === "R") &&
+        (!isEditableTarget(event.target) || (plain && isHudComposer(event.target)))
+      ) {
         event.preventDefault();
         if (!event.repeat) handlersRef.current.onNewChat();
         return;

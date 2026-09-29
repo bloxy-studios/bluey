@@ -67,6 +67,15 @@ describe("HUD shortcut hints follow Settings → Keybinds (UX-026)", () => {
     expect(await screen.findByText("Say the cache is cold.")).toBeInTheDocument();
     expect(useChatStore.getState().prepared).toBeNull();
   });
+
+  it("keeps the HUD-local ⌘⇧↵ hint when the global Generate binding is off", () => {
+    renderHud();
+    rebind("generate_response", { enabled: false });
+    act(() => useChatStore.getState().setPrepared(makeResponse({ id: "prep-2", prepared: true })));
+
+    const pill = screen.getByRole("button", { name: "Show Bluey's suggestion" });
+    expect(pill).toHaveTextContent("Bluey has a suggestion · ⌘⇧↵");
+  });
 });
 
 describe("acceleratorToGlyphs", () => {
