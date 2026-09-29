@@ -4,7 +4,9 @@
  * Guarantees:
  *  - fenced code blocks are preserved verbatim (never reflowed or trimmed)
  *  - factual caveats and citations are preserved
- *  - filler openers and question-restating first sentences are stripped,
+ *  - filler openers and question-restating first sentences are stripped
+ *    (never one naming an option, number or code; never for the shapes
+ *    whose first sentence is the deliverable),
  *    duplicate paragraphs removed
  *  - length capped by style (concise ≈ 120 words of prose, code excluded) —
  *    never for spoken, written or code shapes, never the first paragraph
@@ -14,10 +16,10 @@
 import type { AnswerShape, BlueyMode, BlueyResponse, CodeBlock, ResponseStyle } from "@/lib/types";
 
 const FILLER_OPENERS = [
-  /^certainly[!,.]?\s*/i,
-  /^sure(?: thing)?[!,.]?\s*/i,
-  /^of course[!,.]?\s*/i,
-  /^absolutely[!,.]?\s*/i,
+  /^certainly[!,.]\s*/i,
+  /^sure(?: thing)?[!,.]\s*/i,
+  /^of course[!,.]\s*/i,
+  /^absolutely[!,.]\s*/i,
   /^great question[!,.]?\s*/i,
   /^good question[!,.]?\s*/i,
   /^happy to help[!,.]?\s*/i,
@@ -33,13 +35,19 @@ const FILLER_OPENERS = [
  * punctuation; a sentence is only removed when an answer remains after it.
  */
 const RESTATEMENT_OPENERS = [
-  /^(?:the|this|your) (?:question|prompt|task|problem|screen|screenshot|image|code|snippet|passage|text|error)(?: here| above| shown| below)? (?:is asking|asks|is about|shows|displays|describes|presents|wants|requires|refers to|relates to)\b[^.!?\n]*[.!?:]\s*/i,
-  /^(?:you(?:'re| are) (?:asking|looking at|being asked)|you want to know|you asked|you'?d like to know)\b[^.!?\n]*[.!?:]\s*/i,
+  /^(?:the|this|your) (?:question|prompt|task|problem|screen|screenshot|image|code|snippet|passage|text|error)(?: here| above| shown| below)? (?:is asking|asks|wants|requires)\b[^.!?:\n]*[.!?:]\s*/i,
+  /^(?:you(?:'re| are) (?:asking|looking at|being asked)|you want to know|you asked|you'?d like to know)\b[^.!?:\n]*[.!?:]\s*/i,
   // Approach preambles end at their first comma or colon ("Looking at the screen, …").
   /^(?:to answer (?:this|your|the) question|to solve this|in order to answer|looking at (?:the|this|your) (?:screen|question|code|image|problem|options|error)|based on (?:the|your|this) (?:screen|screenshot|image|question|context|information provided))\b[^.!?,:\n]*[,.:!]\s*/i,
-  /^(?:let'?s|let me) (?:break|walk|look|take|start|dive|begin|see|analy[sz]e|think|go)\b[^.!?\n]*[.!?:]\s*/i,
-  /^i(?:'ll| will| can)(?: help| explain| walk| break)\b[^.!?\n]*[.!?:]\s*/i,
+  /^(?:let'?s|let me) (?:break|walk|look|dive|begin|see|analy[sz]e|think)\b[^.!?:\n]*[.!?:]\s*/i,
+  /^i(?:'ll| will| can)(?: help| explain| walk| break)\b[^.!?:\n]*[.!?:]\s*/i,
 ];
+
+/** A sentence naming an option, a number or code carries the answer: never stripped. */
+const ANSWER_MARKERS = /\b[A-E]\b|\boption\b|\d|`/;
+
+/** Shapes whose first sentence is the deliverable: only exact filler is stripped. */
+const VERBATIM_SHAPES: ReadonlySet<AnswerShape> = new Set<AnswerShape>(["spoken", "written", "code", "choice", "debug"]);
 
 const MIN_WORDS_AFTER_STRIP = 3;
 
@@ -133,9 +141,10 @@ function recapitalize(text: string): string {
 /**
  * Strip filler openers ("Sure!", "Great question!") and restating first
  * sentences ("The question is asking…"). A restatement is only removed when
- * at least a few words of answer remain; the text is never stripped to nothing.
+ * it names no option, number or code and at least a few words of answer
+ * remain; spoken, written, code, choice and debug answers keep theirs (AI-003).
  */
-export function stripFillerOpeners(text: string): string {
+export function stripFillerOpeners(text: string, shape?: AnswerShape): string {
   let result = text.trimStart();
   let changed = true;
   while (changed) {
@@ -148,12 +157,14 @@ export function stripFillerOpeners(text: string): string {
       }
     }
   }
-  changed = true;
+  changed = shape === undefined || !VERBATIM_SHAPES.has(shape);
   while (changed) {
     changed = false;
     for (const pattern of RESTATEMENT_OPENERS) {
-      const next = result.replace(pattern, "").trimStart();
-      if (next !== result && countWords(next) >= MIN_WORDS_AFTER_STRIP) {
+      const removed = pattern.exec(result)?.[0] ?? "";
+      if (!removed || ANSWER_MARKERS.test(removed)) continue;
+      const next = result.slice(removed.length).trimStart();
+      if (countWords(next) >= MIN_WORDS_AFTER_STRIP) {
         result = next;
         changed = true;
       }
@@ -243,7 +254,7 @@ export function optimizeResponse(response: BlueyResponse, opts: OptimizeOptions)
   if (firstProseIndex >= 0) {
     const piece = cleaned[firstProseIndex];
     if (piece) {
-      cleaned[firstProseIndex] = { kind: "prose", text: stripFillerOpeners(piece.text) };
+      cleaned[firstProseIndex] = { kind: "prose", text: stripFillerOpeners(piece.text, opts.shape) };
     }
   }
 

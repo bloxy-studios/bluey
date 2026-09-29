@@ -144,10 +144,38 @@ describe("answer-first cleanup", () => {
     expect(stripFillerOpeners("Looking at the screen, the error is a missing semicolon on line 12.")).toBe(
       "The error is a missing semicolon on line 12.",
     );
+    expect(stripFillerOpeners("I can help: the answer is 42 because both terms cancel.")).toBe(
+      "The answer is 42 because both terms cancel.",
+    );
     expect(stripFillerOpeners("Sure! To answer your question: yes, the call is idempotent.")).toBe(
       "Yes, the call is idempotent.",
     );
   });
+
+  // Every one of these carries the answer, the diagnosis or the opener (AI-003).
+  const MUST_SURVIVE = [
+    "Let's go with option B. It keeps the index small.",
+    "Let's start with the Kafka migration I led: it cut lag from minutes to seconds.",
+    "The error shows that `user` is undefined because `fetchUser` isn't awaited. Add `await` before the call.",
+    "This code displays a race condition: two writers share the counter. Guard it with a mutex.",
+    "The code requires Python 3.11. Upgrade the runtime and rerun the build.",
+    "Sure — I led the migration at FinCo and cut costs by a third.",
+    "Of course not — the lock is released when the guard drops.",
+    "Absolutely not: the call mutates shared state.",
+  ];
+
+  it.each(MUST_SURVIVE)("keeps a first sentence that carries the answer: %s", (text) => {
+    expect(stripFillerOpeners(text)).toBe(text);
+  });
+
+  it.each(["spoken", "written", "code", "choice", "debug"] as const)(
+    "never strips restatements from %s answers, whose text is the deliverable",
+    (shape) => {
+      const text = "Let me walk you through how I scaled the pipeline. We moved the queue to Kafka.";
+      expect(stripFillerOpeners(text, shape)).toBe(text);
+      expect(stripFillerOpeners(`Great question! ${text}`, shape)).toBe(text);
+    },
+  );
 
   it("never strips a restatement when no answer would remain", () => {
     expect(stripFillerOpeners("The question is asking about caching.")).toBe("The question is asking about caching.");

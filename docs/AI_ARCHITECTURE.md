@@ -57,7 +57,9 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
 - **Generations** (`src/ai/generations.ts`): stale-response protection (ADR 0005).
 - **Optimizer** (`src/ai/optimizer.ts`): remove repetition, filler openers and first sentences
   that restate the question or narrate the approach ("The question is asking…", "Let's break
-  this down.", "Looking at the screen, …" — only when an answer remains), respect length & tone,
+  this down.", "Looking at the screen, …" — only when an answer remains, never a sentence naming
+  an option, a number or code, and never for spoken, written, code, choice or debug answers),
+  respect length & tone,
   preserve code, caveats and citations. The length cap keeps the first paragraph and never
   applies to the spoken, written and code shapes. Goal: the minimum text necessary to be useful.
 - **Proactive preparation**: when the classifier detects a likely question with
