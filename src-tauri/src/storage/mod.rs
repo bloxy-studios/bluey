@@ -75,7 +75,8 @@ pub struct Storage {
 impl Storage {
     /// Open the database at the resolved path (migrations run automatically).
     pub fn open(paths: Arc<AppPaths>) -> BlueyResult<Self> {
-        let db = Database::open(&paths.db_path)?;
+        // A failed or bad migration after an update can be rolled back by hand (CRIT-003).
+        let db = Database::open_with_backup(&paths.db_path, env!("CARGO_PKG_VERSION"))?;
         Ok(Self {
             db: Arc::new(db),
             paths,

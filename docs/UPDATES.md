@@ -74,6 +74,10 @@ card as soon as it is granted again; the card is shown in that first run only.
   prepared suggestion (`derivePill`, `src/features/hud/state-pill.ts`).
 - The current version keeps running through every failure; errors are `update.check_failed`
   and `update.install_failed` (copy in `src/lib/errors/present.ts`), shown in the Settings row.
+- **First launch of the new version**: when the database has migrations pending, `bluey.db` is
+  first copied to `bluey.db.bak-<version>` next to it (`VACUUM INTO`). If startup still fails
+  (database, migration, settings), a dialog shows the error and the log folder and offers
+  *Reveal Data Folder* or *Quit* instead of the app vanishing (CRIT-003).
 - **Debug builds** (`tauri dev`) report `supported: false`: a manual check answers, nothing is
   installed and no background check runs. The browser mock simulates the whole cycle (it always
   "finds" `0.2.0`, or `0.2.0-nightly.…` on the Nightly channel).
