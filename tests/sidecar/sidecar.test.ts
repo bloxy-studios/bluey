@@ -4,13 +4,13 @@
  * fully offline — no network, no model, no CLI subprocess.
  */
 
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
 import { sanitizeErrorMessage, type QueryFn } from "../../sidecars/agent/src/agent";
 import type { BuildVariant } from "../../sidecars/agent/src/config";
 import type { GenerateFn } from "../../sidecars/agent/src/gemini";
-import { startSidecar, type StartSidecarOptions } from "../../sidecars/agent/src/main";
+import { flushStream, startSidecar, type StartSidecarOptions } from "../../sidecars/agent/src/main";
 
 type Frame = Record<string, unknown>;
 
@@ -507,4 +507,26 @@ describe("sidecar agent.info", () => {
       expect(reply["result"]).toEqual({ variant, backends });
     },
   );
+});
+
+describe("sidecar exit flush", () => {
+  it("waits until the final frame has left the process, not just been queued", async () => {
+    // A slow pipe: `write()` returns true (the frame is under the high-water
+    // mark) long before the bytes are actually out (AI-014).
+    const written: string[] = [];
+    const slowPipe = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        setTimeout(() => {
+          written.push(chunk.toString());
+          callback();
+        }, 100);
+      },
+    });
+    const frame = `${JSON.stringify({ event: "research.completed", data: { report: "x".repeat(4_000) } })}\n`;
+    expect(slowPipe.write(frame)).toBe(true);
+
+    await flushStream(slowPipe);
+
+    expect(written.join("")).toBe(frame);
+  });
 });

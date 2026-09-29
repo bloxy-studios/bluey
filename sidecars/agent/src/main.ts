@@ -191,18 +191,31 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
   });
 }
 
-/** Flush stdout before exiting so the last protocol frames are never lost. */
-async function flushStdout(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    if (process.stdout.write("")) resolve();
-    else process.stdout.once("drain", () => resolve());
+/** Upper bound on waiting for the last frames to drain before exiting. */
+const FLUSH_TIMEOUT_MS = 10_000;
+
+/**
+ * Resolve once everything written to `stream` so far has been handed to the
+ * OS. `write()` returning true only means the chunk was queued — on a pipe the
+ * final `research.completed` frame can still be in flight, and exiting then
+ * cuts it off (AI-014). Writes complete in order, so the callback of an empty
+ * write fires after every earlier chunk.
+ */
+export function flushStream(stream: Pick<NodeJS.WritableStream, "write">): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
+    (timer as { unref?: () => void }).unref?.();
+    stream.write("", () => {
+      clearTimeout(timer);
+      resolve();
+    });
   });
 }
 
 /** Process entrypoint used by main.ts (dev) and the compiled per-target entries. */
 export async function runSidecarProcess(options: StartSidecarOptions = {}): Promise<never> {
   const code = await startSidecar(options);
-  await flushStdout();
+  await flushStream(process.stdout);
   process.exit(code);
 }
 
