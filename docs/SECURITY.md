@@ -58,7 +58,7 @@ identity (an ad-hoc update, a rebuild) must be approved before it reads an item'
 | Boot, settings save, presence flags, *Saved credentials* | Attribute-only (enumerate / exists / non-interactive probe) — never prompts |
 | First use of a key or token in a process | One data read, then cached in memory (`Zeroizing`) for the process |
 | Save a key, persist a refreshed token | Attribute-only delete, then add (the running build owns the new item); an unchanged value is not rewritten |
-| Remove key, disconnect, sign out, reset | Attribute-only delete, status checked; local state is cleared even if the delete fails |
+| Remove key, disconnect, sign out, reset | Attribute-only delete, status checked; local state is cleared even if the delete fails, and a sign-in or account item left behind never counts as signed in and is deleted at the next launch |
 | *Allow access* (Settings) | The single deliberate interactive read — only of a listed item that is *locked* |
 | *Import* from Claude Code / Antigravity | One read of the other app's item, only on the Import click; a denial says macOS blocked it and to click Import again and choose Allow |
 

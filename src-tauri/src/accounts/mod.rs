@@ -630,7 +630,8 @@ impl AccountsManager {
         }
         self.tokens.lock().remove(account_id);
         // The account is disconnected even when macOS refuses the delete; the
-        // leftover item is reported (Settings → Privacy → Saved credentials).
+        // leftover item is reported (Settings → Privacy → Saved credentials)
+        // and deleted at the next launch (`delete_leftover_tokens`).
         let deleted = self.secrets.delete(&account_tokens_key(account_id)).await;
         if let Err(error) = &deleted {
             tracing::warn!(account = account_id, code = %error.code, "cannot delete the account tokens");
@@ -1023,6 +1024,7 @@ impl AccountsManager {
         if !self.enabled() {
             return;
         }
+        self.delete_leftover_tokens().await;
         let connected: Vec<String> = self
             .accounts
             .read()
@@ -1054,6 +1056,32 @@ impl AccountsManager {
                 }
                 Err(error) => {
                     tracing::debug!(account = %account_id, code = %error.code, "account check deferred (offline?)");
+                }
+            }
+        }
+    }
+
+    /// A disconnect whose Keychain delete failed left the tokens behind, and
+    /// nothing in the UI removes them (a disconnected card offers no
+    /// Disconnect): retry at boot. Presence comes from the attribute listing,
+    /// so this never decrypts, and an account without an item costs nothing.
+    async fn delete_leftover_tokens(&self) {
+        let disconnected: Vec<String> = self
+            .accounts
+            .read()
+            .iter()
+            .filter(|account| account.status == AccountStatus::Disconnected)
+            .map(|account| account.account_id.clone())
+            .collect();
+        for account_id in disconnected {
+            let key = account_tokens_key(&account_id);
+            if self.secrets.known_presence(&key) == Some(false) {
+                continue;
+            }
+            match self.secrets.delete(&key).await {
+                Ok(()) => tracing::info!(account = %account_id, "leftover account tokens deleted"),
+                Err(error) => {
+                    tracing::warn!(account = %account_id, code = %error.code, "cannot delete the leftover account tokens");
                 }
             }
         }
