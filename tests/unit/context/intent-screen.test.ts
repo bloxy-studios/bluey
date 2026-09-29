@@ -69,3 +69,50 @@ describe("classifyIntent reads the whole screen, not only OCR (CTX-011)", () => 
     expect(intent.answerShape).toBe("code");
   });
 });
+
+const CHART_OCR = [
+  "Quarterly revenue by region",
+  "Legend: North America  Europe  APAC",
+  "Q1 Q2 Q3 Q4",
+  "0",
+  "25",
+  "50",
+  "75",
+  "100",
+  "Revenue ($M)",
+  "Source: internal finance dashboard, FY2026 figures, updated weekly by the analytics team.",
+].join("\n");
+const BROWSER_CHROME = "Back Forward Reload Address and search bar Bookmarks Tab search Extensions Profile ".repeat(3);
+
+describe("the vision gate (CTX-009)", () => {
+  it("attaches the screenshot for a chart on ⌘↵ even when AX chrome and labels add text", () => {
+    const intent = classifyIntent({
+      snapshot: screenSnapshot({ ocr: ocr(`${CHART_OCR}\n${"Revenue grew in every region. ".repeat(4)}`), accessibility: ax(BROWSER_CHROME) }),
+      mode: makeMode(),
+      trigger: "shortcut_capture",
+      now: NOW,
+    });
+    expect(intent.visionRequired).toBe(true);
+  });
+
+  it("measures text sufficiency on OCR only — accessibility chrome does not make a sparse screen textual", () => {
+    const intent = classifyIntent({
+      snapshot: screenSnapshot({ ocr: ocr("Figure"), accessibility: ax(BROWSER_CHROME) }),
+      mode: makeMode(),
+      trigger: "shortcut_capture",
+      now: NOW,
+    });
+    expect(intent.visionRequired).toBe(true);
+  });
+
+  it("keeps a dense article text-only", () => {
+    const article = "The committee met on Tuesday to review the proposal and agreed on the timeline. ".repeat(8);
+    const intent = classifyIntent({
+      snapshot: screenSnapshot({ ocr: ocr(article), accessibility: ax(BROWSER_CHROME) }),
+      mode: makeMode(),
+      trigger: "shortcut_capture",
+      now: NOW,
+    });
+    expect(intent.visionRequired).toBe(false);
+  });
+});

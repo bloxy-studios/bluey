@@ -25,6 +25,10 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   shapes read off the question or the screen beat task-derived shapes, which beat the shapes
   the trigger and mode imply; the detection table is in `MODE_SYSTEM.md › Answer shapes`. A
   multiple-choice or compare question about code keeps the `answer` task and schema.
+  Classification reads the whole screen (OCR plus accessibility text, selection and focused
+  value). Vision is required when OCR has under 200 characters, the question points at a
+  visual, or — on ⌘↵/assist — the OCR reads like a chart or figure (legend, axis, figure…,
+  or a run of bare axis numbers); accessibility chrome never counts as screen content.
 - **Prompt architecture** (`src/ai/prompt-builder.ts`, `src/ai/prompts/*`,
   `src/modes/prompts/*`): separate parts — system (identity + safety + the **response
   contract**) · mode (judgment) + schema fragment (fields and section titles only) · style

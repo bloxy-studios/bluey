@@ -59,6 +59,20 @@ const URL_CUE = /https?:\/\/\S+/i;
 const VISUAL_REFERENCE_CUES =
   /\b(this|that|the)\s+(chart|graph|diagram|screenshot|image|picture|figure|design|mockup|slide|table|plot)\b|\bon (my|the) screen\b|\bwhat am i looking at\b/i;
 
+/** Words a chart, diagram or figure prints on screen (titles, legends, axes). */
+const VISUAL_SCREEN_CUES =
+  /\b(chart|graph|diagram|figure|fig\.|legend|axis|plot|histogram|scatter|flowchart|heat ?map|dashboard)\b|\bQ1\b[\s\S]{0,40}\bQ2\b/i;
+/** A line that is only a number, a percentage or an amount — an axis tick or a data label. */
+const NUMERIC_LABEL_LINE = /^\s*[$€£]?-?\d[\d.,]*\s*(%|[kKmMbB])?\s*$/;
+const MIN_NUMERIC_LABELS = 4;
+
+/** Whether the OCR reads like a chart or figure: visual words, or a run of bare axis numbers. */
+function screenLooksVisual(ocrText: string): boolean {
+  if (VISUAL_SCREEN_CUES.test(ocrText)) return true;
+  const labels = ocrText.split("\n").filter((line) => NUMERIC_LABEL_LINE.test(line)).length;
+  return labels >= MIN_NUMERIC_LABELS;
+}
+
 // ── Answer shapes ───────────────────────────────────────────────────────────
 // Detection order (docs/MODE_SYSTEM.md › Answer shapes): assessment shapes
 // that are explicit in the question or on the screen (compare, choice,
@@ -286,7 +300,6 @@ export function classifyIntent(input: IntentInput): Intent {
     detectedEvent,
   });
   const ocrText = snapshot.ocr?.text ?? "";
-  const axText = snapshot.accessibility?.visibleText ?? "";
   const screenText = screenTextOf(snapshot);
 
   // ── Task ────────────────────────────────────────────────────────────────
@@ -316,10 +329,15 @@ export function classifyIntent(input: IntentInput): Intent {
   }
 
   // ── Vision ──────────────────────────────────────────────────────────────
+  // Sufficiency is measured on OCR only: accessibility text is mostly app
+  // chrome and says nothing about whether the pixels carry the content. When
+  // the screen is the subject (⌘↵, assist), a chart or figure on it needs
+  // the image however much label text OCR read off it (CTX-009).
   const hasScreen = Boolean(snapshot.screen?.image ?? snapshot.screen?.frameId);
-  const textAvailable = ocrText.length + axText.length;
-  const insufficientText = textAvailable < VISION_TEXT_SUFFICIENCY_CHARS;
-  const refersToVisual = VISUAL_REFERENCE_CUES.test(question);
+  const insufficientText = ocrText.length < VISION_TEXT_SUFFICIENCY_CHARS;
+  const screenIsSubject = question.length === 0 || trigger === "shortcut_capture" || trigger === "assist";
+  const refersToVisual =
+    VISUAL_REFERENCE_CUES.test(question) || (screenIsSubject && screenLooksVisual(ocrText));
   const codingLowOcr = task === "coding" && averageOcrConfidence(snapshot) < 0.55;
   const visionRequired = hasScreen && (insufficientText || refersToVisual || codingLowOcr);
 
