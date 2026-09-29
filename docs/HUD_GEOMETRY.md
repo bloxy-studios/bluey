@@ -93,6 +93,8 @@ for identical fitted state.
   not introduce an alternate global mixed-DPI coordinate system.
 - CSS applies the opacity preference **once**; NSPanel alpha stays 1.0. Native pin level,
   Spaces/fullscreen collection behavior, drag initiation and content protection are untouched.
+- The panel level comes from the persisted state from the first frame: pinned → status level,
+  otherwise always-on-top → floating, off → normal (`hud_level`, applied at `attach`; MAC-016).
 
 ## Focused automated checks
 
