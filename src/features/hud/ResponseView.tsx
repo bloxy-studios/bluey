@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { Spinner } from "@/components/ui/Spinner";
 import { unreadableAnswerError } from "@/lib/errors/answers";
 import type { BlueyResponse, ResponseSection, ResponseType } from "@/lib/types";
@@ -62,8 +63,18 @@ const Markdown = memo(function Markdown({ content }: { content: string }) {
  * says — rendered as plain headed blocks, not collapsed away. Code, design and
  * artefact-heavy kinds keep the collapsible chrome.
  */
-const PLAIN_SECTION_TYPES: ReadonlySet<ResponseType> = new Set<ResponseType>(["answer", "suggestion", "research", "summary"]);
-const COLLAPSIBLE_KINDS: ReadonlySet<NonNullable<ResponseSection["kind"]>> = new Set(["code", "diagram", "table", "calculation"]);
+const PLAIN_SECTION_TYPES: ReadonlySet<ResponseType> = new Set<ResponseType>([
+  "answer",
+  "suggestion",
+  "research",
+  "summary",
+]);
+const COLLAPSIBLE_KINDS: ReadonlySet<NonNullable<ResponseSection["kind"]>> = new Set([
+  "code",
+  "diagram",
+  "table",
+  "calculation",
+]);
 
 function isCollapsible(responseType: ResponseType, section: ResponseSection): boolean {
   if (!PLAIN_SECTION_TYPES.has(responseType)) return true;
@@ -73,7 +84,9 @@ function isCollapsible(responseType: ResponseType, section: ResponseSection): bo
 function HeadedSection({ section }: { section: ResponseSection }) {
   return (
     <section className="mt-3" data-testid="headed-section">
-      <h3 className="mb-1 mt-0 text-[11px] font-medium uppercase tracking-wide text-fg-subtle">{section.title}</h3>
+      <h3 className="mb-1 mt-0 text-[11px] font-medium uppercase tracking-wide text-fg-subtle">
+        {section.title}
+      </h3>
       <Markdown content={section.content} />
     </section>
   );
@@ -89,7 +102,10 @@ function CollapsibleSection({ section }: { section: ResponseSection }) {
         aria-expanded={open}
         className="flex w-full items-center gap-2 bg-fg/4 px-3 py-2 text-left text-[13px] font-semibold text-fg transition-colors hover:bg-fg/8"
       >
-        <ChevronRight className={cn("size-3.5 text-fg-muted transition-transform", open && "rotate-90")} aria-hidden />
+        <ChevronRight
+          className={cn("size-3.5 text-fg-muted transition-transform", open && "rotate-90")}
+          aria-hidden
+        />
         {section.title}
       </button>
       {open ? (
@@ -122,7 +138,11 @@ export interface ResponseViewProps {
  * the engine's parser should have unwrapped or salvaged it; if raw JSON still
  * arrives here, the user sees the "couldn't read the answer" state instead.
  */
-export const ResponseView = memo(function ResponseView({ response, streaming, className }: ResponseViewProps) {
+export const ResponseView = memo(function ResponseView({
+  response,
+  streaming,
+  className,
+}: ResponseViewProps) {
   const { renderable, pendingCode } = streaming
     ? splitStreamingMarkdown(response.content)
     : { renderable: response.content, pendingCode: false };
@@ -153,15 +173,24 @@ export const ResponseView = memo(function ResponseView({ response, streaming, cl
       ) : null}
 
       {response.diagram ? (
-        <Suspense
+        // The diagram chunk failing to load shows its source, not a broken answer (UX-038).
+        <ErrorBoundary
           fallback={
-            <div className="my-3 flex h-24 items-center justify-center rounded-[10px] border border-hud-border bg-code-bg">
-              <Spinner />
-            </div>
+            <pre className="my-3 overflow-x-auto rounded-[10px] border border-hud-border bg-code-bg p-3.5 font-mono text-[12.5px] text-fg-muted">
+              {response.diagram}
+            </pre>
           }
         >
-          <MermaidDiagram source={response.diagram} />
-        </Suspense>
+          <Suspense
+            fallback={
+              <div className="my-3 flex h-24 items-center justify-center rounded-[10px] border border-hud-border bg-code-bg">
+                <Spinner />
+              </div>
+            }
+          >
+            <MermaidDiagram source={response.diagram} />
+          </Suspense>
+        </ErrorBoundary>
       ) : null}
 
       {response.sections?.map((section) =>

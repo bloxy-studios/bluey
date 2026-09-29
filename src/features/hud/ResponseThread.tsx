@@ -2,6 +2,7 @@ import { ArrowDown } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { Pill } from "@/components/ui/Pill";
 import { Spinner } from "@/components/ui/Spinner";
 import { truncatedAnswerError } from "@/lib/errors/answers";
@@ -92,7 +93,11 @@ const Turn = memo(function Turn({ turn, isLast, onRetry, onRegenerate }: TurnPro
 
   return (
     <div className="flex flex-col gap-3">
-      {turn.suggestion ? <SuggestionHeader suggestion={turn.suggestion} /> : <PromptPill label={turn.promptLabel} />}
+      {turn.suggestion ? (
+        <SuggestionHeader suggestion={turn.suggestion} />
+      ) : (
+        <PromptPill label={turn.promptLabel} />
+      )}
       {turn.error ? (
         <ErrorBanner error={turn.error} onRetry={retry} compact />
       ) : turn.response ? (
@@ -113,6 +118,8 @@ const Turn = memo(function Turn({ turn, isLast, onRetry, onRegenerate }: TurnPro
     </div>
   );
 });
+
+const TURN_FALLBACK = <div className="text-[13px] text-fg-subtle">This answer couldn’t be displayed.</div>;
 
 export interface ResponseThreadProps {
   /** Re-send a failed turn's original request. */
@@ -174,13 +181,15 @@ export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
       >
         <div className="flex min-h-[120px] flex-col gap-5 px-5 py-4">
           {turns.map((turn, index) => (
-            <Turn
-              key={turn.id}
-              turn={turn}
-              isLast={index === turns.length - 1}
-              onRetry={onRetry}
-              onRegenerate={onRegenerate}
-            />
+            // One turn that fails to render must not blank the HUD (UX-038).
+            <ErrorBoundary key={turn.id} resetKey={turn.response} fallback={TURN_FALLBACK}>
+              <Turn
+                turn={turn}
+                isLast={index === turns.length - 1}
+                onRetry={onRetry}
+                onRegenerate={onRegenerate}
+              />
+            </ErrorBoundary>
           ))}
         </div>
       </div>
