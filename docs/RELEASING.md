@@ -32,6 +32,23 @@ notarization inputs can still be used for build-only bundles, but this never cre
 publication-eligible record or a GitHub Release. Do not set `PUBLISH_RELEASE=true` locally;
 that is an internal, gated Actions path, not a shortcut to publish arbitrary files.
 
+### Code identity and the Keychain (ADR 0011)
+
+macOS ties Bluey's Keychain items (API keys, sign-in, subscription tokens) to the code identity
+of the build that created them. Developer ID builds keep one identity (bundle id + Team ID)
+across updates, so users are never asked again. An **ad-hoc** build — the developer path and,
+until Apple credentials exist, every nightly — gets a new identity with each build, so after an
+update macOS asks for the login password before the new build may read each item (Bluey reads
+lazily and shows the item as *locked* with *Allow access*; *Always Allow* makes it stick until
+the next update). Developer ID signing and notarization of every build users install, nightlies
+included, is the real fix and an owner action.
+
+For local developer builds that should keep their approvals, sign with a stable identity
+instead of ad-hoc: `BLUEY_LOCAL_SIGNING_IDENTITY="Apple Development: … (TEAMID)" bash
+scripts/release.sh`. It is used only when `APPLE_SIGNING_IDENTITY` is unset, drops the
+notarization inputs, prints that the build is not eligible for publication, and is refused on
+the publish path. A self-signed certificate does not help (macOS pins it to the binary's hash).
+
 ## Owner setup (required before first publication)
 
 1. Merge/review the release workflow **and its Python/shell helpers and tests** through the
@@ -193,7 +210,9 @@ on that channel. The **Nightly** channel reads the rolling `nightly` prerelease,
 2. `build` (macos-14 matrix, `macos-build` environment): the ordinary developer path of
    `scripts/release.sh` — ad-hoc Apple signature, **no Apple secrets**, minisign-signed updater
    bundle — with `BLUEY_BUILD_VERSION` overriding the version. Nightlies are therefore
-   unsigned/un-notarized builds until Apple credentials exist; the release body says so.
+   unsigned/un-notarized builds until Apple credentials exist; the release body says so. Each
+   nightly update therefore re-asks for Keychain access once per saved item (see *Code identity
+   and the Keychain* above).
 3. `publish` (ubuntu, the only `contents: write` job): creates the `nightly` prerelease on the
    first run, otherwise force-moves the `nightly` tag to the built commit; deletes and re-uploads
    `SHA256SUMS`/`latest.json` (and same-day reruns' bundles), uploads the DMGs, archives and

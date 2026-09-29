@@ -4,7 +4,8 @@
 1. **Nothing happens silently.** Capture and listening only start on explicit user action
    (shortcut, HUD button, menu bar) and are always visible (HUD pill, menu bar item).
 2. **Secrets never reach the renderer.** API keys and the sign-in tokens are stored in the
-   macOS Keychain by the Rust process (`keyring`). The WebView can only `set`, `has`, `delete`
+   macOS Keychain by the Rust process (`security-framework`, ADR 0011). The WebView can only
+   `set`, `has`, `delete` (and see the saved/locked/absent state of)
    the API keys listed in `SECRET_KEYS` (`src/lib/tauri/commands.ts`: provider, Exa, Firecrawl
    and agent keys); the `secrets_*` commands reject every other key (`auth:*`, `account:*`)
    before the store is touched, and the WebView never sees a token at all.
@@ -23,7 +24,7 @@
 | Exa / Firecrawl keys | Keychain | Rust research clients; env-injected into the agent sidecar per job |
 | Anthropic key for the agent | Keychain (or `ANTHROPIC_API_KEY` in Bluey's `.env`) | `ANTHROPIC_API_KEY` env of the sidecar process only, when `RESEARCH_BACKEND=claude` |
 | Sign-in tokens (OAuth access / refresh / ID token) | Keychain `auth:clerk:oauth_tokens` | Rust only (ADR 0008): browser sign-in via Clerk's OAuth/OIDC endpoints; validated/refreshed at boot; revoked on sign-out |
-| AI subscription tokens (ChatGPT / Claude / Google — ADR 0009, from the Provider Accounts PRs) | Keychain `account:<account_id>:oauth_tokens` | Rust only (`AccountsManager`): refreshed under a single-flight lock, injected into provider requests by the adapter, never returned to the WebView, never passed to a sidecar |
+| AI subscription tokens (ChatGPT / Claude / Google — ADR 0009, from the Provider Accounts PRs) | Keychain `account:<account_id>:oauth_tokens` | Rust only (`AccountsManager`): refreshed under a single-flight lock (and once more, forced, when the provider rejects an unexpired Bluey-owned token), rewritten only when a refresh changed them, injected into provider requests by the adapter, never returned to the WebView, never passed to a sidecar |
 | Clerk publishable key + public OAuth client id | `VITE_CLERK_PUBLISHABLE_KEY`, `BLUEY_CLERK_OAUTH_CLIENT_ID` (public by design): the environment / `.env.local` / `.env` at startup, else the values `src-tauri/build.rs` compiled in from the same files (an explicit allowlist of public identifiers — never API keys) | Rust derives the issuer; the WebView never talks to Clerk |
 
 Sidecars are spawned with a **cleared environment**: the helper and the research agent receive
@@ -34,9 +35,30 @@ a child process that has no business with them. Log lines are redacted for `sk-�
 `AIza…`, `Bearer …`, `api-key` values and `key=` URL queries.
 
 Keys entered in Settings are written straight to the Keychain and the UI only shows
-"Key saved". `.env` values are imported into the Keychain on first run and can be removed from
-disk afterwards. Nothing secret is written to SQLite or logs; the logger redacts common key
+"Key saved" (or "locked" — saved, but macOS wants the user's OK before this build reads it —
+with *Allow access*, and a confirmed *Remove key*). `.env` values (provider keys and
+`EXA_API_KEY` / `FIRECRAWL_API_KEY`) are imported into the Keychain when no entry exists yet and
+can be removed from disk afterwards. Release builds read `.env` files only from an explicit
+`BLUEY_ENV_FILE`, never from the launch or executable directory. Nothing secret is written to SQLite or logs; the logger redacts common key
 patterns (`sk-…`, `fc-…`, bearer tokens) defensively.
+
+### Keychain access (ADR 0011)
+Items live in the login keychain under the service `com.codewithabdul.bluey`
+(`com.codewithabdul.bluey.dev` for debug builds, so a dev build never touches the installed
+app's items). macOS trusts the *code identity* that created an item; a build with a different
+identity (an ad-hoc update, a rebuild) must be approved before it reads an item's value.
+
+| Action | Keychain access |
+|---|---|
+| Boot, settings save, presence flags, *Saved credentials* | Attribute-only (enumerate / exists / non-interactive probe) — never prompts |
+| First use of a key or token in a process | One data read, then cached in memory (`Zeroizing`) for the process |
+| Save a key, persist a refreshed token | Attribute-only delete, then add (the running build owns the new item); an unchanged value is not rewritten |
+| Remove key, disconnect, sign out, reset | Attribute-only delete, status checked; local state is cleared even if the delete fails |
+| *Allow access* (Settings) | The single deliberate interactive read |
+| *Import* from Claude Code / Antigravity | One read of the other app's item, only on the Import click; a denial says macOS blocked it and to click Import again and choose Allow |
+
+A denied, cancelled or non-interactive read is reported as a *locked* credential
+(`storage.keychain_*` codes), never as a missing one, and never signs the user out.
 
 ## Provider accounts — subscription sign-in (ADR 0009)
 
@@ -79,7 +101,9 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
   rotates refresh tokens, so the copied session is shared with the CLI and whichever side
   refreshes first signs the other out later — the Import button says so. Claude (PR 3b) reads the
   Keychain item `Claude Code-credentials` (macOS may ask for permission), else
-  `~/.claude/.credentials.json`, plus `~/.claude.json` for the account uuid — read-only, no refresh.
+  `~/.claude/.credentials.json`, plus `~/.claude.json` for the account uuid — read-only, and never
+  refreshed by Bluey (Anthropic rotates refresh tokens too): an imported ChatGPT or Claude session
+  that expires moves to *needs sign-in*: sign in in the browser or import again.
   Google AI (PR 3c) reads the Keychain item `gemini` / `antigravity` the standalone Antigravity app
   and `agy` keep (macOS may ask), never writes it; an expired access token is renewed, which is safe
   because Google refresh tokens do not rotate.
@@ -147,5 +171,6 @@ platform limits honestly and does not attempt to defeat monitoring software.
 ## Data deletion
 `data_delete_screenshots`, `data_clear_transcripts`, `data_clear_ai_cache`,
 `sessions_delete(_all)`, `documents_delete(_all)` and `data_reset_all` remove rows **and** the
-files they reference (frame cache), then `VACUUM`. Reset also clears Keychain entries owned by
-Bluey and the Clerk session.
+files they reference (frame cache), then `VACUUM`. Reset also deletes every Keychain item of
+Bluey's service — enumerated by attributes, so keys of providers removed earlier go too — and the
+Clerk session; deletes never read the item first, so they never prompt.
