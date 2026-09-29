@@ -63,6 +63,7 @@ import {
   createMockAccounts,
   FIXTURE_ACCOUNT_IDENTITIES,
 } from "./fixtures";
+import { applyModePatch, createCustomMode, invalidParams } from "./modes";
 
 const now = () => new Date().toISOString();
 
@@ -606,6 +607,14 @@ export class MockTransport implements Transport {
 
   private log(level: string, target: string, message: string): void {
     this.emit("dev.log", { level, target, message, at: now() });
+  }
+
+  /** `ModeManager::set_active`: switch, update the status, emit `mode.changed`. */
+  private activateMode(id: string): AppStatus {
+    const mode = this.mode(id);
+    const status = this.setAppState({ modeId: mode.id });
+    this.emit("mode.changed", { mode, sessionId: this.status.sessionId });
+    return status;
   }
 
   private mode(id: string): BlueyMode {
@@ -1637,56 +1646,51 @@ export class MockTransport implements Transport {
     modes_list: () => this.modes,
     modes_get: (args) => this.mode(args.id),
     modes_create: (args) => {
-      const created: BlueyMode = {
-        id: createId("mode"),
-        name: args.draft.name || "Untitled Mode",
-        description: args.draft.description ?? "",
-        icon: args.draft.icon ?? "sparkles",
-        systemInstructions: args.draft.systemInstructions ?? "",
-        responseSchema: args.draft.responseSchema ?? "answer",
-        preferredLatency: args.draft.preferredLatency ?? "fast",
-        contextRequirements: args.draft.contextRequirements ?? ["screen", "transcript"],
-        builtIn: false,
-        group: args.draft.group,
-        responseStyle: args.draft.responseStyle,
-        preferredModelRole: args.draft.preferredModelRole,
-        attachedDocumentIds: [],
-        createdAt: now(),
-        updatedAt: now(),
-      };
+      const created = createCustomMode(args.draft, now());
       this.modes = [...this.modes, created];
       this.emit("modes.changed", this.modes);
       return created;
     },
     modes_update: (args) => {
-      const current = this.mode(args.id);
-      const updated: BlueyMode = { ...current, ...args.patch, updatedAt: now() } as BlueyMode;
+      const updated = applyModePatch(this.mode(args.id), args.patch, now());
       this.modes = this.modes.map((m) => (m.id === args.id ? updated : m));
       this.emit("modes.changed", this.modes);
       return updated;
     },
     modes_delete: (args) => {
       const mode = this.mode(args.id);
-      if (mode.builtIn)
-        throw blueyError({
-          kind: "configuration",
-          code: "modes.built_in",
-          message: "Built-in modes cannot be deleted.",
-        });
+      if (mode.builtIn) throw invalidParams("built-in modes cannot be deleted");
+      // The default falls back to `general`; the active mode to the default.
+      if (this.settings.general.defaultModeId === args.id) {
+        this.settings = { ...this.settings, general: { ...this.settings.general, defaultModeId: "general" } };
+        this.emitSettings();
+      }
+      if (this.status.modeId === args.id) {
+        const fallback = this.settings.general.defaultModeId;
+        this.activateMode(this.modes.some((m) => m.id === fallback) ? fallback : "general");
+      }
+      // Its files go with it.
+      this.documents = this.documents.filter((d) => !(d.scope === "mode" && d.scopeId === args.id));
       this.modes = this.modes.filter((m) => m.id !== args.id);
-      if (this.status.modeId === args.id) this.setAppState({ modeId: this.settings.general.defaultModeId });
       this.emit("modes.changed", this.modes);
     },
     modes_duplicate: (args) => {
       const source = this.mode(args.id);
+      const at = now();
+      const id = createId("mode");
+      const files = this.documents
+        .filter((d) => d.scope === "mode" && d.scopeId === source.id)
+        .map((d) => ({ ...d, id: createId("doc"), scopeId: id, createdAt: at, updatedAt: at }));
       const copy: BlueyMode = {
         ...source,
-        id: createId("mode"),
-        name: `${source.name} copy`,
+        id,
+        name: `${source.name} (Copy)`,
         builtIn: false,
-        createdAt: now(),
-        updatedAt: now(),
+        attachedDocumentIds: files.map((d) => d.id),
+        createdAt: at,
+        updatedAt: at,
       };
+      this.documents = [...this.documents, ...files];
       this.modes = [...this.modes, copy];
       this.emit("modes.changed", this.modes);
       return copy;
@@ -1694,23 +1698,23 @@ export class MockTransport implements Transport {
     modes_set_default: (args) => {
       this.mode(args.id);
       this.settings = { ...this.settings, general: { ...this.settings.general, defaultModeId: args.id } };
-      return this.emitSettings();
+      const settings = this.emitSettings();
+      // With no session running the new default applies right away.
+      if (!this.status.sessionId && this.status.modeId !== args.id) this.activateMode(args.id);
+      return settings;
     },
-    modes_set_active: (args) => {
-      const mode = this.mode(args.id);
-      const status = this.setAppState({ modeId: mode.id });
-      this.emit("mode.changed", { mode, sessionId: this.status.sessionId });
-      return status;
-    },
+    modes_set_active: (args) => this.activateMode(args.id),
     modes_reset_built_in: (args) => {
+      const current = this.mode(args.id);
       const original = createBuiltInModes().find((m) => m.id === args.id);
-      if (!original)
-        throw blueyError({
-          kind: "configuration",
-          code: "modes.not_built_in",
-          message: "Not a built-in mode.",
-        });
-      const reset: BlueyMode = { ...original, updatedAt: now() };
+      if (!original || !current.builtIn) throw invalidParams(`mode '${args.id}' is not built-in`);
+      // Files and the creation time are kept.
+      const reset: BlueyMode = {
+        ...original,
+        attachedDocumentIds: current.attachedDocumentIds,
+        createdAt: current.createdAt,
+        updatedAt: now(),
+      };
       this.modes = this.modes.map((m) => (m.id === args.id ? reset : m));
       this.emit("modes.changed", this.modes);
       return reset;
