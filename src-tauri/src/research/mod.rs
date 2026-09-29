@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bluey_core::error::RecoveryAction;
-use bluey_core::types::{DeepResearchRequest, ScrapeResult, SearchResult};
+use bluey_core::types::{DeepResearchRequest, ResearchBackend, ScrapeResult, SearchResult};
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_protocols::{exa, firecrawl};
 use serde::Serialize;
@@ -21,12 +21,16 @@ const DEFAULT_NUM_RESULTS: u32 = 8;
 const MAX_NUM_RESULTS: u32 = 10;
 
 /// Mirrors the `research_available` result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchAvailability {
     pub search: bool,
     pub scrape: bool,
+    /// The agent can run a useful job: the sidecar and backend are usable
+    /// and there is at least an Exa key to search with.
     pub deep_agent: bool,
+    /// Backends the installed agent build can run (Settings hides the rest).
+    pub agent_backends: Vec<ResearchBackend>,
 }
 
 pub struct ResearchManager {
@@ -125,11 +129,14 @@ impl ResearchManager {
     pub async fn availability(&self) -> ResearchAvailability {
         let search = self.secrets.has(EXA_KEY).await.unwrap_or(false);
         let scrape = self.secrets.has(FIRECRAWL_KEY).await.unwrap_or(false);
-        let deep_agent = self.agent.available().await;
+        // Without Exa the agent has nothing to search with, and the sidecar
+        // refuses a job whose tools lack keys (PROV-013).
+        let deep_agent = search && self.agent.available().await;
         ResearchAvailability {
             search,
             scrape,
             deep_agent,
+            agent_backends: self.agent.supported_backends().await,
         }
     }
 

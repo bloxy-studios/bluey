@@ -385,6 +385,10 @@ pub struct DeepResearchRequest {
     pub tools: Vec<ResearchTool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_document_ids: Option<Vec<String>>,
+    /// Wall-clock budget in ms from the start of the job: past it the agent
+    /// stops calling tools and writes its report from what it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
 }
 
 /// Mirrors `DeepResearchEvent` (tag = "type").
