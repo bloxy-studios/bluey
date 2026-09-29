@@ -422,7 +422,9 @@ export function startProactiveLoop(): Unlisten {
     if (!state.state?.visible || previous.state?.visible === true || !deferred) return;
     const { event, at } = deferred;
     deferred = null;
-    if (Date.now() - at <= PREPARED_TTL_MS && proactiveEnabled()) schedule(event);
+    // Shown too late, the conversation has moved past it: the queued lane's rule (LIVE-009).
+    const now = Date.now();
+    if (now - at <= PREPARED_TTL_MS && !isStale(event, now) && proactiveEnabled()) schedule(event);
   });
 
   const offApp = useAppStore.subscribe((state, previous) => {

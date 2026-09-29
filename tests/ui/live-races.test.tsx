@@ -14,7 +14,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useChatStore } from "@/stores/chatStore";
 import { setEngine } from "@/stores/engine";
 import { usePanelStore } from "@/stores/panelStore";
-import { useProactiveStore } from "@/stores/proactive";
+import { QUESTION_STALE_MS, useProactiveStore } from "@/stores/proactive";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { makeResponse, ProactiveFakeEngine, setupMockApp } from "./helpers";
 
@@ -214,6 +214,20 @@ describe("live suggestion races", () => {
       setHudVisible(false);
       mock.emit("question.detected", detected("q-old"));
       vi.setSystemTime(Date.now() + PREPARED_TTL_MS + 1);
+      act(() => setHudVisible(true));
+      await flush();
+      expect(engine.prepared).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a question detected while hidden is dropped once the conversation moved past it (LIVE-009)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      setHudVisible(false);
+      mock.emit("question.detected", detected("q-past"));
+      vi.setSystemTime(Date.now() + QUESTION_STALE_MS + 1);
       act(() => setHudVisible(true));
       await flush();
       expect(engine.prepared).toHaveLength(0);
