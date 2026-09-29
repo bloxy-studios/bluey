@@ -58,7 +58,10 @@ pub fn provider_supports_vision(kind: AiProviderKind) -> bool {
 /// `vision_required` forces the vision role. Unassigned roles fall back:
 /// fast→default, reasoning→default, vision→default, research→reasoning→default.
 /// Providers that are disabled or lack an API key are skipped (mock never
-/// needs a key). When nothing usable remains: `config.no_model`.
+/// needs a key). When an assigned provider was skipped, the role runs on a
+/// usable API-key provider where the reason allows it, else the error names
+/// that provider (`config.provider_unusable`); when no provider is assigned at
+/// all: `config.no_model`.
 pub fn select(
     input: &RoutingInput,
     assignments: &ModelRoleAssignments,

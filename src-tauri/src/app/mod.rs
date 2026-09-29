@@ -105,7 +105,7 @@ pub fn run(builder: tauri::Builder<Wry>) {
     let app = match app {
         Ok(app) => app,
         Err(e) => {
-            // `panic = "abort"`: an `expect` here left only a crash report.
+            // Log and exit cleanly: an `expect` here left only a panic report.
             tracing::error!(error = %e, "cannot build the Bluey application");
             eprintln!("Bluey could not start: {e}");
             std::process::exit(1);
