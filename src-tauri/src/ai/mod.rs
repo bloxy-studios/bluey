@@ -16,9 +16,9 @@ use bluey_core::latency::{self, RustStamps};
 use bluey_core::presets;
 use bluey_core::router::{self, RoutingInput};
 use bluey_core::types::{
-    AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent, AppState,
-    ConnectionTestResult, FinishReason, LatencyBudget, LatencyTrace, ModelAssignment, ModelRole,
-    ModelSelection, ProviderAuthMethod, ReasoningLevel, Settings, TraceStamps,
+    AccountStatus, AiChunk, AiProviderConfig, AiProviderKind, AiRequest, AiTask, AppEvent,
+    AppState, ConnectionTestResult, FinishReason, LatencyBudget, LatencyTrace, ModelAssignment,
+    ModelRole, ModelSelection, ProviderAuthMethod, ReasoningLevel, Settings, TraceStamps,
 };
 use bluey_core::{now_iso, BlueyError, BlueyErrorKind, BlueyResult};
 use bluey_protocols::gemini as gemini_proto;
@@ -288,6 +288,66 @@ impl AiManager {
             model_override: request.model_override.as_ref(),
         };
         router::select(&input, &settings.ai.models, &self.providers())
+            .map_err(|error| self.name_account_state(error))
+    }
+
+    /// An account stop signal says "your API key is used meanwhile" only when
+    /// the router now reaches another provider for the request: that provider
+    /// rides along as `details.fallbackProviderId`.
+    fn with_fallback_hint(
+        &self,
+        request: &AiRequest,
+        failed_provider: &str,
+        mut error: BlueyError,
+    ) -> BlueyError {
+        if !error.code.starts_with("account.") {
+            return error;
+        }
+        let Ok(fallback) = self.select(request) else {
+            return error;
+        };
+        if fallback.provider_id == failed_provider {
+            return error;
+        }
+        let hint = serde_json::Value::from(fallback.provider_id);
+        match error.details.as_mut() {
+            Some(serde_json::Value::Object(details)) => {
+                details.insert("fallbackProviderId".into(), hint);
+            }
+            None => error.details = Some(serde_json::json!({ "fallbackProviderId": hint })),
+            Some(_) => {}
+        }
+        error
+    }
+
+    /// The router only knows an account is unusable; name its state
+    /// (`account_needs_reauth`, `account_rate_limited`, …) for the copy.
+    fn name_account_state(&self, mut error: BlueyError) -> BlueyError {
+        let Some(details) = error.details.as_mut().and_then(|d| d.as_object_mut()) else {
+            return error;
+        };
+        if details.get("cause").and_then(|c| c.as_str()) != Some("account_unavailable") {
+            return error;
+        }
+        let provider_id = details.get("providerId").and_then(|p| p.as_str());
+        let account = self.accounts.get().and_then(|accounts| {
+            accounts
+                .list()
+                .into_iter()
+                .find(|account| Some(account.provider_id.as_str()) == provider_id)
+        });
+        if let Some(account) = account {
+            let state = match account.status {
+                AccountStatus::Disconnected => "disconnected",
+                AccountStatus::Connecting { .. } => "connecting",
+                AccountStatus::Connected => "connected",
+                AccountStatus::NeedsReauth => "needs_reauth",
+                AccountStatus::RateLimited { .. } => "rate_limited",
+                AccountStatus::Unavailable { .. } => "unavailable",
+            };
+            details.insert("cause".into(), format!("account_{state}").into());
+        }
+        error
     }
 
     /// Start a streaming generation. Validation and routing happen before this
@@ -590,6 +650,7 @@ impl AiManager {
                 }
             }
             StreamOutcome::Failed { error } => {
+                let error = self.with_fallback_hint(&request, &selection.provider_id, error);
                 record.finish_reason = Some("error".into());
                 record.error_code = Some(error.code.clone());
                 record.total_ms = Some(started.elapsed().as_millis() as u64);

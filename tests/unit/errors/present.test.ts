@@ -215,10 +215,42 @@ describe("subscription accounts (ADR 0009)", () => {
     expect(limited.title).toBe("Plan limit reached");
     expect(limited.message).toContain("5h window");
     expect(limited.message).toMatch(/resets at \d/);
-    expect(limited.message).toContain("API key meanwhile");
+    expect(limited.message).not.toContain("API key meanwhile");
+    expect(limited.message).toContain("Add an API key");
 
     const noReset = describeError(error({ kind: "authentication", code: "account.rate_limited" }));
     expect(noReset.message).not.toContain("resets at");
+  });
+
+  it("promises the API key only when Rust names the provider that stands in (PROV-001)", () => {
+    const standIn = describeError(
+      error({ kind: "authentication", code: "account.needs_reauth", details: { fallbackProviderId: "gemini" } }),
+    );
+    expect(standIn.message).toContain("Bluey uses your API key meanwhile.");
+
+    const stranded = describeError(error({ kind: "authentication", code: "account.policy_blocked" }));
+    expect(stranded.message).not.toContain("API key meanwhile");
+    expect(stranded.message).toContain("Add an API key in Settings → AI");
+  });
+
+  it("names the assigned provider and why it can't serve the role (UX-007)", () => {
+    const unusable = (cause: string) =>
+      presentError(
+        error({
+          kind: "configuration",
+          code: "config.provider_unusable",
+          details: { providerId: "anthropic", providerName: "Anthropic", cause, role: "default" },
+          recovery: { type: "open_settings", tab: "ai" },
+        }),
+      );
+    const keyless = unusable("missing_key");
+    expect(keyless.title).toBe("API key missing");
+    expect(keyless.message).toContain("Anthropic has no API key yet");
+    expect(keyless.message).not.toContain("No model assigned");
+    expect(keyless.actionLabel).toBe("Open Settings");
+    expect(unusable("disabled").title).toBe("Provider turned off");
+    expect(unusable("account_needs_reauth").message).toContain("no API-key provider can stand in");
+    expect(unusable("account_rate_limited").title).toBe("Plan limit reached");
   });
 
   it("offers Reconnect for an expired account and Use API key instead for an unavailable one", () => {

@@ -3,9 +3,10 @@
 //! requirement — plus the user's role assignments. Pure decision logic, no I/O.
 
 use crate::error::BlueyError;
+use crate::presets;
 use crate::types::{
     AiProviderConfig, AiProviderKind, AiTask, LatencyBudget, ModelAssignment, ModelRole,
-    ModelRoleAssignments, ModelSelection, ReasoningLevel,
+    ModelRoleAssignments, ModelSelection, ProviderAuthMethod, ReasoningLevel,
 };
 
 /// Above this context size, summarization is routed to the default role
@@ -88,6 +89,9 @@ pub fn select(
         };
     }
 
+    // The first assigned provider the chain had to skip: it names the failure
+    // and decides whether the API-key fallback below applies.
+    let mut blocked: Option<Blocked> = None;
     for candidate in fallback_chain(role) {
         let Some(assignment) = assignments.get(*candidate) else {
             reason.push_str(&format!("; role {} unassigned", role_str(*candidate)));
@@ -99,6 +103,8 @@ pub fn select(
                 assignment.provider_id,
                 role_str(*candidate)
             ));
+            blocked
+                .get_or_insert_with(|| Blocked::new(&assignment.provider_id, None, needs_vision));
             continue;
         };
         if !provider_usable(provider) {
@@ -107,6 +113,7 @@ pub fn select(
                 provider.id,
                 role_str(*candidate)
             ));
+            blocked.get_or_insert_with(|| Blocked::new(&provider.id, Some(provider), needs_vision));
             continue;
         }
         if needs_vision && !provider_supports_vision(provider.kind) {
@@ -115,6 +122,7 @@ pub fn select(
                 provider.id,
                 role_str(*candidate)
             ));
+            blocked.get_or_insert_with(|| Blocked::new(&provider.id, Some(provider), needs_vision));
             continue;
         }
         if *candidate != role {
@@ -129,13 +137,36 @@ pub fn select(
         });
     }
 
-    Err(BlueyError::configuration(
-        "no_model",
-        format!(
-            "no usable model for role {}; add a provider and assign models in Settings → AI",
-            role_str(role)
-        ),
-    ))
+    let Some(blocked) = blocked else {
+        return Err(BlueyError::configuration(
+            "no_model",
+            format!(
+                "no usable model for role {}; add a provider and assign models in Settings → AI",
+                role_str(role)
+            ),
+        ));
+    };
+
+    // A subscription account that stopped serving (or a provider that is gone)
+    // must not strand the role: the same role runs on a usable API-key provider.
+    if blocked.allows_api_key_fallback() {
+        if let Some((provider, model)) =
+            api_key_fallback(role, needs_vision, assignments, providers)
+        {
+            reason.push_str(&format!(
+                " → fallback {} ({} unavailable)",
+                provider.id, blocked.provider_id
+            ));
+            return Ok(ModelSelection {
+                provider_id: provider.id.clone(),
+                provider_kind: provider.kind,
+                model,
+                role,
+                reason,
+            });
+        }
+    }
+    Err(blocked.into_error(role))
 }
 
 /// Derive the desired role from the routing input, with a human-readable reason.
@@ -254,6 +285,112 @@ fn fallback_chain(role: ModelRole) -> &'static [ModelRole] {
 
 fn provider_usable(p: &AiProviderConfig) -> bool {
     p.enabled && (p.has_api_key || p.kind == AiProviderKind::Mock)
+}
+
+/// The API-key provider that stands in for an unusable account: the first
+/// usable one in settings order (the reserved Gemini provider first), with its
+/// kind's recommended model for the role — or, for kinds without presets
+/// (OpenAI-compatible), the model the user already assigned it for another
+/// text role.
+fn api_key_fallback<'p>(
+    role: ModelRole,
+    needs_vision: bool,
+    assignments: &ModelRoleAssignments,
+    providers: &'p [AiProviderConfig],
+) -> Option<(&'p AiProviderConfig, String)> {
+    let usable = |p: &&AiProviderConfig| {
+        p.auth_method == ProviderAuthMethod::ApiKey
+            && p.kind != AiProviderKind::Mock
+            && provider_usable(p)
+            && (!needs_vision || provider_supports_vision(p.kind))
+    };
+    let model_for = |p: &AiProviderConfig| {
+        let preset = presets::by_kind(p.kind).and_then(|preset| {
+            fallback_chain(role)
+                .iter()
+                .find_map(|r| preset.model_for(*r))
+        });
+        let text_role = TEXT_ROLES.contains(&role);
+        preset.map(str::to_string).or_else(|| {
+            TEXT_ROLES
+                .iter()
+                .filter(|_| text_role)
+                .filter_map(|r| assignments.get(*r))
+                .find(|a| a.provider_id == p.id)
+                .map(|a| a.model.clone())
+        })
+    };
+    let gemini_first = providers
+        .iter()
+        .filter(|p| p.id == presets::GEMINI_ID)
+        .chain(providers.iter().filter(|p| p.id != presets::GEMINI_ID));
+    gemini_first
+        .filter(usable)
+        .find_map(|p| model_for(p).map(|model| (p, model)))
+}
+
+/// Roles whose models generate text (a stand-in model must be one of these).
+const TEXT_ROLES: [ModelRole; 5] = [
+    ModelRole::Default,
+    ModelRole::Fast,
+    ModelRole::Reasoning,
+    ModelRole::Vision,
+    ModelRole::Research,
+];
+
+/// An assigned provider the chain skipped, and why (`cause` is the
+/// `config.provider_unusable` detail the WebView words its copy from).
+struct Blocked {
+    provider_id: String,
+    provider_name: Option<String>,
+    is_account: bool,
+    cause: &'static str,
+}
+
+impl Blocked {
+    fn new(provider_id: &str, provider: Option<&AiProviderConfig>, needs_vision: bool) -> Self {
+        let cause = match provider {
+            None => "not_configured",
+            Some(p) if p.auth_method == ProviderAuthMethod::OauthSubscription => {
+                "account_unavailable"
+            }
+            Some(p) if !p.enabled => "disabled",
+            Some(p) if !provider_usable(p) => "missing_key",
+            Some(_) if needs_vision => "no_vision",
+            Some(_) => "unusable",
+        };
+        Self {
+            provider_id: provider_id.to_string(),
+            provider_name: provider.map(|p| p.name.clone()),
+            is_account: provider
+                .is_some_and(|p| p.auth_method == ProviderAuthMethod::OauthSubscription),
+            cause,
+        }
+    }
+
+    /// Only an account (or a provider that no longer exists) reroutes on its
+    /// own; a disabled or keyless API-key provider is the user's to fix.
+    fn allows_api_key_fallback(&self) -> bool {
+        self.is_account || self.cause == "not_configured"
+    }
+
+    fn into_error(self, role: ModelRole) -> BlueyError {
+        let name = self.provider_name.as_deref().unwrap_or(&self.provider_id);
+        BlueyError::configuration(
+            "provider_unusable",
+            format!(
+                "role {} is assigned to {name}, which cannot serve requests ({})",
+                role_str(role),
+                self.cause
+            ),
+        )
+        .with_details(serde_json::json!({
+            "providerId": self.provider_id,
+            "providerName": name,
+            "cause": self.cause,
+            "role": role_str(role),
+        }))
+    }
 }
 
 fn role_str(role: ModelRole) -> &'static str {
@@ -438,7 +575,76 @@ mod tests {
         };
         let e = select(&input(AiTask::Answer), &a2, &providers).expect_err("no usable model");
         assert_eq!(e.kind, BlueyErrorKind::Configuration);
-        assert_eq!(e.code, "config.no_model");
+        assert_eq!(e.code, "config.provider_unusable");
+        let details = e.details.expect("details");
+        assert_eq!(details["providerId"], "p2");
+        assert_eq!(details["cause"], "missing_key");
+    }
+
+    fn account(id: &str, kind: AiProviderKind, usable: bool) -> AiProviderConfig {
+        AiProviderConfig {
+            auth_method: ProviderAuthMethod::OauthSubscription,
+            ..provider(id, kind, true, usable)
+        }
+    }
+
+    fn default_on(provider_id: &str) -> ModelRoleAssignments {
+        ModelRoleAssignments {
+            default: Some(assignment(provider_id, "claude-sonnet-5")),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_unusable_account_falls_back_to_an_api_key_provider() {
+        let providers = vec![
+            provider("azure-foundry", AiProviderKind::AzureFoundry, true, false),
+            provider("gemini", AiProviderKind::GoogleGemini, true, true),
+            account("claude", AiProviderKind::ClaudeSubscription, false),
+        ];
+        let mut i = input(AiTask::Answer);
+        i.latency = LatencyBudget::Balanced;
+        let s = select(&i, &default_on("claude"), &providers).expect("api-key fallback");
+        assert_eq!(s.provider_id, "gemini");
+        assert_eq!(s.model, "gemini-3.8-flash");
+        assert_eq!(s.role, ModelRole::Default);
+        assert!(
+            s.reason.contains("→ fallback gemini (claude unavailable)"),
+            "{}",
+            s.reason
+        );
+
+        // The account layer switched off: the provider is gone, same fallback.
+        let without_account = &providers[..2];
+        let s = select(&i, &default_on("claude"), without_account).expect("fallback");
+        assert_eq!(s.provider_id, "gemini");
+    }
+
+    #[test]
+    fn an_unusable_account_without_an_api_key_provider_names_the_account() {
+        let providers = vec![
+            provider("gemini", AiProviderKind::GoogleGemini, true, false),
+            account("claude", AiProviderKind::ClaudeSubscription, false),
+        ];
+        let e = select(&input(AiTask::Coding), &default_on("claude"), &providers)
+            .expect_err("nothing usable");
+        assert_eq!(e.code, "config.provider_unusable");
+        let details = e.details.expect("details");
+        assert_eq!(details["providerId"], "claude");
+        assert_eq!(details["cause"], "account_unavailable");
+        assert_eq!(details["role"], "default");
+    }
+
+    #[test]
+    fn a_disabled_api_key_provider_is_reported_not_rerouted() {
+        let providers = vec![
+            provider("gemini", AiProviderKind::GoogleGemini, true, true),
+            provider("anthropic", AiProviderKind::Anthropic, false, true),
+        ];
+        let e = select(&input(AiTask::Coding), &default_on("anthropic"), &providers)
+            .expect_err("the user's choice stays visible");
+        assert_eq!(e.code, "config.provider_unusable");
+        assert_eq!(e.details.expect("details")["cause"], "disabled");
     }
 
     #[test]

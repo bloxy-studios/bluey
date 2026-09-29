@@ -55,9 +55,14 @@ the plan — together they keep the two right-hand columns true after every offi
 4. **Requests** — the adapter resolves a `CredentialSource::OAuth` per request (refresh under a
    single-flight lock 60 s before expiry) and applies the provider's `RequestShaper` last, so the
    request matches the official client's captured shape.
-5. **Fallback** — `NeedsReauth`, `Unavailable` or `RateLimited{until}` routes the role to the
-   API-key provider (then the router's chain) and the HUD shows *Reconnect* / *Use API key
-   instead*; a rate-limited account is skipped until its window resets.
+5. **Fallback** — `NeedsReauth`, `Unavailable` or `RateLimited{until}` makes the account keyless
+   for the router: the role's chain runs first, and when it is exhausted the same role runs on
+   the first usable API-key provider (the reserved `gemini` first) with that kind's preset model
+   (`→ fallback <provider> (<account> unavailable)` in the selection reason, shown in the HUD).
+   A failed request's error carries `details.fallbackProviderId` only when such a provider
+   exists, so the copy says *Bluey uses your API key meanwhile* only then; with none the router
+   returns `config.provider_unusable` (`cause: account_<state>`). A rate-limited account is
+   skipped until its window resets.
 
 ## Verified wire facts
 
