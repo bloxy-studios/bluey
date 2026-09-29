@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { Pill } from "@/components/ui/Pill";
 import { Spinner } from "@/components/ui/Spinner";
 import { showErrorToast } from "@/components/ui/toast-store";
-import { presentError } from "@/lib/errors/present";
+import { presentError, runRecovery } from "@/lib/errors/present";
 import { bluey } from "@/lib/tauri/api";
 import { toBlueyError } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
@@ -90,7 +90,8 @@ export function StatePill({ onRetry }: StatePillProps = {}) {
               className="shrink-0 rounded-full bg-hud-chip px-2.5 py-1 text-[12px] font-medium text-fg hover:bg-fg/15"
               onClick={() => {
                 void (async () => {
-                  await presented.action?.();
+                  // The pill clears even when the recovery fails; the runner shows that failure.
+                  if (presented.action) await runRecovery(presented.action);
                   await recover();
                 })();
               }}

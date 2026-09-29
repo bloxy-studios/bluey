@@ -2,12 +2,14 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { useToastStore } from "@/components/ui/toast-store";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { HudPanel } from "@/features/hud/HudPanel";
 import type { CommandArgs } from "@/lib/tauri/commands";
 import type { MockTransport } from "@/lib/tauri/mock";
 import { bluey } from "@/lib/tauri/api";
 import { setEngine } from "@/stores/engine";
+import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { FakeEngine, setupInterceptedApp, type InterceptingTransport } from "./helpers";
 
@@ -53,5 +55,44 @@ describe("HUD content-protection eye (UX-004)", () => {
     expect(await screen.findByRole("button", { name: "Content protection on" })).toBeInTheDocument();
     // The backend applied it (settings side effect), so the capture state agrees.
     expect((await bluey.capture.getProtection()).enabled).toBe(true);
+  });
+});
+
+describe("HUD state pill recovery (UX-036)", () => {
+  it("still clears the error and shows why when the recovery itself fails", async () => {
+    const { mock, transport } = await setupInterceptedApp();
+    setEngine(new FakeEngine());
+    useToastStore.setState({ toasts: [] });
+    let recovered = 0;
+    transport.intercept("window_open", async () => {
+      throw { kind: "internal", code: "internal.window", message: "The Settings window could not open.", recoverable: false };
+    });
+    transport.intercept("app_recover", (_args, next) => {
+      recovered += 1;
+      return next();
+    });
+    renderHud();
+
+    const { status } = useAppStore.getState();
+    act(() =>
+      mock.emit("app.state", {
+        ...status!,
+        state: "error",
+        error: {
+          kind: "configuration",
+          code: "config.missing_provider",
+          message: "No AI provider configured",
+          recoverable: true,
+          recovery: { type: "open_settings", tab: "ai" },
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Open Settings" }));
+
+    await waitFor(() => expect(recovered).toBe(1));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts).toEqual([expect.objectContaining({ variant: "error" })]),
+    );
   });
 });

@@ -1,5 +1,6 @@
 import { AlertCircle, X } from "lucide-react";
 
+import { runRecovery } from "@/lib/errors/present";
 import { cn } from "@/lib/utils/cn";
 import { useToastStore, type ToastItem } from "./toast-store";
 
@@ -23,7 +24,7 @@ function ErrorToast({ toast }: { toast: ToastItem }) {
             className="mt-1.5 text-[12.5px] font-medium text-accent hover:text-accent-hover"
             onClick={() => {
               dismiss(toast.id);
-              void toast.action?.run();
+              if (toast.action) void runRecovery(toast.action.run);
             }}
           >
             {toast.action.label}

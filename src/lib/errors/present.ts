@@ -7,7 +7,7 @@
  */
 
 import { bluey } from "@/lib/tauri/api";
-import type { BlueyError } from "@/lib/types";
+import { toBlueyError, type BlueyError } from "@/lib/types";
 
 export interface PresentedError {
   title: string;
@@ -294,6 +294,31 @@ export function describeError(error: BlueyError): { title: string; message: stri
     title: KIND_TITLES[error.kind] ?? "Something went wrong",
     message: KIND_MESSAGES[error.kind] ?? error.message,
   };
+}
+
+type RecoveryFailureReporter = (error: BlueyError) => void;
+
+let reportRecoveryFailure: RecoveryFailureReporter = (error) =>
+  console.warn("[recovery] the recovery action failed", error.code);
+
+/** The toast host registers how a failed recovery is shown (it cannot be imported here without a cycle). */
+export function setRecoveryFailureReporter(reporter: RecoveryFailureReporter): void {
+  reportRecoveryFailure = reporter;
+}
+
+/**
+ * The one runner for recovery buttons (toasts, banners, the HUD pill and notice):
+ * a recovery that fails itself — Reconnect, Restart helper, Open Settings — is
+ * shown, never swallowed as an unhandled rejection (UX-036). Resolves `false` then.
+ */
+export async function runRecovery(action: () => void | Promise<void>): Promise<boolean> {
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    reportRecoveryFailure(toBlueyError(error));
+    return false;
+  }
 }
 
 /** Turns a BlueyError into a friendly title/message + recovery action. */

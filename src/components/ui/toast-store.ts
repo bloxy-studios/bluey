@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { presentError, type ErrorPresenterOptions } from "@/lib/errors/present";
+import { presentError, setRecoveryFailureReporter, type ErrorPresenterOptions } from "@/lib/errors/present";
 import type { BlueyError } from "@/lib/types";
 import { createId } from "@/lib/utils/id";
 
@@ -110,3 +110,6 @@ export function showErrorToast(error: BlueyError, options: ErrorPresenterOptions
       : undefined,
   });
 }
+
+// A recovery button that fails (Reconnect, Restart helper…) says why, as a toast (UX-036).
+setRecoveryFailureReporter((error) => showErrorToast(error));
