@@ -32,6 +32,7 @@ printf 'bun' >> "$MOCK_LOG"; printf ' [%s]' "$@" >> "$MOCK_LOG"; printf '\\n' >>
 if [[ "${1:-}" == install && "${MOCK_FAIL:-}" == install ]]; then exit 19; fi
 if [[ "${1:-} ${2:-}" == 'run typecheck' && "${MOCK_FAIL:-}" == typecheck ]]; then exit 20; fi
 if [[ "${1:-} ${2:-} ${3:-}" == 'run tauri build' ]]; then
+  printf 'identity=%s notary=%s\\n' "${APPLE_SIGNING_IDENTITY:-}" "${APPLE_ID:-}" >> "$MOCK_LOG"
   [[ "${MOCK_FAIL:-}" != build ]] || exit 21
   # A real build leaves the DMG and the signed updater bundle; "silent-build" exits 0 without them.
   if [[ "${MOCK_FAIL:-}" != silent-build ]]; then
@@ -106,6 +107,22 @@ bun install --os darwin --cpu '*'
         self.assertFalse(any("[--config]" in line for line in commands))
         self.assertFalse((self.runner / "bluey-verified").exists())
         self.assertIn("not a published release", result.stdout)
+
+    def test_local_signing_identity_replaces_ad_hoc_for_developer_builds_only(self):
+        result = self.run_shell()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("identity=- notary=\n", self.commands())
+        identity = "Apple Development: Fixture (ABCDEFGHIJ)"
+        self.log.unlink()
+        result = self.run_shell(BLUEY_LOCAL_SIGNING_IDENTITY=identity, APPLE_ID="fixture@example.test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"identity={identity} notary=\n", self.commands())
+        self.assertIn("NOT eligible for publication", result.stdout)
+        self.log.unlink()
+        result = self.run_shell(BLUEY_LOCAL_SIGNING_IDENTITY=identity, PUBLISH_RELEASE="true", **self.credentials())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("developer builds only", result.stderr)
+        self.assertEqual(self.commands(), "")
 
     def test_missing_updater_signing_key_fails_before_install(self):
         for environment in ({"TAURI_SIGNING_PRIVATE_KEY": ""},

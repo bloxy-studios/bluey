@@ -2,6 +2,7 @@
 # macOS-only build pipeline; nothing here creates a tag or GitHub Release.
 # Default: developer build (.app + .dmg), NEVER eligible for publication.
 # TARGET=... RESEARCH_BACKEND=gemini|claude bash scripts/release.sh
+# BLUEY_LOCAL_SIGNING_IDENTITY=... signs a developer build with a stable local identity.
 # PUBLISH_RELEASE=true is reserved for the gated Actions publishing workflow.
 # Setup, credentials and native acceptance checks: docs/RELEASING.md.
 set +x  # Never trace signing/notarization or optional OAuth inputs.
@@ -38,6 +39,7 @@ if [[ "$PUBLISH_RELEASE" == true ]]; then
   python3 scripts/release/release_metadata.py version --root "$ROOT" --tag "$RELEASE_TAG" --check-tag --commit "$RELEASE_COMMIT"
   # Do not allow alternate Tauri credential discovery or implicit certificate import.
   unset APPLE_CERTIFICATE APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
+  [[ -z "${BLUEY_LOCAL_SIGNING_IDENTITY:-}" ]] || fail 'BLUEY_LOCAL_SIGNING_IDENTITY is for developer builds only'
 else
   python3 scripts/release/release_metadata.py version --root "$ROOT"
 fi
@@ -85,6 +87,14 @@ bun run typecheck
 bun run lint
 bun run test
 bash scripts/check-rust.sh
+
+# A stable local identity (an Apple Development certificate) instead of ad-hoc keeps
+# Keychain approvals across local rebuilds (ADR 0011). Never notarized or publishable.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" && -n "${BLUEY_LOCAL_SIGNING_IDENTITY:-}" ]]; then
+  export APPLE_SIGNING_IDENTITY="$BLUEY_LOCAL_SIGNING_IDENTITY"
+  unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+  printf '%s\n' 'Developer-only build signed with a local identity; NOT eligible for publication.'
+fi
 
 # Keep the original chain (these helpers build BOTH architectures, ignoring TARGET).
 # Tauri then selects the target-suffixed sidecars and signs them with app entitlements.
