@@ -283,6 +283,28 @@ describe("Gemini backend (injected generateContentStream)", () => {
     expect(await harness.done).toBe(0);
   });
 
+  it("counts the turns and tokens already spent when the deadline's hard stop fires", async () => {
+    // Turn 1 calls a tool; the report turn never answers, so the hard stop
+    // writes the evidence report.
+    const stuckReport: GenerateFn = async (params) => {
+      if (params.config?.tools) return chunks(callChunk("call-1", "exa_search", { query: "q" }));
+      return new Promise<never>((_resolve, reject) => {
+        params.config?.abortSignal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    };
+    const harness = makeHarness({
+      env: { GEMINI_API_KEY: "k" },
+      deps: { generateFn: stuckReport, exaClient, deadlineGraceMs: 0 },
+    });
+    harness.send({ id: 1, method: "research.run", params: { ...runParams, maxTurns: 2, deadlineMs: 300 } });
+    const completed = await harness.waitFor(isEvent("research.completed"), "completed");
+    const data = completed["data"] as Frame;
+    expect(data["report"]).toMatch(/^## Research stopped early/);
+    expect(data["turns"]).toBe(1);
+    expect(data["usage"]).toEqual({ inputTokens: 100, outputTokens: 15 });
+    expect(await harness.done).toBe(0);
+  });
+
   it("fails fast with gemini_empty_turn when a model turn has no parts (no follow-up request)", async () => {
     let requests = 0;
     const emptyTurn: GenerateFn = async () => {

@@ -7,7 +7,7 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 
-import { sanitizeErrorMessage, type QueryFn } from "../../sidecars/agent/src/agent";
+import { claudeSpent, sanitizeErrorMessage, type QueryFn } from "../../sidecars/agent/src/agent";
 import type { BuildVariant } from "../../sidecars/agent/src/config";
 import type { GenerateFn } from "../../sidecars/agent/src/gemini";
 import { FlushingSink, startSidecar, type StartSidecarOptions } from "../../sidecars/agent/src/main";
@@ -545,5 +545,18 @@ describe("sidecar exit flush", () => {
     await sink.flushed();
 
     expect(written.join("")).toBe(frame);
+  });
+});
+
+describe("claudeSpent", () => {
+  it("counts each model turn once, with its latest usage", () => {
+    // A deadline's hard stop reports these numbers instead of zeros.
+    const turns = new Map([
+      ["msg_1", { inputTokens: 1_200, outputTokens: 80 }],
+      ["msg_2", { inputTokens: 2_500, outputTokens: 40 }],
+    ]);
+    turns.set("msg_2", { inputTokens: 2_500, outputTokens: 120 });
+    expect(claudeSpent(turns)).toEqual({ turns: 2, usage: { inputTokens: 3_700, outputTokens: 200 } });
+    expect(claudeSpent(new Map())).toEqual({ turns: 0, usage: { inputTokens: 0, outputTokens: 0 } });
   });
 });
