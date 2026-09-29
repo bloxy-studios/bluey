@@ -299,6 +299,9 @@ pub mod fake {
         fn probe(&self, account: &str) -> Result<Option<Zeroizing<String>>, KeychainStatus> {
             self.note(Op::Probe, account);
             let inner = self.inner.lock();
+            if let Some(status) = inner.fail_lookups {
+                return Err(KeychainStatus(status));
+            }
             if let Some(status) = inner.locked.get(account) {
                 return Err(KeychainStatus(*status));
             }

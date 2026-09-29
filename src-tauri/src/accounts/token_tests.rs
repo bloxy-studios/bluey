@@ -15,7 +15,7 @@ use bluey_oauth::{unix_now, TokenSet};
 use bluey_protocols::request_shaper::FingerprintInfo;
 
 use super::profile::{ConnectStart, Connected, ProviderProfile};
-use super::AccountsManager;
+use super::{AccountsManager, Origin};
 use crate::events::EventBus;
 use crate::secrets::account_tokens_key;
 use crate::secrets::backend::fake::{CountingFake, Op};
@@ -93,12 +93,13 @@ fn tokens(access: &str, expires_at: u64) -> TokenSet {
 }
 
 const KEY: &str = "account:claude:oauth_tokens";
+const BROWSER: Option<Origin> = Some(Origin::Browser);
 
 /// A connected `claude` account whose Keychain item holds `stored`; counts
 /// start at zero after setup.
 async fn connected(
     stored: &TokenSet,
-    imported: bool,
+    origin: Option<Origin>,
 ) -> (Arc<CountingFake>, Arc<FakeProfile>, AccountsManager) {
     assert_eq!(account_tokens_key("claude"), KEY);
     let raw = serde_json::to_string(stored).unwrap();
@@ -116,7 +117,7 @@ async fn connected(
     let mut account = manager.stored("claude").unwrap();
     account.status = AccountStatus::Connected;
     manager.set_account(account).await.unwrap();
-    manager.set_imported("claude", imported).await.unwrap();
+    manager.set_origin("claude", origin).await.unwrap();
     fake.reset_counts();
     (fake, profile, manager)
 }
@@ -127,7 +128,7 @@ fn status(manager: &AccountsManager) -> AccountStatus {
 
 #[tokio::test]
 async fn requests_with_a_valid_token_never_write_the_keychain() {
-    let (fake, profile, manager) = connected(&tokens("a", unix_now() + 3_600), false).await;
+    let (fake, profile, manager) = connected(&tokens("a", unix_now() + 3_600), BROWSER).await;
     for _ in 0..20 {
         assert_eq!(
             manager.credential_for("claude").await.unwrap().access_token,
@@ -142,7 +143,7 @@ async fn requests_with_a_valid_token_never_write_the_keychain() {
 
 #[tokio::test]
 async fn a_refresh_rewrites_the_item_exactly_once() {
-    let (fake, profile, manager) = connected(&tokens("a", unix_now() - 10), false).await;
+    let (fake, profile, manager) = connected(&tokens("a", unix_now() - 10), BROWSER).await;
     for _ in 0..5 {
         assert_eq!(
             manager.credential_for("claude").await.unwrap().access_token,
@@ -156,7 +157,8 @@ async fn a_refresh_rewrites_the_item_exactly_once() {
 
 #[tokio::test]
 async fn an_imported_rotating_session_is_never_refreshed() {
-    let (fake, profile, manager) = connected(&tokens("a", unix_now() - 10), true).await;
+    let (fake, profile, manager) =
+        connected(&tokens("a", unix_now() - 10), Some(Origin::Import)).await;
     let error = manager.credential_for("claude").await.unwrap_err();
     assert_eq!(error.code, "account.needs_reauth");
     assert!(error.message.contains("import it again"));
@@ -174,7 +176,7 @@ async fn an_imported_rotating_session_is_never_refreshed() {
 
 #[tokio::test]
 async fn a_401_on_a_valid_token_forces_one_shared_refresh() {
-    let (fake, profile, manager) = connected(&tokens("a", unix_now() + 3_600), false).await;
+    let (fake, profile, manager) = connected(&tokens("a", unix_now() + 3_600), BROWSER).await;
     assert_eq!(
         manager.credential_for("claude").await.unwrap().access_token,
         "a"
@@ -193,7 +195,7 @@ async fn a_401_on_a_valid_token_forces_one_shared_refresh() {
 
 #[tokio::test]
 async fn a_locked_token_item_is_not_reported_as_disconnected() {
-    let (fake, _, manager) = connected(&tokens("a", unix_now() + 3_600), false).await;
+    let (fake, _, manager) = connected(&tokens("a", unix_now() + 3_600), BROWSER).await;
     fake.lock_item(KEY, -25293);
     let error = manager.credential_for("claude").await.unwrap_err();
     assert_eq!(error.code, "storage.keychain_access_denied");
@@ -208,11 +210,71 @@ async fn a_locked_token_item_is_not_reported_as_disconnected() {
 
 #[tokio::test]
 async fn disconnect_never_decrypts_and_completes_when_the_delete_fails() {
-    let (fake, _, manager) = connected(&tokens("a", unix_now() + 3_600), false).await;
+    let (fake, _, manager) = connected(&tokens("a", unix_now() + 3_600), BROWSER).await;
     fake.fail_remove(KEY, -25293);
     let outcome = manager.disconnect("claude").await;
     assert_eq!(outcome.unwrap_err().code, "storage.keychain_access_denied");
     assert_eq!(status(&manager), AccountStatus::Disconnected);
     assert_eq!(fake.reads(), 0, "revocation uses in-memory tokens only");
-    assert!(!manager.is_imported("claude"));
+    assert_eq!(manager.origins.read().get("claude"), None);
+}
+
+#[tokio::test]
+async fn an_account_without_a_recorded_origin_is_never_refreshed() {
+    // Connected before origins were recorded: it may be a Claude Code import,
+    // and a refresh would rotate the token and sign Claude Code out.
+    let (fake, profile, manager) = connected(&tokens("a", unix_now() - 10), None).await;
+    let error = manager.credential_for("claude").await.unwrap_err();
+    assert_eq!(error.code, "account.needs_reauth");
+    assert_eq!(error.details.as_ref().unwrap()["imported"], true);
+    assert!(!manager.refresh_rejected("claude", "a").await);
+    assert_eq!(profile.refreshes(), 0);
+    assert_eq!(fake.writes(), 0);
+}
+
+#[tokio::test]
+async fn the_origin_is_recorded_before_the_tokens_and_survives_a_restart() {
+    let (fake, _, manager) = connected(&tokens("a", unix_now() + 3_600), None).await;
+    let connected = Connected {
+        tokens: tokens("b", unix_now() + 3_600),
+        identity: AccountIdentity::default(),
+    };
+    manager
+        .finish_connect("claude", Ok(connected), Origin::Import)
+        .await;
+    assert_eq!(fake.writes(), 1);
+    assert_eq!(status(&manager), AccountStatus::Connected);
+    let restarted = AccountsManager::load(
+        manager.secrets.clone(),
+        manager.storage.clone(),
+        manager.bus.clone(),
+        manager.settings.clone(),
+        reqwest::Client::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        restarted.origins.read().get("claude"),
+        Some(&Origin::Import)
+    );
+    assert!(!restarted.signed_in_by_bluey("claude"));
+}
+
+#[tokio::test]
+async fn boot_never_reads_a_locked_or_unprobeable_account_item() {
+    let (fake, profile, manager) = connected(&tokens("a", unix_now() - 10), BROWSER).await;
+    fake.lock_item(KEY, -25308);
+    manager.restore().await;
+    assert_eq!(
+        fake.reads(),
+        0,
+        "a read here is a Keychain prompt at launch"
+    );
+    assert_eq!(profile.refreshes(), 0);
+    assert_eq!(status(&manager), AccountStatus::Connected);
+    // A probe that fails outright defers the check the same way.
+    fake.unlock(KEY);
+    fake.fail_lookups(-25291);
+    manager.restore().await;
+    assert_eq!(fake.reads(), 0);
+    assert_eq!(status(&manager), AccountStatus::Connected);
 }

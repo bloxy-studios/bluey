@@ -387,7 +387,10 @@ Semantics (ADR 0011):
   during requests. macOS may ask once; if the user denies it (`-25293` / `-128`) the error is
   `account.import_denied` — "macOS blocked Bluey from reading <App>'s sign-in — click Import again
   and choose Allow" — not "not signed in".
-* The account remembers that it was imported. ChatGPT and Claude rotate refresh tokens, so Bluey
+* The account remembers how it was connected (`accounts:origin:<id>`: `import` or `browser`,
+  recorded before the tokens are kept; a connection whose origin cannot be recorded fails). An
+  account without a record (connected by an older build) is treated as an import. ChatGPT and
+  Claude rotate refresh tokens, so Bluey
   **never refreshes an imported ChatGPT or Claude session**: the copy would sign the original
   client out (or be signed out by it). When the imported access token expires, the account moves
   to *needs sign-in* (`account.needs_reauth`, details `imported: true`): sign in in the browser

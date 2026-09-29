@@ -24,7 +24,7 @@ pub mod chatgpt;
 pub mod claude;
 pub mod profile;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -85,21 +85,34 @@ fn load_or_create_device_id(storage: &Storage) -> BlueyResult<String> {
     Ok(fresh)
 }
 
-/// Settings key of the ids of accounts whose tokens were imported from the
-/// official app (not a Bluey sign-in) — see [`refreshes_imported_session`].
-const IMPORTED_KEY: &str = "accounts:imported";
+/// How an account's tokens were obtained. Persisted per account
+/// ([`origin_key`]); an account without a record — connected before origins
+/// were recorded — is treated as an import (see [`AccountsManager::may_refresh`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Origin {
+    /// Imported from the official app's local session.
+    Import,
+    /// A Bluey browser sign-in.
+    Browser,
+}
 
-/// Whether Bluey may refresh a session it imported from the official app.
+/// Whether Bluey may refresh a session it imported from the official app —
+/// an allow-list, so a provider added later does not refresh by default.
 /// Claude Code and Codex rotate refresh tokens: a refresh by Bluey would
 /// invalidate the official app's copy and sign it out, so their imports are
 /// used until they expire and then need a new import (or a browser sign-in).
 /// Google's refresh tokens do not rotate, so an Antigravity import refreshes.
 fn refreshes_imported_session(provider_id: &str) -> bool {
-    !matches!(provider_id, "claude" | "chatgpt")
+    matches!(provider_id, "antigravity")
 }
 
 fn catalog_key(account_id: &str) -> String {
     format!("accounts:catalog:{account_id}")
+}
+
+fn origin_key(account_id: &str) -> String {
+    format!("accounts:origin:{account_id}")
 }
 
 /// A sign-in in flight: how to abandon it and, for manual-code flows, where
@@ -120,8 +133,8 @@ pub struct AccountsManager {
     catalogs: parking_lot::RwLock<HashMap<String, ProviderModelCatalog>>,
     tokens: parking_lot::Mutex<HashMap<String, Arc<TokenCache>>>,
     pending: parking_lot::Mutex<HashMap<String, PendingConnect>>,
-    /// Accounts connected by import rather than a Bluey sign-in ([`IMPORTED_KEY`]).
-    imported: parking_lot::RwLock<HashSet<String>>,
+    /// How each account's tokens were obtained ([`origin_key`]).
+    origins: parking_lot::RwLock<HashMap<String, Origin>>,
     device_id: String,
 }
 
@@ -163,10 +176,16 @@ impl AccountsManager {
                 catalogs.insert(account.account_id.clone(), catalog);
             }
         }
-        let imported: HashSet<String> = storage
-            .run_sync(|db| SettingsRepository::get_json(db, IMPORTED_KEY))?
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
+        let mut origins = HashMap::new();
+        for account in &accounts {
+            let key = origin_key(&account.account_id);
+            if let Some(origin) = storage
+                .run_sync(|db| SettingsRepository::get_json(db, &key))?
+                .and_then(|value| serde_json::from_value::<Origin>(value).ok())
+            {
+                origins.insert(account.account_id.clone(), origin);
+            }
+        }
         let device_id = load_or_create_device_id(&storage)?;
         let _ = DEVICE_ID.set(device_id.clone());
         Ok(Self {
@@ -180,7 +199,7 @@ impl AccountsManager {
             catalogs: parking_lot::RwLock::new(catalogs),
             tokens: parking_lot::Mutex::new(HashMap::new()),
             pending: parking_lot::Mutex::new(HashMap::new()),
-            imported: parking_lot::RwLock::new(imported),
+            origins: parking_lot::RwLock::new(origins),
             device_id,
         })
     }
@@ -362,29 +381,30 @@ impl AccountsManager {
             .await
     }
 
-    fn is_imported(&self, account_id: &str) -> bool {
-        self.imported.read().contains(account_id)
+    /// Whether `account_id`'s tokens come from a Bluey browser sign-in. An
+    /// import, or an account without a recorded origin, is not.
+    fn signed_in_by_bluey(&self, account_id: &str) -> bool {
+        self.origins.read().get(account_id) == Some(&Origin::Browser)
     }
 
-    /// Record whether `account_id`'s tokens came from an import.
-    async fn set_imported(&self, account_id: &str, imported: bool) -> BlueyResult<()> {
-        let ids = {
-            let mut set = self.imported.write();
-            let changed = if imported {
-                set.insert(account_id.to_string())
-            } else {
-                set.remove(account_id)
-            };
-            if !changed {
-                return Ok(());
-            }
-            let mut ids: Vec<String> = set.iter().cloned().collect();
-            ids.sort();
-            ids
-        };
+    /// Record (or, with `None`, forget) how `account_id`'s tokens were
+    /// obtained — persisted first, so memory never claims an origin that a
+    /// restart would lose.
+    async fn set_origin(&self, account_id: &str, origin: Option<Origin>) -> BlueyResult<()> {
+        if self.origins.read().get(account_id).copied() == origin {
+            return Ok(());
+        }
+        let key = origin_key(account_id);
+        let value = serde_json::to_value(origin).unwrap_or(serde_json::Value::Null);
         self.storage
-            .run(move |db| SettingsRepository::set_json(db, IMPORTED_KEY, &serde_json::json!(ids)))
-            .await
+            .run(move |db| SettingsRepository::set_json(db, &key, &value))
+            .await?;
+        let mut origins = self.origins.write();
+        match origin {
+            Some(origin) => origins.insert(account_id.to_string(), origin),
+            None => origins.remove(account_id),
+        };
+        Ok(())
     }
 
     fn cancel_pending(&self, account_id: &str) -> bool {
@@ -461,7 +481,7 @@ impl AccountsManager {
             };
             app.state::<AppCore>()
                 .accounts
-                .finish_connect(&account_id, outcome, false)
+                .finish_connect(&account_id, outcome, Origin::Browser)
                 .await;
         });
         tracing::info!(provider = provider_id, "subscription sign-in started");
@@ -476,7 +496,8 @@ impl AccountsManager {
         self.cancel_pending(&account_id);
         let outcome = profile.import(&self.http).await;
         let failed = outcome.as_ref().err().cloned();
-        self.finish_connect(&account_id, outcome, true).await;
+        self.finish_connect(&account_id, outcome, Origin::Import)
+            .await;
         match failed {
             Some(error) => Err(error),
             None => self.stored(&account_id),
@@ -490,7 +511,7 @@ impl AccountsManager {
         &self,
         account_id: &str,
         outcome: BlueyResult<Connected>,
-        imported: bool,
+        origin: Origin,
     ) {
         self.pending.lock().remove(account_id);
         let Ok(mut account) = self.stored(account_id) else {
@@ -502,7 +523,13 @@ impl AccountsManager {
                     tracing::warn!(account = account_id, "cannot serialise the account tokens");
                     return;
                 };
-                if let Err(error) = self.secrets.set(&account_tokens_key(account_id), raw).await {
+                // The origin decides whether the tokens may ever be refreshed,
+                // so it is recorded before they are kept — or not at all.
+                let stored = match self.set_origin(account_id, Some(origin)).await {
+                    Ok(()) => self.secrets.set(&account_tokens_key(account_id), raw).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = stored {
                     tracing::warn!(account = account_id, code = %error.code, "cannot store the account tokens");
                     account.status = AccountStatus::Disconnected;
                     let _ = self.set_account(account).await;
@@ -516,9 +543,6 @@ impl AccountsManager {
                         DEFAULT_REFRESH_LEEWAY,
                     )),
                 );
-                if let Err(error) = self.set_imported(account_id, imported).await {
-                    tracing::warn!(account = account_id, code = %error.code, "cannot record the sign-in origin");
-                }
                 account.identity = Some(connected.identity);
                 account.status = AccountStatus::Connected;
                 account.connected_at = Some(now_iso());
@@ -593,9 +617,10 @@ impl AccountsManager {
         self.cancel_pending(account_id);
         let mut account = self.stored(account_id)?;
         // Revocation is best effort and uses only tokens already in memory —
-        // never a Keychain read (a prompt) just to disconnect. An import is
-        // never revoked: the tokens belong to the official app's session.
-        if !self.is_imported(account_id) {
+        // never a Keychain read (a prompt) just to disconnect. Only a Bluey
+        // sign-in is revoked: an import (or an account of unknown origin)
+        // shares the official app's session.
+        if self.signed_in_by_bluey(account_id) {
             if let (Ok(profile), Some(tokens)) = (
                 self.profile_for(&account.provider_id),
                 self.tokens_in_memory(account_id).await,
@@ -610,7 +635,7 @@ impl AccountsManager {
         if let Err(error) = &deleted {
             tracing::warn!(account = account_id, code = %error.code, "cannot delete the account tokens");
         }
-        self.set_imported(account_id, false).await?;
+        self.set_origin(account_id, None).await?;
         self.drop_catalog(account_id).await?;
         self.unassign_roles(&account.provider_id).await?;
         account.status = AccountStatus::Disconnected;
@@ -863,8 +888,11 @@ impl AccountsManager {
 
     /// Bluey refreshes its own sign-ins, and imports only where the official
     /// app's refresh token does not rotate ([`refreshes_imported_session`]).
+    /// Fails closed: an account without a recorded origin (connected before
+    /// origins were recorded) may be an import, so it is treated as one.
     fn may_refresh(&self, account: &ProviderAccount) -> bool {
-        !self.is_imported(&account.account_id) || refreshes_imported_session(&account.provider_id)
+        self.signed_in_by_bluey(&account.account_id)
+            || refreshes_imported_session(&account.provider_id)
     }
 
     /// The outcome of a (possibly) refreshing token lookup: keep a refreshed
@@ -999,12 +1027,21 @@ impl AccountsManager {
             .map(|account| account.account_id.clone())
             .collect();
         for account_id in connected {
-            // Never prompt at boot: an item this build may not read silently
-            // (after an update) waits for the first request that needs it.
+            // Never prompt at boot: only an item the silent probe could read
+            // (and so cached) is checked. One this build may not read silently
+            // (after an update), or a failed probe, waits for the first
+            // request that needs it.
             let key = account_tokens_key(&account_id);
-            if matches!(self.secrets.state(&key).await, Ok(SecretState::Locked)) {
-                tracing::debug!(account = %account_id, "account check deferred (macOS approval pending)");
-                continue;
+            match self.secrets.state(&key).await {
+                Ok(SecretState::Present) => {}
+                Ok(state) => {
+                    tracing::debug!(account = %account_id, ?state, "account check deferred");
+                    continue;
+                }
+                Err(error) => {
+                    tracing::debug!(account = %account_id, code = %error.code, "account check deferred");
+                    continue;
+                }
             }
             match self.credential_for(&account_id).await {
                 Ok(_) => {}
@@ -1035,16 +1072,11 @@ impl AccountsManager {
             if let Err(error) = self.drop_catalog(&account.account_id).await {
                 failures.push((format!("account catalog {}", account.account_id), error));
             }
+            if let Err(error) = self.set_origin(&account.account_id, None).await {
+                failures.push((format!("account origin {}", account.account_id), error));
+            }
         }
         self.tokens.lock().clear();
-        self.imported.write().clear();
-        if let Err(error) = self
-            .storage
-            .run(|db| SettingsRepository::set_json(db, IMPORTED_KEY, &serde_json::Value::Null))
-            .await
-        {
-            failures.push(("account origins".into(), error));
-        }
         let blanks: Vec<ProviderAccount> = self
             .profiles
             .iter()
@@ -1161,8 +1193,17 @@ mod tests {
     #[test]
     fn keys_and_timestamps_are_stable() {
         assert_eq!(catalog_key("chatgpt"), "accounts:catalog:chatgpt");
+        assert_eq!(origin_key("claude"), "accounts:origin:claude");
         assert_eq!(iso_from_unix(1_700_000_000), "2023-11-14T22:13:20Z");
         assert_eq!(role_key(ModelRole::Transcription), "transcription");
+    }
+
+    #[test]
+    fn only_listed_providers_refresh_an_imported_session() {
+        assert!(refreshes_imported_session("antigravity"));
+        for provider in ["claude", "chatgpt", "a-provider-added-later"] {
+            assert!(!refreshes_imported_session(provider), "{provider}");
+        }
     }
 
     #[test]
