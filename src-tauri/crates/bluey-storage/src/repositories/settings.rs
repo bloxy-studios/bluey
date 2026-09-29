@@ -594,7 +594,10 @@ mod tests {
 
         let listed = ShortcutRepository::list(&db).unwrap();
         let get = |id: ShortcutId| listed.iter().find(|b| b.id == id).unwrap();
-        assert_eq!(get(ShortcutId::MoveUp).accelerator, "Ctrl+Alt+ArrowUp");
+        assert_eq!(
+            get(ShortcutId::MoveUp).accelerator,
+            "CmdOrCtrl+Ctrl+Alt+ArrowUp"
+        );
         assert_eq!(get(ShortcutId::MoveLeft).accelerator, "Cmd+Alt+KeyJ");
         assert_eq!(
             get(ShortcutId::ScrollDown).accelerator,

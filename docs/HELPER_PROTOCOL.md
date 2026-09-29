@@ -137,7 +137,8 @@ never dump the whole tree.
   "emitPcm": false,                              // true → emit `audio.chunk` with pcm16 base64 (cloud STT path)
   "chunkMs": 200,
   "transcription": {                             // on-device STT inside the helper (Apple Speech)
-    "enabled": true, "locale": "en-US", "onDevice": true, "sources": ["microphone", "system"]
+    "enabled": true, "locale": "en-US", "onDevice": true, "sources": ["microphone", "system"],
+    "requireOnDevice": false                     // true (Cloud AI off): no server fallback; a locale without an on-device model → `audio.error{speech_on_device_unavailable}`
   },
   "levels": { "enabled": true, "intervalMs": 100 }
 }

@@ -117,6 +117,12 @@ describe("describeError", () => {
     });
   });
 
+  it("says why nothing is transcribed when Cloud AI is off and speech has no on-device model", () => {
+    const copy = describeError(error({ kind: "audio", code: "audio.speech_on_device_unavailable" }));
+    expect(copy.title).toBe("No on-device speech model");
+    expect(copy.message).toContain("Settings → Privacy");
+  });
+
   it("explains a cloud transcription outage as reconnecting, not a dead end", () => {
     expect(describeError(error({ kind: "audio", code: "audio.stt_degraded" })).title).toBe("Reconnecting transcription");
   });

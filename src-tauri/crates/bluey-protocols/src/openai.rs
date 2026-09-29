@@ -90,9 +90,26 @@ pub fn reasoning_effort_for(
 }
 
 /// Whether an HTTP-400 error body says the endpoint does not take native
-/// structured output (→ resend with the schema in the prompt instead).
+/// structured output (→ resend with the schema in the prompt instead). An
+/// endpoint that takes it but rejects Bluey's schema ("Invalid schema for
+/// response_format …", `invalid_json_schema`) is an error to surface, not a
+/// reason to drop native structured output for that endpoint.
 pub fn is_response_format_rejection(status: u16, body: &str) -> bool {
-    status == 400 && (body.contains("response_format") || body.contains("json_schema"))
+    if status != 400 || !(body.contains("response_format") || body.contains("json_schema")) {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    if lower.contains("invalid_json_schema") || lower.contains("invalid schema") {
+        return false;
+    }
+    const UNSUPPORTED: [&str; 5] = [
+        "unsupported",
+        "not supported",
+        "unrecognized",
+        "unknown",
+        "not permitted",
+    ];
+    UNSUPPORTED.iter().any(|phrase| lower.contains(phrase))
 }
 
 /// Build the JSON body for a chat-completions request.
@@ -453,6 +470,13 @@ mod tests {
             r#"{"error":{"message":"bad temperature"}}"#
         ));
         assert!(!is_response_format_rejection(500, rejected));
+        assert!(is_response_format_rejection(
+            400,
+            r#"{"error":{"message":"Unrecognized request argument supplied: response_format"}}"#
+        ));
+        // The endpoint takes structured output; Bluey's schema is what is wrong.
+        let bad_schema = r#"{"error":{"message":"Invalid schema for response_format 'answer': 'additionalProperties' is required to be supplied and to be false.","type":"invalid_request_error","param":"response_format","code":"invalid_json_schema"}}"#;
+        assert!(!is_response_format_rejection(400, bad_schema));
     }
 
     #[test]

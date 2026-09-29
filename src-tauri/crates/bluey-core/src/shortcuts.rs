@@ -66,25 +66,25 @@ pub fn default_bindings() -> Vec<ShortcutBinding> {
             ShortcutId::MoveUp,
             "Move the window position up",
             ShortcutGroup::Window,
-            "Ctrl+Alt+ArrowUp",
+            "CmdOrCtrl+Ctrl+Alt+ArrowUp",
         ),
         mk(
             ShortcutId::MoveDown,
             "Move the window position down",
             ShortcutGroup::Window,
-            "Ctrl+Alt+ArrowDown",
+            "CmdOrCtrl+Ctrl+Alt+ArrowDown",
         ),
         mk(
             ShortcutId::MoveLeft,
             "Move the window position left",
             ShortcutGroup::Window,
-            "Ctrl+Alt+ArrowLeft",
+            "CmdOrCtrl+Ctrl+Alt+ArrowLeft",
         ),
         mk(
             ShortcutId::MoveRight,
             "Move the window position right",
             ShortcutGroup::Window,
-            "Ctrl+Alt+ArrowRight",
+            "CmdOrCtrl+Ctrl+Alt+ArrowRight",
         ),
         mk(
             ShortcutId::ScrollUp,
@@ -120,6 +120,11 @@ pub const KNOWN_SYSTEM_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+ArrowDown", "Application windows"),
     ("Ctrl+ArrowLeft", "Previous Space"),
     ("Ctrl+ArrowRight", "Next Space"),
+    // Not Apple's, but the out-of-the-box keys of the common window managers.
+    ("Ctrl+Alt+ArrowLeft", "Left half (Rectangle, Magnet)"),
+    ("Ctrl+Alt+ArrowRight", "Right half (Rectangle, Magnet)"),
+    ("Ctrl+Alt+ArrowUp", "Top half (Rectangle, Magnet)"),
+    ("Ctrl+Alt+ArrowDown", "Bottom half (Rectangle, Magnet)"),
     ("Cmd+Shift+KeyA", "Applications folder (Finder)"),
     // Standard text-editing and app chords: a global hotkey consumes the chord in
     // every app, so taking one of these breaks editing everywhere (UX-001).

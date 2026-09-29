@@ -2,7 +2,8 @@
 //! function here removes rows (and reports file paths for the caller to unlink)
 //! rather than soft-deleting. `secure_delete` (see `Database::configure`)
 //! zeroes the freed pages, and each deletion ends with a WAL checkpoint so the
-//! deleted text does not linger in `bluey.db-wal` either (DATA-010).
+//! deleted text does not linger in `bluey.db-wal` either (DATA-010), and with
+//! the removal of the pre-migration `bluey.db.bak-*` copies, which still hold it.
 
 use std::path::{Path, PathBuf};
 
@@ -93,14 +94,14 @@ fn dir_size_bytes(dir: &Path) -> u64 {
 /// Delete one session (cascade). Returns screenshot image paths to unlink.
 pub fn delete_session(db: &Database, session_id: &str) -> Result<Vec<PathBuf>, BlueyError> {
     let paths = SessionRepository::delete(db, session_id)?;
-    db.checkpoint()?;
+    db.finish_deletion()?;
     Ok(paths)
 }
 
 /// Delete every session. Returns `(deleted_sessions, image_paths)`.
 pub fn delete_all_sessions(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyError> {
     let deleted = SessionRepository::delete_all(db)?;
-    db.checkpoint()?;
+    db.finish_deletion()?;
     Ok(deleted)
 }
 
@@ -108,21 +109,21 @@ pub fn delete_all_sessions(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyEr
 /// the rows are gone; the caller unlinks the files.
 pub fn delete_screenshots(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyError> {
     let deleted = SnapshotRepository::delete_all_screens(db)?;
-    db.checkpoint()?;
+    db.finish_deletion()?;
     Ok(deleted)
 }
 
 /// Delete every transcript segment. Returns rows removed.
 pub fn clear_transcripts(db: &Database) -> Result<u64, BlueyError> {
     let deleted = TranscriptRepository::clear(db, None)?;
-    db.checkpoint()?;
+    db.finish_deletion()?;
     Ok(deleted)
 }
 
 /// Delete every AI cache entry. Returns rows removed.
 pub fn clear_ai_cache(db: &Database) -> Result<u64, BlueyError> {
     let deleted = AiCacheRepository::clear(db)?;
-    db.checkpoint()?;
+    db.finish_deletion()?;
     Ok(deleted)
 }
 
@@ -200,7 +201,12 @@ pub fn apply_retention(
     }
     report.image_paths.sort();
     report.image_paths.dedup();
-    db.checkpoint()?;
+    // Data a setting says not to keep must not survive in the backup either.
+    if settings.store_session_history && settings.store_screenshots && settings.store_transcripts {
+        db.checkpoint()?;
+    } else {
+        db.finish_deletion()?;
+    }
     Ok(report)
 }
 
@@ -368,9 +374,10 @@ mod tests {
         }
     }
 
-    /// Whether `needle` is readable anywhere in the database or its WAL.
+    /// Whether `needle` is readable anywhere in the database, its WAL or a
+    /// pre-migration backup.
     fn db_files_contain(db_path: &Path, needle: &str) -> bool {
-        ["", "-wal"].iter().any(|suffix| {
+        ["", "-wal", ".bak-0.1.0"].iter().any(|suffix| {
             let mut path = db_path.as_os_str().to_owned();
             path.push(suffix);
             std::fs::read(&path)
@@ -392,12 +399,19 @@ mod tests {
             .unwrap();
         ResponseRepository::save(&db, &testutil::response(Some(&s.id), secret)).unwrap();
         db.checkpoint().unwrap();
+        // The copy an upgrade takes before migrating (CRIT-003) holds it too.
+        let backup = dir.path().join("bluey.db.bak-0.1.0");
+        std::fs::copy(&path, &backup).unwrap();
         assert!(
             db_files_contain(&path, secret),
             "fixture: the text is on disk"
         );
 
         delete_session(&db, &s.id).unwrap();
+        assert!(
+            !backup.exists(),
+            "the pre-migration backup outlived a deletion"
+        );
         assert!(
             !db_files_contain(&path, secret),
             "deleted text is still on disk"
@@ -413,6 +427,31 @@ mod tests {
         let (deleted, _) = delete_all_sessions(&db).unwrap();
         assert_eq!(deleted, 1);
         assert_no_answers_left(&db);
+    }
+
+    #[test]
+    fn retention_drops_the_pre_migration_backup_only_when_a_setting_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bluey.db");
+        let db = Database::open(&path).unwrap();
+        let backup = dir.path().join("bluey.db.bak-0.1.0");
+        std::fs::write(&backup, b"x").unwrap();
+
+        let keep_all = PrivacySettings {
+            store_session_history: true,
+            store_screenshots: true,
+            store_transcripts: true,
+            ..PrivacySettings::default()
+        };
+        apply_retention(&db, &keep_all).unwrap();
+        assert!(backup.exists(), "nothing is off: the backup stays");
+
+        let transcripts_off = PrivacySettings {
+            store_transcripts: false,
+            ..keep_all
+        };
+        apply_retention(&db, &transcripts_off).unwrap();
+        assert!(!backup.exists(), "the backup still held the transcripts");
     }
 
     #[test]

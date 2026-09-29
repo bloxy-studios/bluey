@@ -58,7 +58,10 @@ pub async fn responses_feedback(
 #[tauri::command]
 pub async fn responses_delete(core: State<'_, AppCore>, id: String) -> BlueyResult<()> {
     core.storage
-        .run(move |db| ResponseRepository::delete(db, &id))
+        .run(move |db| {
+            ResponseRepository::delete(db, &id)?;
+            db.finish_deletion()
+        })
         .await
 }
 

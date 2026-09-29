@@ -1198,8 +1198,8 @@ fn batch_transcription_target(
 
 /// Privacy → Cloud AI is the master switch for sending anything to a model
 /// provider; it is enforced here, where the network calls happen, and not
-/// only in the WebView.
-fn ensure_cloud_ai(settings: &Settings) -> BlueyResult<()> {
+/// only in the WebView (research and the agent sidecar check it too).
+pub(crate) fn ensure_cloud_ai(settings: &Settings) -> BlueyResult<()> {
     if settings.privacy.cloud_ai_enabled {
         return Ok(());
     }

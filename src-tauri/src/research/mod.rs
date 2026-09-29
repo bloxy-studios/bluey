@@ -12,8 +12,10 @@ use bluey_protocols::{exa, firecrawl};
 use serde::Serialize;
 
 use crate::agent::AgentManager;
+use crate::ai::ensure_cloud_ai;
 use crate::ai::providers::{map_http_status, map_transport_error};
 use crate::secrets::{SecretsStore, EXA_KEY, FIRECRAWL_KEY};
+use crate::settings::SettingsManager;
 
 const EXA_TIMEOUT: Duration = Duration::from_secs(20);
 const FIRECRAWL_TIMEOUT: Duration = Duration::from_secs(45);
@@ -36,6 +38,7 @@ pub struct ResearchAvailability {
 pub struct ResearchManager {
     http: reqwest::Client,
     secrets: Arc<SecretsStore>,
+    settings: Arc<SettingsManager>,
     agent: Arc<AgentManager>,
 }
 
@@ -43,11 +46,13 @@ impl ResearchManager {
     pub fn new(
         http: reqwest::Client,
         secrets: Arc<SecretsStore>,
+        settings: Arc<SettingsManager>,
         agent: Arc<AgentManager>,
     ) -> Self {
         Self {
             http,
             secrets,
+            settings,
             agent,
         }
     }
@@ -66,6 +71,7 @@ impl ResearchManager {
         query: &str,
         num_results: Option<u32>,
     ) -> BlueyResult<Vec<SearchResult>> {
+        ensure_cloud_ai(&self.settings.get())?;
         let key = self
             .secrets
             .get(EXA_KEY)
@@ -99,6 +105,7 @@ impl ResearchManager {
         if !url.starts_with("https://") && !url.starts_with("http://") {
             return Err(BlueyError::invalid_params("scrape URLs must be http(s)"));
         }
+        ensure_cloud_ai(&self.settings.get())?;
         let key = self
             .secrets
             .get(FIRECRAWL_KEY)

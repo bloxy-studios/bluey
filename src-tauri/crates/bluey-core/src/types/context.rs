@@ -393,6 +393,11 @@ pub struct SnapshotOptions {
     pub ocr_level: Option<OcrLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_image: Option<bool>,
+    /// Built for silent work (proactive preparation, live suggestions): the
+    /// builder leaves the app state machine alone, because a background
+    /// request never drives the state that would take it out of Analyzing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 impl Default for SnapshotOptions {
@@ -406,6 +411,7 @@ impl Default for SnapshotOptions {
             capture: None,
             ocr_level: None,
             inline_image: Some(true),
+            background: false,
         }
     }
 }

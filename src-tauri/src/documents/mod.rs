@@ -109,8 +109,8 @@ impl DocumentsManager {
             .storage
             .run(move |db| {
                 let deleted = DocumentRepository::delete(db, &id)?;
-                // Deleted text must not linger in the WAL (DATA-010).
-                db.checkpoint()?;
+                // Deleted text must not linger in the WAL (DATA-010) or a backup.
+                db.finish_deletion()?;
                 Ok(deleted)
             })
             .await?;
@@ -129,7 +129,7 @@ impl DocumentsManager {
             .storage
             .run(move |db| {
                 let removed = DocumentRepository::delete_all(db, scope)?;
-                db.checkpoint()?;
+                db.finish_deletion()?;
                 Ok(removed)
             })
             .await?;

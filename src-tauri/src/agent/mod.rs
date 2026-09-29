@@ -119,7 +119,11 @@ impl AgentManager {
                 }
             }
         };
-        has_credential && backend_supported(self.info().await.as_ref(), backend)
+        // Asking the sidecar spawns it (up to INFO_TIMEOUT) on the ask path:
+        // only when the answer matters.
+        has_credential
+            && (!needs_sidecar_info(backend)
+                || backend_supported(self.info().await.as_ref(), backend))
     }
 
     /// Research backends the installed sidecar can run (empty when it is not
@@ -268,6 +272,8 @@ impl AgentManager {
 
     /// Spawn the sidecar for `request` and stream its events onto the bus.
     pub async fn start(self: &Arc<Self>, request: DeepResearchRequest) -> BlueyResult<()> {
+        // The job sends the query and allow-listed documents to a model provider.
+        crate::ai::ensure_cloud_ai(&self.settings.get())?;
         if !self.settings.get().ai.deep_research_enabled {
             return Err(BlueyError::configuration(
                 "deep_research_disabled",
@@ -330,6 +336,12 @@ impl AgentManager {
 /// Whether the installed build can run `backend`. Both builds run Gemini
 /// (pure JS); Claude needs the CLI, which only the full build (or a dev
 /// `BLUEY_CLAUDE_CLI`) has — an unknown build is not trusted with it.
+/// Whether `backend` depends on what the installed sidecar build supports
+/// (`agent.info`); Gemini runs on every build.
+fn needs_sidecar_info(backend: ResearchBackend) -> bool {
+    matches!(backend, ResearchBackend::Claude)
+}
+
 fn backend_supported(info: Option<&AgentInfo>, backend: ResearchBackend) -> bool {
     match backend {
         ResearchBackend::Gemini => true,
@@ -395,5 +407,12 @@ mod env_boundary_tests {
         assert!(!backend_supported(None, ResearchBackend::Claude));
         assert!(backend_supported(Some(&lite), ResearchBackend::Gemini));
         assert!(backend_supported(None, ResearchBackend::Gemini));
+    }
+
+    #[test]
+    fn only_claude_spawns_the_sidecar_to_check_availability() {
+        // `available()` sits on the ask path; Gemini must not pay a sidecar spawn.
+        assert!(!needs_sidecar_info(ResearchBackend::Gemini));
+        assert!(needs_sidecar_info(ResearchBackend::Claude));
     }
 }

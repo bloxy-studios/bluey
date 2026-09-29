@@ -241,8 +241,15 @@ fn on_session_timeline(mut wire: WireTranscript, offset_ms: u64) -> WireTranscri
     wire
 }
 
-/// Build the helper `audio.start` params from a session config.
-pub fn helper_start_params(config: &AudioSessionConfig, route: TranscriptionRoute) -> Value {
+/// Build the helper `audio.start` params from a session config. With Privacy
+/// → Cloud AI off (`cloud_allowed == false`) Apple Speech must stay on the Mac:
+/// `requireOnDevice` makes the helper refuse its server fallback and report
+/// `speech_on_device_unavailable` instead.
+pub fn helper_start_params(
+    config: &AudioSessionConfig,
+    route: TranscriptionRoute,
+    cloud_allowed: bool,
+) -> Value {
     let mut sources = Vec::new();
     if config.microphone.enabled {
         sources.push("microphone");
@@ -253,6 +260,7 @@ pub fn helper_start_params(config: &AudioSessionConfig, route: TranscriptionRout
     let mut transcription = json!({
         "enabled": route == TranscriptionRoute::Apple,
         "onDevice": true,
+        "requireOnDevice": !cloud_allowed,
         "sources": sources,
     });
     if config.transcription.language != "auto" && !config.transcription.language.is_empty() {
@@ -413,7 +421,7 @@ impl AudioManager {
             cloud_allowed,
             cloud.is_some(),
         );
-        let params = helper_start_params(&config, route);
+        let params = helper_start_params(&config, route, cloud_allowed);
         // Reset per-session state and install the cloud transcription sink
         // *before* the helper starts capturing, so the first PCM chunks are not
         // dropped for lack of a session.
@@ -564,6 +572,10 @@ impl AudioManager {
             }
             Err(error) => {
                 tracing::warn!(error = %error, "could not restart listening on Apple Speech");
+                // Nothing is captured any more: leave Listening and close the
+                // session listening opened, as a failed helper-restart resume does.
+                self.mark_stopped(Some(error));
+                self.end_auto_session().await;
             }
         }
     }
@@ -1019,17 +1031,13 @@ impl AudioManager {
     // ── Transcript access ──────────────────────────────────────────────────
 
     /// Finals from the last `window_seconds`, oldest first — the context
-    /// snapshot's transcript. While listening only the current run counts;
-    /// otherwise only the active session's finals (none without a session).
+    /// snapshot's transcript (scoped by [`context_scope`]).
     pub fn recent(&self, window_seconds: u32) -> Vec<TranscriptSegment> {
-        let scope = if self.is_running() {
-            RingScope::Run(self.run_id.load(Ordering::SeqCst))
-        } else {
-            match self.sessions.active_id() {
-                Some(id) => RingScope::Session(id),
-                None => RingScope::Nothing,
-            }
-        };
+        let scope = context_scope(
+            self.sessions.active_id(),
+            self.is_running(),
+            self.run_id.load(Ordering::SeqCst),
+        );
         self.ring.lock().recent(&scope, window_seconds)
     }
 
@@ -1059,7 +1067,12 @@ impl AudioManager {
         let target = session_id.clone();
         let removed = self
             .storage
-            .run(move |db| TranscriptRepository::clear(db, target.as_deref()))
+            .run(move |db| {
+                let removed = TranscriptRepository::clear(db, target.as_deref())?;
+                // Nothing of it may linger in the WAL or a pre-migration backup.
+                db.finish_deletion()?;
+                Ok(removed)
+            })
             .await?;
         {
             let mut ring = self.ring.lock();
@@ -1372,10 +1385,59 @@ fn ensure_signed_in(state: AppState) -> BlueyResult<()> {
     Ok(())
 }
 
+/// Which finals the context snapshot sees: the active session's (its runs
+/// share one timeline through `time_offset_ms`, so a reroute to Apple, a helper
+/// restart or a stop/start keeps what was said before); without a session, the
+/// current listening run's; otherwise none.
+fn context_scope(active_session: Option<String>, running: bool, run_id: u64) -> RingScope {
+    match active_session {
+        Some(id) => RingScope::Session(id),
+        None if running => RingScope::Run(run_id),
+        None => RingScope::Nothing,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bluey_core::types::VadSensitivity;
+
+    #[test]
+    fn a_session_keeps_what_was_said_before_the_run_changed() {
+        // A reroute to Apple or a helper restart starts run 2 in the same
+        // session; the question heard in run 1 must stay in the next answer.
+        let segment = |text: &str, start: u64| TranscriptSegment {
+            id: format!("seg_{text}"),
+            session_id: Some("ses_1".into()),
+            speaker: None,
+            speaker_confidence: None,
+            source: bluey_core::types::AudioSource::System,
+            text: text.into(),
+            start_time: start,
+            end_time: start + 1_000,
+            confidence: None,
+            finalized: true,
+            language: None,
+            created_at: "t".into(),
+        };
+        let mut ring = TranscriptRing::new(8);
+        ring.push(1, segment("what is your notice period", 0));
+        ring.push(2, segment("and your salary range", 4_000));
+
+        let scope = context_scope(Some("ses_1".into()), true, 2);
+        let texts: Vec<String> = ring
+            .recent(&scope, 120)
+            .into_iter()
+            .map(|s| s.text)
+            .collect();
+        assert_eq!(
+            texts,
+            ["what is your notice period", "and your salary range"]
+        );
+
+        assert_eq!(context_scope(None, true, 2), RingScope::Run(2));
+        assert_eq!(context_scope(None, false, 2), RingScope::Nothing);
+    }
 
     #[test]
     fn listening_is_refused_while_signed_out() {
@@ -1391,7 +1453,7 @@ mod tests {
         let mut config = AudioSessionConfig::default();
         config.transcription.language = "auto".into();
         config.vad.sensitivity = VadSensitivity::High;
-        let params = helper_start_params(&config, TranscriptionRoute::Apple);
+        let params = helper_start_params(&config, TranscriptionRoute::Apple, true);
         assert_eq!(params["sampleRate"], 16_000);
         assert_eq!(params["emitPcm"], false);
         assert_eq!(params["chunkMs"], 200);
@@ -1407,6 +1469,16 @@ mod tests {
         );
         assert_eq!(params["vad"]["sensitivity"], "high");
         assert_eq!(params["levels"]["enabled"], true);
+        // Cloud AI on: the helper may fall back to Apple's servers (and says so).
+        assert_eq!(params["transcription"]["requireOnDevice"], false);
+    }
+
+    #[test]
+    fn with_cloud_ai_off_apple_speech_may_not_use_apples_servers() {
+        let config = AudioSessionConfig::default();
+        let params = helper_start_params(&config, TranscriptionRoute::Apple, false);
+        assert_eq!(params["transcription"]["onDevice"], true);
+        assert_eq!(params["transcription"]["requireOnDevice"], true);
     }
 
     #[test]
@@ -1415,7 +1487,7 @@ mod tests {
         config.system_audio.enabled = false;
         config.transcription.language = "en-US".into();
         config.microphone.device_id = Some("mic-1".into());
-        let params = helper_start_params(&config, TranscriptionRoute::Pcm);
+        let params = helper_start_params(&config, TranscriptionRoute::Pcm, true);
         assert_eq!(params["emitPcm"], true);
         assert_eq!(params["transcription"]["enabled"], false);
         assert_eq!(params["transcription"]["locale"], "en-US");

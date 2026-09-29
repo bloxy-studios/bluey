@@ -222,6 +222,7 @@ pub fn fast_path_options(settings: &Settings) -> SnapshotOptions {
         }),
         ocr_level: Some(settings.screen.ocr_level),
         inline_image: Some(true),
+        background: false,
     }
 }
 

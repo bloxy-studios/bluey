@@ -67,7 +67,10 @@ with the reason.
   locale supports it (`supportsOnDeviceRecognition`) and automatic punctuation (macOS 13+).
   When the locale has no on-device model the recognizer runs on Apple's servers: `audio.started`
   reports `speech { locale, onDevice }` (also `AudioStatus.speechLocale/speechOnDevice`) and
-  Bluey shows an `audio.speech_server` notice instead of switching silently. Partial results
+  Bluey shows an `audio.speech_server` notice instead of switching silently. With Privacy →
+  Cloud AI off, `audio.start` sends `requireOnDevice: true` and the helper does not use Apple's
+  servers: that source is not transcribed and `audio.error{speech_on_device_unavailable}` says
+  why. Partial results
   stream; an utterance is committed as a final when the recognizer resets after a pause, and
   requests are rotated every ~55 s to respect the framework's one-minute limit — only the
   current request can rotate or restart, a retired request's late callbacks are ignored. Every
@@ -131,8 +134,9 @@ a provider session that gives up is re-opened on the next chunk after a 10 s coo
 configuration error (key rejected, model not found, unsupported) moves listening to Apple
 Speech with `stt_fallback`. The other source keeps going throughout. Apple Speech itself unavailable → `speech_unavailable`.
 `stt_fallback` is announced once per run as an info notice, not an error. With Privacy → Cloud AI
-off a cloud provider is never used: listening runs on Apple Speech (`stt_fallback`), and turning
-the switch off mid-run moves a live cloud session onto Apple Speech.
+off a cloud provider is never used: listening runs on Apple Speech (`stt_fallback`) on the Mac
+only (`requireOnDevice`, see above), and turning the switch off mid-run moves a live cloud
+session onto Apple Speech.
 
 Starting is single-flight: a second `audio.start` while one is starting or running is not an
 error. If the helper does not confirm `audio.start` in time Bluey sends a best-effort

@@ -76,7 +76,11 @@ impl Storage {
     /// Open the database at the resolved path (migrations run automatically).
     pub fn open(paths: Arc<AppPaths>) -> BlueyResult<Self> {
         // A failed or bad migration after an update can be rolled back by hand (CRIT-003).
-        let db = Database::open_with_backup(&paths.db_path, env!("CARGO_PKG_VERSION"))?;
+        let version = env!("CARGO_PKG_VERSION");
+        let db = Database::open_with_backup(&paths.db_path, version)?;
+        // This version migrated fine, so older versions' copies have served
+        // their purpose; keep at most this upgrade's (a deletion drops it too).
+        bluey_storage::db::remove_backups(&paths.db_path, Some(version));
         Ok(Self {
             db: Arc::new(db),
             paths,
@@ -136,25 +140,7 @@ impl Storage {
     /// (CRIT-003): they hold everything the database held, so Reset must not
     /// leave them behind. Returns how many were removed.
     pub fn remove_db_backups(db_path: &Path) -> usize {
-        let (Some(dir), Some(name)) = (db_path.parent(), db_path.file_name()) else {
-            return 0;
-        };
-        let prefix = format!("{}.bak-", name.to_string_lossy());
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return 0;
-        };
-        let backups: Vec<PathBuf> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path
-                        .file_name()
-                        .is_some_and(|n| n.to_string_lossy().starts_with(&prefix))
-            })
-            .collect();
-        Self::remove_files(&backups);
-        backups.iter().filter(|path| !path.exists()).count()
+        bluey_storage::db::remove_backups(db_path, None)
     }
 
     /// Best-effort file deletion for image paths returned by retention calls.

@@ -48,6 +48,8 @@ export interface BuildNativeSnapshotArgs {
   transcriptWindowSeconds?: number;
   /** The heard question the ask answers: its conversation is part of the context. */
   detectedEvent?: DetectedEvent;
+  /** Silent work (proactive preparation, live suggestions): the build must not move the app state. */
+  background?: boolean;
   api: SnapshotApi;
 }
 
@@ -81,6 +83,7 @@ export function snapshotOptionsFor(args: Omit<BuildNativeSnapshotArgs, "api">): 
     ocrLevel: settings.screen.ocrLevel,
     inlineImage: includeScreen,
   };
+  if (args.background) options.background = true;
   if (includeTranscript) {
     options.transcriptWindowSeconds = transcriptWindowSeconds ?? DEFAULT_TRANSCRIPT_WINDOW_SECONDS;
   }

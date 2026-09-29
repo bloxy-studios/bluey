@@ -17,6 +17,8 @@ public struct AudioStartParams: Decodable {
         public var enabled: Bool?
         public var locale: String?
         public var onDevice: Bool?
+        /// Privacy → Cloud AI is off: no fallback to Apple's servers.
+        public var requireOnDevice: Bool?
         public var sources: [String]?
     }
     public struct Levels: Decodable {
@@ -150,6 +152,7 @@ public final class AudioSession {
                         locale: params.transcription?.locale
                             ?? SpeechTranscriber.defaultLocale().identifier,
                         onDevice: params.transcription?.onDevice ?? true,
+                        requireOnDevice: params.transcription?.requireOnDevice ?? false,
                         sampleRate: Double(self.sampleRate),
                         emit: self.emit)
                     if transcriber.start() {
