@@ -12,13 +12,13 @@ const iconButton = cva(
     variants: {
       variant: {
         /** Quiet toolbar button (HUD row 2). */
-        ghost: "text-fg-muted hover:text-fg hover:bg-white/10 rounded-[8px]",
+        ghost: "text-fg-muted hover:text-fg hover:bg-fg/10 rounded-[8px]",
         /** Chip on the HUD input row (rgba(255,255,255,.1) rounded square). */
-        chip: "bg-hud-chip text-fg hover:bg-white/15 rounded-[10px]",
+        chip: "bg-hud-chip text-fg hover:bg-fg/15 rounded-[10px]",
         /** Circular buttons (back, stop, scroll-to-bottom, "…"). */
         circle: "bg-bg-tile text-fg-muted hover:text-fg hover:bg-bg-hover rounded-full border border-border",
         /** Circular on translucent HUD. */
-        hudCircle: "bg-hud-chip text-fg hover:bg-white/15 rounded-full",
+        hudCircle: "bg-hud-chip text-fg hover:bg-fg/15 rounded-full",
         plain: "text-fg-muted hover:text-fg rounded-[8px]",
       },
       size: {
@@ -27,7 +27,7 @@ const iconButton = cva(
         lg: "size-9",
       },
       active: {
-        true: "text-fg bg-white/10",
+        true: "text-fg bg-fg/10",
         false: "",
       },
     },

@@ -87,7 +87,7 @@ export function StatePill({ onRetry }: StatePillProps = {}) {
           {presented?.action ? (
             <button
               type="button"
-              className="shrink-0 rounded-full bg-hud-chip px-2.5 py-1 text-[12px] font-medium text-fg hover:bg-white/15"
+              className="shrink-0 rounded-full bg-hud-chip px-2.5 py-1 text-[12px] font-medium text-fg hover:bg-fg/15"
               onClick={() => {
                 void (async () => {
                   await presented.action?.();
@@ -101,7 +101,7 @@ export function StatePill({ onRetry }: StatePillProps = {}) {
           <button
             type="button"
             aria-label="Dismiss error"
-            className="flex size-6 shrink-0 items-center justify-center rounded-full text-fg-muted hover:bg-white/10 hover:text-fg"
+            className="flex size-6 shrink-0 items-center justify-center rounded-full text-fg-muted hover:bg-fg/10 hover:text-fg"
             onClick={() => void recover()}
           >
             <X className="size-3.5" aria-hidden />

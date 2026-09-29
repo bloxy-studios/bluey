@@ -87,7 +87,7 @@ function CollapsibleSection({ section }: { section: ResponseSection }) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 bg-white/4 px-3 py-2 text-left text-[13px] font-semibold text-fg transition-colors hover:bg-white/8"
+        className="flex w-full items-center gap-2 bg-fg/4 px-3 py-2 text-left text-[13px] font-semibold text-fg transition-colors hover:bg-fg/8"
       >
         <ChevronRight className={cn("size-3.5 text-fg-muted transition-transform", open && "rotate-90")} aria-hidden />
         {section.title}
@@ -142,7 +142,7 @@ export const ResponseView = memo(function ResponseView({ response, streaming, cl
       )}
 
       {pendingCode ? (
-        <div className="my-3 flex items-center gap-2 rounded-[10px] border border-hud-border bg-[#0d0d0d] px-3.5 py-3 text-[13px] text-fg-muted">
+        <div className="my-3 flex items-center gap-2 rounded-[10px] border border-hud-border bg-code-bg px-3.5 py-3 text-[13px] text-fg-muted">
           <Spinner size={12} />
           Writing code…
         </div>
@@ -155,7 +155,7 @@ export const ResponseView = memo(function ResponseView({ response, streaming, cl
       {response.diagram ? (
         <Suspense
           fallback={
-            <div className="my-3 flex h-24 items-center justify-center rounded-[10px] border border-hud-border bg-[#0d0d0d]">
+            <div className="my-3 flex h-24 items-center justify-center rounded-[10px] border border-hud-border bg-code-bg">
               <Spinner />
             </div>
           }

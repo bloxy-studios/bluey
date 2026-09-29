@@ -32,6 +32,8 @@
   --color-hud-chip: rgba(255, 255, 255, 0.1);
   --color-hud-prompt: rgba(255, 255, 255, 0.12);
   --color-tooltip-bg: #0b0b0b;
+  /* Code blocks and diagrams; the shiki/mermaid themes follow the same theme (UX-005). */
+  --color-code-bg: #0d0d0d;
 
   /* Radii */
   --radius-panel: 16px;
@@ -118,6 +120,7 @@
   --color-hud-chip: rgba(0, 0, 0, 0.07);
   --color-hud-prompt: rgba(0, 0, 0, 0.08);
   --color-tooltip-bg: #2c2c2e;
+  --color-code-bg: #ffffff;
 }
 
 /* ── Base ─────────────────────────────────────────────────────────────── */

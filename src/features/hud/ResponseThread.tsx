@@ -189,7 +189,7 @@ export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
           type="button"
           aria-label="Scroll to bottom"
           onClick={() => scrollToBottom()}
-          className="absolute bottom-3 right-4 flex size-9 items-center justify-center rounded-full bg-hud-chip text-fg shadow-lg shadow-black/25 backdrop-blur transition-colors hover:bg-white/20 motion-safe:animate-fade-in"
+          className="absolute bottom-3 right-4 flex size-9 items-center justify-center rounded-full bg-hud-chip text-fg shadow-lg shadow-black/25 backdrop-blur transition-colors hover:bg-fg/20 motion-safe:animate-fade-in"
         >
           <ArrowDown className="size-4" aria-hidden />
         </button>
