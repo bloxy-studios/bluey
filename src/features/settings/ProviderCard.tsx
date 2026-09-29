@@ -23,6 +23,7 @@ import {
   providerNeedsBaseUrl,
   type ProviderDraftValues,
 } from "./provider-form";
+import { adoptFirstKey } from "./first-key-presets";
 import { SecretKeyField } from "./SecretKeyField";
 
 export function ProviderDialog({
@@ -223,7 +224,10 @@ export function ProviderCard({
           aria-label={`${provider.name} API key`}
           placeholder={provider.kind === "google_gemini" ? "AIza… (Google AI Studio key)" : "API key"}
           help={providerKeyHelp(provider.kind)}
-          onSaved={() => setResult(null)} // a stale "Test connection" verdict no longer applies
+          onSaved={() => {
+            setResult(null); // a stale "Test connection" verdict no longer applies
+            if (!provider.hasApiKey) void adoptFirstKey(provider);
+          }}
         />
         <div className="flex items-center gap-2">
           {preset ? (
