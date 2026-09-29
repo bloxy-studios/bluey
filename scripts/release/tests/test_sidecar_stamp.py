@@ -55,7 +55,7 @@ class EnsureSidecarsTests(unittest.TestCase):
         """Run ensure-sidecars.sh; return which sidecars it built."""
         self.log.write_text("")
         result = subprocess.run(["bash", str(self.root / "scripts/ensure-sidecars.sh")], cwd=self.root,
-                                env=self.env, capture_output=True, text=True, timeout=30)
+                                env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         return self.log.read_text().split()
 

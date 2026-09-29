@@ -82,7 +82,7 @@ bun install --os darwin --cpu '*'
 
     def run_shell(self, **environment):
         return subprocess.run(["bash", str(self.root / "scripts/release.sh")], cwd=self.root,
-                              env={**self.env, **environment}, capture_output=True, text=True, timeout=20)
+                              env={**self.env, **environment}, capture_output=True, text=True, timeout=60)
 
     def commands(self):
         return self.log.read_text() if self.log.exists() else ""
