@@ -105,6 +105,24 @@ describe("KeybindsTab", () => {
     });
   });
 
+  it("marks a shortcut macOS did not register instead of hiding it in the dev log (UX-039)", async () => {
+    const settings = useSettingsStore.getState().settings!;
+    useSettingsStore.setState({
+      settings: {
+        ...settings,
+        shortcuts: settings.shortcuts.map((s) =>
+          s.id === "toggle_panel" ? { ...s, registrationError: "registration failed: HotKey already registered" } : s,
+        ),
+      },
+    });
+    render(<KeybindsTab />);
+    expect(screen.getByText("Not active")).toBeInTheDocument();
+    expect(screen.getByText(/macOS did not register this shortcut/).textContent).toContain(
+      "HotKey already registered",
+    );
+    expect(screen.getAllByText("Not active")).toHaveLength(1);
+  });
+
   it("escape cancels recording without changes", async () => {
     const user = userEvent.setup();
     render(<KeybindsTab />);

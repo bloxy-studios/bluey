@@ -17,6 +17,7 @@ pub fn default_bindings() -> Vec<ShortcutBinding> {
         accelerator: acc.to_string(),
         default_accelerator: acc.to_string(),
         enabled: true,
+        registration_error: None,
     };
     // Registered globally only when the user opts in: the HUD handles these keys
     // itself while it has focus, and ⌘R / ⌘, belong to the frontmost app (UX-001).
@@ -342,6 +343,7 @@ pub fn reconcile(stored: &[ShortcutBinding]) -> Vec<ShortcutBinding> {
                 accelerator: normalize_accelerator(&s.accelerator)
                     .unwrap_or(def.default_accelerator.clone()),
                 enabled: s.enabled,
+                registration_error: s.registration_error.clone(),
                 ..def
             },
             None => def,

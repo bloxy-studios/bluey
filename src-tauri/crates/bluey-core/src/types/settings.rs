@@ -373,6 +373,10 @@ pub struct ShortcutBinding {
     pub accelerator: String,
     pub default_accelerator: String,
     pub enabled: bool,
+    /// Why the binding did not register the last time it was applied
+    /// (UX-039); absent while it works or is switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

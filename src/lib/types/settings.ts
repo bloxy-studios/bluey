@@ -116,6 +116,8 @@ export interface ShortcutBinding {
   accelerator: string;
   defaultAccelerator: string;
   enabled: boolean;
+  /** Why macOS did not register it the last time it was applied (UX-039). */
+  registrationError?: string;
 }
 
 export type ShortcutId =

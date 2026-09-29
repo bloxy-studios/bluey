@@ -22,7 +22,7 @@ import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
 import { toBlueyError, type ShortcutBinding, type ShortcutConflict, type ShortcutId } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
-import { eventToAccelerator } from "@/lib/utils/keyboard";
+import { eventToAccelerator, registrationFailureMessage } from "@/lib/utils/keyboard";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 const ICONS: Record<ShortcutId, LucideIcon> = {
@@ -56,6 +56,7 @@ interface RowProps {
 
 function KeybindRow({ binding, recording, conflict, onStartRecording, onToggle }: RowProps) {
   const Icon = ICONS[binding.id];
+  const failed = binding.enabled && binding.registrationError ? binding.registrationError : null;
   return (
     <div className="flex flex-col">
       <div
@@ -75,6 +76,11 @@ function KeybindRow({ binding, recording, conflict, onStartRecording, onToggle }
         >
           <Icon className="size-5 shrink-0 text-fg-muted" strokeWidth={1.7} aria-hidden />
           <span className="min-w-0 flex-1 truncate text-[14px] text-fg">{binding.label}</span>
+          {failed ? (
+            <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[11.5px] font-medium text-danger">
+              Not active
+            </span>
+          ) : null}
           {recording ? (
             <span className="text-[12.5px] font-medium text-accent">Press shortcut… (Esc cancels)</span>
           ) : (
@@ -95,6 +101,9 @@ function KeybindRow({ binding, recording, conflict, onStartRecording, onToggle }
             : "Conflicts with another Bluey shortcut — "}
           {conflict.detail}
         </div>
+      ) : null}
+      {failed && !conflict ? (
+        <p className="mb-1 ml-10 mt-0.5 text-[12.5px] text-danger">{registrationFailureMessage(failed)}</p>
       ) : null}
     </div>
   );

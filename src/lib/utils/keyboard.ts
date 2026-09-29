@@ -132,3 +132,8 @@ export function eventToAccelerator(event: Pick<KeyboardEvent, "key" | "metaKey" 
 
   return [...parts, key].join("+");
 }
+
+/** Copy for a global shortcut macOS did not register (UX-039). */
+export function registrationFailureMessage(reason: string): string {
+  return `macOS did not register this shortcut, so it does nothing right now. Another app may be using it — choose a different one. (${reason})`;
+}
