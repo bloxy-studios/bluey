@@ -105,7 +105,8 @@ pub fn run(builder: tauri::Builder<Wry>) {
     let app = match app {
         Ok(app) => app,
         Err(e) => {
-            // `panic = "abort"`: an `expect` here left only a crash report.
+            // A panic aborts (see `logging/panic_hook.rs`): an `expect` here
+            // would leave only a crash report.
             tracing::error!(error = %e, "cannot build the Bluey application");
             eprintln!("Bluey could not start: {e}");
             std::process::exit(1);
@@ -201,6 +202,7 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
         paths.logs_dir.clone(),
         &logging::effective_level("info"),
     ));
+    logging::panic_hook::install();
     let bus = Arc::new(EventBus::new());
     Logging::connect_bus(bus.clone());
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "bluey starting");

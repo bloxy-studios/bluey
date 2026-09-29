@@ -74,9 +74,10 @@ pub fn parse_document(bytes: &[u8], format: DocumentFormat) -> Result<ParsedDocu
 }
 
 // `pdf-extract` panics (`panic!()`, `unwrap()`) on many malformed or unusual
-// PDFs. Its panics are contained by `catch_unwind` below, which only works
-// when panics unwind: a `panic = "abort"` profile would turn one bad resume
-// into an app crash again (CRIT-002).
+// PDFs. Its panics are contained by `bluey_core::panic::contain` below, which
+// only works when panics unwind: a `panic = "abort"` profile would turn one bad
+// resume into an app crash again (CRIT-002). The app's panic hook still aborts
+// on every other panic.
 #[cfg(not(panic = "unwind"))]
 compile_error!("document parsing needs panic = \"unwind\" to contain pdf-extract panics");
 
@@ -96,7 +97,7 @@ fn contain_parser_panic<T>(
     kind: &str,
     parse: impl FnOnce() -> T + std::panic::UnwindSafe,
 ) -> Result<T, BlueyError> {
-    std::panic::catch_unwind(parse).map_err(|_| {
+    bluey_core::panic::contain(parse).map_err(|_| {
         tracing::warn!(kind, "document parser panicked; import refused");
         BlueyError::storage(
             "parse",

@@ -129,7 +129,8 @@ codegen-units = 1
 lto = true
 opt-level = 3
 # Panics unwind (the default) so a panicking third-party document parser is
-# contained by `catch_unwind` instead of aborting the app (CRIT-002).
+# contained by `catch_unwind` instead of aborting the app (CRIT-002). Every
+# other panic still aborts: see `logging/panic_hook.rs`.
 panic = "unwind"
 strip = true
 
