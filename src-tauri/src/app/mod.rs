@@ -543,7 +543,7 @@ mod tests {
             "storage.migration: migration 0006_shortcut_defaults failed: disk I/O error",
             "/Users/me/Library/Logs/Bluey",
         );
-        assert!(message.starts_with("storage.migration: migration 0005"));
+        assert!(message.starts_with("storage.migration: migration 0006"));
         assert!(message.contains("/Users/me/Library/Logs/Bluey"));
         assert!(message.contains("bluey.db.bak-"));
     }
