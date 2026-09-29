@@ -1,11 +1,12 @@
 import { waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MockTransport } from "@/lib/tauri/mock";
 import type { DetectedEvent } from "@/lib/types";
 import { useChatStore } from "@/stores/chatStore";
 import { setEngine } from "@/stores/engine";
 import { canShowLive, useProactiveStore } from "@/stores/proactive";
+import { useSessionStore } from "@/stores/sessionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranscriptStore } from "@/stores/transcriptStore";
 import { makeSettings } from "../fixtures/helpers/builders";
@@ -56,7 +57,10 @@ describe("proactive preparation loop", () => {
     await waitFor(() => expect(useChatStore.getState().turns.at(-1)?.status).toBe("done"));
     const turn = useChatStore.getState().turns.at(-1);
     expect(useChatStore.getState().turns).toHaveLength(1);
-    expect(turn?.suggestion).toEqual({ question: "How would you design a rate limiter?", speaker: "Interviewer" });
+    expect(turn?.suggestion).toEqual({
+      question: "How would you design a rate limiter?",
+      speaker: "Interviewer",
+    });
     expect(turn?.prompt).toBe("How would you design a rate limiter?");
     expect(turn?.response?.id).toBe("prep-det-1");
     expect(turn?.response?.prepared).toBeUndefined(); // on screen, so no longer "prepared and waiting"
@@ -110,6 +114,29 @@ describe("proactive preparation loop", () => {
     expect(engine.classified).toHaveLength(1);
     expect(engine.prepared).toHaveLength(0);
     expect(useChatStore.getState().prepared).toBeNull();
+    expect(useChatStore.getState().turns).toHaveLength(0);
+  });
+
+  it("logs a Team Meeting decision on the session timeline without answering it (MODE-006)", async () => {
+    await mock.invoke("modes_set_active", { id: "team-meeting" });
+    const session = await mock.invoke("sessions_start", { modeId: "team-meeting" });
+    await waitFor(() => expect(useSessionStore.getState().active?.id).toBe(session.id));
+    vi.spyOn(engine, "classify").mockImplementationOnce(async (input) => ({
+      ...detected("det-decision", false),
+      type: "decision",
+      text: input.segment.text,
+      segmentIds: [input.segment.id],
+    }));
+
+    mock.emit("transcript.final", makeSegment({ id: "seg-d", text: "We decided to ship on Friday." }));
+
+    await waitFor(() =>
+      expect(useSessionStore.getState().events.map((e) => e.type)).toContain("decision_detected"),
+    );
+    const logged = useSessionStore.getState().events.find((e) => e.type === "decision_detected");
+    expect(logged?.detail).toBe("We decided to ship on Friday.");
+    expect(logged?.refs).toEqual({ segmentId: "seg-d" });
+    expect(engine.prepared).toHaveLength(0);
     expect(useChatStore.getState().turns).toHaveLength(0);
   });
 
@@ -210,7 +237,10 @@ describe("proactive preparation loop", () => {
     engine.release();
     await waitFor(() => expect(useChatStore.getState().turns).toHaveLength(2));
     await waitFor(() => expect(useChatStore.getState().turns.every((t) => t.status === "done")).toBe(true));
-    expect(useChatStore.getState().turns.map((t) => t.suggestion?.question)).toEqual(["Question live-1?", "Question live-2?"]);
+    expect(useChatStore.getState().turns.map((t) => t.suggestion?.question)).toEqual([
+      "Question live-1?",
+      "Question live-2?",
+    ]);
     expect(useProactiveStore.getState().liveEventId).toBeNull();
   });
 
@@ -238,7 +268,9 @@ describe("proactive preparation loop", () => {
     const ids = engine.prepared.map((p) => p.detectedEvent?.id);
     expect(new Set(ids).size).toBe(ids.length); // never prepared twice for one id
     await waitFor(() => expect(useChatStore.getState().turns.at(-1)?.status).toBe("done"));
-    expect(useChatStore.getState().turns.at(-1)?.suggestion?.question).toBe("Can you walk me through your résumé?");
+    expect(useChatStore.getState().turns.at(-1)?.suggestion?.question).toBe(
+      "Can you walk me through your résumé?",
+    );
     expect(useChatStore.getState().prepared).toBeNull();
   });
 });

@@ -56,7 +56,10 @@ set active. Validation: `validateModeDraft` (name 1–48 chars, instructions ≤
 4. **Output** — `responseSchema` selects the structured schema and the HUD renderer (sections,
    code block with copy/expand, diagram view, calculations separated).
 5. **Classifier** — detection rules adapt to the mode (objections in Sales, decisions/actions in
-   Team Meeting, behavioral cues in interviews).
+   Team Meeting, behavioral cues in interviews). In Team Meeting (decisions, action items,
+   important statements, topic changes) and Lecture (important statements, topic changes) these
+   detections need no answer: they go on the session timeline (`src/transcript/notable.ts`), with
+   the spoken words only when Privacy → Store transcripts is on.
 6. **Summary** — the post-session summary is structured per mode (e.g. lecture study guide,
    meeting decisions/action items).
 

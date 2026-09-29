@@ -27,7 +27,13 @@
 
 import { create } from "zustand";
 
-import { PREPARED_TTL_MS, type CancelHandle, type EngineCallbacks, type EnginePhase } from "@/lib/engine-contract";
+import {
+  PREPARED_TTL_MS,
+  type CancelHandle,
+  type EngineCallbacks,
+  type EnginePhase,
+} from "@/lib/engine-contract";
+import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { getTransport, type Unlisten } from "@/lib/tauri/transport";
 import type { BlueyError, BlueyMode, DetectedEvent, Settings, TranscriptSegment } from "@/lib/types";
@@ -38,6 +44,7 @@ import {
   DIRECT_QUESTION_TYPES,
   isOpenFragment,
 } from "@/transcript/classifier";
+import { notableEntry } from "@/transcript/notable";
 import { labelSpeaker } from "@/transcript/speaker";
 import { recentSegments } from "@/transcript/window";
 import { useAppStore } from "./appStore";
@@ -130,7 +137,8 @@ const META_PHRASES =
 
 const GENERIC_TYPES: ReadonlySet<DetectedEvent["type"]> = new Set(["question", "follow_up"]);
 
-export type SurfaceVerdict = "surface" | "not_substantive" | "below_threshold" | "duplicate" | "cooldown" | "stale";
+export type SurfaceVerdict =
+  "surface" | "not_substantive" | "below_threshold" | "duplicate" | "cooldown" | "stale";
 
 /** What the gate knows about the session so far. */
 export interface SurfaceContext {
@@ -269,6 +277,19 @@ function liveCallbacks(generation: number, event: DetectedEvent): EngineCallback
  * Safe to call in any window: it only acts in the HUD window so settings /
  * onboarding never run a second copy of the pipeline.
  */
+/** Log a Team Meeting / Lecture detection that needs no answer on the session timeline (MODE-006). */
+async function recordNotable(event: DetectedEvent, mode: BlueyMode, settings: Settings): Promise<void> {
+  const session = useSessionStore.getState().active;
+  const entry = session ? notableEntry(event, mode, settings.privacy.storeTranscripts) : null;
+  if (!session || !entry) return;
+  try {
+    // Rust publishes `session.event`, which appends it to the timeline store.
+    await bluey.session.addEvent({ sessionId: session.id, ...entry });
+  } catch (error) {
+    console.warn("[proactive] could not log the detection", error);
+  }
+}
+
 export function startProactiveLoop(): Unlisten {
   const seen = new Set<string>();
   let queued: DetectedEvent | null = null;
@@ -291,7 +312,10 @@ export function startProactiveLoop(): Unlisten {
   const prepareFor = async (event: DetectedEvent): Promise<void> => {
     busy = true;
     // What opened a suggestion feeds dedupe and the cooldown (LIVE-009).
-    surfaced = [...surfaced, { text: event.text, at: Date.now(), ...(event.speaker ? { speaker: event.speaker } : {}) }];
+    surfaced = [
+      ...surfaced,
+      { text: event.text, at: Date.now(), ...(event.speaker ? { speaker: event.speaker } : {}) },
+    ];
     useProactiveStore.getState().setPreparing(event.id);
     try {
       const settings = useSettingsStore.getState().settings;
@@ -303,11 +327,19 @@ export function startProactiveLoop(): Unlisten {
       let generation: number | null = null;
       let callbacks: EngineCallbacks | undefined;
       if (live) {
-        const suggestion: SuggestionMeta = { question: event.text, ...(event.speaker ? { speaker: event.speaker } : {}) };
+        const suggestion: SuggestionMeta = {
+          question: event.text,
+          ...(event.speaker ? { speaker: event.speaker } : {}),
+        };
         generation = chat.begin(event.text, event.text, {
           phase: "thinking",
           suggestion,
-          request: { trigger: "detected_event", detectedEvent: event, promptLabel: event.text, captureScreen: false },
+          request: {
+            trigger: "detected_event",
+            detectedEvent: event,
+            promptLabel: event.text,
+            captureScreen: false,
+          },
         });
         useProactiveStore.getState().setLive(event.id);
         callbacks = {
@@ -414,13 +446,14 @@ export function startProactiveLoop(): Unlisten {
     const others = useTranscriptStore.getState().segments.filter((s) => !segmentIds.includes(s.id));
     try {
       // The engine emits `question.detected` itself when the event needs a response.
-      await getEngine().classify({
+      const event = await getEngine().classify({
         segment,
         recent: recentSegments(others, CLASSIFY_WINDOW_SECONDS),
         mode,
         settings,
         ...(segmentIds.length > 1 ? { segmentIds } : {}),
       });
+      if (event) await recordNotable(event, mode, settings);
     } catch (error) {
       console.warn("[proactive] classify failed", error);
     }
@@ -441,7 +474,11 @@ export function startProactiveLoop(): Unlisten {
     let merged = segment;
     let ids = [segment.id];
     const previous = held;
-    if (previous && previous.segment.source === segment.source && previous.segment.speaker === segment.speaker) {
+    if (
+      previous &&
+      previous.segment.source === segment.source &&
+      previous.segment.speaker === segment.speaker
+    ) {
       // The same voice went on within the window: classify the whole utterance once.
       clearTimeout(previous.timer);
       held = null;
