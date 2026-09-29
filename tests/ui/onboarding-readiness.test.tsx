@@ -7,7 +7,7 @@ import { ReadyStep, TestAIStep } from "@/features/onboarding/steps/tests";
 import type { MockTransport } from "@/lib/tauri/mock";
 import type { AIProviderConfig } from "@/lib/types";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { setupMockApp } from "./helpers";
+import { setupInterceptedApp, setupMockApp } from "./helpers";
 
 /** Rewrite the providers (and optionally the roles) the way Settings → AI would. */
 async function patchAi(
@@ -86,5 +86,27 @@ describe("onboarding readiness (ONB-001)", () => {
     await screen.findByText("Connect an AI provider");
     expect(screen.getByRole("alert")).toHaveTextContent("has no API key yet");
     expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
+  });
+
+  // Rust's router also routes to connected subscription accounts (ai/mod.rs `providers()`),
+  // which are not in settings.ai.providers; the mock does not route them, so the test answers
+  // as Rust would.
+  it("tests a connected account the router picks, with no API key anywhere", async () => {
+    await patchAi((p) => ({ ...p, hasApiKey: false }));
+    const { transport } = await setupInterceptedApp();
+    transport.intercept("ai_readiness", async () => ({ ok: true, providerId: "chatgpt", model: "gpt-5.5", vision: true }));
+    const tested: unknown[] = [];
+    transport.intercept("ai_test_connection", async (args) => {
+      tested.push(args);
+      return { ok: true, providerId: args.providerId, model: args.model, latencyMs: 120 };
+    });
+    const user = userEvent.setup();
+    renderStep(TestAIStep);
+
+    await user.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect(screen.getByText(/tiny request to ChatGPT/)).toBeInTheDocument();
+    expect(screen.queryByText("Connect an AI provider")).not.toBeInTheDocument();
+    await screen.findByText(/Connected · gpt-5.5/);
+    expect(tested).toEqual([{ providerId: "chatgpt", model: "gpt-5.5" }]);
   });
 });
