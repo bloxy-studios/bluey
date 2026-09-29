@@ -70,7 +70,7 @@ Then press **⌘ \\** to toggle Bluey, **⌘ ↵** to ask about your screen, **�
 
 ## Default shortcuts
 ⌘ \\ toggle · ⌘ ↵ capture + analyze · ⌘ ⇧ ↵ generate response · ⌘ ⇧ L toggle listening ·
-⌃ ⌥ ↑↓←→ move panel · ⌥ ⌘ ↑↓ scroll response. ⌘ R (new chat) and ⌘ , (settings) work while the
+⌃ ⌥ ⌘ ↑↓←→ move panel · ⌥ ⌘ ↑↓ scroll response. ⌘ R (new chat) and ⌘ , (settings) work while the
 HUD has focus; their global versions are off by default so they never take those chords from
 other apps. All remappable, with conflict detection (standard editing chords such as ⌘ ← warn).
 

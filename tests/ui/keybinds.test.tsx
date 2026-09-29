@@ -64,13 +64,13 @@ describe("KeybindsTab", () => {
       "false",
     );
     const moveLeft = screen.getByLabelText("Edit shortcut: Move the window position left");
-    expect(moveLeft.textContent).toContain("⌃⌥←");
+    expect(moveLeft.textContent).toContain("⌘⌃⌥←");
 
     await user.click(moveLeft);
     fireEvent.keyDown(window, { key: "ArrowLeft", metaKey: true });
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("start of the line"));
     const binding = useSettingsStore.getState().settings?.shortcuts.find((s) => s.id === "move_left");
-    expect(binding?.accelerator).toBe("Ctrl+Alt+ArrowLeft");
+    expect(binding?.accelerator).toBe("CmdOrCtrl+Ctrl+Alt+ArrowLeft");
   });
 
   it("records ⌃ as Control, not as ⌘", async () => {

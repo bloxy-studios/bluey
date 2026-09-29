@@ -147,10 +147,10 @@ export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
   // HUD-local by default: ⌘R and ⌘, belong to the frontmost app (UX-001).
   shortcut("new_chat", "Start a new chat", "general", "CmdOrCtrl+KeyR", false),
   shortcut("open_settings", "Open Bluey settings", "general", "CmdOrCtrl+Comma", false),
-  shortcut("move_up", "Move the window position up", "window", "Ctrl+Alt+ArrowUp"),
-  shortcut("move_down", "Move the window position down", "window", "Ctrl+Alt+ArrowDown"),
-  shortcut("move_left", "Move the window position left", "window", "Ctrl+Alt+ArrowLeft"),
-  shortcut("move_right", "Move the window position right", "window", "Ctrl+Alt+ArrowRight"),
+  shortcut("move_up", "Move the window position up", "window", "CmdOrCtrl+Ctrl+Alt+ArrowUp"),
+  shortcut("move_down", "Move the window position down", "window", "CmdOrCtrl+Ctrl+Alt+ArrowDown"),
+  shortcut("move_left", "Move the window position left", "window", "CmdOrCtrl+Ctrl+Alt+ArrowLeft"),
+  shortcut("move_right", "Move the window position right", "window", "CmdOrCtrl+Ctrl+Alt+ArrowRight"),
   shortcut("scroll_up", "Scroll the response window up", "scroll", "CmdOrCtrl+Alt+ArrowUp"),
   shortcut("scroll_down", "Scroll the response window down", "scroll", "CmdOrCtrl+Alt+ArrowDown"),
 ];
