@@ -62,7 +62,13 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   callbacks, so the same pipeline streams the answer into that turn as it is written, persists
   it like any shown answer, and neither caches nor announces it. With *On request* — or while
   another answer is already streaming — `prepare()` runs silently, caches the result by event
-  id (5 entries, 3-minute TTL) and emits `response.prepared`; ⌘⇧↵ shows it instantly.
+  id (5 entries, 3-minute TTL) and emits `response.prepared`; ⌘⇧↵ shows it instantly (and
+  saves it to the session). A pure `shouldSurface` gate drops back-channel, repeats, stale
+  queued questions and (outside conversational modes) anything but direct questions; a
+  counterpart's unfinished fragment is held ~900 ms and merged with the next final. Esc, Stop,
+  a manual ask or New chat cancel the live stream; nothing streams into a hidden HUD (the
+  newest question is prepared when it is shown). Team Meeting / Lecture detections that need
+  no answer go on the session timeline instead.
 
 ### Orchestration layer (Rust, `src-tauri/src/ai`)
 
@@ -180,7 +186,13 @@ visionRequired, preferredRole)` over the user's role assignments
   (`bun run fingerprints:capture | import-har | diff | bless`) keeps them true against the real
   clients. Facts, consent copy and the runbook: `docs/PROVIDER_ACCOUNTS.md`.
 - **Cancellation**: each request has a `CancellationToken`; `ai_cancel(requestId)` aborts the
-  HTTP stream; newer generations cancel older ones.
+  HTTP stream; a newer generation cancels an older one only within the same session and
+  `scope` (ask / live / prepare / classify), so a live suggestion never cancels the user's own
+  answer. `background` requests (prepare, live suggestions) never move the app state (no
+  Thinking, no Error); `ai.*` events still flow.
+- **Cloud AI switch**: with Privacy → Cloud AI off, `AiManager` refuses every model call
+  (`ai_stream`, `ai_embed`, `ai_transcribe_file`, so document embedding too) with
+  `privacy.cloud_ai_disabled`.
 - **Metrics**: time to first token, total latency, token usage → `ai_requests` table +
   `dev.metrics` event.
 
