@@ -427,11 +427,11 @@ mod tests {
         // Voice is per request (AI-011, MODE-002): a mode never claims every answer is speech.
         assert!(!text("interview").contains("every answer is words"));
         // A technical mode answers a non-technical question instead of forcing its task (MODE-004).
-        assert!(text("coding").contains("not about code"));
-        assert!(text("coding").contains("in one or two lines"));
+        assert!(text("coding-interview").contains("not about code"));
+        assert!(text("coding-interview").contains("in one or two lines"));
         assert!(text("system-design").contains("not about the design"));
         // Silence is a quiet answer, never an empty one the parser rejects (AI-011).
-        assert!(text("meeting").contains("\"Nothing to flag.\""));
+        assert!(text("team-meeting").contains("\"Nothing to flag.\""));
     }
 
     #[test]
