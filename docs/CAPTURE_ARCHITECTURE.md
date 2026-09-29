@@ -10,8 +10,11 @@
 
 ## Capture (ScreenCaptureKit, macOS 14+)
 * **On demand**: `SCScreenshotManager.captureImage(contentFilter:configuration:)` for the
-  active display (default), a window, a region (`sourceRect`) or the active window. Bluey's own
-  windows are excluded from the content filter so the HUD never appears in captures.
+  display with focus (default), a window, a region (`sourceRect`) or the active window. Bluey's
+  own windows are excluded from the content filter so the HUD never appears in captures.
+* **Display with focus**: a request without a `displayId` captures the display that contains
+  the midpoint of the frontmost app's front window, then the display under the mouse, then the
+  main display (`FocusDisplay.resolve`).
 * **Multi-monitor / Retina**: displays enumerated with points, origin and scale factor; the
   frame is rendered at native pixels and downscaled so the longest side ≤ `maxImageDimension`
   (default 1600 px), JPEG q0.8. Frames are written to

@@ -42,15 +42,20 @@ public enum ShareableContent {
         content.windows.filter { isOwnWindow($0) }
     }
 
-    /// Resolve a display by its stringified CGDirectDisplayID; nil → main display.
+    /// Resolve a display by its stringified CGDirectDisplayID; nil → the display
+    /// with focus (see FocusDisplay), not simply the menu-bar display.
     public static func display(
         withId id: String?, in content: SCShareableContent
     ) -> SCDisplay? {
         if let id, let numeric = UInt32(id) {
             return content.displays.first { $0.displayID == numeric }
         }
-        let main = CGMainDisplayID()
-        return content.displays.first { $0.displayID == main } ?? content.displays.first
+        let focused = FocusDisplay.resolve(
+            displays: content.displays.map { (id: $0.displayID, frame: $0.frame) },
+            focusedWindow: FocusDisplay.focusedWindowBounds(),
+            mouse: FocusDisplay.mouseLocation(),
+            mainDisplayID: CGMainDisplayID())
+        return content.displays.first { $0.displayID == focused } ?? content.displays.first
     }
 
     public static func window(withId id: UInt32, in content: SCShareableContent) -> SCWindow? {
