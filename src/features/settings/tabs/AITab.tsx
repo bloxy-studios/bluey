@@ -18,7 +18,6 @@ import {
   type AIProviderConfig,
   type ModelRole,
   type ModelRoleAssignments,
-  type ResearchBackend,
   type ResponseLength,
   type ResponseTone,
   type SuggestionDisplay,
@@ -28,6 +27,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { PROVIDER_COPY } from "../accounts/account-copy";
 import { AccountsSection } from "../accounts/AccountsSection";
 import { ProviderCard, ProviderDialog } from "../ProviderCard";
+import { ResearchBackendSelect } from "../ResearchBackendSelect";
 import {
   draftToDeployments,
   isPresetProviderId,
@@ -361,7 +361,10 @@ export default function AITab() {
         />
       </div>
 
-      <SectionHeader title="Live suggestions" description="Answers to the questions Bluey hears while listening" />
+      <SectionHeader
+        title="Live suggestions"
+        description="Answers to the questions Bluey hears while listening"
+      />
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between py-1">
           <div>
@@ -435,14 +438,9 @@ export default function AITab() {
                 : "Claude Agent SDK — needs an Anthropic key (or Claude in Foundry) and the full sidecar build."}
             </div>
           </div>
-          <Select
-            aria-label="Research backend"
+          <ResearchBackendSelect
             value={ai.researchBackend}
-            onChange={(e) => void update({ ai: { researchBackend: e.target.value as ResearchBackend } })}
-            options={[
-              { value: "gemini", label: "Gemini" },
-              { value: "claude", label: "Claude" },
-            ]}
+            onChange={(backend) => void update({ ai: { researchBackend: backend } })}
           />
         </div>
         <div className="flex flex-col gap-2.5 rounded-card border border-border bg-bg-elevated p-4">

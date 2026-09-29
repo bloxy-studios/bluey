@@ -190,7 +190,13 @@ function mockBenchReport(options: BenchOptions): BenchReport {
     discarded: 3,
     failures: 0,
     fixture: Boolean(options.fixture),
-    rows: rows.map(([stage, label, p50, p95]) => ({ stage, label, samples: counted, p50Ms: p50, p95Ms: p95 })),
+    rows: rows.map(([stage, label, p50, p95]) => ({
+      stage,
+      label,
+      samples: counted,
+      p50Ms: p50,
+      p95Ms: p95,
+    })),
     imageBytesP50: 148_000,
     promptTokensP50: 2130,
     localTotalP50Ms: 642,
@@ -397,7 +403,8 @@ export class MockTransport implements Transport {
   }
 
   private async mockUpdateCheck(): Promise<UpdateStatus> {
-    if (this.updateState.phase === "checking" || this.updateState.phase === "downloading") return this.updateStatus();
+    if (this.updateState.phase === "checking" || this.updateState.phase === "downloading")
+      return this.updateStatus();
     this.setUpdateState({ phase: "checking", error: undefined, progress: undefined });
     await this.pause(300);
     const channel = this.settings.updates.channel;
@@ -421,7 +428,10 @@ export class MockTransport implements Transport {
     }
     const total = 38_000_000;
     for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
-      this.setUpdateState({ phase: "downloading", progress: { downloaded: Math.round(total * fraction), total } });
+      this.setUpdateState({
+        phase: "downloading",
+        progress: { downloaded: Math.round(total * fraction), total },
+      });
       await this.pause(120);
     }
     return this.setUpdateState({ phase: "ready", progress: undefined });
@@ -436,7 +446,12 @@ export class MockTransport implements Transport {
         message: "no installed update is waiting for a relaunch",
       });
     }
-    this.setUpdateState({ phase: "idle", currentVersion: installed, available: undefined, progress: undefined });
+    this.setUpdateState({
+      phase: "idle",
+      currentVersion: installed,
+      available: undefined,
+      progress: undefined,
+    });
   }
 
   private authStatus(): AuthStatus {
@@ -453,7 +468,11 @@ export class MockTransport implements Transport {
   private account(accountId: string): ProviderAccount {
     const account = this.accounts.find((a) => a.accountId === accountId);
     if (!account) {
-      throw blueyError({ kind: "authentication", code: "account.not_found", message: `no account \`${accountId}\`` });
+      throw blueyError({
+        kind: "authentication",
+        code: "account.not_found",
+        message: `no account \`${accountId}\``,
+      });
     }
     return account;
   }
@@ -539,7 +558,11 @@ export class MockTransport implements Transport {
         return;
       case "rate_limited":
         this.setAccount(accountId, {
-          status: { state: "rate_limited", until: new Date(Date.now() + 2 * 3_600_000).toISOString(), window: "5h" },
+          status: {
+            state: "rate_limited",
+            until: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+            window: "5h",
+          },
           identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
           connectedAt: at,
         });
@@ -555,7 +578,10 @@ export class MockTransport implements Transport {
         });
         return;
       case "needs_reauth":
-        this.setAccount(accountId, { status: { state: "needs_reauth" }, identity: FIXTURE_ACCOUNT_IDENTITIES[accountId] });
+        this.setAccount(accountId, {
+          status: { state: "needs_reauth" },
+          identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
+        });
         return;
       case "hang":
         return;
@@ -1078,7 +1104,9 @@ export class MockTransport implements Transport {
       this.nextAccountOutcome = "success";
       const existing = this.accountTimers.get(account.accountId);
       if (existing) clearTimeout(existing);
-      const connecting = this.setAccount(account.accountId, { status: this.connectFlow(flow, account.providerId) });
+      const connecting = this.setAccount(account.accountId, {
+        status: this.connectFlow(flow, account.providerId),
+      });
       if (flow === "manual_code") {
         // Completes when the user pastes the code (`accounts_submit_code`).
         this.pendingManualCodes.add(account.accountId);
@@ -1087,7 +1115,10 @@ export class MockTransport implements Transport {
       if (outcome !== "hang") {
         this.accountTimers.set(
           account.accountId,
-          setTimeout(() => this.finishAccountConnect(account.accountId, outcome), Math.max(this.streamDelayMs * 4, 10)),
+          setTimeout(
+            () => this.finishAccountConnect(account.accountId, outcome),
+            Math.max(this.streamDelayMs * 4, 10),
+          ),
         );
       }
       return connecting;
@@ -1539,7 +1570,9 @@ export class MockTransport implements Transport {
             code: "account.not_connected",
             message: "connect the account and refresh its models first",
           });
-        return args.role === "embedding" || args.role === "transcription" ? [] : catalog.models.map((m) => m.id);
+        return args.role === "embedding" || args.role === "transcription"
+          ? []
+          : catalog.models.map((m) => m.id);
       }
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
       const models = FIXTURE_MODELS_BY_KIND[provider?.kind ?? "mock"] ?? [];
@@ -1631,7 +1664,12 @@ export class MockTransport implements Transport {
       });
     },
     research_deep_cancel: () => true,
-    research_available: () => ({ search: true, scrape: true, deepAgent: false }),
+    research_available: () => ({
+      search: true,
+      scrape: true,
+      deepAgent: false,
+      agentBackends: ["gemini", "claude"],
+    }),
 
     // Modes
     modes_list: () => this.modes,
