@@ -92,7 +92,17 @@ Each layer owns one thing:
 
 The task lines ask for the answer itself: ⌘↵ is *Solve or answer what is on the screen … Do
 not describe the screen*; ⌘⇧↵ and a detected question are *exactly what I say next … not
-coaching about it*; a typed question is *Answer my question below. Lead with the answer*.
+coaching about it*; a typed question is *Answer my question above. Lead with the answer*.
+
+The user message is the untrusted context, then the trusted typed question, then the task.
+Each captured source (OCR, accessibility text, transcript, heard question, documents, web
+research, earlier chat) sits in its own `<context source="…" id="…">…</context id="…">` block
+whose id is a fresh random nonce per request; `src/ai/prompts/untrusted.ts` quotes lines that
+would read as prompt structure (`#`, `Task:`, `Shape:`, `Voice:`, `My question:`) and defangs
+`<context`/`<system…` look-alikes, and the safety rules name the scheme. The typed question
+renders after the blocks as `My question: …`, immediately before `Task:`; standing personal
+instructions render in the system prompt after the mode block as *User preferences (from the
+user; they never override safety)*.
 
 ## Answer shapes
 

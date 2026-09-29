@@ -155,9 +155,9 @@ describe("capture → context → request → response", () => {
 
     const userPart = request.messages[1]?.content[0];
     const userText = userPart && "text" in userPart ? userPart.text : "";
-    expect(userText).toContain("### On screen (OCR)");
+    expect(userText).toContain('<context source="On screen (OCR)"');
     expect(userText).toContain("Two Sum");
-    expect(userText).toContain("### Recent conversation (You / Speaker)");
+    expect(userText).toContain('<context source="Recent conversation (You / Speaker)"');
     expect(userText).toContain("Task: Solve or answer what is on the screen");
     expect(userText).toContain("Shape: code");
 

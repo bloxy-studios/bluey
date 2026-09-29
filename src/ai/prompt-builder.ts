@@ -24,11 +24,16 @@ import { modePromptFor } from "@/modes/prompts";
 import {
   CONTEXT_PREAMBLE,
   PLAIN_OUTPUT_BLOCK,
+  PREFERENCES_LABEL,
+  QUESTION_LABEL,
   RESPONSE_CONTRACT,
   SECTION_LABELS,
   SECTION_ORDER,
+  TRUSTED_SOURCES,
   answerShapeLine,
+  contextBlock,
   identityBlock,
+  newContextNonce,
   outputLanguageLine,
   structuredOutputBlock,
   styleBlock,
@@ -61,6 +66,8 @@ export interface PromptBuilderParts {
   omittedNote?: string;
   outputLanguage?: string;
   blueyName?: string;
+  /** Fences the untrusted context blocks; drawn fresh per request unless a test pins it. */
+  nonce?: string;
 }
 
 /**
@@ -68,7 +75,7 @@ export interface PromptBuilderParts {
  * chat turns) read in the order they happened; untimed items (the earlier
  * summary) lead. Budget selection stays relevance-based.
  */
-function renderSection(source: ContextSource, bucket: ContextItem[]): string {
+function renderSection(source: ContextSource, bucket: ContextItem[], nonce: string): string {
   const ordered = bucket.some((item) => item.at !== undefined)
     ? bucket.slice().sort((a, b) => {
         const ta = a.at ?? Number.NEGATIVE_INFINITY;
@@ -76,11 +83,24 @@ function renderSection(source: ContextSource, bucket: ContextItem[]): string {
         return ta === tb ? 0 : ta < tb ? -1 : 1;
       })
     : bucket;
-  return `### ${SECTION_LABELS[source]}\n${ordered.map((item) => item.content).join("\n")}`;
+  return contextBlock(SECTION_LABELS[source], nonce, ordered.map((item) => item.content).join("\n"));
+}
+
+/** The trusted items of one source, in order, as one text (empty when none). */
+function trustedText(items: readonly ContextItem[], source: ContextSource): string {
+  return items
+    .filter((item) => item.source === source)
+    .map((item) => item.content.trim())
+    .filter((content) => content.length > 0)
+    .join("\n");
 }
 
 export class PromptBuilder {
-  constructor(private readonly parts: PromptBuilderParts) {}
+  private readonly nonce: string;
+
+  constructor(private readonly parts: PromptBuilderParts) {
+    this.nonce = parts.nonce ?? newContextNonce();
+  }
 
   /** System message: identity + safety + response contract + mode + style + output format. */
   renderSystem(): string {
@@ -92,6 +112,11 @@ export class PromptBuilder {
     // A custom mode is the user's own text and outranks the contract (AI-011).
     const label = mode.builtIn ? mode.name : `${mode.name} (the user's custom instructions)`;
     blocks.push(`Mode: ${label}.${modeInstructions ? `\n${modeInstructions}` : ""}\n${fragment}`);
+
+    // Standing personal instructions are the user's own words: trusted, and
+    // placed after the mode so they refine it, never above safety (AI-004).
+    const preferences = trustedText(this.parts.items, "personal_instructions");
+    if (preferences) blocks.push(`${PREFERENCES_LABEL}\n${preferences}`);
 
     blocks.push(styleBlock(style));
 
@@ -105,10 +130,12 @@ export class PromptBuilder {
   /** Context sections grouped by provenance label, in fixed section order. */
   renderContext(): string {
     const { items, omittedNote } = this.parts;
-    if (items.length === 0 && !omittedNote) return "";
+    if (!items.some((item) => !TRUSTED_SOURCES.has(item.source)) && !omittedNote) return "";
 
     const grouped = new Map<ContextSource, ContextItem[]>();
     for (const item of items) {
+      // The user's own words render outside the untrusted blocks (AI-004).
+      if (TRUSTED_SOURCES.has(item.source)) continue;
       const bucket = grouped.get(item.source) ?? [];
       bucket.push(item);
       grouped.set(item.source, bucket);
@@ -119,11 +146,11 @@ export class PromptBuilder {
       const bucket = grouped.get(source);
       if (!bucket || bucket.length === 0) continue;
       grouped.delete(source);
-      sections.push(renderSection(source, bucket));
+      sections.push(renderSection(source, bucket, this.nonce));
     }
     // Any source not in the fixed order still gets rendered (future-proof).
     for (const [source, bucket] of grouped) {
-      sections.push(renderSection(source, bucket));
+      sections.push(renderSection(source, bucket, this.nonce));
     }
     if (omittedNote) sections.push(`(${omittedNote})`);
     return sections.join("\n\n");
@@ -144,8 +171,15 @@ export class PromptBuilder {
 
   /** Full message array for the provider (+ inline image when vision). */
   buildMessages(): AIMessage[] {
-    const context = this.renderContext();
-    const userText = [context, this.renderTask()].filter((part) => part.length > 0).join("\n\n");
+    // The typed question is trusted: it follows the context, right before the task (AI-004).
+    const question = trustedText(this.parts.items, "user_instruction");
+    const userText = [
+      this.renderContext(),
+      question ? `${QUESTION_LABEL} ${question}` : "",
+      this.renderTask(),
+    ]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
 
     const userContent: AIContentPart[] = [{ type: "text", text: userText }];
     if (this.parts.visionImage) {

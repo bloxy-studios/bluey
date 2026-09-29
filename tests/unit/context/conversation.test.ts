@@ -43,6 +43,12 @@ const older = [1, 2, 3].map((n) =>
   }),
 );
 
+/** The whole user message: context blocks, then my question, then the task. */
+function userTextOf(builder: PromptBuilder): string {
+  const part = builder.buildMessages()[1]?.content[0];
+  return part && "text" in part ? part.text : "";
+}
+
 function prompt(
   snapshot: ContextSnapshot,
   instruction: string,
@@ -83,10 +89,10 @@ describe("conversation memory", () => {
       previousResponses: [twoSum],
     });
     const builder = prompt(enriched, instruction);
-    const context = builder.renderContext();
+    const context = userTextOf(builder);
 
-    const chat = context.indexOf("### Earlier in this chat");
-    const question = context.indexOf("### Current question");
+    const chat = context.indexOf('source="Earlier in this chat"');
+    const question = context.indexOf(`My question: ${instruction}`);
     expect(chat).toBeGreaterThan(-1);
     expect(chat).toBeLessThan(question);
     expect(context).toContain("Q: Solve Two Sum\nA: Walk the array once");
@@ -103,9 +109,9 @@ describe("conversation memory", () => {
       instruction,
       previousResponses: [...older, twoSum],
     });
-    const context = prompt(enriched, instruction).renderContext();
-    const start = context.indexOf("### Earlier in this chat");
-    const section = context.slice(start, context.indexOf("### Current question"));
+    const context = userTextOf(prompt(enriched, instruction));
+    const start = context.indexOf('source="Earlier in this chat"');
+    const section = context.slice(start, context.indexOf("My question:"));
 
     expect(section).toContain("Q: Old question 1\nA (summary): Old answer 1");
     expect(section).toContain("Q: Old question 3\nA: Old answer body 3");
@@ -172,7 +178,7 @@ describe("conversation memory", () => {
     const instruction = "why not B?";
     const enriched = enrichSnapshot(makeSnapshot(), { mode, settings, instruction });
     const task = prompt(enriched, instruction).renderTask();
-    expect(task).toContain("Answer my question below");
+    expect(task).toContain("Answer my question above");
     expect(task).not.toContain("follow-up");
   });
 });
