@@ -250,20 +250,48 @@ export function novelWindowText(visible: string, seen: readonly string[]): strin
   return text.length / visible.trim().length < MIN_NEW_WINDOW_TEXT ? undefined : text;
 }
 
-/** Words that point at the screen (or at what is being worked on): screen context stays. */
+/**
+ * Words that point at the screen (or at what is being worked on), including
+ * the task verbs that act on the content in view: screen context stays.
+ */
 const SCREEN_CUES =
-  /\b(this|that|these|those|it|here|above|below|screen|page|window|tab|code|error|bug|question|problem|task|solve|answer|fix|debug|solution|approach|complexity|optimi[sz]e|output|chart|graph|diagram|image|picture|slide|table)\b/i;
+  /\b(this|that|these|those|it|here|above|below|screen|page|window|tab|code|error|bug|question|problem|task|solve|answer|fix|debug|solution|approach|complexity|optimi[sz]e|output|chart|graph|diagram|image|picture|slide|table|summari[sz]e|summary|translate|explain|rewrite|rephrase|proofread|reply|respond|draft|read|email|message|article|text|document)\b/i;
+/** Words that point at the conversation: the transcript stays. */
+const CONVERSATION_CUES = /\b(meeting|call|conversation|discussion|said|say|says|mentioned|talked)\b/i;
+/** Ref of the one-line summary of the conversation before the transcript window. */
+const EARLIER_SUMMARY_REF = "transcript:earlier-summary";
 /** Most recent transcript turns kept when the floor applies. */
 const FLOOR_TRANSCRIPT_TURNS = 2;
-const FLOORED_SOURCES: ReadonlySet<ContextSource> = new Set(["ocr", "screen", "window_text", "transcript_old"]);
+/** OCR kept when the floor applies: its leading lines, as the page's headline. */
+const FLOOR_OCR_TOKENS = 300;
+const FLOORED_SOURCES: ReadonlySet<ContextSource> = new Set(["screen", "window_text", "transcript_old"]);
+
+/** The leading OCR lines that fit in the floor's headline budget (none if the first line does not). */
+function ocrHeadlineItem(item: ContextItem): ContextItem[] {
+  const lines: string[] = [];
+  let tokens = 0;
+  for (const line of item.content.split("\n")) {
+    tokens += estimateTokens(line) + 1;
+    if (tokens > FLOOR_OCR_TOKENS) break;
+    lines.push(line);
+  }
+  const content = lines.join("\n").trim();
+  return content.length === 0 ? [] : [{ ...item, content, tokens: estimateTokens(content) }];
+}
 
 /**
- * Relevance floor for a typed ask that neither points at the screen nor
- * shares a keyword with it: the screen text and the older transcript cannot
- * help, so keep only the focused/selected UI and the last two transcript turns.
+ * Relevance floor for a typed ask that points at neither the screen nor the
+ * conversation and shares no keyword with either: most of the screen text and
+ * the older transcript cannot help, so keep the focused/selected UI, the OCR
+ * headline, the earlier-conversation summary and the last two transcript turns.
  */
 function applyRelevanceFloor(items: ContextItem[], snapshot: ContextSnapshot, instruction: string): ContextItem[] {
-  if (instruction.length === 0 || SCREEN_CUES.test(instruction) || keywordTokens(instruction).length === 0) {
+  if (
+    instruction.length === 0 ||
+    SCREEN_CUES.test(instruction) ||
+    CONVERSATION_CUES.test(instruction) ||
+    keywordTokens(instruction).length === 0
+  ) {
     return items;
   }
   const ax = snapshot.accessibility;
@@ -271,15 +299,20 @@ function applyRelevanceFloor(items: ContextItem[], snapshot: ContextSnapshot, in
     .filter((text): text is string => typeof text === "string")
     .join("\n");
   if (screenText.trim().length === 0 || keywordOverlap(instruction, screenText) > 0) return items;
+  const heard = items.filter((item) => item.source === "transcript" || item.source === "transcript_old");
+  if (keywordOverlap(instruction, heard.map((item) => item.content).join("\n")) > 0) return items;
   const recentTurns = new Set(
-    items
+    heard
       .filter((item) => item.source === "transcript")
       .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
       .slice(0, FLOOR_TRANSCRIPT_TURNS),
   );
-  return items.filter((item) =>
-    item.source === "transcript" ? recentTurns.has(item) : !FLOORED_SOURCES.has(item.source),
-  );
+  return items.flatMap((item) => {
+    if (item.source === "transcript") return recentTurns.has(item) ? [item] : [];
+    if (item.source === "ocr") return ocrHeadlineItem(item);
+    if (item.ref === EARLIER_SUMMARY_REF) return [item];
+    return FLOORED_SOURCES.has(item.source) ? [] : [item];
+  });
 }
 
 /**
@@ -371,7 +404,7 @@ export function fuseContext(snapshot: ContextSnapshot, opts: FuseOptions = {}): 
       content: `Earlier (summary): ${earlier}`,
       relevance: 0.35,
       tokens: estimateTokens(earlier),
-      ref: "transcript:earlier-summary",
+      ref: EARLIER_SUMMARY_REF,
     });
   }
 
