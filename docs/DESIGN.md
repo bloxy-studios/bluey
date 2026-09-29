@@ -226,7 +226,10 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   repeated errors of the same code replace each other. Plain confirmations stay pills.
 * **Actions on a response**: Copy answer, Copy code, 👍 / 👎 (with "Why wasn't this
   useful?" chips: Wrong, Too long, Not relevant, Missed context, Wrong tone), Regenerate,
-  Expand/Collapse solution. "Copied" confirmation for ~1s.
+  Expand/Collapse solution. "Copied" confirmation for ~1s. Under them a muted 11px provenance
+  line: provider · model · latency, plus "via API key" when a subscription account was skipped
+  (or "fallback model" for another router fallback; the router's reason on hover). A failed web
+  research adds a subtle note under the answer ("Web research failed — answered without it.").
 * Respect `prefers-reduced-motion` and the user's reducedMotion setting: disable the height
   animation, pulse and fades.
 

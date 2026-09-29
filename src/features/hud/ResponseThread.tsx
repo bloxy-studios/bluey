@@ -107,6 +107,10 @@ const Turn = memo(function Turn({ turn, isLast, onRetry, onRegenerate }: TurnPro
           {turn.response.truncated && turn.status === "done" ? (
             <ErrorBanner error={truncatedAnswerError()} onRetry={regenerate} compact />
           ) : null}
+          {turn.response.researchNote && turn.status === "done" ? (
+            // The answer went without the web it was meant to use (UX-035).
+            <p className="m-0 text-[12px] text-fg-subtle">{turn.response.researchNote}</p>
+          ) : null}
           {turn.status === "done" && isLast ? (
             <ResponseActions response={turn.response} onRegenerate={regenerate} />
           ) : null}

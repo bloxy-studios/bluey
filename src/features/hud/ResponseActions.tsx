@@ -8,6 +8,7 @@ import type { BlueyResponse, FeedbackCategory, FeedbackRating } from "@/lib/type
 import { cn } from "@/lib/utils/cn";
 import { copyText } from "@/lib/utils/clipboard";
 import { extractCodeBlocks } from "./markdown";
+import { ResponseProvenance } from "./ResponseProvenance";
 
 const FEEDBACK_CHIPS: Array<{ id: FeedbackCategory; label: string }> = [
   { id: "wrong", label: "Wrong" },
@@ -51,7 +52,7 @@ export interface ResponseActionsProps {
   onRegenerate: () => void;
 }
 
-/** Copy answer / copy code / 👍 👎 (+ category chips) / regenerate. */
+/** Copy answer / copy code / 👍 👎 (+ category chips) / regenerate, then which model answered. */
 export function ResponseActions({ response, onRegenerate }: ResponseActionsProps) {
   const [rating, setRating] = useState<FeedbackRating | null>(response.feedback?.rating ?? null);
   const [showChips, setShowChips] = useState(false);
@@ -105,6 +106,7 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
           <RotateCcw className="size-[15px]" aria-hidden />
         </ActionButton>
       </div>
+      <ResponseProvenance response={response} />
 
       {showChips ? (
         <div className="mt-2 motion-safe:animate-rise-in">
