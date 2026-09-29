@@ -62,6 +62,9 @@ describe("HUD content-protection eye (UX-004)", () => {
     // The tray publishes settings just before its side effect applies them: a status that
     // disagrees with the saved mode is unknown, never "Content-protected" (SEC-004).
     await waitFor(() => expect(tooltipOf(eye)).toBe("Privacy mode: hidden from legacy capture only"));
+    // Once the side effect applied it, a re-read finds full protection.
+    await act(() => bluey.capture.setProtection({ enabled: true }));
+    await waitFor(() => expect(tooltipOf(eye)).toBe("Content-protected"));
   });
 
   it("saves the toggle as the display mode, so it survives a relaunch", async () => {
