@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Make sure Tauri's externalBin sidecars exist for this host before `tauri dev`.
+# Make sure Tauri's externalBin sidecars exist for this host, and match their sources, before
+# `tauri dev`.
 # Full dual-arch binaries are still produced by `bun run build:helpers` / release.
 set -euo pipefail
 
@@ -15,18 +16,26 @@ case "$(uname -m)" in
         ;;
 esac
 
-missing=0
-for bin in bluey-helper bluey-agent; do
-    if [[ ! -x "$OUT/${bin}-${TRIPLE}" ]]; then
-        echo "→ missing $OUT/${bin}-${TRIPLE}"
-        missing=1
+# A binary is rebuilt when it is missing or its `.stamp` (the source hash written by its build
+# script) no longer matches the sources, so `tauri dev` never runs a stale sidecar (TEST-009).
+needs_build() {
+    local bin="$1" kind="$2" path="$OUT/${1}-${TRIPLE}"
+    if [[ ! -x "$path" ]]; then
+        echo "→ missing $path"
+        return 0
     fi
-done
+    if [[ "$(cat "$path.stamp" 2>/dev/null || true)" != "$(bash "$ROOT/scripts/sidecar-stamp.sh" "$kind")" ]]; then
+        echo "→ $path is older than its sources"
+        return 0
+    fi
+    return 1
+}
 
-if [[ "$missing" -eq 0 ]]; then
-    exit 0
+if needs_build bluey-helper helper; then
+    echo "→ building the host helper for $TRIPLE"
+    bash "$ROOT/scripts/build-helper.sh" host
 fi
-
-echo "→ building host sidecars for $TRIPLE (first run; later tauri dev skips this)"
-bash "$ROOT/scripts/build-helper.sh" host
-bash "$ROOT/scripts/build-agent.sh" host
+if needs_build bluey-agent agent; then
+    echo "→ building the host agent for $TRIPLE"
+    bash "$ROOT/scripts/build-agent.sh" host
+fi

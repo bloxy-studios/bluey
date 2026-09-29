@@ -93,6 +93,8 @@ else
 fi
 
 mkdir -p "$OUT_DIR"
+# Hash of the sources this build starts from; ensure-sidecars.sh compares it (TEST-009).
+STAMP="$(bash "$ROOT/scripts/sidecar-stamp.sh" agent)"
 
 sign() {
   local file="$1"
@@ -115,6 +117,7 @@ build_target() {
   bun build "$entry" --compile --target="$target" --outfile "$outfile"
   chmod +x "$outfile"
   sign "$outfile"
+  printf '%s\n' "$STAMP" > "$outfile.stamp"
   echo "  built $(du -h "$outfile" | cut -f1 | tr -d ' ') → $outfile"
 }
 
