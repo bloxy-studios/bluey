@@ -48,6 +48,17 @@ describe("HUD notice row (UX-013)", () => {
     expect(alert.compareDocumentPosition(audio) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  // The message carries the instruction (which System Settings pane): an error may wrap to a
+  // second line instead of hiding it behind a hover-only title.
+  it("lets an error's instruction wrap instead of truncating it to one line", async () => {
+    renderHudWindow();
+    act(() => showErrorToast(micDenied));
+
+    const text = (await screen.findByRole("alert")).querySelector("p");
+    expect(text).toHaveClass("line-clamp-2");
+    expect(text).not.toHaveClass("truncate");
+  });
+
   it("runs the recovery and dismisses the notice", async () => {
     const user = userEvent.setup();
     renderHudWindow();

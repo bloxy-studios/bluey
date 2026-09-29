@@ -37,7 +37,11 @@ function NoticeRow({
         className={`size-3.5 shrink-0 ${role === "alert" ? "text-danger" : "text-fg-muted"}`}
         aria-hidden
       />
-      <p className="m-0 min-w-0 flex-1 truncate text-fg-muted" title={message ? `${title} — ${message}` : title}>
+      {/* An error's message is the instruction: let it wrap to a second line (useAutoHeight re-measures). */}
+      <p
+        className={`m-0 min-w-0 flex-1 text-fg-muted ${role === "alert" ? "line-clamp-2" : "truncate"}`}
+        title={message ? `${title} — ${message}` : title}
+      >
         <span className="font-medium text-fg">{title}</span>
         {message ? ` · ${message}` : null}
       </p>
