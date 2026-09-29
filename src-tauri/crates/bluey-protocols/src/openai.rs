@@ -26,6 +26,9 @@ pub struct ChatBodyOptions<'a> {
     pub reasoning_effort: Option<&'a str>,
     /// Structured output via `response_format: { type: "json_schema", ... }`.
     pub output_schema: Option<&'a JsonSchemaSpec>,
+    /// When the endpoint rejected `response_format` (HTTP 400), the schema is
+    /// instructed in a leading system message instead.
+    pub schema_as_prompt_fallback: bool,
 }
 
 /// Chat-completions URL for a generic OpenAI-compatible base URL:
@@ -86,9 +89,22 @@ pub fn reasoning_effort_for(
     is_reasoning_model(model).then(|| crate::codex::reasoning_effort(level, latency, &[], None))
 }
 
+/// Whether an HTTP-400 error body says the endpoint does not take native
+/// structured output (→ resend with the schema in the prompt instead).
+pub fn is_response_format_rejection(status: u16, body: &str) -> bool {
+    status == 400 && (body.contains("response_format") || body.contains("json_schema"))
+}
+
 /// Build the JSON body for a chat-completions request.
 pub fn build_chat_body(opts: &ChatBodyOptions<'_>) -> Value {
-    let messages: Vec<Value> = opts.messages.iter().map(message_to_json).collect();
+    let mut messages: Vec<Value> = opts.messages.iter().map(message_to_json).collect();
+    let schema_in_prompt = opts
+        .output_schema
+        .filter(|_| opts.schema_as_prompt_fallback);
+    if let Some(spec) = schema_in_prompt {
+        let instruction = crate::anthropic::schema_prompt(spec);
+        messages.insert(0, json!({ "role": "system", "content": instruction }));
+    }
     let mut body = json!({
         "model": opts.model,
         "messages": messages,
@@ -114,7 +130,7 @@ pub fn build_chat_body(opts: &ChatBodyOptions<'_>) -> Value {
             }
         }
     }
-    if let Some(spec) = opts.output_schema {
+    if let Some(spec) = opts.output_schema.filter(|_| schema_in_prompt.is_none()) {
         // Strict structured outputs reject a schema whose objects leave a property out of
         // `required` or lack `additionalProperties: false` (HTTP 400) — zod's output does
         // both, so send the strict-mode variant (see `crate::json_schema`).
@@ -335,6 +351,7 @@ mod tests {
             max_output_tokens: Some(256),
             temperature: Some(0.2),
             reasoning_effort: None,
+            schema_as_prompt_fallback: false,
             output_schema: Some(&spec),
         });
         assert_eq!(body["model"], "gpt-test");
@@ -395,10 +412,47 @@ mod tests {
             max_output_tokens: None,
             temperature: Some(0.6),
             reasoning_effort: effort.as_deref(),
+            schema_as_prompt_fallback: false,
             output_schema: None,
         });
         assert_eq!(body["reasoning_effort"], "high");
         assert!(body.get("temperature").is_none(), "{body}");
+    }
+
+    #[test]
+    fn the_schema_moves_into_the_prompt_when_response_format_was_rejected() {
+        let spec = JsonSchemaSpec {
+            name: "answer".into(),
+            schema: json!({ "type": "object" }),
+            strict: None,
+        };
+        let messages = vec![text_message(AiRole::User, "hi")];
+        let body = build_chat_body(&ChatBodyOptions {
+            model: "llama-3",
+            messages: &messages,
+            stream: true,
+            include_usage: false,
+            max_output_tokens: None,
+            temperature: None,
+            reasoning_effort: None,
+            output_schema: Some(&spec),
+            schema_as_prompt_fallback: true,
+        });
+        assert!(body.get("response_format").is_none(), "{body}");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("JSON Schema"));
+        assert_eq!(body["messages"][1]["content"], "hi");
+
+        let rejected = r#"{"error":{"message":"Invalid parameter: 'response_format' of type 'json_schema' is not supported with this model."}}"#;
+        assert!(is_response_format_rejection(400, rejected));
+        assert!(!is_response_format_rejection(
+            400,
+            r#"{"error":{"message":"bad temperature"}}"#
+        ));
+        assert!(!is_response_format_rejection(500, rejected));
     }
 
     #[test]
@@ -423,6 +477,7 @@ mod tests {
             max_output_tokens: None,
             temperature: None,
             reasoning_effort: None,
+            schema_as_prompt_fallback: false,
             output_schema: None,
         });
         let parts = body["messages"][0]["content"].as_array().unwrap();

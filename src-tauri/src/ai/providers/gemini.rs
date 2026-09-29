@@ -36,9 +36,9 @@ use super::{
 };
 
 const HINT: &str = "Gemini";
-const MAX_ATTEMPTS: u32 = 3;
+pub(super) const MAX_ATTEMPTS: u32 = 3;
 const BACKOFF_BASE: Duration = Duration::from_millis(600);
-const BACKOFF_CAP: Duration = Duration::from_secs(8);
+pub(super) const BACKOFF_CAP: Duration = Duration::from_secs(8);
 /// Safety cap on `GET /models` paging.
 const MAX_MODEL_PAGES: usize = 10;
 /// Files API: how often / how long to wait for an upload to leave `PROCESSING`.
@@ -60,7 +60,7 @@ pub struct GeminiProvider {
     embedding_dimensions: u32,
 }
 
-fn backoff(attempt: u32) -> Duration {
+pub(super) fn backoff(attempt: u32) -> Duration {
     BACKOFF_BASE
         .checked_mul(2u32.saturating_pow(attempt.saturating_sub(1)))
         .unwrap_or(BACKOFF_CAP)
@@ -72,7 +72,7 @@ fn cancelled() -> BlueyError {
 }
 
 /// Up to 250 ms of jitter so parallel requests do not retry in lockstep.
-fn jitter() -> Duration {
+pub(super) fn jitter() -> Duration {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
