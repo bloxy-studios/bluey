@@ -15,6 +15,7 @@ import type {
   CaptureTarget,
   ContextSnapshot,
   ConversationTurn,
+  DetectedEvent,
   RetrievedChunk,
   Session,
   SessionContext,
@@ -25,6 +26,7 @@ import type {
   TranscriptSegment,
 } from "@/lib/types";
 import { effectiveStyle, requires } from "@/modes/registry";
+import { isSpokenAsk } from "./relevance";
 
 export interface SnapshotApi {
   context: {
@@ -44,6 +46,8 @@ export interface BuildNativeSnapshotArgs {
    */
   screenAllowed?: boolean;
   transcriptWindowSeconds?: number;
+  /** The heard question the ask answers: its conversation is part of the context. */
+  detectedEvent?: DetectedEvent;
   api: SnapshotApi;
 }
 
@@ -67,7 +71,7 @@ export function snapshotOptionsFor(args: Omit<BuildNativeSnapshotArgs, "api">): 
   const screenAllowed = args.screenAllowed !== false;
   const includeScreen =
     screenAllowed && (captureScreen === true || trigger === "shortcut_capture" || requires(mode, "screen"));
-  const includeTranscript = requires(mode, "transcript") || trigger === "shortcut_generate" || trigger === "detected_event";
+  const includeTranscript = requires(mode, "transcript") || isSpokenAsk(trigger, args.detectedEvent);
 
   const options: SnapshotOptions = {
     includeScreen,

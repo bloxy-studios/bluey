@@ -336,6 +336,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
         captureScreen: input.captureScreen,
         screenAllowed: input.screenAllowed,
         transcriptWindowSeconds: input.transcriptWindowSeconds,
+        detectedEvent: input.detectedEvent,
         api,
       });
       const replyTs = perfNow();

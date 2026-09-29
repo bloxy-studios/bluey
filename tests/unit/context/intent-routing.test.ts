@@ -149,6 +149,21 @@ describe("technical modes answer non-technical questions as speech (MODE-004)", 
     expect(intent.answerShape).toBe("spoken");
   });
 
+  it("keeps a regenerated heard question spoken, on the suggestion schema (UX-011)", () => {
+    for (const mode of [makeMode(), codingMode]) {
+      const again = classifyIntent({
+        snapshot: makeSnapshot(),
+        mode,
+        detectedEvent: { ...EVENT, text: "What is your experience with Kubernetes?" },
+        trigger: "regenerate",
+        now: NOW,
+      });
+      expect(again.answerShape, mode.id).toBe("spoken");
+      expect(again.voice, mode.id).toBe("speak-as-user");
+      if (mode === codingMode) expect(again.schemaId).toBe("suggested-response");
+    }
+  });
+
   it("uses the behavioral schema for a behavioral question", () => {
     const intent = heard("Tell me about a time you disagreed with a teammate.", "behavioral_question");
     expect(intent.schemaId).toBe("behavioral");
