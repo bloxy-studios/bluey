@@ -260,6 +260,22 @@ function averageOcrConfidence(snapshot: ContextSnapshot): number {
 
 export const VISION_TEXT_SUFFICIENCY_CHARS = 200;
 
+/** Upper bound on the screen text the classifier's regexes scan. */
+const SCREEN_TEXT_CAP = 6000;
+
+/**
+ * Everything readable on screen: OCR plus the accessibility text, the
+ * selection and the focused value. Rust drops OCR lines that repeat an AX
+ * line, so OCR alone can miss the very question or problem (CTX-011).
+ */
+function screenTextOf(snapshot: ContextSnapshot): string {
+  const ax = snapshot.accessibility;
+  return [snapshot.ocr?.text, ax?.visibleText, ax?.selectedText, ax?.focusedElement?.value]
+    .filter((text): text is string => typeof text === "string" && text.trim().length > 0)
+    .join("\n")
+    .slice(0, SCREEN_TEXT_CAP);
+}
+
 /** Classify the current ask into task, vision need, reasoning depth, schema and answer shape. */
 export function classifyIntent(input: IntentInput): Intent {
   const { snapshot, mode, detectedEvent, trigger } = input;
@@ -271,16 +287,17 @@ export function classifyIntent(input: IntentInput): Intent {
   });
   const ocrText = snapshot.ocr?.text ?? "";
   const axText = snapshot.accessibility?.visibleText ?? "";
+  const screenText = screenTextOf(snapshot);
 
   // ── Task ────────────────────────────────────────────────────────────────
   let task: AITask = defaultTaskFor(mode);
   const codingAsked = CODING_CUES.test(question) || detectedEvent?.type === "coding_problem";
-  const codingVisible = CODING_SCREEN_MARKERS.test(ocrText) && ocrText.length > 80;
+  const codingVisible = CODING_SCREEN_MARKERS.test(screenText) && screenText.length > 80;
   const designAsked = SYSTEM_DESIGN_CUES.test(question) || mode.responseSchema === "system-design";
   // A multiple-choice or compare-two-responses question about code is still
   // an assessment question: the screen's code markers alone must not turn it
   // into a "solve this problem" coding task.
-  const assessment = detectAssessmentShape(question, ocrText);
+  const assessment = detectAssessmentShape(question, screenText);
   const codingFromScreen = codingVisible && assessment === null;
   // A question heard in the live conversation is answered now, as speech; it
   // never goes out to the web ("my current role" is not a research cue).
@@ -312,7 +329,7 @@ export function classifyIntent(input: IntentInput): Intent {
 
   const schemaId = schemaFor(mode, task);
   const responseType = responseTypeFor(schemaId, task);
-  const answerShape = detectAnswerShape({ question, screenText: ocrText, task, schemaId, trigger });
+  const answerShape = detectAnswerShape({ question, screenText, task, schemaId, trigger });
 
   return { task, visionRequired, reasoning, latency, responseType, schemaId, answerShape };
 }
