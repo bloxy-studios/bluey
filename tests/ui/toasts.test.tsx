@@ -6,7 +6,9 @@ import { Toasts } from "@/components/ui/Toast";
 import { showErrorToast, useToastStore } from "@/components/ui/toast-store";
 import type { MockTransport } from "@/lib/tauri/mock";
 import type { BlueyError } from "@/lib/types";
-import { setupMockApp } from "./helpers";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { describeError } from "@/lib/errors/present";
+import { setupInterceptedApp, setupMockApp } from "./helpers";
 
 const permissionError: BlueyError = {
   kind: "permission",
@@ -113,5 +115,55 @@ describe("error toasts", () => {
     await screen.findByRole("alert");
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+});
+
+describe("recovery runner (UX-036)", () => {
+  const expired: BlueyError = {
+    kind: "authentication",
+    code: "auth.account_expired",
+    message: "The OpenAI sign-in expired.",
+    recoverable: true,
+    recovery: { type: "reconnect_account", accountId: "acct-openai", providerId: "openai" },
+  };
+  const connectFailed: BlueyError = {
+    kind: "network",
+    code: "network.offline",
+    message: "The browser sign-in could not reach OpenAI.",
+    recoverable: true,
+  };
+
+  beforeEach(async () => {
+    const { transport } = await setupInterceptedApp();
+    useToastStore.setState({ toasts: [] });
+    transport.intercept("accounts_connect", async () => {
+      throw connectFailed;
+    });
+  });
+
+  it("shows a failing toast recovery instead of swallowing it", async () => {
+    const user = userEvent.setup();
+    render(<Toasts />);
+    showErrorToast(expired);
+    await user.click(await screen.findByRole("button", { name: "Reconnect" }));
+
+    // The reconnect's own failure replaces the dismissed toast.
+    const { title, message } = describeError(connectFailed);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(title);
+    expect(alert).toHaveTextContent(message);
+  });
+
+  it("shows a failing banner recovery as a toast", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <ErrorBanner error={expired} />
+        <Toasts />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Reconnect" }));
+    await waitFor(() => expect(useToastStore.getState().toasts).toHaveLength(1));
+    expect(useToastStore.getState().toasts[0]?.variant).toBe("error");
   });
 });

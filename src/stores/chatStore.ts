@@ -61,11 +61,16 @@ interface ChatStore {
   activeRequestId: string | null;
   /** Proactively prepared response (from `response.prepared`) awaiting ⌘⇧↵. */
   prepared: BlueyResponse | null;
+  /** Turns the last `newChat` dropped, restorable for `UNDO_CLEAR_MS` until the next ask (UX-012). */
+  cleared: ChatTurn[] | null;
 
   begin(prompt: string | undefined, promptLabel?: string, options?: BeginOptions): number;
   setActiveRequest(generation: number, requestId: string): void;
   setPhase(generation: number, phase: EnginePhase): void;
+  /** Queue a streamed draft; the newest one lands in `turns` at most once per frame (PERF-003). */
   applyDraft(generation: number, response: BlueyResponse): void;
+  /** Write the queued draft now (terminal transitions call it so no text is lost). */
+  flushDraft(): void;
   complete(generation: number, response: BlueyResponse): void;
   fail(generation: number, error: BlueyError): void;
   markCancelled(generation: number): void;
@@ -73,6 +78,8 @@ interface ChatStore {
   showResponse(response: BlueyResponse, options?: ShowOptions): void;
   setPrepared(response: BlueyResponse | null): void;
   newChat(): void;
+  /** Bring back the turns `newChat` dropped, while nothing new has been asked. */
+  undoNewChat(): void;
 }
 
 function updateLast(turns: ChatTurn[], update: (turn: ChatTurn) => ChatTurn): ChatTurn[] {
@@ -91,17 +98,40 @@ export function shownResponse(response: BlueyResponse): BlueyResponse {
 
 let preparedExpiry: ReturnType<typeof setTimeout> | null = null;
 
+/** How long "Chat cleared · Undo" is offered after the thread is cleared (UX-012). */
+export const UNDO_CLEAR_MS = 5_000;
+let clearedExpiry: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * The newest streamed draft not yet in `turns`. A stream delivers a draft per
+ * token; writing each one re-rendered the whole thread, so drafts are coalesced
+ * to one store write per animation frame (PERF-003). The frame is requested
+ * before the engine's first-paint stamp, so that stamp runs after the commit.
+ */
+let pendingDraft: { generation: number; response: BlueyResponse } | null = null;
+let draftFrameScheduled = false;
+
+function onNextFrame(callback: () => void): void {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(callback);
+  else setTimeout(callback, 16);
+}
+
 export const useChatStore = create<ChatStore>((set, get) => ({
   turns: [],
   generation: 0,
   phase: null,
   activeRequestId: null,
   prepared: null,
+  cleared: null,
 
   begin: (prompt, promptLabel, options = {}) => {
+    // The superseded turn keeps the text it had streamed so far.
+    get().flushDraft();
     const generation = get().generation + 1;
     set((state) => ({
       generation,
+      // A new ask ends the offer to undo a clear.
+      cleared: null,
       phase: options.phase ?? "capturing",
       turns: [
         ...state.turns.map((t) => (t.status === "streaming" ? { ...t, status: "cancelled" as const } : t)),
@@ -131,11 +161,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   applyDraft: (generation, response) => {
     if (generation !== get().generation) return;
-    set((state) => ({ turns: updateLast(state.turns, (turn) => ({ ...turn, response })) }));
+    pendingDraft = { generation, response };
+    if (draftFrameScheduled) return;
+    draftFrameScheduled = true;
+    onNextFrame(() => {
+      draftFrameScheduled = false;
+      get().flushDraft();
+    });
+  },
+
+  flushDraft: () => {
+    const draft = pendingDraft;
+    pendingDraft = null;
+    if (!draft || draft.generation !== get().generation) return;
+    set((state) => ({ turns: updateLast(state.turns, (turn) => ({ ...turn, response: draft.response })) }));
   },
 
   complete: (generation, response) => {
     if (generation !== get().generation) return;
+    // The final response supersedes any queued draft.
+    pendingDraft = null;
     set((state) => ({
       phase: "done",
       activeRequestId: null,
@@ -145,6 +190,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   fail: (generation, error) => {
     if (generation !== get().generation) return;
+    get().flushDraft();
     set((state) => ({
       phase: "error",
       activeRequestId: null,
@@ -154,6 +200,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   markCancelled: (generation) => {
     if (generation !== get().generation) return;
+    get().flushDraft();
     set((state) => ({
       phase: "cancelled",
       activeRequestId: null,
@@ -165,8 +212,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   showResponse: (response, options = {}) => {
     const shown = shownResponse(response);
+    get().flushDraft();
     set((state) => ({
       generation: state.generation + 1,
+      cleared: null,
       phase: "done",
       activeRequestId: null,
       prepared: state.prepared?.id === response.id ? null : state.prepared,
@@ -198,14 +247,35 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }, PREPARED_TTL_MS);
   },
 
-  newChat: () =>
+  newChat: () => {
+    // Keep the text streamed so far, so an undo brings back what was on screen.
+    get().flushDraft();
+    const dropped = get().turns.map((t) => (t.status === "streaming" ? { ...t, status: "cancelled" as const } : t));
+    if (dropped.length > 0) {
+      if (clearedExpiry) clearTimeout(clearedExpiry);
+      clearedExpiry = setTimeout(() => {
+        clearedExpiry = null;
+        set({ cleared: null });
+      }, UNDO_CLEAR_MS);
+    }
     set((state) => ({
       turns: [],
+      // Clearing an already-empty HUD keeps the earlier undo on offer.
+      cleared: dropped.length > 0 ? dropped : state.cleared,
       phase: null,
       activeRequestId: null,
       prepared: null,
       generation: state.generation + 1,
-    })),
+    }));
+  },
+
+  undoNewChat: () => {
+    const { cleared, turns } = get();
+    if (!cleared || turns.length > 0) return;
+    if (clearedExpiry) clearTimeout(clearedExpiry);
+    clearedExpiry = null;
+    set({ turns: cleared, cleared: null, phase: "done" });
+  },
 }));
 
 /** Latest completed responses, oldest first (for follow-up context). */

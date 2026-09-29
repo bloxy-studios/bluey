@@ -1,8 +1,10 @@
 import { ArrowLeft, CornerDownLeft, Square } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
 
 import { IconButton } from "@/components/ui/IconButton";
 import { eventBus } from "@/lib/tauri/event-bus";
+import { useHudUiStore } from "@/stores/hudUiStore";
+import { usePanelStore } from "@/stores/panelStore";
 import { isComposingKey, preventRepeatedActivation } from "./hud-keyboard";
 
 interface BaseInputRowProps {
@@ -12,12 +14,18 @@ interface BaseInputRowProps {
 }
 
 function useHudInput({ onSubmit, onAssist }: BaseInputRowProps) {
-  const [value, setValue] = useState("");
+  const value = useHudUiStore((s) => s.draft);
+  const setValue = useHudUiStore((s) => s.setDraft);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const composingRef = useRef(false);
+  const visible = usePanelStore((s) => s.state?.visible);
+
+  // Focus when the HUD is shown — never because a (live) turn appeared (LIVE-008).
+  useEffect(() => {
+    if (visible !== false) inputRef.current?.focus();
+  }, [visible]);
 
   useEffect(() => {
-    inputRef.current?.focus();
     const offFocus = eventBus.on("panel.focusInput", () => inputRef.current?.focus());
     const onWindowBlur = () => {
       composingRef.current = false;
@@ -65,81 +73,56 @@ function useHudInput({ onSubmit, onAssist }: BaseInputRowProps) {
   return { value, setValue, inputRef, submit, onKeyDown, compositionProps };
 }
 
-export interface HudIdleRowProps extends BaseInputRowProps {
-  placeholder?: string;
+export interface HudComposerProps extends BaseInputRowProps {
+  /** A chat exists: ← back, "Ask follow-up", ■ stop while streaming. */
+  expanded: boolean;
+  streaming?: boolean;
+  onBack?: () => void;
+  onStop?: () => void;
 }
 
-/** Idle first row (56px): "Ask anything about your screen" + ↵ chip. */
-export function HudIdleRow({
-  onSubmit,
-  onAssist,
-  placeholder = "Ask anything about your screen",
-}: HudIdleRowProps) {
-  const { value, setValue, inputRef, submit, onKeyDown, compositionProps } = useHudInput({
-    onSubmit,
-    onAssist,
-  });
+/**
+ * The HUD's one composer. Both layouts render this same component at the same
+ * place, so the input element — its text, caret and focus — survives the switch
+ * to the expanded layout when a turn (a live suggestion too) appears (LIVE-008).
+ * Idle row (56px): "Ask anything about your screen" + ↵ chip; expanded: ← back,
+ * "Ask follow-up", ■ stop / ↵ submit.
+ */
+export function HudComposer({ expanded, streaming = false, onBack, onStop, ...input }: HudComposerProps) {
+  const { value, setValue, inputRef, submit, onKeyDown, compositionProps } = useHudInput(input);
+  const label = expanded ? "Ask follow-up" : "Ask Bluey";
 
   return (
-    <div data-tauri-drag-region className="flex h-14 items-center gap-3 pl-5 pr-3">
+    <div
+      data-tauri-drag-region
+      className={
+        expanded
+          ? "flex h-14 items-center gap-3 border-b border-hud-border pl-3 pr-3"
+          : "flex h-14 items-center gap-3 pl-5 pr-3"
+      }
+    >
+      {expanded ? (
+        <IconButton
+          aria-label="Back"
+          variant="hudCircle"
+          size="lg"
+          onClick={onBack}
+          onKeyDown={preventRepeatedActivation}
+        >
+          <ArrowLeft className="size-4" aria-hidden />
+        </IconButton>
+      ) : null}
       <input
         ref={inputRef}
         {...compositionProps}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={placeholder}
-        aria-label="Ask Bluey"
+        placeholder={expanded ? "Ask follow-up" : "Ask anything about your screen"}
+        aria-label={label}
         className="hud-input h-full min-w-0 flex-1 bg-transparent text-[15px] text-fg outline-none placeholder:text-fg-muted"
       />
-      <IconButton
-        aria-label="Submit"
-        variant="chip"
-        size="lg"
-        onClick={submit}
-        onKeyDown={preventRepeatedActivation}
-      >
-        <CornerDownLeft className="size-4" aria-hidden />
-      </IconButton>
-    </div>
-  );
-}
-
-export interface FollowUpHeaderProps extends BaseInputRowProps {
-  streaming: boolean;
-  onBack: () => void;
-  onStop: () => void;
-}
-
-/** Expanded header: ← back, "Ask follow-up" input, ■ stop / ↵ submit. */
-export function FollowUpHeader({ onSubmit, onAssist, streaming, onBack, onStop }: FollowUpHeaderProps) {
-  const { value, setValue, inputRef, submit, onKeyDown, compositionProps } = useHudInput({
-    onSubmit,
-    onAssist,
-  });
-
-  return (
-    <div data-tauri-drag-region className="flex h-14 items-center gap-3 border-b border-hud-border pl-3 pr-3">
-      <IconButton
-        aria-label="Back"
-        variant="hudCircle"
-        size="lg"
-        onClick={onBack}
-        onKeyDown={preventRepeatedActivation}
-      >
-        <ArrowLeft className="size-4" aria-hidden />
-      </IconButton>
-      <input
-        ref={inputRef}
-        {...compositionProps}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder="Ask follow-up"
-        aria-label="Ask follow-up"
-        className="hud-input h-full min-w-0 flex-1 bg-transparent text-[15px] text-fg outline-none placeholder:text-fg-muted"
-      />
-      {streaming ? (
+      {expanded && streaming ? (
         <IconButton
           aria-label="Stop generating"
           variant="hudCircle"
@@ -151,7 +134,7 @@ export function FollowUpHeader({ onSubmit, onAssist, streaming, onBack, onStop }
         </IconButton>
       ) : (
         <IconButton
-          aria-label="Submit follow-up"
+          aria-label={expanded ? "Submit follow-up" : "Submit"}
           variant="chip"
           size="lg"
           onClick={submit}
@@ -162,4 +145,20 @@ export function FollowUpHeader({ onSubmit, onAssist, streaming, onBack, onStop }
       )}
     </div>
   );
+}
+
+/** The idle composer. */
+export function HudIdleRow(props: BaseInputRowProps) {
+  return <HudComposer {...props} expanded={false} />;
+}
+
+export interface FollowUpHeaderProps extends BaseInputRowProps {
+  streaming: boolean;
+  onBack: () => void;
+  onStop: () => void;
+}
+
+/** The expanded composer. */
+export function FollowUpHeader(props: FollowUpHeaderProps) {
+  return <HudComposer {...props} expanded />;
 }

@@ -1,6 +1,7 @@
 import { AlertCircle } from "lucide-react";
 
 import { useErrorPresenter, type ErrorPresenterOptions } from "@/hooks/useErrorPresenter";
+import { runRecovery } from "@/lib/errors/present";
 import type { BlueyError } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { Button } from "./Button";
@@ -31,7 +32,7 @@ export function ErrorBanner({ error, className, compact, ...presenterOptions }: 
         <p className="mt-0.5 text-[12.5px] leading-snug text-fg-muted">{presented.message}</p>
       </div>
       {presented.action ? (
-        <Button size="sm" variant="secondary" onClick={() => void presented.action?.()}>
+        <Button size="sm" variant="secondary" onClick={() => presented.action && void runRecovery(presented.action)}>
           {presented.actionLabel}
         </Button>
       ) : null}

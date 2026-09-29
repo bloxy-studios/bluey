@@ -1,5 +1,6 @@
 import { AlertCircle, X } from "lucide-react";
 
+import { runRecovery } from "@/lib/errors/present";
 import { cn } from "@/lib/utils/cn";
 import { useToastStore, type ToastItem } from "./toast-store";
 
@@ -23,7 +24,7 @@ function ErrorToast({ toast }: { toast: ToastItem }) {
             className="mt-1.5 text-[12.5px] font-medium text-accent hover:text-accent-hover"
             onClick={() => {
               dismiss(toast.id);
-              void toast.action?.run();
+              if (toast.action) void runRecovery(toast.action.run);
             }}
           >
             {toast.action.label}
@@ -42,9 +43,20 @@ function ErrorToast({ toast }: { toast: ToastItem }) {
   );
 }
 
-/** Toast host: fixed bottom-center. Transient confirmations ("Copied") and error toasts with a recovery link. */
-export function Toasts() {
-  const toasts = useToastStore((state) => state.toasts);
+export interface ToastsProps {
+  /** Show at most the newest `limit` toasts (the auto-sized HUD has room for one). */
+  limit?: number;
+}
+
+/**
+ * Toast host: fixed bottom-center. Transient confirmations ("Copied") and error
+ * toasts with a recovery link — unless an inline host (the HUD notice row) shows the errors.
+ */
+export function Toasts({ limit }: ToastsProps = {}) {
+  const all = useToastStore((state) => state.toasts);
+  const errorsInline = useToastStore((state) => state.inlineErrorHosts > 0);
+  const shown = errorsInline ? all.filter((toast) => toast.variant !== "error") : all;
+  const toasts = limit === undefined ? shown : shown.slice(-limit);
   if (toasts.length === 0) return null;
   return (
     <div className="pointer-events-none fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2">

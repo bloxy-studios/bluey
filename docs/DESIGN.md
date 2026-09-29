@@ -210,7 +210,8 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   body shows "Researching · Searching the web… (2 lookups)" with an accent "Skip research"
   link that cancels the job and lets the answer continue without it),
   Preparing `◌ Preparing a suggestion` (proactive loop running) and Prepared (blue)
-  `Bluey has a suggestion · ⌘⇧↵` — both only when *Show suggestions* is **On request**, or
+  `Bluey has a suggestion · ⌘⇧↵` (a button that shows the prepared answer; the keys are the
+  saved Generate binding, omitted when it is disabled) — both only when *Show suggestions* is **On request**, or
   when a live suggestion had to stay silent because another answer was streaming; with the
   default **Live** a detected question opens a suggestion turn at once and the pill simply
   reads `◌ Thinking` while it streams, then returns to `● Listening` — Update (blue, only while otherwise idle — never over
@@ -225,7 +226,10 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   repeated errors of the same code replace each other. Plain confirmations stay pills.
 * **Actions on a response**: Copy answer, Copy code, 👍 / 👎 (with "Why wasn't this
   useful?" chips: Wrong, Too long, Not relevant, Missed context, Wrong tone), Regenerate,
-  Expand/Collapse solution. "Copied" confirmation for ~1s.
+  Expand/Collapse solution. "Copied" confirmation for ~1s. Under them a muted 11px provenance
+  line: provider · model · latency, plus "via API key" when a subscription account was skipped
+  (or "fallback model" for another router fallback; the router's reason on hover). A failed web
+  research adds a subtle note under the answer ("Web research failed — answered without it.").
 * Respect `prefers-reduced-motion` and the user's reducedMotion setting: disable the height
   animation, pulse and fades.
 

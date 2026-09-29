@@ -366,7 +366,8 @@ export class MockTransport implements Transport {
     lostAfterUpdate: [],
   };
 
-  private protection: CaptureProtection = mockProtection(true);
+  // Like Rust (capture/mod.rs): protection starts from the saved display mode.
+  private protection: CaptureProtection = mockProtection(this.settings.privacy.displayMode === "privacy");
 
   private status: AppStatus = {
     state: "ready",
@@ -717,6 +718,12 @@ export class MockTransport implements Transport {
     this.status = { ...this.status, ...patch, updatedAt: now() };
     this.emit("app.state", this.status);
     return this.status;
+  }
+
+  /** Rust's settings side effect: the display mode drives content protection (settings/side_effects.rs). */
+  private applyDisplayMode(): void {
+    const enabled = this.settings.privacy.displayMode === "privacy";
+    if (this.protection.enabled !== enabled) this.protection = { ...this.protection, enabled };
   }
 
   private emitSettings(): Settings {
@@ -2250,12 +2257,14 @@ export class MockTransport implements Transport {
       const before = this.settings;
       this.settings = this.withKeyFlags(mergeSettings(this.settings, args.patch));
       this.dropRemovedProviderKeys(before);
+      this.applyDisplayMode();
       return this.emitSettings();
     },
     settings_reset: () => {
       const before = this.settings;
       this.settings = this.withKeyFlags(createDefaultSettings());
       this.dropRemovedProviderKeys(before);
+      this.applyDisplayMode();
       return this.emitSettings();
     },
     secrets_set: (args) => {

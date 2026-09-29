@@ -8,6 +8,7 @@ import type { BlueyResponse, FeedbackCategory, FeedbackRating } from "@/lib/type
 import { cn } from "@/lib/utils/cn";
 import { copyText } from "@/lib/utils/clipboard";
 import { extractCodeBlocks } from "./markdown";
+import { ResponseProvenance } from "./ResponseProvenance";
 
 const FEEDBACK_CHIPS: Array<{ id: FeedbackCategory; label: string }> = [
   { id: "wrong", label: "Wrong" },
@@ -36,8 +37,8 @@ function ActionButton({
         onClick={onClick}
         className={cn(
           "flex size-7 items-center justify-center rounded-[7px] text-fg-muted transition-colors",
-          "hover:bg-white/10 hover:text-fg",
-          active && "text-fg bg-white/10",
+          "hover:bg-fg/10 hover:text-fg",
+          active && "text-fg bg-fg/10",
         )}
       >
         {children}
@@ -51,7 +52,7 @@ export interface ResponseActionsProps {
   onRegenerate: () => void;
 }
 
-/** Copy answer / copy code / 👍 👎 (+ category chips) / regenerate. */
+/** Copy answer / copy code / 👍 👎 (+ category chips) / regenerate, then which model answered. */
 export function ResponseActions({ response, onRegenerate }: ResponseActionsProps) {
   const [rating, setRating] = useState<FeedbackRating | null>(response.feedback?.rating ?? null);
   const [showChips, setShowChips] = useState(false);
@@ -105,6 +106,7 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
           <RotateCcw className="size-[15px]" aria-hidden />
         </ActionButton>
       </div>
+      <ResponseProvenance response={response} />
 
       {showChips ? (
         <div className="mt-2 motion-safe:animate-rise-in">
@@ -115,7 +117,7 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
                 key={chip.id}
                 type="button"
                 onClick={() => void sendFeedback("down", [chip.id])}
-                className="h-[24px] rounded-full border border-hud-border bg-white/4 px-2.5 text-[12px] text-fg-muted transition-colors hover:bg-white/10 hover:text-fg"
+                className="h-[24px] rounded-full border border-hud-border bg-fg/4 px-2.5 text-[12px] text-fg-muted transition-colors hover:bg-fg/10 hover:text-fg"
               >
                 {chip.label}
               </button>

@@ -6,6 +6,8 @@
 
 import { create } from "zustand";
 
+import type { SnapshotWarning } from "@/lib/types";
+
 export const HUD_UI_STORAGE_KEY = "bluey.hud.ui";
 
 interface HudUiState {
@@ -14,6 +16,15 @@ interface HudUiState {
 }
 
 interface HudUiStore extends HudUiState {
+  /**
+   * The composer's text (not persisted): shared by both layouts so a live turn
+   * opening mid-sentence never discards it (LIVE-008).
+   */
+  draft: string;
+  setDraft(draft: string): void;
+  /** Why the last ask went without the screen it wanted (not persisted, UX-002). */
+  screenWarning: SnapshotWarning | null;
+  setScreenWarning(warning: SnapshotWarning | null): void;
   setScreenEnabled(enabled: boolean): void;
   toggleScreen(): void;
   toggleTranscript(): void;
@@ -59,15 +70,23 @@ export const useHudUiStore = create<HudUiStore>((set, get) => {
   };
   return {
     ...readPersisted(),
-    setScreenEnabled: (enabled) => apply({ screenEnabled: enabled }),
-    toggleScreen: () => apply({ screenEnabled: !get().screenEnabled }),
+    draft: "",
+    setDraft: (draft) => set({ draft }),
+    screenWarning: null,
+    setScreenWarning: (warning) => set({ screenWarning: warning }),
+    // Screen off makes a "screen unavailable" notice moot.
+    setScreenEnabled: (enabled) => {
+      apply({ screenEnabled: enabled });
+      if (!enabled) set({ screenWarning: null });
+    },
+    toggleScreen: () => get().setScreenEnabled(!get().screenEnabled),
     toggleTranscript: () => apply({ transcriptCollapsed: !get().transcriptCollapsed }),
   };
 });
 
 /** Test helper. */
 export function resetHudUiForTest(): void {
-  useHudUiStore.setState({ ...DEFAULTS });
+  useHudUiStore.setState({ ...DEFAULTS, draft: "", screenWarning: null });
   try {
     globalThis.localStorage?.removeItem(HUD_UI_STORAGE_KEY);
   } catch {

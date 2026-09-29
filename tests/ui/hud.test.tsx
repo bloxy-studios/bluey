@@ -175,7 +175,8 @@ describe("HudPanel", () => {
     await waitFor(() => expect(screen.getByText("Interviewer asked")).toBeInTheDocument());
     expect(screen.getByText("“Why do you want to work here?”")).toBeInTheDocument();
     expect(screen.getByText("Suggested")).toBeInTheDocument();
-    expect(screen.getByText("Prepared for")).toBeInTheDocument(); // first streamed draft
+    // The first streamed draft (drafts land once per frame, PERF-003).
+    expect(await screen.findByText("Prepared for")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Ask follow-up")).toBeInTheDocument(); // expanded layout
     expect(screen.queryByText(/Bluey has a suggestion/)).not.toBeInTheDocument();
     expect(screen.getByText("Thinking")).toBeInTheDocument(); // the pill reports the work, not a hint
