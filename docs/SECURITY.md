@@ -8,7 +8,10 @@
    `set`, `has`, `delete` (and see the saved/locked/absent state of)
    the API keys listed in `SECRET_KEYS` (`src/lib/tauri/commands.ts`: provider, Exa, Firecrawl
    and agent keys); the `secrets_*` commands reject every other key (`auth:*`, `account:*`)
-   before the store is touched, and the WebView never sees a token at all.
+   before the store is touched, and the WebView never sees a token at all. The one exception is
+   `secrets_allow_access`, which also takes the sign-in and subscription-account token keys the
+   *Saved credentials* list shows, reads only an item the silent probe reports *locked*, and
+   returns just its state.
 3. **Minimal retention by default.** Raw audio is never persisted; screenshots are off by
    default; transcripts and session history can be disabled; deletion really deletes.
 4. **Model output is untrusted data.** It is rendered as text/markdown, never executed, and the
@@ -54,7 +57,7 @@ identity (an ad-hoc update, a rebuild) must be approved before it reads an item'
 | First use of a key or token in a process | One data read, then cached in memory (`Zeroizing`) for the process |
 | Save a key, persist a refreshed token | Attribute-only delete, then add (the running build owns the new item); an unchanged value is not rewritten |
 | Remove key, disconnect, sign out, reset | Attribute-only delete, status checked; local state is cleared even if the delete fails |
-| *Allow access* (Settings) | The single deliberate interactive read |
+| *Allow access* (Settings) | The single deliberate interactive read — only of a listed item that is *locked* |
 | *Import* from Claude Code / Antigravity | One read of the other app's item, only on the Import click; a denial says macOS blocked it and to click Import again and choose Allow |
 
 A denied, cancelled or non-interactive read is reported as a *locked* credential

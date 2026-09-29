@@ -3,9 +3,13 @@
 //! holds back until the user allows access, and what each one is for. Names
 //! and states only — a value never leaves Rust (ADR 0011).
 
+use std::sync::Arc;
+
+use bluey_core::{BlueyError, BlueyResult};
 use serde::Serialize;
 
-use super::{is_webview_secret_key, key_category, SecretState};
+use super::{is_account_tokens_key, is_webview_secret_key, key_category};
+use super::{SecretState, SecretsStore};
 use super::{AGENT_ANTHROPIC_KEY, CLERK_OAUTH_TOKENS_KEY, CLERK_TOKEN_KEY, EXA_KEY, FIRECRAWL_KEY};
 
 /// One saved credential, as the WebView may see it.
@@ -73,6 +77,34 @@ fn label(key: &str, labels: &dyn CredentialLabels) -> String {
     }
 }
 
+/// Whether "Allow access" may target `key`: a credential the health list
+/// offers it for — an API key from Settings, the Bluey sign-in, or a
+/// subscription account's tokens. The only command that takes a Rust-only
+/// key from the WebView, and it returns a state, never a value.
+pub fn may_allow_access(key: &str) -> bool {
+    is_webview_secret_key(key) || key == CLERK_OAUTH_TOKENS_KEY || is_account_tokens_key(key)
+}
+
+/// "Allow access" (`secrets_allow_access`): the one read that may show
+/// macOS's Keychain prompt, so the user answers it once, on purpose. Only an
+/// item the silent probe reports `Locked` is read (the value stays in Rust's
+/// cache); any other state is returned as it is.
+pub async fn allow_access(secrets: &Arc<SecretsStore>, key: &str) -> BlueyResult<SecretState> {
+    if !may_allow_access(key) {
+        return Err(BlueyError::invalid_params(
+            "this secret is not listed under saved credentials",
+        ));
+    }
+    let state = secrets.state(key).await?;
+    if state != SecretState::Locked {
+        return Ok(state);
+    }
+    Ok(match secrets.get(key).await? {
+        Some(_) => SecretState::Present,
+        None => SecretState::Absent,
+    })
+}
+
 fn middle<'a>(key: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     key.strip_prefix(prefix)?.strip_suffix(suffix)
 }
@@ -138,5 +170,43 @@ mod tests {
                 "removable": true,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn allow_access_reads_only_a_locked_listed_item() {
+        use crate::secrets::backend::fake::{CountingFake, Op};
+        let exa = EXA_KEY;
+        let fake = Arc::new(CountingFake::with_items(&[
+            (exa, "saved"),
+            (CLERK_OAUTH_TOKENS_KEY, "{}"),
+        ]));
+        let secrets = Arc::new(SecretsStore::with_backend(fake.clone()));
+
+        for key in ["settings:theme", CLERK_TOKEN_KEY, "account::oauth_tokens"] {
+            let error = allow_access(&secrets, key).await.unwrap_err();
+            assert_eq!(error.code, "internal.invalid_params", "{key}");
+        }
+        assert_eq!(fake.count(Op::Probe), 0, "rejected before the store");
+
+        let absent = account_tokens_key("claude");
+        assert_eq!(
+            allow_access(&secrets, &absent).await.unwrap(),
+            SecretState::Absent
+        );
+        assert_eq!(
+            allow_access(&secrets, exa).await.unwrap(),
+            SecretState::Present
+        );
+        assert_eq!(
+            fake.reads(),
+            0,
+            "readable or absent items are never read again"
+        );
+
+        // A locked item is read: the prompt the user asked for (here denied).
+        fake.lock_item(CLERK_OAUTH_TOKENS_KEY, -25293);
+        let denied = allow_access(&secrets, CLERK_OAUTH_TOKENS_KEY).await;
+        assert_eq!(denied.unwrap_err().code, "storage.keychain_access_denied");
+        assert_eq!(fake.reads(), 1);
     }
 }

@@ -10,7 +10,9 @@
 //!   `secrets_has` / `secrets_delete`) may touch only the keys of
 //!   `SECRET_KEYS` in `src/lib/tauri/commands.ts` — API keys entered in
 //!   Settings. Sign-in and (ADR 0009) subscription-account tokens never cross
-//!   that boundary in either direction.
+//!   that boundary in either direction — except that `secrets_allow_access`
+//!   ([`health::may_allow_access`]) may name them to trigger the one
+//!   deliberate read of a locked item; it returns a state, never a value.
 
 pub mod backend;
 pub mod health;

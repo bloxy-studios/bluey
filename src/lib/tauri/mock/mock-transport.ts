@@ -144,6 +144,15 @@ function assertWebviewSecretKey(key: string): void {
   });
 }
 
+/**
+ * Rust `secrets::health::may_allow_access`: *Allow access* also takes the
+ * Rust-only sign-in and account token keys the Saved credentials list shows.
+ */
+function assertAllowAccessKey(key: string): void {
+  if (key === "auth:clerk:oauth_tokens" || /^account:.+:oauth_tokens$/.test(key)) return;
+  assertWebviewSecretKey(key);
+}
+
 /** Rust `secrets::key_category`, for the keys the mock can hold. */
 function secretCategory(key: string): CredentialCategory {
   if (key.startsWith("provider:")) return "provider_key";
@@ -2090,7 +2099,10 @@ export class MockTransport implements Transport {
         state: "present",
         removable: true,
       })),
-    secrets_allow_access: (args): SecretState => (this.secrets.has(args.key) ? "present" : "absent"),
+    secrets_allow_access: (args): SecretState => {
+      assertAllowAccessKey(args.key);
+      return this.secrets.has(args.key) ? "present" : "absent";
+    },
 
     // Shortcuts
     shortcuts_list: () => this.settings.shortcuts,

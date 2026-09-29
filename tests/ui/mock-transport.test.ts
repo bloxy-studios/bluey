@@ -117,6 +117,18 @@ describe("MockTransport", () => {
     expect(await mock.invoke("secrets_has", { key: "provider:custom-1:api_key" })).toBe(false);
   });
 
+  it("allows access only to the credentials Rust's Saved credentials list shows", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    for (const key of ["auth:clerk:oauth_tokens", "account:claude:oauth_tokens", "research:exa:api_key"]) {
+      expect(await mock.invoke("secrets_allow_access", { key })).toMatch(/^(present|absent)$/);
+    }
+    for (const key of ["auth:clerk:client_token", "account::oauth_tokens", "settings:theme"]) {
+      await expect(mock.invoke("secrets_allow_access", { key })).rejects.toMatchObject({
+        code: "internal.invalid_params",
+      });
+    }
+  });
+
   it("seeds Gemini as the first provider and applies its presets per role", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     const settings = await mock.invoke("settings_get", undefined);

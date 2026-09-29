@@ -74,17 +74,14 @@ pub async fn secrets_health(core: State<'_, AppCore>) -> BlueyResult<Vec<Credent
 }
 
 /// "Allow access": the one read that may show macOS's Keychain prompt, so the
-/// user answers it once, on purpose. Any Bluey-owned key (the value stays in
-/// Rust's cache); returns the new state.
+/// user answers it once, on purpose — only for a listed credential macOS
+/// holds back ([`health::allow_access`]); returns the new state.
 #[tauri::command]
 pub async fn secrets_allow_access(
     core: State<'_, AppCore>,
     key: String,
 ) -> BlueyResult<SecretState> {
-    let state = match core.secrets.get(&key).await? {
-        Some(_) => SecretState::Present,
-        None => SecretState::Absent,
-    };
+    let state = health::allow_access(&core.secrets, &key).await?;
     core.settings.refresh_provider_keys();
     Ok(state)
 }
