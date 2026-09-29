@@ -41,15 +41,16 @@ describe("HUD shortcut hints follow Settings → Keybinds (UX-026)", () => {
     setEngine(new FakeEngine());
   });
 
-  it("shows the saved New Chat binding, and none when it is disabled", () => {
+  it("shows the saved New Chat binding, and the HUD-local ⌘R when the global one is off", () => {
     renderHud();
     showAnswer();
-    rebind("new_chat", { accelerator: "CmdOrCtrl+Shift+KeyN" });
+    rebind("new_chat", { accelerator: "CmdOrCtrl+Shift+KeyN", enabled: true });
     const button = screen.getByRole("button", { name: "New Chat" });
     expect(within(button).getByLabelText("⌘ ⇧ N")).toBeInTheDocument();
 
+    // Off globally (the UX-001 default) — ⌘R still works inside the HUD, so it is the hint.
     rebind("new_chat", { enabled: false });
-    expect(within(button).queryByLabelText(/⌘/)).not.toBeInTheDocument();
+    expect(within(button).getByLabelText("⌘ R")).toBeInTheDocument();
   });
 
   it("the suggestion pill names the saved Generate binding and shows the prepared answer on click", async () => {

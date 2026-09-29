@@ -38,6 +38,8 @@ describe("PrivacyTab raw audio retention", () => {
   });
 
   it("does not promise that Privacy mode hides Bluey from modern screen sharing (SEC-004)", async () => {
+    // Protection follows the saved display mode (as in Rust), so turn Privacy mode on first.
+    await useSettingsStore.getState().update({ privacy: { displayMode: "privacy" } });
     render(<PrivacyTab />);
     await waitFor(() => expect(screen.getByText(/macOS 15 and later may still show Bluey/)).toBeInTheDocument());
     expect(screen.queryByText(/excludes its windows from screen recordings/)).not.toBeInTheDocument();

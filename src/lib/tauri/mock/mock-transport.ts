@@ -723,7 +723,8 @@ export class MockTransport implements Transport {
   /** Rust's settings side effect: the display mode drives content protection (settings/side_effects.rs). */
   private applyDisplayMode(): void {
     const enabled = this.settings.privacy.displayMode === "privacy";
-    if (this.protection.enabled !== enabled) this.protection = { ...this.protection, enabled };
+    // Rust recomputes the whole status (note, partial) for the new state.
+    if (this.protection.enabled !== enabled) this.protection = mockProtection(enabled);
   }
 
   private emitSettings(): Settings {
