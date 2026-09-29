@@ -9,8 +9,9 @@ import * as z from "zod";
 import { SUMMARY_SYSTEM, summaryTaskFor } from "@/ai/prompts";
 import { streamRequest, type StreamApi } from "@/ai/stream";
 import { compressKeepTail } from "@/context/budget";
+import { estimateTokens } from "@/context/fusion";
 import type { SummarizeInput } from "@/lib/engine-contract";
-import type { AIMessage, AIRequest, JsonSchemaSpec, SessionSummary } from "@/lib/types";
+import type { AIMessage, AIRequest, JsonSchemaSpec, SessionSummary, TranscriptSegment } from "@/lib/types";
 import { parseJsonLoose } from "@/modes/schemas";
 
 const summarySchema = z.object({
@@ -47,19 +48,73 @@ const tolerantSummary = z.object({
 });
 
 const MAX_TRANSCRIPT_TOKENS = 6000;
+/** Share of the transcript budget spent on the start of a long session; the rest keeps its end. */
+const HEAD_SHARE = 1 / 3;
+/** Room kept for the "[… N lines … omitted …]" line. */
+const OMISSION_MARKER_TOKENS = 40;
 const MAX_RESPONSE_CHARS = 400;
+
+interface TranscriptExcerpt {
+  text: string;
+  /** Set when the middle of a long session did not fit: what the user is told. */
+  omittedNote?: string;
+}
+
+function mmss(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/**
+ * The transcript within the budget. A long session keeps its start (context, agenda) and its
+ * end (decisions, next steps) and says what was left out — to the model in the text and to the
+ * user in the summary (AI-007).
+ */
+export function transcriptExcerpt(transcript: TranscriptSegment[]): TranscriptExcerpt | null {
+  const segments = transcript.filter((s) => s.finalized && s.text.trim().length > 0);
+  if (segments.length === 0) return null;
+  const lines = segments.map(
+    (s) => `${s.speaker ?? (s.source === "microphone" ? "You" : "Speaker")}: ${s.text}`,
+  );
+  const text = lines.join("\n");
+  if (estimateTokens(text) <= MAX_TRANSCRIPT_TOKENS) return { text };
+
+  const costs = lines.map((line) => estimateTokens(line) + 1);
+  let head = 0;
+  let used = 0;
+  const headBudget = MAX_TRANSCRIPT_TOKENS * HEAD_SHARE;
+  while (head < lines.length && used + costs[head]! <= headBudget) {
+    used += costs[head]!;
+    head += 1;
+  }
+  let tail = lines.length;
+  const budget = MAX_TRANSCRIPT_TOKENS - OMISSION_MARKER_TOKENS;
+  while (tail > head && used + costs[tail - 1]! <= budget) {
+    tail -= 1;
+    used += costs[tail]!;
+  }
+  if (head === 0 && tail === lines.length) return { text: compressKeepTail(text, MAX_TRANSCRIPT_TOKENS) };
+
+  const from = segments[head]!.startTime;
+  const to = segments[tail - 1]!.endTime;
+  const range = `${mmss(from)}–${mmss(to)}`;
+  const minutes = Math.max(1, Math.round((to - from) / 60_000));
+  return {
+    text: [
+      ...lines.slice(0, head),
+      `[… ${tail - head} lines from the middle of the session (${range}) omitted …]`,
+      ...lines.slice(tail),
+    ].join("\n"),
+    omittedNote: `This session was long: the summary covers its beginning and end; about ${minutes} min in the middle (${range}) was not included.`,
+  };
+}
 
 /** Compile the session material into one user-message body. */
 export function renderSummaryInput(input: SummarizeInput): string {
   const parts: string[] = [];
 
-  const transcriptLines = input.transcript
-    .filter((s) => s.finalized && s.text.trim().length > 0)
-    .map((s) => `${s.speaker ?? (s.source === "microphone" ? "You" : "Speaker")}: ${s.text}`)
-    .join("\n");
-  if (transcriptLines.length > 0) {
-    parts.push(`### Transcript\n${compressKeepTail(transcriptLines, MAX_TRANSCRIPT_TOKENS)}`);
-  }
+  const excerpt = transcriptExcerpt(input.transcript);
+  if (excerpt) parts.push(`### Transcript\n${excerpt.text}`);
 
   if (input.responses.length > 0) {
     const lines = input.responses.map((r) => {
@@ -88,13 +143,12 @@ export interface SummaryDeps {
 }
 
 function buildSummaryRequest(input: SummarizeInput, deps: Required<SummaryDeps>): AIRequest {
+  const material = renderSummaryInput(input);
   const messages: AIMessage[] = [
     { role: "system", content: [{ type: "text", text: SUMMARY_SYSTEM }] },
     {
       role: "user",
-      content: [
-        { type: "text", text: `${renderSummaryInput(input)}\n\n${summaryTaskFor(input.mode)}` },
-      ],
+      content: [{ type: "text", text: `${material}\n\n${summaryTaskFor(input.mode)}` }],
     },
   ];
   return {
@@ -105,7 +159,7 @@ function buildSummaryRequest(input: SummarizeInput, deps: Required<SummaryDeps>)
     latencyBudget: "balanced",
     reasoning: "light",
     visionRequired: false,
-    contextTokens: Math.ceil(renderSummaryInput(input).length / 4),
+    contextTokens: Math.ceil(material.length / 4),
     messages,
     outputSchema: summaryOutputSchema(),
     maxOutputTokens: 2000,
@@ -138,20 +192,25 @@ export async function generateSessionSummary(
   const outcome = await streamRequest(request, {}, resolved.api).done;
 
   if (outcome.finishReason === "error") {
-    throw outcome.error ?? {
-      kind: "ai" as const,
-      code: "ai.summary_failed",
-      message: "Session summary generation failed",
-      recoverable: true,
-    };
+    throw (
+      outcome.error ?? {
+        kind: "ai" as const,
+        code: "ai.summary_failed",
+        message: "Session summary generation failed",
+        recoverable: true,
+      }
+    );
   }
 
   const parsed = parseSummaryOutput(outcome.text);
+  const omittedNote = transcriptExcerpt(input.transcript)?.omittedNote;
+  const overview = parsed.overview ?? "";
   return {
     id: `sum_${resolved.idGen()}`,
     sessionId: input.session.id,
     modeId: input.mode.id,
-    overview: parsed.overview ?? "",
+    // Stored with the summary, so the detail view and the export say it too.
+    overview: omittedNote ? `${overview}\n\n${omittedNote}`.trim() : overview,
     topics: parsed.topics ?? [],
     questions: parsed.questions ?? [],
     answers: parsed.answers ?? [],
