@@ -18,6 +18,12 @@ pub fn default_bindings() -> Vec<ShortcutBinding> {
         default_accelerator: acc.to_string(),
         enabled: true,
     };
+    // Registered globally only when the user opts in: the HUD handles these keys
+    // itself while it has focus, and ⌘R / ⌘, belong to the frontmost app (UX-001).
+    let hud_local = |b: ShortcutBinding| ShortcutBinding {
+        enabled: false,
+        ..b
+    };
     vec![
         mk(
             ShortcutId::TogglePanel,
@@ -43,53 +49,53 @@ pub fn default_bindings() -> Vec<ShortcutBinding> {
             ShortcutGroup::General,
             "CmdOrCtrl+Shift+KeyL",
         ),
-        mk(
+        hud_local(mk(
             ShortcutId::NewChat,
             "Start a new chat",
             ShortcutGroup::General,
             "CmdOrCtrl+KeyR",
-        ),
-        mk(
+        )),
+        hud_local(mk(
             ShortcutId::OpenSettings,
             "Open Bluey settings",
             ShortcutGroup::General,
             "CmdOrCtrl+Comma",
-        ),
+        )),
         mk(
             ShortcutId::MoveUp,
             "Move the window position up",
             ShortcutGroup::Window,
-            "CmdOrCtrl+ArrowUp",
+            "Ctrl+Alt+ArrowUp",
         ),
         mk(
             ShortcutId::MoveDown,
             "Move the window position down",
             ShortcutGroup::Window,
-            "CmdOrCtrl+ArrowDown",
+            "Ctrl+Alt+ArrowDown",
         ),
         mk(
             ShortcutId::MoveLeft,
             "Move the window position left",
             ShortcutGroup::Window,
-            "CmdOrCtrl+ArrowLeft",
+            "Ctrl+Alt+ArrowLeft",
         ),
         mk(
             ShortcutId::MoveRight,
             "Move the window position right",
             ShortcutGroup::Window,
-            "CmdOrCtrl+ArrowRight",
+            "Ctrl+Alt+ArrowRight",
         ),
         mk(
             ShortcutId::ScrollUp,
             "Scroll the response window up",
             ShortcutGroup::Scroll,
-            "CmdOrCtrl+Shift+ArrowUp",
+            "CmdOrCtrl+Alt+ArrowUp",
         ),
         mk(
             ShortcutId::ScrollDown,
             "Scroll the response window down",
             ShortcutGroup::Scroll,
-            "CmdOrCtrl+Shift+ArrowDown",
+            "CmdOrCtrl+Alt+ArrowDown",
         ),
     ]
 }
@@ -114,6 +120,32 @@ pub const KNOWN_SYSTEM_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+ArrowLeft", "Previous Space"),
     ("Ctrl+ArrowRight", "Next Space"),
     ("Cmd+Shift+KeyA", "Applications folder (Finder)"),
+    // Standard text-editing and app chords: a global hotkey consumes the chord in
+    // every app, so taking one of these breaks editing everywhere (UX-001).
+    ("Cmd+ArrowLeft", "Move to the start of the line"),
+    ("Cmd+ArrowRight", "Move to the end of the line"),
+    ("Cmd+ArrowUp", "Move to the start of the document"),
+    ("Cmd+ArrowDown", "Move to the end of the document"),
+    ("Cmd+Shift+ArrowLeft", "Select to the start of the line"),
+    ("Cmd+Shift+ArrowRight", "Select to the end of the line"),
+    ("Cmd+Shift+ArrowUp", "Select to the start of the document"),
+    ("Cmd+Shift+ArrowDown", "Select to the end of the document"),
+    ("Alt+ArrowLeft", "Move to the previous word"),
+    ("Alt+ArrowRight", "Move to the next word"),
+    ("Alt+Shift+ArrowLeft", "Select the previous word"),
+    ("Alt+Shift+ArrowRight", "Select the next word"),
+    ("Cmd+KeyA", "Select all"),
+    ("Cmd+KeyC", "Copy"),
+    ("Cmd+KeyV", "Paste"),
+    ("Cmd+KeyX", "Cut"),
+    ("Cmd+KeyZ", "Undo"),
+    ("Cmd+Shift+KeyZ", "Redo"),
+    ("Cmd+KeyF", "Find"),
+    ("Cmd+KeyS", "Save"),
+    ("Cmd+KeyN", "New window"),
+    ("Cmd+KeyT", "New tab"),
+    ("Cmd+KeyR", "Reload"),
+    ("Cmd+Comma", "App settings"),
 ];
 
 /// Canonical form: modifiers sorted in a fixed order, key capitalised as a `Code` name.
@@ -337,6 +369,46 @@ mod tests {
     }
 
     #[test]
+    fn enabled_defaults_leave_system_and_editing_chords_alone() {
+        // UX-001: a global hotkey consumes its chord in every app.
+        for b in default_bindings().iter().filter(|b| b.enabled) {
+            let as_cmd = normalize_accelerator(&b.accelerator)
+                .unwrap()
+                .replace("CmdOrCtrl", "Cmd");
+            for (sys, name) in KNOWN_SYSTEM_SHORTCUTS {
+                assert_ne!(
+                    normalize_accelerator(sys).as_deref(),
+                    Some(as_cmd.as_str()),
+                    "{:?} takes {name}",
+                    b.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_chat_and_settings_are_hud_local_by_default() {
+        let b = default_bindings();
+        for id in [ShortcutId::NewChat, ShortcutId::OpenSettings] {
+            assert!(!b.iter().find(|x| x.id == id).unwrap().enabled, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn recording_an_editing_chord_warns() {
+        let b = default_bindings();
+        for chord in [
+            "Cmd+ArrowLeft",
+            "CmdOrCtrl+Shift+ArrowUp",
+            "Cmd+KeyR",
+            "Cmd+Comma",
+        ] {
+            let c = detect_conflict(chord, &b, None).unwrap();
+            assert_eq!(c.conflicts_with, ShortcutConflictKind::System, "{chord}");
+        }
+    }
+
+    #[test]
     fn normalizes_aliases() {
         assert_eq!(
             normalize_accelerator("command+\\").unwrap(),
@@ -375,6 +447,7 @@ mod tests {
         assert_eq!(display_keys("CmdOrCtrl+Backslash"), vec!["⌘", "\\"]);
         assert_eq!(display_keys("CmdOrCtrl+Shift+ArrowUp"), vec!["⌘", "⇧", "↑"]);
         assert_eq!(display_keys("CmdOrCtrl+KeyR"), vec!["⌘", "R"]);
+        assert_eq!(display_keys("Ctrl+Alt+ArrowLeft"), vec!["⌃", "⌥", "←"]);
     }
 
     #[test]

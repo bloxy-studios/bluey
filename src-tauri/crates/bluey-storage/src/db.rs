@@ -30,6 +30,10 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         "0004_ai_request_trace",
         include_str!("../migrations/0004_ai_request_trace.sql"),
     ),
+    (
+        "0005_shortcut_defaults",
+        include_str!("../migrations/0005_shortcut_defaults.sql"),
+    ),
 ];
 
 /// A single SQLite database handle shared by all repositories.
@@ -241,7 +245,8 @@ mod tests {
                 "0001_init".to_string(),
                 "0002_fts_sync".to_string(),
                 "0003_embedding_model".to_string(),
-                "0004_ai_request_trace".to_string()
+                "0004_ai_request_trace".to_string(),
+                "0005_shortcut_defaults".to_string()
             ]
         );
         assert!(db.path().is_none());
