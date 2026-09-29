@@ -76,6 +76,13 @@ impl AiProvider for AzureProvider {
     ) -> BlueyResult<ChunkStream> {
         let deployment = self.deployment(&request.model);
         let url = proto::chat_url(&self.base_url, self.api_version.as_deref(), deployment);
+        // The Foundry presets are all reasoning models: the family is read from
+        // the model id (the deployment name usually is the model id too).
+        let effort = [request.model.as_str(), deployment]
+            .into_iter()
+            .find_map(|m| {
+                openai_proto::reasoning_effort_for(m, request.reasoning, request.latency)
+            });
         let body = openai_proto::build_chat_body(&openai_proto::ChatBodyOptions {
             model: deployment,
             messages: &request.messages,
@@ -83,6 +90,7 @@ impl AiProvider for AzureProvider {
             include_usage: true,
             max_output_tokens: request.max_output_tokens,
             temperature: request.temperature,
+            reasoning_effort: effort.as_deref(),
             output_schema: request.output_schema.as_ref(),
         });
         let response = self

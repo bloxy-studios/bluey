@@ -88,6 +88,21 @@ impl AnthropicProvider {
             output_schema: request.output_schema.as_ref(),
             schema_as_prompt_fallback: schema_as_prompt,
         });
+        // Adaptive thinking on both paths when Bluey asks for reasoning
+        // (model-gated: never Haiku); it also drops the sampling knobs.
+        claude_code::apply_thinking(
+            &mut body,
+            &request.model,
+            request.reasoning,
+            request.latency,
+        );
+        if !self.is_oauth() {
+            // Adaptive thinking and `output_config.effort` are GA on the public
+            // API; context editing is a beta that key requests do not opt into.
+            if let Some(map) = body.as_object_mut() {
+                map.remove("context_management");
+            }
+        }
         match &self.auth {
             Auth::ApiKey(api_key) => self
                 .http
@@ -100,12 +115,6 @@ impl AnthropicProvider {
                 .await
                 .map_err(|e| map_transport_error(&e, "Anthropic")),
             Auth::Oauth(credential) => {
-                claude_code::apply_thinking(
-                    &mut body,
-                    &request.model,
-                    request.reasoning,
-                    request.latency,
-                );
                 claude_code::normalise_max_tokens(
                     &mut body,
                     &request.model,
@@ -490,6 +499,45 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             .as_str()
             .unwrap()
             .starts_with("{\"device_id\":\"aaaa"));
+    }
+
+    fn sse_ok() -> String {
+        let sse = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}",
+            sse.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn an_api_key_request_thinks_when_bluey_asks_for_reasoning() {
+        let (base, seen) = stub(sse_ok()).await;
+        let provider =
+            AnthropicProvider::new(reqwest::Client::new(), base, "sk-ant-api03-x".into());
+        let request = ProviderRequest {
+            model: "claude-opus-5".into(),
+            reasoning: ReasoningLevel::Deep,
+            latency: LatencyBudget::Balanced,
+            ..request()
+        };
+        let stream = provider
+            .stream(&request, CancellationToken::new())
+            .await
+            .unwrap();
+        super::super::collect_text(stream).await.unwrap();
+
+        let (_head, body) = seen.await.unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive", "{body}");
+        assert!(body["output_config"]["effort"].is_string(), "{body}");
+        assert!(
+            body.get("temperature").is_none(),
+            "thinking drops sampling: {body}"
+        );
+        assert!(
+            body.get("context_management").is_none(),
+            "beta-only on the key path"
+        );
     }
 
     #[tokio::test]

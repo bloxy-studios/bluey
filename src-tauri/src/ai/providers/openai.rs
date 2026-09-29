@@ -38,6 +38,8 @@ impl AiProvider for OpenAiProvider {
         request: &ProviderRequest,
         token: CancellationToken,
     ) -> BlueyResult<ChunkStream> {
+        let effort =
+            proto::reasoning_effort_for(&request.model, request.reasoning, request.latency);
         let body = proto::build_chat_body(&proto::ChatBodyOptions {
             model: &request.model,
             messages: &request.messages,
@@ -45,6 +47,7 @@ impl AiProvider for OpenAiProvider {
             include_usage: true,
             max_output_tokens: request.max_output_tokens,
             temperature: request.temperature,
+            reasoning_effort: effort.as_deref(),
             output_schema: request.output_schema.as_ref(),
         });
         let response = self

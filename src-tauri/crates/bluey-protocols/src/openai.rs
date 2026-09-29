@@ -3,7 +3,9 @@
 //! Used verbatim by the `openai_compatible` provider and (with a different URL
 //! scheme + auth header) by the Azure Foundry v1 provider.
 
-use bluey_core::types::{AiContentPart, AiMessage, AiRole, FinishReason, JsonSchemaSpec};
+use bluey_core::types::{
+    AiContentPart, AiMessage, AiRole, FinishReason, JsonSchemaSpec, LatencyBudget, ReasoningLevel,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -19,6 +21,9 @@ pub struct ChatBodyOptions<'a> {
     /// Sent as `max_completion_tokens`.
     pub max_output_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// `reasoning_effort` for reasoning-model families (see
+    /// [`reasoning_effort_for`]); when set, `temperature` is not sent.
+    pub reasoning_effort: Option<&'a str>,
     /// Structured output via `response_format: { type: "json_schema", ... }`.
     pub output_schema: Option<&'a JsonSchemaSpec>,
 }
@@ -49,6 +54,38 @@ fn versioned_url(base_url: &str, path: &str) -> String {
     }
 }
 
+/// OpenAI's reasoning families — GPT-5 and later, the o-series — reject
+/// `temperature` (and `top_p`, the penalties) and take `reasoning_effort`
+/// instead. Decided by the model family, whichever endpoint serves it
+/// (Foundry, OpenAI, a gateway's `openai/gpt-5`); `*-chat` variants are chat
+/// models and keep sampling.
+pub fn is_reasoning_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    if name.contains("-chat") {
+        return false;
+    }
+    let gpt_major = name
+        .strip_prefix("gpt-")
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|major| major.parse::<u32>().ok());
+    let o_series = ["o1", "o3", "o4"]
+        .iter()
+        .any(|series| name == *series || name.starts_with(&format!("{series}-")));
+    gpt_major.is_some_and(|major| major >= 5) || o_series
+}
+
+/// `reasoning_effort` for a request to `model` — Bluey's reasoning level and
+/// latency budget through the Codex policy (`low`/`medium`/`high`) — or `None`
+/// when the model is not a reasoning model.
+pub fn reasoning_effort_for(
+    model: &str,
+    level: ReasoningLevel,
+    latency: LatencyBudget,
+) -> Option<String> {
+    is_reasoning_model(model).then(|| crate::codex::reasoning_effort(level, latency, &[], None))
+}
+
 /// Build the JSON body for a chat-completions request.
 pub fn build_chat_body(opts: &ChatBodyOptions<'_>) -> Value {
     let messages: Vec<Value> = opts.messages.iter().map(message_to_json).collect();
@@ -66,8 +103,16 @@ pub fn build_chat_body(opts: &ChatBodyOptions<'_>) -> Value {
     if let Some(max) = opts.max_output_tokens {
         obj.insert("max_completion_tokens".into(), json!(max));
     }
-    if let Some(t) = opts.temperature {
-        obj.insert("temperature".into(), json!(t));
+    match opts.reasoning_effort {
+        // Reasoning models reject sampling knobs (HTTP 400 "Unsupported parameter").
+        Some(effort) => {
+            obj.insert("reasoning_effort".into(), json!(effort));
+        }
+        None => {
+            if let Some(t) = opts.temperature {
+                obj.insert("temperature".into(), json!(t));
+            }
+        }
     }
     if let Some(spec) = opts.output_schema {
         // Strict structured outputs reject a schema whose objects leave a property out of
@@ -289,6 +334,7 @@ mod tests {
             include_usage: true,
             max_output_tokens: Some(256),
             temperature: Some(0.2),
+            reasoning_effort: None,
             output_schema: Some(&spec),
         });
         assert_eq!(body["model"], "gpt-test");
@@ -312,6 +358,50 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_families_get_an_effort_and_never_a_temperature() {
+        for model in [
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "GPT-5",
+            "openai/gpt-5.5",
+            "o3",
+            "o4-mini",
+        ] {
+            assert!(is_reasoning_model(model), "{model}");
+        }
+        for model in [
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-5-chat-latest",
+            "gpt-oss-120b",
+            "llama-3",
+        ] {
+            assert!(!is_reasoning_model(model), "{model}");
+        }
+        let effort =
+            reasoning_effort_for("gpt-6-astra", ReasoningLevel::Deep, LatencyBudget::Balanced);
+        assert_eq!(effort.as_deref(), Some("high"));
+        assert_eq!(
+            reasoning_effort_for("gpt-4.1", ReasoningLevel::Deep, LatencyBudget::Balanced),
+            None
+        );
+
+        let messages = vec![text_message(AiRole::User, "hi")];
+        let body = build_chat_body(&ChatBodyOptions {
+            model: "gpt-5.6-terra",
+            messages: &messages,
+            stream: true,
+            include_usage: false,
+            max_output_tokens: None,
+            temperature: Some(0.6),
+            reasoning_effort: effort.as_deref(),
+            output_schema: None,
+        });
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(body.get("temperature").is_none(), "{body}");
+    }
+
+    #[test]
     fn images_become_data_url_parts() {
         let message = AiMessage {
             role: AiRole::User,
@@ -332,6 +422,7 @@ mod tests {
             include_usage: false,
             max_output_tokens: None,
             temperature: None,
+            reasoning_effort: None,
             output_schema: None,
         });
         let parts = body["messages"][0]["content"].as_array().unwrap();
