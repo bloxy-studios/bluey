@@ -197,6 +197,10 @@ pub mod fake {
                 .insert(account.into(), status);
         }
 
+        pub fn allow_remove(&self, account: &str) {
+            self.inner.lock().failing_removes.remove(account);
+        }
+
         pub fn fail_lookups(&self, status: i32) {
             self.inner.lock().fail_lookups = Some(status);
         }
