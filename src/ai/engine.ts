@@ -17,14 +17,15 @@
  */
 
 import * as z from "zod";
-import type {
-  AskInput,
-  ClassifyInput,
-  EngineCallbacks,
-  EngineHandle,
-  EnginePhase,
-  ResponseEngine,
-  SummarizeInput,
+import {
+  PREPARED_TTL_MS,
+  type AskInput,
+  type ClassifyInput,
+  type EngineCallbacks,
+  type EngineHandle,
+  type EnginePhase,
+  type ResponseEngine,
+  type SummarizeInput,
 } from "@/lib/engine-contract";
 import { truncatedAnswerError, unreadableAnswerError } from "@/lib/errors/answers";
 import { bluey } from "@/lib/tauri/api";
@@ -41,11 +42,14 @@ import {
   type DetectedEvent,
   type DetectedEventType,
   type LatencyTrace,
+  type ModelSelection,
   type ResponseSection,
+  type ResponseSelection,
   type RetrievalQuery,
   type RetrievedChunk,
   type ScrapeResult,
   type SearchResult,
+  type Session,
   type SessionEvent,
   type SessionEventType,
   type SessionSummary,
@@ -132,9 +136,10 @@ export interface EngineDeps {
 
 const SCOPE_ASK = "ask";
 const SCOPE_PREPARE = "prepare";
+const SCOPE_LIVE = "live";
 
 export const PREPARED_CACHE_MAX = 5;
-export const PREPARED_TTL_MS = 3 * 60 * 1000;
+export { PREPARED_TTL_MS };
 
 interface PreparedEntry {
   response: BlueyResponse;
@@ -179,9 +184,16 @@ interface PipelineOptions {
   scope: string;
   /** Prepared for later: no persistence, no session events, `response.prepared = true`. */
   silent: boolean;
+  /** Work the user did not start (prepare/live): Rust keeps it out of the app state machine. */
+  background: boolean;
   /** Always honoured — a silent preparation simply passes none. */
   callbacks: EngineCallbacks;
   isCancelled(): boolean;
+  /**
+   * Aborted when the request is cancelled (Esc/Stop, a manual ask, a newer request):
+   * slow side work such as research listens to it to stop early.
+   */
+  signal: AbortSignal;
   onStreamHandle(handle: StreamHandle): void;
 }
 
@@ -241,6 +253,17 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
   }
 
   // ── Final response assembly ───────────────────────────────────────────────
+
+  /** Provenance for the HUD: which model answered, and why when the router fell back. */
+  function toResponseSelection(selection: ModelSelection | undefined): ResponseSelection | undefined {
+    if (!selection) return undefined;
+    return {
+      role: selection.role,
+      providerId: selection.providerId,
+      model: selection.model,
+      ...(selection.reason.includes("→ fallback") ? { fallbackReason: selection.reason } : {}),
+    };
+  }
 
   function toSections(parsed: StructuredModelOutput): ResponseSection[] | undefined {
     if (!parsed.sections || parsed.sections.length === 0) return undefined;
@@ -410,6 +433,11 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       outputSchema,
       now,
     });
+    // Rust supersedes per (session, scope) and routes by the request's own mode role, so a
+    // mode switch mid-flight cannot re-route it (MODE-012).
+    request.scope = opts.scope;
+    request.background = opts.background;
+    if (input.mode.preferredModelRole) request.preferredModelRole = input.mode.preferredModelRole;
     const promptBuiltMs = perfNow() - anchorTs;
     let firstPaintMs: number | undefined;
     let firstPaintScheduled = false;
@@ -451,7 +479,8 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     // One streaming attempt; drafts restart when a retry replaces the first one.
     const streamOnce = (attempt: AIRequest): StreamHandle => {
       fenceBuffer = new CodeFenceBuffer();
-      lastDraftLength = -1;
+      // `lastDraftLength` is kept: a length retry only paints once it outgrows the draft
+      // already on screen, instead of wiping it and regrowing from nothing (LIVE-015).
       const handle = streamRequest(
         attempt,
         {
@@ -561,34 +590,71 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       createdAt: now().toISOString(),
       ...(truncated ? { truncated: true } : {}),
     };
+    const selection = toResponseSelection(outcome.selection);
+    if (selection) response.selection = selection;
     response = optimizeResponse(response, { style, mode: input.mode, shape: intent.answerShape });
     if (opts.silent) response.prepared = true;
 
     // Persist + events (best-effort; the response is already usable).
     if (!opts.silent) {
-      try {
-        await api.responses.save({ response });
-      } catch {
-        // Storage failures must not lose the answer.
-      }
-      if (input.session) {
-        try {
-          await api.session.addEvent({
-            sessionId: input.session.id,
-            type: "response_generated",
-            title: "Response generated",
-            detail: response.title,
-            refs: { responseId: response.id, requestId: opts.requestId },
-          });
-        } catch {
-          // Best-effort.
-        }
-      }
+      await persistShown(response, input.session);
       bus.emit("context.updated", { snapshot, reason: "response_generated" });
       emitDevMetrics(metrics, bus, now);
     }
 
     return response;
+  }
+
+  // ── persistence ───────────────────────────────────────────────────────────
+
+  /** Save a shown answer and log `response_generated` (best-effort; the answer is already usable). */
+  async function persistShown(response: BlueyResponse, session: Session | null | undefined): Promise<void> {
+    try {
+      await api.responses.save({ response });
+    } catch {
+      // Storage failures must not lose the answer.
+    }
+    if (!session) return;
+    try {
+      await api.session.addEvent({
+        sessionId: session.id,
+        type: "response_generated",
+        title: "Response generated",
+        detail: response.title,
+        refs: { responseId: response.id, requestId: response.requestId },
+      });
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  async function commitShown(response: BlueyResponse, session?: Session | null): Promise<BlueyResponse> {
+    const { prepared: _prepared, ...rest } = response;
+    const shown: BlueyResponse = { ...rest, sessionId: rest.sessionId ?? session?.id };
+    await persistShown(shown, session);
+    return shown;
+  }
+
+  // ── cancellation ──────────────────────────────────────────────────────────
+
+  /**
+   * One request's cancellation: aborts its signal, then cancels the live stream (or, before
+   * the stream exists, the request id in Rust). Shared by `ask` and `prepare`.
+   */
+  function createCancellation(requestId: string) {
+    const controller = new AbortController();
+    let streamHandle: StreamHandle | null = null;
+    return {
+      signal: controller.signal,
+      attach: (handle: StreamHandle) => {
+        streamHandle = handle;
+      },
+      cancel: async (): Promise<void> => {
+        controller.abort();
+        if (streamHandle) await streamHandle.cancel();
+        else await api.ai.cancel({ requestId }).catch(() => false);
+      },
+    };
   }
 
   // ── ask ───────────────────────────────────────────────────────────────────
@@ -602,19 +668,17 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     if (previous) void api.ai.cancel({ requestId: previous }).catch(() => false);
     gate.setInflight(SCOPE_ASK, requestId);
 
-    let cancelled = false;
-    let streamHandle: StreamHandle | null = null;
-
+    const cancellation = createCancellation(requestId);
     const opts: PipelineOptions = {
       requestId,
       generation,
       scope: SCOPE_ASK,
       silent: false,
+      background: false,
       callbacks,
-      isCancelled: () => cancelled,
-      onStreamHandle: (handle) => {
-        streamHandle = handle;
-      },
+      isCancelled: () => cancellation.signal.aborted,
+      signal: cancellation.signal,
+      onStreamHandle: cancellation.attach,
     };
 
     const done: Promise<BlueyResponse | null> = (async () => {
@@ -636,16 +700,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       }
     })();
 
-    return {
-      requestId,
-      generation,
-      cancel: async () => {
-        cancelled = true;
-        if (streamHandle) await streamHandle.cancel();
-        else await api.ai.cancel({ requestId }).catch(() => false);
-      },
-      done,
-    };
+    return { requestId, generation, cancel: cancellation.cancel, done };
   }
 
   // ── prepare / takePrepared ────────────────────────────────────────────────
@@ -669,23 +724,31 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     const key = input.detectedEvent?.id ?? "generic";
     const cached = prepared.get(key);
     if (cached) {
-      if (live) {
-        prepared.delete(key);
-        callbacks.onComplete?.(cached.response);
-      }
-      return cached.response;
+      if (!live) return cached.response;
+      prepared.delete(key);
+      // Opened live: it is shown now, so it is saved like any shown answer (DATA-007).
+      const shown = await commitShown(cached.response, input.session);
+      callbacks.onComplete?.(shown);
+      return shown;
     }
 
     const requestId = `req_${idGen()}`;
-    const generation = gate.next(SCOPE_PREPARE);
+    // Live suggestions and silent preparations are separate supersede groups: a background
+    // preparation must never cancel the suggestion the user is reading.
+    const scope = live ? SCOPE_LIVE : SCOPE_PREPARE;
+    const generation = gate.next(scope);
+    const cancellation = createCancellation(requestId);
+    callbacks.onHandle?.({ requestId, cancel: cancellation.cancel });
     const opts: PipelineOptions = {
       requestId,
       generation,
-      scope: SCOPE_PREPARE,
+      scope,
       silent: !live,
+      background: true,
       callbacks,
-      isCancelled: () => false,
-      onStreamHandle: () => {},
+      isCancelled: () => cancellation.signal.aborted,
+      signal: cancellation.signal,
+      onStreamHandle: cancellation.attach,
     };
     try {
       const response = await runPipeline(input, opts);
@@ -774,6 +837,9 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       },
       maxOutputTokens: 100,
       temperature: 0,
+      // Transcript triage the user never asked for: kept out of the app state machine.
+      scope: "classify",
+      background: true,
       createdAt: now().toISOString(),
     };
 
@@ -802,6 +868,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       segment: input.segment,
       recent: input.recent,
       mode: input.mode,
+      ...(input.segmentIds ? { segmentIds: input.segmentIds } : {}),
       now,
       idGen,
     });
@@ -839,6 +906,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     gate.invalidateAll();
     gate.next(SCOPE_ASK);
     gate.next(SCOPE_PREPARE);
+    gate.next(SCOPE_LIVE);
     try {
       await api.ai.cancelAll();
     } catch {
@@ -846,5 +914,9 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     }
   }
 
-  return { ask, prepare, takePrepared, classify, summarizeSession, cancelAll };
+  function clearPrepared(): void {
+    prepared.clear();
+  }
+
+  return { ask, prepare, takePrepared, clearPrepared, commitShown, classify, summarizeSession, cancelAll };
 }

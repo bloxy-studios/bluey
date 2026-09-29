@@ -76,22 +76,32 @@ function SuggestionHeader({ suggestion }: { suggestion: SuggestionMeta }) {
   );
 }
 
-function Turn({ turn, isLast, onRegenerate }: { turn: ChatTurn; isLast: boolean; onRegenerate: () => void }) {
+interface TurnProps {
+  turn: ChatTurn;
+  isLast: boolean;
+  onRetry: (turnId: string) => void;
+  onRegenerate: (turnId: string) => void;
+}
+
+function Turn({ turn, isLast, onRetry, onRegenerate }: TurnProps) {
   const streaming = turn.status === "streaming";
+  // Each turn re-sends its own request, not whatever the last turn asked (UX-011).
+  const retry = () => onRetry(turn.id);
+  const regenerate = () => onRegenerate(turn.id);
 
   return (
     <div className="flex flex-col gap-3">
       {turn.suggestion ? <SuggestionHeader suggestion={turn.suggestion} /> : <PromptPill label={turn.promptLabel} />}
       {turn.error ? (
-        <ErrorBanner error={turn.error} onRetry={onRegenerate} compact />
+        <ErrorBanner error={turn.error} onRetry={retry} compact />
       ) : turn.response ? (
         <>
           <ResponseView response={turn.response} streaming={streaming} />
           {turn.response.truncated && turn.status === "done" ? (
-            <ErrorBanner error={truncatedAnswerError()} onRetry={onRegenerate} compact />
+            <ErrorBanner error={truncatedAnswerError()} onRetry={regenerate} compact />
           ) : null}
           {turn.status === "done" && isLast ? (
-            <ResponseActions response={turn.response} onRegenerate={onRegenerate} />
+            <ResponseActions response={turn.response} onRegenerate={regenerate} />
           ) : null}
         </>
       ) : streaming ? (
@@ -104,11 +114,14 @@ function Turn({ turn, isLast, onRegenerate }: { turn: ChatTurn; isLast: boolean;
 }
 
 export interface ResponseThreadProps {
-  onRegenerate: () => void;
+  /** Re-send a failed turn's original request. */
+  onRetry: (turnId: string) => void;
+  /** Ask a finished turn's question again (same screen/detected-question context). */
+  onRegenerate: (turnId: string) => void;
 }
 
 /** Scrollable response body with auto-follow and a floating ↓ button. */
-export function ResponseThread({ onRegenerate }: ResponseThreadProps) {
+export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
   const turns = useChatStore((s) => s.turns);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -157,7 +170,13 @@ export function ResponseThread({ onRegenerate }: ResponseThreadProps) {
       >
         <div className="flex min-h-[120px] flex-col gap-5 px-5 py-4">
           {turns.map((turn, index) => (
-            <Turn key={turn.id} turn={turn} isLast={index === turns.length - 1} onRegenerate={onRegenerate} />
+            <Turn
+              key={turn.id}
+              turn={turn}
+              isLast={index === turns.length - 1}
+              onRetry={onRetry}
+              onRegenerate={onRegenerate}
+            />
           ))}
         </div>
       </div>

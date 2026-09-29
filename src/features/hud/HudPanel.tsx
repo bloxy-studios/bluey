@@ -31,7 +31,7 @@ export function HudPanel() {
   const toggleScreen = useHudUiStore((s) => s.toggleScreen);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
-  const { ask, stop, generateOrTakePrepared, regenerate, newChat } = useAsk();
+  const { ask, stop, generateOrTakePrepared, retry: retryTurn, regenerate, newChat } = useAsk();
 
   const expanded = turns.length > 0;
   const streaming =
@@ -67,9 +67,7 @@ export function HudPanel() {
     else if (expanded) newChat();
   }, [streaming, stop, expanded, newChat]);
 
-  const retry = useCallback(() => {
-    if (useChatStore.getState().turns.length > 0) regenerate();
-  }, [regenerate]);
+  const retry = useCallback(() => retryTurn(), [retryTurn]);
 
   useHudShortcuts({
     onCaptureAnalyze: assist,
@@ -127,7 +125,7 @@ export function HudPanel() {
                 onAssist={assist}
               />
             </div>
-            <ResponseThread onRegenerate={regenerate} />
+            <ResponseThread onRetry={retryTurn} onRegenerate={regenerate} />
             <TranscriptStrip />
             {toolbar}
           </>

@@ -121,6 +121,48 @@ type Handlers = {
   [K in CommandName]: (args: CommandArgs<K>) => CommandResult<K> | Promise<CommandResult<K>>;
 };
 
+/** An `ai_stream` in flight (Rust `ActiveRequest`). */
+interface MockActiveAi {
+  sessionId?: string;
+  scope?: string;
+  generation: number;
+  drivesState: boolean;
+}
+
+/** Rust `is_primary`: the tasks that answer the user. */
+const PRIMARY_AI_TASKS: ReadonlySet<AIRequest["task"]> = new Set([
+  "answer",
+  "coding",
+  "system_design",
+  "deep_reasoning",
+]);
+
+/** Rust `drives_state`: only answers the user asked for move the app state (Thinking, Error). */
+function drivesState(request: AIRequest): boolean {
+  return PRIMARY_AI_TASKS.has(request.task) && request.background !== true;
+}
+
+/** Rust `ActiveRequest::superseded_by`: a newer generation of the same session and scope. */
+function supersededBy(entry: MockActiveAi, request: AIRequest): boolean {
+  return (
+    request.sessionId !== undefined &&
+    entry.sessionId === request.sessionId &&
+    entry.scope === request.scope &&
+    entry.generation < request.generation
+  );
+}
+
+/** Rust `ensure_cloud_ai`: Privacy → Cloud AI off refuses every model call (SEC-003). */
+function cloudAiDisabled(): BlueyError {
+  return blueyError({
+    kind: "configuration",
+    code: "privacy.cloud_ai_disabled",
+    message: "Cloud AI is turned off in Privacy settings, so Bluey cannot ask a model right now.",
+    recoverable: true,
+    recovery: { type: "open_settings", tab: "privacy" },
+  });
+}
+
 import type { BenchOptions, BenchReport, LatencyTrace } from "@/lib/types/latency";
 import type { UpdateStatus } from "@/lib/types/updates";
 
@@ -190,7 +232,13 @@ function mockBenchReport(options: BenchOptions): BenchReport {
     discarded: 3,
     failures: 0,
     fixture: Boolean(options.fixture),
-    rows: rows.map(([stage, label, p50, p95]) => ({ stage, label, samples: counted, p50Ms: p50, p95Ms: p95 })),
+    rows: rows.map(([stage, label, p50, p95]) => ({
+      stage,
+      label,
+      samples: counted,
+      p50Ms: p50,
+      p95Ms: p95,
+    })),
     imageBytesP50: 148_000,
     promptTokensP50: 2130,
     localTotalP50Ms: 642,
@@ -233,6 +281,8 @@ export class MockTransport implements Transport {
   private readonly secrets = new Map<string, string>();
   private frames = new Map<string, string>();
   private cancelled = new Set<string>();
+  /** Streams in flight, mirroring `AiManager`'s supersede and app-state bookkeeping. */
+  private activeAi = new Map<string, MockActiveAi>();
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private nextAiFailure: string | null = null;
   /** Simulate a configured Clerk OAuth app (browser sign-in); off by default so tests run as the dev user. */
@@ -397,7 +447,8 @@ export class MockTransport implements Transport {
   }
 
   private async mockUpdateCheck(): Promise<UpdateStatus> {
-    if (this.updateState.phase === "checking" || this.updateState.phase === "downloading") return this.updateStatus();
+    if (this.updateState.phase === "checking" || this.updateState.phase === "downloading")
+      return this.updateStatus();
     this.setUpdateState({ phase: "checking", error: undefined, progress: undefined });
     await this.pause(300);
     const channel = this.settings.updates.channel;
@@ -421,7 +472,10 @@ export class MockTransport implements Transport {
     }
     const total = 38_000_000;
     for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
-      this.setUpdateState({ phase: "downloading", progress: { downloaded: Math.round(total * fraction), total } });
+      this.setUpdateState({
+        phase: "downloading",
+        progress: { downloaded: Math.round(total * fraction), total },
+      });
       await this.pause(120);
     }
     return this.setUpdateState({ phase: "ready", progress: undefined });
@@ -436,7 +490,12 @@ export class MockTransport implements Transport {
         message: "no installed update is waiting for a relaunch",
       });
     }
-    this.setUpdateState({ phase: "idle", currentVersion: installed, available: undefined, progress: undefined });
+    this.setUpdateState({
+      phase: "idle",
+      currentVersion: installed,
+      available: undefined,
+      progress: undefined,
+    });
   }
 
   private authStatus(): AuthStatus {
@@ -453,7 +512,11 @@ export class MockTransport implements Transport {
   private account(accountId: string): ProviderAccount {
     const account = this.accounts.find((a) => a.accountId === accountId);
     if (!account) {
-      throw blueyError({ kind: "authentication", code: "account.not_found", message: `no account \`${accountId}\`` });
+      throw blueyError({
+        kind: "authentication",
+        code: "account.not_found",
+        message: `no account \`${accountId}\``,
+      });
     }
     return account;
   }
@@ -539,7 +602,11 @@ export class MockTransport implements Transport {
         return;
       case "rate_limited":
         this.setAccount(accountId, {
-          status: { state: "rate_limited", until: new Date(Date.now() + 2 * 3_600_000).toISOString(), window: "5h" },
+          status: {
+            state: "rate_limited",
+            until: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+            window: "5h",
+          },
           identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
           connectedAt: at,
         });
@@ -555,7 +622,10 @@ export class MockTransport implements Transport {
         });
         return;
       case "needs_reauth":
-        this.setAccount(accountId, { status: { state: "needs_reauth" }, identity: FIXTURE_ACCOUNT_IDENTITIES[accountId] });
+        this.setAccount(accountId, {
+          status: { state: "needs_reauth" },
+          identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
+        });
         return;
       case "hang":
         return;
@@ -770,6 +840,56 @@ export class MockTransport implements Transport {
       sessionId: request.sessionId,
     });
 
+    // Rust `ensure_cloud_ai`: Privacy → Cloud AI off refuses before any provider call.
+    if (!this.settings.privacy.cloudAiEnabled) {
+      const error = cloudAiDisabled();
+      this.failAi(request, error);
+      throw error;
+    }
+    this.startAi(request);
+    try {
+      await this.runAiStream(request, channel, startedAt);
+    } finally {
+      this.activeAi.delete(request.requestId);
+    }
+  }
+
+  /** Rust `AiManager::start`: supersede older generations of the same scope, register, Thinking. */
+  private startAi(request: AIRequest): void {
+    for (const [id, entry] of this.activeAi) {
+      if (supersededBy(entry, request)) this.cancelled.add(id);
+    }
+    const drives = drivesState(request);
+    this.activeAi.set(request.requestId, {
+      sessionId: request.sessionId,
+      scope: request.scope,
+      generation: request.generation,
+      drivesState: drives,
+    });
+    // ThinkingStarted also leaves Error, clearing it (the machine is recoverable).
+    if (drives) this.setAppState({ state: "thinking", error: undefined, resumeState: undefined });
+  }
+
+  /** Rust `publish_failed`: `ai.failed` always; the Error state only for the user's own answers. */
+  private failAi(request: AIRequest, error: BlueyError): void {
+    this.emit("ai.failed", { requestId: request.requestId, error });
+    if (!drivesState(request)) return;
+    const idle = this.status.audioActive ? "listening" : "ready";
+    this.setAppState({ state: "error", error, resumeState: idle });
+  }
+
+  /** Rust `leave_thinking_after_cancel`: back to idle unless another answer still runs. */
+  private leaveThinkingAfterCancel(requestId: string): void {
+    const othersRunning = [...this.activeAi].some(([id, entry]) => id !== requestId && entry.drivesState);
+    if (othersRunning || this.status.state !== "thinking") return;
+    this.setAppState({ state: this.status.audioActive ? "listening" : "ready" });
+  }
+
+  private async runAiStream(
+    request: AIRequest,
+    channel: MockStreamChannel<AIChunk>,
+    startedAt: number,
+  ): Promise<void> {
     if (this.nextAiFailure) {
       const code = this.nextAiFailure;
       this.nextAiFailure = null;
@@ -781,7 +901,7 @@ export class MockTransport implements Transport {
         recovery: { type: "retry" },
       });
       channel.push({ type: "failed", requestId: request.requestId, error });
-      this.emit("ai.failed", { requestId: request.requestId, error });
+      this.failAi(request, error);
       return;
     }
 
@@ -793,7 +913,6 @@ export class MockTransport implements Transport {
       reason: "mock router",
     };
 
-    this.setAppState({ state: "thinking" });
     await this.delay(this.streamDelayMs * 6);
     channel.push({ type: "started", requestId: request.requestId, selection });
     this.emit("ai.started", {
@@ -818,7 +937,7 @@ export class MockTransport implements Transport {
           timeToFirstTokenMs: firstToken,
         });
         this.emit("ai.cancelled", { requestId: request.requestId });
-        this.setAppState({ state: this.status.audioActive ? "listening" : "ready" });
+        if (drivesState(request)) this.leaveThinkingAfterCancel(request.requestId);
         return;
       }
       if (firstToken === undefined) firstToken = Date.now() - startedAt;
@@ -851,7 +970,7 @@ export class MockTransport implements Transport {
       updatedAt: now(),
     };
     this.emit("dev.metrics", this.metrics);
-    this.setAppState({ state: "response_ready" });
+    if (drivesState(request)) this.setAppState({ state: "response_ready" });
   }
 
   private simulate(simulation: DevSimulation): void {
@@ -1089,7 +1208,9 @@ export class MockTransport implements Transport {
       this.nextAccountOutcome = "success";
       const existing = this.accountTimers.get(account.accountId);
       if (existing) clearTimeout(existing);
-      const connecting = this.setAccount(account.accountId, { status: this.connectFlow(flow, account.providerId) });
+      const connecting = this.setAccount(account.accountId, {
+        status: this.connectFlow(flow, account.providerId),
+      });
       if (flow === "manual_code") {
         // Completes when the user pastes the code (`accounts_submit_code`).
         this.pendingManualCodes.add(account.accountId);
@@ -1098,7 +1219,10 @@ export class MockTransport implements Transport {
       if (outcome !== "hang") {
         this.accountTimers.set(
           account.accountId,
-          setTimeout(() => this.finishAccountConnect(account.accountId, outcome), Math.max(this.streamDelayMs * 4, 10)),
+          setTimeout(
+            () => this.finishAccountConnect(account.accountId, outcome),
+            Math.max(this.streamDelayMs * 4, 10),
+          ),
         );
       }
       return connecting;
@@ -1409,16 +1533,23 @@ export class MockTransport implements Transport {
     // AI
     ai_stream: (args) => this.streamAi(args),
     ai_report_trace: () => null,
+    // Rust `AiManager::cancel` / `cancel_all`: only streams still in flight can be cancelled.
     ai_cancel: (args) => {
+      if (!this.activeAi.has(args.requestId)) return false;
       this.cancelled.add(args.requestId);
       return true;
     },
     ai_cancel_all: () => {
-      const count = this.cancelled.size;
-      return count;
+      for (const id of this.activeAi.keys()) this.cancelled.add(id);
+      return this.activeAi.size;
     },
-    ai_embed: (args) =>
-      args.texts.map((text) => Array.from({ length: 8 }, (_, i) => ((text.length * (i + 3)) % 97) / 97)),
+    ai_embed: (args) => {
+      if (args.texts.length === 0) return [];
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
+      return args.texts.map((text) =>
+        Array.from({ length: 8 }, (_, i) => ((text.length * (i + 3)) % 97) / 97),
+      );
+    },
     // Same contract as `AiCore::test_connection`: unknown provider / no model THROW; a provider
     // without a key answers `ok: false` with `config.missing_key`.
     ai_test_connection: async (args) => {
@@ -1477,6 +1608,7 @@ export class MockTransport implements Transport {
       return { ok: true, providerId: provider.id, model, latencyMs: 132 };
     },
     ai_transcribe_file: async (args) => {
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
       await this.delay(this.streamDelayMs * 4);
       const fileName = args.path.split("/").pop() || "recording";
       let session = args.sessionId ? this.sessions.find((s) => s.id === args.sessionId) : undefined;
@@ -1550,7 +1682,9 @@ export class MockTransport implements Transport {
             code: "account.not_connected",
             message: "connect the account and refresh its models first",
           });
-        return args.role === "embedding" || args.role === "transcription" ? [] : catalog.models.map((m) => m.id);
+        return args.role === "embedding" || args.role === "transcription"
+          ? []
+          : catalog.models.map((m) => m.id);
       }
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
       const models = FIXTURE_MODELS_BY_KIND[provider?.kind ?? "mock"] ?? [];

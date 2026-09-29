@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
-import type { EnginePhase } from "@/lib/engine-contract";
-import type { BlueyError, BlueyResponse } from "@/lib/types";
+import { PREPARED_TTL_MS, type AskTrigger, type EnginePhase } from "@/lib/engine-contract";
+import type { BlueyError, BlueyResponse, DetectedEvent } from "@/lib/types";
 import { createId } from "@/lib/utils/id";
 
 export type TurnStatus = "streaming" | "done" | "error" | "cancelled";
@@ -10,6 +10,15 @@ export type TurnStatus = "streaming" | "done" | "error" | "cancelled";
 export interface SuggestionMeta {
   question: string;
   speaker?: string;
+}
+
+/** What was asked, kept on the turn so Retry/Regenerate re-send the same request (UX-011). */
+export interface TurnRequest {
+  trigger: AskTrigger;
+  instruction?: string;
+  captureScreen?: boolean;
+  promptLabel?: string;
+  detectedEvent?: DetectedEvent;
 }
 
 export interface ChatTurn {
@@ -23,17 +32,21 @@ export interface ChatTurn {
   response: BlueyResponse | null;
   status: TurnStatus;
   error?: BlueyError;
+  /** The request that produced this turn (absent on answers shown from the prepared cache). */
+  request?: TurnRequest;
 }
 
 export interface BeginOptions {
   /** Initial phase; a suggestion never reads the screen, so it starts at `thinking`. */
   phase?: EnginePhase;
   suggestion?: SuggestionMeta;
+  request?: TurnRequest;
 }
 
 export interface ShowOptions {
   promptLabel?: string;
   suggestion?: SuggestionMeta;
+  request?: TurnRequest;
 }
 
 interface ChatStore {
@@ -76,6 +89,8 @@ export function shownResponse(response: BlueyResponse): BlueyResponse {
   return shown;
 }
 
+let preparedExpiry: ReturnType<typeof setTimeout> | null = null;
+
 export const useChatStore = create<ChatStore>((set, get) => ({
   turns: [],
   generation: 0,
@@ -95,6 +110,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           prompt,
           promptLabel: promptLabel ?? prompt ?? "Assist",
           ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+          ...(options.request ? { request: options.request } : {}),
           response: null,
           status: "streaming" as const,
         },
@@ -155,12 +171,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       activeRequestId: null,
       prepared: state.prepared?.id === response.id ? null : state.prepared,
       turns: [
-        ...state.turns,
+        // Like `begin`: a turn still streaming is superseded, never left spinning (LIVE-011).
+        ...state.turns.map((t) => (t.status === "streaming" ? { ...t, status: "cancelled" as const } : t)),
         {
           id: createId("turn"),
           prompt: shown.prompt,
           promptLabel: options.promptLabel ?? shown.prompt ?? "Suggestion",
           ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+          ...(options.request ? { request: options.request } : {}),
           response: shown,
           status: "done" as const,
         },
@@ -168,7 +186,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }));
   },
 
-  setPrepared: (response) => set({ prepared: response }),
+  setPrepared: (response) => {
+    if (preparedExpiry) clearTimeout(preparedExpiry);
+    preparedExpiry = null;
+    set({ prepared: response });
+    if (!response) return;
+    // The hint must not outlive the question: after the TTL, ⌘⇧↵ generates afresh (LIVE-016).
+    preparedExpiry = setTimeout(() => {
+      preparedExpiry = null;
+      if (get().prepared?.id === response.id) set({ prepared: null });
+    }, PREPARED_TTL_MS);
+  },
 
   newChat: () =>
     set((state) => ({

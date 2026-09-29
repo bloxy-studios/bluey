@@ -107,8 +107,8 @@ docs/                      this documentation + ADRs
    streams SSE; chunks flow back over a `Channel`; `ai.*` events mirror to the bus.
 6. Engine buffers code fences, parses structured output, optimises, saves the response and
    session event; HUD renders progressively; state `→ response_ready`.
-7. Any newer request bumps the generation; the previous request is cancelled and its late chunks
-   dropped (ADR 0005).
+7. Any newer request bumps the generation; the previous request of the same scope (ask, live,
+   prepare) is cancelled and its late chunks dropped (ADR 0005).
 
 ## Data & privacy
 

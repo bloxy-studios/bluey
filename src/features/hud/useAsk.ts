@@ -1,28 +1,63 @@
 import { useCallback } from "react";
 
-import type { AskTrigger, EngineHandle } from "@/lib/engine-contract";
+import type { EngineHandle, EnginePhase } from "@/lib/engine-contract";
 import { bluey } from "@/lib/tauri/api";
-import type { DetectedEvent } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
-import { completedResponses, useChatStore } from "@/stores/chatStore";
+import {
+  completedResponses,
+  useChatStore,
+  type ChatTurn,
+  type SuggestionMeta,
+  type TurnRequest,
+} from "@/stores/chatStore";
 import { getEngine } from "@/stores/engine";
 import { useHudUiStore } from "@/stores/hudUiStore";
 import { modeById, useModesStore } from "@/stores/modesStore";
-import { useProactiveStore } from "@/stores/proactive";
+import { cancelLiveSuggestion, useProactiveStore } from "@/stores/proactive";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranscriptStore } from "@/stores/transcriptStore";
 
 let currentHandle: EngineHandle | null = null;
 
-export interface AskRequest {
-  trigger: AskTrigger;
-  instruction?: string;
-  captureScreen?: boolean;
-  promptLabel?: string;
-  detectedEvent?: DetectedEvent;
+export interface AskRequest extends TurnRequest {
   /** The global shortcut's keydown on Bluey's monotonic clock (fast-path trace). */
   triggeredAtMs?: number;
+  /** Re-asking a suggestion turn keeps it rendered as a suggestion. */
+  suggestion?: SuggestionMeta;
+}
+
+const BUSY_PHASES: ReadonlySet<EnginePhase> = new Set(["capturing", "analyzing", "thinking", "streaming"]);
+
+/**
+ * Stop whatever is streaming into the thread — the user's answer and a live suggestion —
+ * so its turn reads "Stopped" and nothing it produced is saved (LIVE-001).
+ */
+async function cancelStreaming(): Promise<void> {
+  const chat = useChatStore.getState();
+  if (chat.phase && BUSY_PHASES.has(chat.phase)) chat.markCancelled(chat.generation);
+  const handle = currentHandle;
+  currentHandle = null;
+  await Promise.all([
+    handle?.cancel().catch((error: unknown) => console.warn("[ask] cancel failed", error)),
+    cancelLiveSuggestion({ dismissed: true }),
+  ]);
+}
+
+/** A turn's request; turns shown from the prepared cache fall back to their question. */
+function requestOf(turn: ChatTurn): TurnRequest {
+  if (turn.request) return turn.request;
+  return {
+    trigger: "regenerate",
+    instruction: turn.prompt ?? turn.suggestion?.question,
+    promptLabel: turn.promptLabel,
+    captureScreen: false,
+  };
+}
+
+function findTurn(turnId?: string): ChatTurn | undefined {
+  const turns = useChatStore.getState().turns;
+  return turnId ? turns.find((turn) => turn.id === turnId) : turns.at(-1);
 }
 
 /**
@@ -40,9 +75,15 @@ export function useAsk() {
       modeById(modes, status?.modeId) ?? modeById(modes, settings.general.defaultModeId) ?? modes[0];
     if (!mode) return null;
 
+    // A manual ask replaces a live suggestion streaming into the thread (LIVE-001).
+    void cancelLiveSuggestion();
     const chat = useChatStore.getState();
     const previous = completedResponses(chat.turns);
-    const generation = chat.begin(request.instruction, request.promptLabel);
+    const { triggeredAtMs: _triggeredAtMs, suggestion, ...turnRequest } = request;
+    const generation = chat.begin(request.instruction, request.promptLabel, {
+      request: turnRequest,
+      ...(suggestion ? { suggestion } : {}),
+    });
     const sessionState = useSessionStore.getState();
 
     const handle = getEngine().ask(
@@ -68,21 +109,14 @@ export function useAsk() {
       },
     );
     currentHandle = handle;
+    void handle.done.finally(() => {
+      if (currentHandle === handle) currentHandle = null;
+    });
     useChatStore.getState().setActiveRequest(generation, handle.requestId);
     return handle;
   }, []);
 
-  const stop = useCallback(async () => {
-    const chat = useChatStore.getState();
-    if (chat.phase && ["capturing", "analyzing", "thinking", "streaming"].includes(chat.phase)) {
-      chat.markCancelled(chat.generation);
-      try {
-        await currentHandle?.cancel();
-      } catch (error) {
-        console.warn("[ask] cancel failed", error);
-      }
-    }
-  }, []);
+  const stop = useCallback(() => cancelStreaming(), []);
 
   /**
    * ⌘⇧↵ — show the response prepared for the question currently surfaced
@@ -96,6 +130,8 @@ export function useAsk() {
       engine.takePrepared() ??
       useChatStore.getState().prepared;
     if (prepared) {
+      // A turn still streaming is stopped, never left spinning above the answer (LIVE-011).
+      void cancelStreaming();
       // Shown as a suggestion turn: the question it answers (and who asked, when known).
       const detected = preparedEventId
         ? useTranscriptStore.getState().questions.find((question) => question.id === preparedEventId)
@@ -104,9 +140,16 @@ export function useAsk() {
       useChatStore.getState().showResponse(prepared, {
         promptLabel: question ?? "Suggestion",
         suggestion: question ? { question, ...(detected?.speaker ? { speaker: detected.speaker } : {}) } : undefined,
+        ...(detected
+          ? { request: { trigger: "detected_event", detectedEvent: detected, promptLabel: detected.text } }
+          : {}),
       });
       useChatStore.getState().setPrepared(null);
       useProactiveStore.getState().consumePrepared();
+      // On screen now, so it belongs to the session like any answer (DATA-007).
+      void engine
+        .commitShown(prepared, useSessionStore.getState().active)
+        .catch((error: unknown) => console.warn("[ask] saving the prepared answer failed", error));
       return;
     }
     ask({
@@ -116,16 +159,28 @@ export function useAsk() {
     });
   }, [ask]);
 
-  const regenerate = useCallback(() => {
-    const turns = useChatStore.getState().turns;
-    const last = turns[turns.length - 1];
-    ask({
-      trigger: "regenerate",
-      instruction: last?.prompt,
-      promptLabel: last?.promptLabel ?? "Regenerated",
-      captureScreen: false,
-    });
-  }, [ask]);
+  /** Re-send a (failed) turn's original request: same trigger, screen and question (UX-011). */
+  const retry = useCallback(
+    (turnId?: string) => {
+      const turn = findTurn(turnId);
+      if (turn) ask({ ...requestOf(turn), ...(turn.suggestion ? { suggestion: turn.suggestion } : {}) });
+    },
+    [ask],
+  );
+
+  /** Ask a turn's question again for a different answer, keeping its context (UX-011). */
+  const regenerate = useCallback(
+    (turnId?: string) => {
+      const turn = findTurn(turnId);
+      if (!turn) return;
+      ask({
+        ...requestOf(turn),
+        trigger: "regenerate",
+        ...(turn.suggestion ? { suggestion: turn.suggestion } : {}),
+      });
+    },
+    [ask],
+  );
 
   const newChat = useCallback(() => {
     void stop();
@@ -133,5 +188,5 @@ export function useAsk() {
     void bluey.app.dismissResponse().catch(() => undefined);
   }, [stop]);
 
-  return { ask, stop, generateOrTakePrepared, regenerate, newChat };
+  return { ask, stop, generateOrTakePrepared, retry, regenerate, newChat };
 }

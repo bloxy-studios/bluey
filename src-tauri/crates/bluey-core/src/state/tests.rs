@@ -126,16 +126,16 @@ fn expected(from: AppState, event: &AppEvent) -> Option<AppState> {
         }),
         E::Authenticated => (from == S::AuthRequired).then_some(S::Ready),
         E::SignedOut => (from != S::Booting).then_some(S::AuthRequired),
-        E::AudioStarted => {
-            audio_toggle_allowed(from).then_some(if from == S::Ready { S::Listening } else { from })
+        E::AudioStarted => non_boot.then_some(if from == S::Ready { S::Listening } else { from }),
+        E::AudioStopped => non_boot.then_some(if from == S::Listening { S::Ready } else { from }),
+        E::CaptureStarted => {
+            (from.is_idle() || from == S::ResponseReady || from == S::Error).then_some(S::Capturing)
         }
-        E::AudioStopped => {
-            audio_toggle_allowed(from).then_some(if from == S::Listening { S::Ready } else { from })
-        }
-        E::CaptureStarted => (from.is_idle() || from == S::ResponseReady).then_some(S::Capturing),
         E::CaptureFinished | E::AnalysisStarted => (from == S::Capturing).then_some(S::Analyzing),
-        E::ThinkingStarted => (from.is_idle() || from == S::Analyzing || from == S::ResponseReady)
-            .then_some(S::Thinking),
+        E::ThinkingStarted => {
+            (from.is_idle() || from == S::Analyzing || from == S::ResponseReady || from == S::Error)
+                .then_some(S::Thinking)
+        }
         E::ResponseReady => (from == S::Thinking).then_some(S::ResponseReady),
         // Audio is off in the matrix machines, so idle == Ready.
         E::ResponseDismissed => matches!(
@@ -215,6 +215,69 @@ fn failure_remembers_and_recovers_to_idle() {
     let s = m.transition(AppEvent::Recovered).expect("recover");
     assert_eq!(s.state, AppState::Listening);
     assert_eq!(s.resume_state, None);
+    assert!(s.error.is_none());
+}
+
+#[test]
+fn audio_flag_follows_the_hardware_while_errored() {
+    // An AI failure must not strand the listening indicator: the microphone
+    // starts (or stops) while the pill shows the error.
+    let mut m = machine_in(AppState::Ready);
+    m.transition(AppEvent::Failed { error: err() })
+        .expect("fail");
+    let s = m
+        .transition(AppEvent::AudioStarted)
+        .expect("audio on in Error");
+    assert_eq!(s.state, AppState::Error);
+    assert!(s.audio_active);
+    assert_eq!(s.resume_state, Some(AppState::Listening));
+    let s = m.transition(AppEvent::Recovered).expect("recover");
+    assert_eq!(s.state, AppState::Listening);
+
+    let mut m = machine_in(AppState::Listening);
+    m.transition(AppEvent::Failed { error: err() })
+        .expect("fail");
+    let s = m
+        .transition(AppEvent::AudioStopped)
+        .expect("audio off in Error");
+    assert!(!s.audio_active);
+    assert_eq!(s.resume_state, Some(AppState::Ready));
+}
+
+#[test]
+fn audio_flag_follows_the_hardware_while_paused() {
+    let mut m = machine_in(AppState::Listening);
+    m.transition(AppEvent::Paused).expect("pause");
+    let s = m
+        .transition(AppEvent::AudioStopped)
+        .expect("audio off while paused");
+    assert_eq!(s.state, AppState::Paused);
+    assert!(!s.audio_active);
+    let s = m.transition(AppEvent::Resumed).expect("resume");
+    assert_eq!(s.state, AppState::Ready);
+}
+
+#[test]
+fn new_work_leaves_the_error_state() {
+    let mut m = machine_in(AppState::Listening);
+    m.transition(AppEvent::Failed { error: err() })
+        .expect("fail");
+    let s = m
+        .transition(AppEvent::ThinkingStarted)
+        .expect("think from Error");
+    assert_eq!(s.state, AppState::Thinking);
+    assert!(s.error.is_none());
+    assert!(s.resume_state.is_none());
+    let s = m.transition(AppEvent::ResponseReady).expect("ready");
+    assert_eq!(s.state, AppState::ResponseReady);
+
+    let mut m = machine_in(AppState::Ready);
+    m.transition(AppEvent::Failed { error: err() })
+        .expect("fail");
+    let s = m
+        .transition(AppEvent::CaptureStarted)
+        .expect("capture from Error");
+    assert_eq!(s.state, AppState::Capturing);
     assert!(s.error.is_none());
 }
 
