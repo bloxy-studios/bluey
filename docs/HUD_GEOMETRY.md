@@ -91,7 +91,8 @@ for identical fitted state.
   in logical coordinates before converting by the window scale, and Tauri runtime-wry
   2.11.4 converts `NSScreen.visibleFrame` using each monitor's own scale. This change does
   not introduce an alternate global mixed-DPI coordinate system.
-- CSS applies the opacity preference **once**; NSPanel alpha stays 1.0. Native pin level,
+- CSS applies the opacity preference **once**, to the panel background only (text stays
+  opaque); NSPanel alpha stays 1.0. Native pin level,
   Spaces/fullscreen collection behavior, drag initiation and content protection are untouched.
 
 ## Focused automated checks

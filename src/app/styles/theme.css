@@ -31,6 +31,10 @@
   --color-hud-border: rgba(255, 255, 255, 0.08);
   --color-hud-chip: rgba(255, 255, 255, 0.1);
   --color-hud-prompt: rgba(255, 255, 255, 0.12);
+  /* Secondary text on the translucent HUD: brighter than the window scale so it
+     reads over any backdrop at the default panel opacity (UX-014). */
+  --color-hud-fg-muted: #c2c2c2;
+  --color-hud-fg-subtle: #a8a8a8;
   --color-tooltip-bg: #0b0b0b;
   /* Code blocks and diagrams; the shiki/mermaid themes follow the same theme (UX-005). */
   --color-code-bg: #0d0d0d;
@@ -119,6 +123,8 @@
   --color-hud-border: rgba(0, 0, 0, 0.08);
   --color-hud-chip: rgba(0, 0, 0, 0.07);
   --color-hud-prompt: rgba(0, 0, 0, 0.08);
+  --color-hud-fg-muted: #4d4d52;
+  --color-hud-fg-subtle: #5f5f64;
   --color-tooltip-bg: #2c2c2e;
   --color-code-bg: #ffffff;
 }
@@ -375,6 +381,14 @@ input.hud-input:focus-visible {
 }
 .response-body strong {
   font-weight: 600;
+}
+
+/* HUD surface: the panel-opacity preference (--hud-opacity) thins the background
+   only; text keeps full opacity and uses the HUD's secondary-text scale (UX-014). */
+.hud-surface {
+  --color-fg-muted: var(--color-hud-fg-muted);
+  --color-fg-subtle: var(--color-hud-fg-subtle);
+  background-color: color-mix(in srgb, var(--color-hud-bg) calc(var(--hud-opacity, 1) * 100%), transparent);
 }
 
 /* Shiki output */

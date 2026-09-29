@@ -23,7 +23,7 @@ describe("HUD layout boundaries", () => {
     setEngine(new FakeEngine());
   });
 
-  it("keeps the compact surface inside the measured shadow frame with one opacity", () => {
+  it("keeps the compact surface inside the measured shadow frame; opacity thins only the background", () => {
     const settings = useSettingsStore.getState().settings!;
     useSettingsStore.setState({
       settings: { ...settings, appearance: { ...settings.appearance, opacity: 0.5 } },
@@ -36,7 +36,10 @@ describe("HUD layout boundaries", () => {
     expect(frame).toHaveClass("max-w-full");
     expect(frame).not.toHaveClass("h-full");
     expect(surface).toHaveClass("w-full", "min-w-0");
-    expect(surface).toHaveStyle({ opacity: "0.5" });
+    // UX-014: the preference feeds the background mix, never element opacity (text stays opaque).
+    expect(surface.style.getPropertyValue("--hud-opacity")).toBe("0.5");
+    expect(surface).toHaveClass("hud-surface");
+    expect(surface.style.opacity).toBe("");
     expect(frame.style.opacity).toBe("");
     expect(screen.getByRole("textbox", { name: "Ask Bluey" }).parentElement!.parentElement).toHaveClass(
       "shrink-0",

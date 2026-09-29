@@ -23,6 +23,18 @@ function token(theme: "dark" | "light", name: string): string {
 
 type Rgb = [number, number, number];
 
+/** `rgba(r, g, b, a)` → colour and alpha. */
+function rgba(color: string): [Rgb, number] {
+  const parts = /rgba\(([^)]+)\)/.exec(color)?.[1]?.split(",").map((part) => Number(part.trim()));
+  if (!parts || parts.length !== 4) throw new Error(`not an rgba colour: ${color}`);
+  return [[parts[0], parts[1], parts[2]] as Rgb, parts[3] as number];
+}
+
+/** `color` at `alpha` over an opaque backdrop. */
+function over([r, g, b]: Rgb, alpha: number, [br, bg, bb]: Rgb): Rgb {
+  return [r * alpha + br * (1 - alpha), g * alpha + bg * (1 - alpha), b * alpha + bb * (1 - alpha)];
+}
+
 function hex(color: string): Rgb {
   const value = color.replace("#", "");
   return [0, 2, 4].map((i) => parseInt(value.slice(i, i + 2), 16)) as Rgb;
@@ -62,5 +74,31 @@ describe("code surface tokens (UX-005)", () => {
     for (const foreground of shikiForegrounds(shiki)) {
       expect(contrast(hex(foreground), background), `${foreground} on ${theme}`).toBeGreaterThanOrEqual(4.5);
     }
+  });
+});
+
+/** The default panel opacity (`appearance.opacity`, bluey-core settings). */
+const DEFAULT_PANEL_OPACITY = 0.92;
+const WHITE: Rgb = [255, 255, 255];
+const BLACK: Rgb = [0, 0, 0];
+
+describe("HUD text tokens (UX-014)", () => {
+  it.each(["dark", "light"] as const)(
+    "%s HUD text reads over a white or black backdrop at the default opacity",
+    (theme) => {
+      const [surface, alpha] = rgba(token(theme, "color-hud-bg"));
+      for (const backdrop of [WHITE, BLACK]) {
+        const background = over(surface, alpha * DEFAULT_PANEL_OPACITY, backdrop);
+        const at = `${theme} over ${backdrop === WHITE ? "white" : "black"}`;
+        expect(contrast(hex(token(theme, "color-fg")), background), `fg ${at}`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(hex(token(theme, "color-hud-fg-muted")), background), `muted ${at}`).toBeGreaterThanOrEqual(3);
+        expect(contrast(hex(token(theme, "color-hud-fg-subtle")), background), `subtle ${at}`).toBeGreaterThanOrEqual(3);
+      }
+    },
+  );
+
+  it("maps the opacity preference to the background only", () => {
+    expect(CSS).toMatch(/\.hud-surface \{[^}]*--color-fg-muted: var\(--color-hud-fg-muted\)/);
+    expect(CSS).toMatch(/\.hud-surface \{[^}]*background-color: color-mix\([^;]*var\(--hud-opacity/);
   });
 });

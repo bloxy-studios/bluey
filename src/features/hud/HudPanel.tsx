@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, type CSSProperties } from "react";
 
 import { useChatStore } from "@/stores/chatStore";
 import { useHudUiStore } from "@/stores/hudUiStore";
@@ -116,9 +116,10 @@ export function HudPanel() {
       <div
         role="dialog"
         aria-label="Bluey"
-        style={{ maxHeight: hudSurfaceMaxHeight(workArea.height), opacity }}
+        // The opacity preference thins the background, never the text (UX-014).
+        style={{ maxHeight: hudSurfaceMaxHeight(workArea.height), "--hud-opacity": opacity } as CSSProperties}
         className={cn(
-          "flex w-full min-w-0 flex-col overflow-hidden rounded-panel border border-hud-border bg-hud-bg",
+          "hud-surface flex w-full min-w-0 flex-col overflow-hidden rounded-panel border border-hud-border",
           "shadow-[0_8px_32px_rgba(0,0,0,0.35)] motion-safe:animate-rise-in",
           blur && "backdrop-blur-[24px] backdrop-saturate-[1.4]",
         )}
