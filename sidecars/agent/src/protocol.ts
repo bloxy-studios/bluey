@@ -43,6 +43,8 @@ export interface DeepResearchRequest {
   allowedDocumentIds?: string[];
   /** Optional model override (protocol doc allows it on the wire). */
   model?: string;
+  /** Wall-clock budget from job start: past it the agent stops calling tools and reports. */
+  deadlineMs?: number;
 }
 
 export const deepResearchRequestSchema = z.object({

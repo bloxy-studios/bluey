@@ -36,7 +36,12 @@ describe("research flow inside ask", () => {
     fake.handle("context_build_snapshot", () => snapshot);
     fake.handle("responses_save", ({ response }) => response);
     fake.handle("ai_cancel", () => true);
-    fake.handle("research_available", () => ({ search: true, scrape: true, deepAgent: false }));
+    fake.handle("research_available", () => ({
+      search: true,
+      scrape: true,
+      deepAgent: false,
+      agentBackends: [],
+    }));
     fake.handle("research_search", () => results);
     fake.handle("research_scrape", ({ url }) => ({
       url,
