@@ -11,6 +11,7 @@ import { useChatStore, type ChatTurn, type SuggestionMeta } from "@/stores/chatS
 import { useResearchStore } from "@/stores/researchStore";
 import { ResponseActions } from "./ResponseActions";
 import { ResponseView } from "./ResponseView";
+import { followScrollTop, offsetInScroller } from "./thread-scroll";
 
 /** Streaming placeholder: what the pipeline is doing right now, incl. deep research. */
 function StreamingStatus() {
@@ -132,6 +133,8 @@ export interface ResponseThreadProps {
 export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
   const turns = useChatStore((s) => s.turns);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const followedTurnRef = useRef<string | undefined>(undefined);
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
 
@@ -149,14 +152,29 @@ export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
     setAtBottom(nearBottom);
   }, []);
 
-  // Follow the stream while the user is at the bottom: one layout read per
-  // frame, not one per streamed draft (PERF-003).
+  // A new turn scrolls its top into view; the stream is followed while the
+  // user is at the bottom, but never past the turn's first line (UX-027). One
+  // layout read per frame, not one per streamed draft (PERF-003).
+  const lastTurnId = turns[turns.length - 1]?.id;
   const lastContent = turns[turns.length - 1]?.response?.content;
   useEffect(() => {
-    if (!atBottomRef.current) return;
-    const frame = requestAnimationFrame(() => scrollToBottom(false));
+    const isNewTurn = followedTurnRef.current !== lastTurnId;
+    if (!isNewTurn && !atBottomRef.current) return;
+    followedTurnRef.current = lastTurnId;
+    const frame = requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      const turnEl = contentRef.current?.lastElementChild;
+      if (!el || !(turnEl instanceof HTMLElement)) return;
+      const view = {
+        scrollTop: isNewTurn ? 0 : el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      };
+      el.scrollTo({ top: followScrollTop(view, offsetInScroller(el, turnEl)), behavior: "auto" });
+      handleScroll();
+    });
     return () => cancelAnimationFrame(frame);
-  }, [lastContent, turns.length, scrollToBottom]);
+  }, [lastTurnId, lastContent, handleScroll]);
 
   // Global scroll shortcuts (⇧⌘↑ / ⇧⌘↓ forwarded by the backend).
   useEffect(() => {
@@ -179,7 +197,7 @@ export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
         tabIndex={0}
         className="min-h-0 overflow-y-auto overscroll-contain"
       >
-        <div className="flex min-h-[120px] flex-col gap-5 px-5 py-4">
+        <div ref={contentRef} className="flex min-h-[120px] flex-col gap-5 px-5 py-4">
           {turns.map((turn, index) => (
             // One turn that fails to render must not blank the HUD (UX-038).
             <ErrorBoundary key={turn.id} resetKey={turn.response} fallback={TURN_FALLBACK}>
