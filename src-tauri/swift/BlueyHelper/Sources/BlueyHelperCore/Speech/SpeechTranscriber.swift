@@ -49,14 +49,21 @@ public final class SpeechTranscriber {
     static let fallbackLocale = "en-US"
 
     /// The locale for `language: auto`: the user's own when Apple Speech
-    /// supports it, else en-US.
+    /// supports it (on the Mac when `onDevice` is asked for, so `auto` never
+    /// moves audio to Apple's servers), else en-US.
     static func defaultLocale(
+        onDevice: Bool = true,
         current: Locale = .current,
-        supported: Set<Locale> = SFSpeechRecognizer.supportedLocales()
+        supported: Set<Locale> = SFSpeechRecognizer.supportedLocales(),
+        recognizesOnDevice: (Locale) -> Bool = {
+            SFSpeechRecognizer(locale: $0)?.supportsOnDeviceRecognition ?? false
+        }
     ) -> Locale {
         let wanted = speechIdentifier(current)
-        return supported.first { speechIdentifier($0) == wanted }
-            ?? Locale(identifier: fallbackLocale)
+        guard let own = supported.first(where: { speechIdentifier($0) == wanted }),
+            !onDevice || recognizesOnDevice(own)
+        else { return Locale(identifier: fallbackLocale) }
+        return own
     }
 
     /// "en-GB" for en_GB, en-GB@rg=… and en-GB alike.
