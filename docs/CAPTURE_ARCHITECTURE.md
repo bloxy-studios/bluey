@@ -15,7 +15,11 @@
 * **Multi-monitor / Retina**: displays enumerated with points, origin and scale factor; the
   frame is rendered at native pixels and downscaled so the longest side ≤ `maxImageDimension`
   (default 1600 px), JPEG q0.8. Frames are written to
-  `~/Library/Caches/com.codewithabdul.bluey/frames/` and discarded after use.
+  `~/Library/Caches/com.codewithabdul.bluey/frames/` and deleted by Rust once a context snapshot
+  has OCR'd and inlined them, or when they leave the 8-frame cache; the helper sweeps anything
+  older than 10 minutes every 5 minutes. With *Store screenshots* on, a session's frames are
+  copied to `<data dir>/screenshots/` first and the row points at the copy; *Delete screenshots*
+  and *Reset* remove both directories' files (DATA-001).
 * **Change detection**: a 64-bit difference hash per target; `changed=false` when the Hamming
   ratio is below `minDelta`. The engine skips vision/OCR work for unchanged screens and reuses
   the cached OCR.
