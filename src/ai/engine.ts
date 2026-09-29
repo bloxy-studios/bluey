@@ -262,7 +262,9 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       bus,
       timeoutMs: deps.researchTimeoutMs,
       availability,
-      // A cancelled or superseded ask stops its research job (AI-010).
+      // A cancelled or superseded ask stops its research job (AI-010): the signal
+      // aborts at once on cancel, the predicate also catches supersede.
+      signal: opts.signal,
       isCancelled: () => opts.isCancelled() || isStale(opts.scope, opts.generation),
     });
   }

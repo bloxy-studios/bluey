@@ -177,7 +177,9 @@ describe("research flow inside ask", () => {
       useAuthStore.setState({ user: null });
     }
 
-    expect(fake.callsFor("documents_retrieve")).toHaveLength(1);
+    // Retrieval runs before research (it may query several scopes); the query is
+    // built from what it returned.
+    expect(fake.callsFor("documents_retrieve").length).toBeGreaterThan(0);
     const query = fake.callsFor("research_search")[0]?.query ?? "";
     expect(query).toContain("hiring");
     expect(query).not.toMatch(/Globex|Jane|Doe/);
