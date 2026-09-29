@@ -282,6 +282,9 @@ function mockBenchReport(options: BenchOptions): BenchReport {
   };
 }
 
+/** `sessions_search` page size when the query sets no `limit` (Rust: `DEFAULT_LIST_LIMIT`). */
+const SESSION_PAGE_DEFAULT = 50;
+
 export class MockTransport implements Transport {
   readonly kind = "mock" as const;
 
@@ -2016,6 +2019,9 @@ export class MockTransport implements Transport {
           );
           return inTitle || inEvents;
         })
+        // Newest first and paged like Rust (50 per page unless `limit` says otherwise).
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .slice(args.query.offset ?? 0, (args.query.offset ?? 0) + (args.query.limit ?? SESSION_PAGE_DEFAULT))
         .map((s) => this.sessionListItem(s, text ? `…${text}…` : undefined));
     },
     sessions_delete: (args) => {

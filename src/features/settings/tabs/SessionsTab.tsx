@@ -33,6 +33,21 @@ function dateFrom(filter: DateFilter): string | undefined {
   return undefined;
 }
 
+/** Sessions fetched per page; Rust's `sessions_search` default (`DEFAULT_LIST_LIMIT`). */
+const SESSION_PAGE_SIZE = 50;
+
+type Filters = { text: string; modeId: string; dateFilter: DateFilter };
+
+function toQuery(filters: Filters, offset: number) {
+  return {
+    text: filters.text.trim() || undefined,
+    modeId: filters.modeId || undefined,
+    from: dateFrom(filters.dateFilter),
+    limit: SESSION_PAGE_SIZE,
+    offset,
+  };
+}
+
 const STATUS_LABEL: Record<SessionListItem["session"]["status"], string | null> = {
   active: "Live",
   paused: "Paused",
@@ -52,21 +67,39 @@ export default function SessionsTab() {
   const [confirmDelete, setConfirmDelete] = useState<SessionListItem | null>(null);
   const [importing, setImporting] = useState(false);
 
-  const search = useCallback(async (query: { text: string; modeId: string; dateFilter: DateFilter }) => {
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** Every stored session, shown next to the unfiltered list; null when unknown. */
+  const [total, setTotal] = useState<number | null>(null);
+
+  const search = useCallback(async (filters: Filters) => {
     try {
-      const result = await bluey.session.search({
-        query: {
-          text: query.text.trim() || undefined,
-          modeId: query.modeId || undefined,
-          from: dateFrom(query.dateFilter),
-        },
-      });
+      const result = await bluey.session.search({ query: toQuery(filters, 0) });
       setItems(result);
+      setHasMore(result.length === SESSION_PAGE_SIZE);
       setError(null);
     } catch (err) {
       setError(toBlueyError(err, "storage"));
     }
+    // The count is a nicety: a failure leaves it hidden rather than failing the list.
+    bluey.data.usageStats().then(
+      (stats) => setTotal(stats.sessions),
+      () => setTotal(null),
+    );
   }, []);
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const page = await bluey.session.search({ query: toQuery({ text, modeId, dateFilter }, items.length) });
+      setItems((prev) => [...prev, ...page.filter((p) => !prev.some((i) => i.session.id === p.session.id))]);
+      setHasMore(page.length === SESSION_PAGE_SIZE);
+    } catch (err) {
+      showErrorToast(toBlueyError(err, "storage"));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const debouncedSearch = useDebouncedCallback(search, 300);
 
@@ -111,6 +144,8 @@ export default function SessionsTab() {
       setImporting(false);
     }
   };
+
+  const isUnfiltered = !text.trim() && !modeId && dateFilter === "all";
 
   if (selectedId) {
     return (
@@ -245,6 +280,20 @@ export default function SessionsTab() {
             })}
           </ul>
         )}
+        {items.length > 0 ? (
+          <footer className="mt-4 flex items-center justify-between gap-3 px-3.5 text-[12px] text-fg-subtle">
+            <span aria-live="polite">
+              {isUnfiltered && total !== null && total >= items.length
+                ? `Showing ${items.length} of ${total} sessions`
+                : `Showing ${items.length} ${items.length === 1 ? "session" : "sessions"}`}
+            </span>
+            {hasMore ? (
+              <Button variant="secondary" size="sm" disabled={loadingMore} onClick={() => void loadMore()}>
+                {loadingMore ? "Loading…" : "Load more"}
+              </Button>
+            ) : null}
+          </footer>
+        ) : null}
       </div>
 
       <ConfirmDialog
