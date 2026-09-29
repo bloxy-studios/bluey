@@ -16,13 +16,13 @@ export function invalidParams(message: string): BlueyError {
 
 /** Throws `internal.invalid_params` for a draft/patch Rust would reject. */
 export function assertValidModePatch(patch: ModePatch): void {
-  const { errors } = validateModeDraft({
+  const [firstError] = validateModeDraft({
     ...patch,
     name: patch.name ?? "mode",
     group: patch.group ?? undefined,
     preferredModelRole: patch.preferredModelRole ?? undefined,
-  });
-  if (errors.length > 0) throw invalidParams(errors[0]);
+  }).errors;
+  if (firstError !== undefined) throw invalidParams(firstError);
 }
 
 /** A new custom mode from a draft (`ModeRepository::create`). */
