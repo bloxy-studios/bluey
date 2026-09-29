@@ -7,7 +7,7 @@ import { usePanelStore } from "@/stores/panelStore";
 import { hasTauriRuntime } from "@/lib/tauri/transport";
 import { cn } from "@/lib/utils/cn";
 import { HUD_FRAME_INSETS, hudFrameWidth, hudSurfaceMaxHeight } from "./geometry";
-import { FollowUpHeader, HudIdleRow } from "./HudInputRow";
+import { HudComposer } from "./HudInputRow";
 import { HudNotice } from "./HudNotice";
 import { HudToolbar } from "./HudToolbar";
 import { ResponseThread } from "./ResponseThread";
@@ -40,16 +40,21 @@ export function HudPanel() {
 
   useAutoHeight(panelRef, expanded, `${workArea.width}:${workArea.height}`);
 
+  // A thread of only Bluey's own suggestions is not a conversation the user
+  // started: a typed question there is a fresh ask with the screen (LIVE-008).
+  const followingUp = useChatStore((s) => s.turns.some((turn) => !turn.suggestion));
   const submitTyped = useCallback(
     (text: string) => {
       ask({
-        trigger: expanded ? "follow_up" : "typed",
+        trigger: followingUp ? "follow_up" : "typed",
         instruction: text,
-        captureScreen: !expanded && screenEnabled,
+        captureScreen: !followingUp && screenEnabled,
       });
     },
-    [ask, expanded, screenEnabled],
+    [ask, followingUp, screenEnabled],
   );
+
+  const stopStreaming = useCallback(() => void stop(), [stop]);
 
   const assist = useCallback(
     (triggeredAtMs?: number) => {
@@ -118,30 +123,20 @@ export function HudPanel() {
           blur && "backdrop-blur-[24px] backdrop-saturate-[1.4]",
         )}
       >
-        {expanded ? (
-          <>
-            <div className="shrink-0">
-              <FollowUpHeader
-                streaming={streaming}
-                onBack={newChat}
-                onStop={() => void stop()}
-                onSubmit={submitTyped}
-                onAssist={assist}
-              />
-            </div>
-            <ResponseThread onRetry={retryTurn} onRegenerate={regenerate} />
-            <TranscriptStrip />
-            {toolbar}
-          </>
-        ) : (
-          <>
-            <div className="shrink-0">
-              <HudIdleRow onSubmit={submitTyped} onAssist={assist} />
-            </div>
-            <TranscriptStrip />
-            {toolbar}
-          </>
-        )}
+        {/* One composer and toolbar in both layouts: a turn appearing never remounts them (LIVE-008). */}
+        <div className="shrink-0">
+          <HudComposer
+            expanded={expanded}
+            streaming={streaming}
+            onBack={newChat}
+            onStop={stopStreaming}
+            onSubmit={submitTyped}
+            onAssist={assist}
+          />
+        </div>
+        {expanded ? <ResponseThread onRetry={retryTurn} onRegenerate={regenerate} /> : null}
+        <TranscriptStrip />
+        {toolbar}
       </div>
     </div>
   );

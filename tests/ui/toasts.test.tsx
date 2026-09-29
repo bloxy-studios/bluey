@@ -120,11 +120,11 @@ describe("error toasts", () => {
 
 describe("recovery runner (UX-036)", () => {
   const expired: BlueyError = {
-    kind: "auth",
+    kind: "authentication",
     code: "auth.account_expired",
     message: "The OpenAI sign-in expired.",
     recoverable: true,
-    recovery: { type: "reconnect_account", providerId: "openai" },
+    recovery: { type: "reconnect_account", accountId: "acct-openai", providerId: "openai" },
   };
   const connectFailed: BlueyError = {
     kind: "network",

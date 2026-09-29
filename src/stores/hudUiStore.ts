@@ -16,6 +16,12 @@ interface HudUiState {
 }
 
 interface HudUiStore extends HudUiState {
+  /**
+   * The composer's text (not persisted): shared by both layouts so a live turn
+   * opening mid-sentence never discards it (LIVE-008).
+   */
+  draft: string;
+  setDraft(draft: string): void;
   /** Why the last ask went without the screen it wanted (not persisted, UX-002). */
   screenWarning: SnapshotWarning | null;
   setScreenWarning(warning: SnapshotWarning | null): void;
@@ -64,6 +70,8 @@ export const useHudUiStore = create<HudUiStore>((set, get) => {
   };
   return {
     ...readPersisted(),
+    draft: "",
+    setDraft: (draft) => set({ draft }),
     screenWarning: null,
     setScreenWarning: (warning) => set({ screenWarning: warning }),
     // Screen off makes a "screen unavailable" notice moot.
@@ -78,7 +86,7 @@ export const useHudUiStore = create<HudUiStore>((set, get) => {
 
 /** Test helper. */
 export function resetHudUiForTest(): void {
-  useHudUiStore.setState({ ...DEFAULTS, screenWarning: null });
+  useHudUiStore.setState({ ...DEFAULTS, draft: "", screenWarning: null });
   try {
     globalThis.localStorage?.removeItem(HUD_UI_STORAGE_KEY);
   } catch {
