@@ -156,9 +156,18 @@ pub fn export_markdown(detail: &SessionDetail, transcript: &[TranscriptSegment])
         md.push('\n');
         push_list(&mut md, "Topics", &summary.topics);
         push_list(&mut md, "Questions", &summary.questions);
+        push_list(&mut md, "Answers", &summary.answers);
         push_list(&mut md, "Decisions", &summary.decisions);
         push_list(&mut md, "Action items", &summary.action_items);
         push_list(&mut md, "Open items", &summary.open_items);
+        push_list(&mut md, "Improvements", &summary.improvements);
+        // The mode's own sections (Study guide, Interview debrief, …).
+        for section in summary.sections.iter().flatten() {
+            md.push_str(&format!(
+                "\n#### {}\n\n{}\n",
+                section.title, section.content
+            ));
+        }
     }
 
     if !detail.notes.is_empty() {
@@ -223,7 +232,7 @@ mod tests {
     use super::*;
     use crate::types::{
         AudioSource, BlueyResponse, CodeBlock, ResponseType, Session, SessionEvent, SessionNote,
-        SessionSummary,
+        SessionSummary, SummarySection,
     };
     use pretty_assertions::assert_eq;
 
@@ -454,6 +463,24 @@ mod tests {
         assert!(md.contains("## Transcript"));
         assert!(md.contains("- **[01:01] Interviewer**: Tell me about yourself."));
         assert!(md.contains("- **[01:04] Me**: Sure — I'm a systems engineer."));
+    }
+
+    #[test]
+    fn export_includes_answers_improvements_and_mode_sections() {
+        let mut detail = sample_detail();
+        let summary = detail.summary.as_mut().unwrap();
+        summary.answers = vec!["Explained the cache design".into()];
+        summary.improvements = vec!["Lead with the result".into()];
+        summary.sections = Some(vec![SummarySection {
+            title: "Interview debrief".into(),
+            content: "Strong on systems; probe on testing.".into(),
+        }]);
+
+        let md = export_markdown(&detail, &[]);
+
+        assert!(md.contains("**Answers**\n\n- Explained the cache design"));
+        assert!(md.contains("**Improvements**\n\n- Lead with the result"));
+        assert!(md.contains("#### Interview debrief\n\nStrong on systems; probe on testing."));
     }
 
     #[test]

@@ -440,6 +440,7 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
                 [
                   ["Topics", summary.topics],
                   ["Questions", summary.questions],
+                  ["Answers", summary.answers],
                   ["Decisions", summary.decisions],
                   ["Action items", summary.actionItems],
                   ["Open items", summary.openItems],
@@ -459,6 +460,16 @@ export function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack
                     </ul>
                   </div>
                 ))}
+              {(summary.sections ?? []).map((section, i) => (
+                <div key={`${i}-${section.title}`} className="mt-3">
+                  <div className="mb-1 text-[11.5px] font-medium uppercase tracking-wide text-fg-subtle">
+                    {section.title}
+                  </div>
+                  <p className="m-0 whitespace-pre-wrap text-[13.5px] leading-relaxed text-fg-muted">
+                    {section.content}
+                  </p>
+                </div>
+              ))}
             </div>
           ) : !summaryError ? (
             <p className="text-[13px] text-fg-muted">No summary yet.</p>

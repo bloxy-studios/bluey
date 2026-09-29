@@ -82,6 +82,32 @@ describe("SessionDetail", () => {
     expect(await screen.findByRole("button", { name: /^Delete$/ })).toBeDisabled();
   });
 
+  it("shows the summary's answers and the mode's own sections", async () => {
+    await bluey.session.saveSummary({
+      summary: {
+        sessionId: "session-coding-1",
+        modeId: "coding-interview",
+        overview: "Practice round on graphs.",
+        topics: [],
+        questions: [],
+        answers: ["Used BFS for shortest paths"],
+        decisions: [],
+        actionItems: [],
+        openItems: [],
+        improvements: ["State complexity up front"],
+        sections: [{ title: "Interview debrief", content: "Clear reasoning; rushed the edge cases." }],
+      },
+    });
+    withTooltips(<SessionDetail sessionId="session-coding-1" onBack={() => {}} />);
+
+    expect(await screen.findByText("Practice round on graphs.")).toBeInTheDocument();
+    expect(screen.getByText("Answers")).toBeInTheDocument();
+    expect(screen.getByText("Used BFS for shortest paths")).toBeInTheDocument();
+    expect(screen.getByText("State complexity up front")).toBeInTheDocument();
+    expect(screen.getByText("Interview debrief")).toBeInTheDocument();
+    expect(screen.getByText("Clear reasoning; rushed the edge cases.")).toBeInTheDocument();
+  });
+
   it("renames the session inline", async () => {
     const user = userEvent.setup();
     withTooltips(<SessionDetail sessionId="session-coding-1" onBack={() => {}} />);
