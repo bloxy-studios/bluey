@@ -104,6 +104,14 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     message:
       "Only Google Gemini can transcribe recordings. Point Settings → AI → Models → Transcription at Google Gemini and import again.",
   },
+  "not_supported.link_scheme": {
+    title: "Can't open this link",
+    message: "Bluey only opens web (http/https) and email links.",
+  },
+  "internal.open_link": {
+    title: "Couldn't open the link",
+    message: "Your default browser didn't open it. Copy the link and open it yourself.",
+  },
   // Informational: cloud speech-to-text fell back to on-device Apple Speech.
   "audio.stt_fallback": {
     title: "Using Apple Speech",
