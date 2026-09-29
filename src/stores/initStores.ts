@@ -94,7 +94,7 @@ export function resetStoresForTest(): void {
     questions: [],
     levels: { microphone: 0, system: 0 },
   });
-  useChatStore.setState({ turns: [], generation: 0, phase: null, activeRequestId: null, prepared: null });
+  useChatStore.setState({ turns: [], generation: 0, phase: null, activeRequestId: null, prepared: null, cleared: null });
   usePanelStore.setState({ state: null });
   usePermissionsStore.setState({ permissions: null });
   useDevStore.setState({ metrics: null, logs: [] });

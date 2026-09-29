@@ -1,9 +1,9 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 
 import { useToastStore } from "@/components/ui/toast-store";
 import type { AppStatus } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
-import { useChatStore } from "@/stores/chatStore";
+import { UNDO_CLEAR_MS, useChatStore } from "@/stores/chatStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { makeResponse, setupInterceptedApp, setupMockApp } from "./helpers";
 
@@ -128,5 +128,50 @@ describe("chatStore stale-draft protection", () => {
     expect(turns).toHaveLength(2);
     expect(turns[0]?.status).toBe("cancelled");
     expect(turns[1]?.status).toBe("streaming");
+  });
+});
+
+describe("chatStore clear and undo (UX-012)", () => {
+  beforeEach(async () => {
+    await setupMockApp();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("restores the cleared turns, with a streaming turn stopped rather than spinning", () => {
+    const generation = useChatStore.getState().begin("first question");
+    useChatStore.getState().applyDraft(generation, makeResponse({ content: "partial" }));
+    useChatStore.getState().newChat();
+    expect(useChatStore.getState().turns).toHaveLength(0);
+
+    useChatStore.getState().undoNewChat();
+    const [turn] = useChatStore.getState().turns;
+    expect(turn?.status).toBe("cancelled");
+    expect(turn?.response?.content).toBe("partial");
+    expect(useChatStore.getState().cleared).toBeNull();
+  });
+
+  it("stops offering the undo after UNDO_CLEAR_MS", () => {
+    useChatStore.getState().showResponse(makeResponse());
+    useChatStore.getState().newChat();
+    vi.advanceTimersByTime(UNDO_CLEAR_MS);
+    expect(useChatStore.getState().cleared).toBeNull();
+    useChatStore.getState().undoNewChat();
+    expect(useChatStore.getState().turns).toHaveLength(0);
+  });
+
+  it("a new ask ends the offer, and clearing an empty HUD keeps it", () => {
+    useChatStore.getState().showResponse(makeResponse());
+    useChatStore.getState().newChat();
+    useChatStore.getState().newChat();
+    expect(useChatStore.getState().cleared).toHaveLength(1);
+
+    useChatStore.getState().begin("another question");
+    expect(useChatStore.getState().cleared).toBeNull();
+    useChatStore.getState().undoNewChat();
+    expect(useChatStore.getState().turns).toHaveLength(1);
   });
 });

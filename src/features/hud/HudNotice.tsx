@@ -1,34 +1,45 @@
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, Undo2, X, type LucideIcon } from "lucide-react";
 import { useEffect } from "react";
 
 import { useToastStore } from "@/components/ui/toast-store";
 import { presentError, runRecovery } from "@/lib/errors/present";
 import { eventBus } from "@/lib/tauri/event-bus";
 import type { SnapshotWarning } from "@/lib/types";
+import { useChatStore } from "@/stores/chatStore";
 import { useHudUiStore } from "@/stores/hudUiStore";
 
 interface NoticeProps {
   /** `alert` for errors; `status` for the quieter "screen not included" warning. */
   role?: "alert" | "status";
   title: string;
-  message: string;
+  message?: string;
+  icon?: LucideIcon;
   actionLabel?: string;
   onAction?: () => void;
-  onDismiss: () => void;
+  onDismiss?: () => void;
 }
 
-function NoticeRow({ role = "alert", title, message, actionLabel, onAction, onDismiss }: NoticeProps) {
+function NoticeRow({
+  role = "alert",
+  title,
+  message,
+  icon: Icon = AlertCircle,
+  actionLabel,
+  onAction,
+  onDismiss,
+}: NoticeProps) {
   return (
     <div
       role={role}
       className="flex shrink-0 items-center gap-2 border-t border-hud-border px-4 py-2 text-[12.5px] motion-safe:animate-fade-in"
     >
-      <AlertCircle
+      <Icon
         className={`size-3.5 shrink-0 ${role === "alert" ? "text-danger" : "text-fg-muted"}`}
         aria-hidden
       />
-      <p className="m-0 min-w-0 flex-1 truncate text-fg-muted" title={`${title} — ${message}`}>
-        <span className="font-medium text-fg">{title}</span> · {message}
+      <p className="m-0 min-w-0 flex-1 truncate text-fg-muted" title={message ? `${title} — ${message}` : title}>
+        <span className="font-medium text-fg">{title}</span>
+        {message ? ` · ${message}` : null}
       </p>
       {actionLabel && onAction ? (
         <button
@@ -39,14 +50,16 @@ function NoticeRow({ role = "alert", title, message, actionLabel, onAction, onDi
           {actionLabel}
         </button>
       ) : null}
-      <button
-        type="button"
-        aria-label="Dismiss"
-        onClick={onDismiss}
-        className="flex size-6 shrink-0 items-center justify-center rounded-full text-fg-muted transition-colors hover:bg-fg/10 hover:text-fg"
-      >
-        <X className="size-3.5" aria-hidden />
-      </button>
+      {onDismiss ? (
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={onDismiss}
+          className="flex size-6 shrink-0 items-center justify-center rounded-full text-fg-muted transition-colors hover:bg-fg/10 hover:text-fg"
+        >
+          <X className="size-3.5" aria-hidden />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -76,8 +89,9 @@ function useScreenWarning(): void {
 
 /**
  * The HUD's one inline notice row, above the toolbar and inside the measured
- * frame: the newest error with its recovery, else why the last ask went
- * without the screen. An overlay toast in the auto-sized HUD window covered the
+ * frame: the newest error with its recovery, else "Chat cleared · Undo" just
+ * after the thread was cleared (UX-012), else why the last ask went without
+ * the screen. An overlay toast in the auto-sized HUD window covered the
  * toolbar and clipped when stacked (UX-013).
  */
 export function HudNotice() {
@@ -86,10 +100,22 @@ export function HudNotice() {
   const dismiss = useToastStore((s) => s.dismiss);
 
   const screenWarning = useHudUiStore((s) => s.screenWarning);
+  const canUndoClear = useChatStore((s) => s.cleared !== null && s.turns.length === 0);
 
   useEffect(() => claimInlineErrors(), [claimInlineErrors]);
   useScreenWarning();
 
+  if (!error && canUndoClear) {
+    return (
+      <NoticeRow
+        role="status"
+        icon={Undo2}
+        title="Chat cleared"
+        actionLabel="Undo"
+        onAction={() => useChatStore.getState().undoNewChat()}
+      />
+    );
+  }
   if (!error && screenWarning) {
     const { actionLabel, action: fix } = warningRecovery(screenWarning);
     const clear = () => useHudUiStore.getState().setScreenWarning(null);

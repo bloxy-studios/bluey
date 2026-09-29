@@ -69,7 +69,10 @@ export function HudPanel() {
   );
 
   const onEscape = useCallback(() => {
+    const { draft, setDraft } = useHudUiStore.getState();
     if (streaming) void stop();
+    // A half-typed question goes first; only the next Esc clears the thread (UX-012).
+    else if (draft.length > 0) setDraft("");
     else if (expanded) newChat();
   }, [streaming, stop, expanded, newChat]);
 
