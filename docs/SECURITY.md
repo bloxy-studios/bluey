@@ -130,12 +130,15 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
 
 ## Fast path and prefetch (ADR 0010)
 
-The speculative warm frame reuses the smart-observation frame (≤ 1.5 s old, unchanged dHash) for
-⌘↵ only when screen permission is granted **and** the smart-observation setting is on; retrieval
-for the current transcript question is precomputed from the transcript the user is already
-recording. Nothing is captured that the user did not already enable, and no frame is sent to a
-model without ⌘↵ / ⌘⇧↵. OCR moves off the critical path but keeps its retention rules: OCR text
-follows the *store transcripts / screenshots* settings exactly as before.
+Built: ⌘↵ waits at most 150 ms for OCR; a slower pass finishes in the background into the
+in-memory OCR cache for that frame hash and is not sent anywhere on its own. Every ⌘↵ captures a
+fresh frame.
+
+Planned, not built (ADR 0010 §8): a speculative warm frame that reuses the smart-observation frame
+(≤ 1.5 s old, unchanged dHash) for ⌘↵ only when screen permission is granted **and** the
+smart-observation setting is on, and retrieval for the current transcript question precomputed
+from the transcript the user is already recording. The constraint it will ship under: nothing is
+captured that the user did not already enable, and no frame is sent to a model without ⌘↵ / ⌘⇧↵.
 
 ## Frontend ⇄ backend boundary
 * Every command has a typed signature in `src/lib/tauri/commands.ts`; the Rust side validates
