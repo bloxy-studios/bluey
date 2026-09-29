@@ -70,6 +70,12 @@ describe("PromptBuilder.renderSystem", () => {
     expect(system.indexOf("Security rules")).toBeLessThan(system.indexOf("Always open with the ROI."));
   });
 
+  it("leaves the shape rules to the per-ask Shape line instead of repeating them (AI-015)", () => {
+    const system = builder({ answerShape: "choice" }).renderSystem();
+    expect(system).not.toContain("Match the shape of the question");
+    expect(system).not.toContain("Multiple choice: the option");
+  });
+
   it("uses the plain-markdown output block when no schema is set", () => {
     const system = builder({ outputSchema: undefined }).renderSystem();
     expect(system).toContain("well-formed markdown");
