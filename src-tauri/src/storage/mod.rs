@@ -116,6 +116,31 @@ impl Storage {
         files.iter().filter(|path| !path.exists()).count()
     }
 
+    /// Delete the `<db>.bak-<version>` copies taken before migrations
+    /// (CRIT-003): they hold everything the database held, so Reset must not
+    /// leave them behind. Returns how many were removed.
+    pub fn remove_db_backups(db_path: &Path) -> usize {
+        let (Some(dir), Some(name)) = (db_path.parent(), db_path.file_name()) else {
+            return 0;
+        };
+        let prefix = format!("{}.bak-", name.to_string_lossy());
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let backups: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with(&prefix))
+            })
+            .collect();
+        Self::remove_files(&backups);
+        backups.iter().filter(|path| !path.exists()).count()
+    }
+
     /// Best-effort file deletion for image paths returned by retention calls.
     pub fn remove_files(paths: &[PathBuf]) {
         for path in paths {
@@ -143,6 +168,26 @@ mod tests {
         assert_eq!(Storage::clear_dir(&dir), 2);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         assert_eq!(Storage::clear_dir(&dir.join("missing")), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_removes_the_pre_migration_database_backups_only() {
+        let dir = std::env::temp_dir().join(format!("bluey-bak-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "bluey.db",
+            "bluey.db.bak-0.1.1",
+            "bluey.db.bak-0.1.2",
+            "other.db.bak-1",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        assert_eq!(Storage::remove_db_backups(&dir.join("bluey.db")), 2);
+        assert!(dir.join("bluey.db").exists());
+        assert!(dir.join("other.db.bak-1").exists());
+        assert!(!dir.join("bluey.db.bak-0.1.1").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

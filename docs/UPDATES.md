@@ -79,7 +79,8 @@ card as soon as it is granted again; the card is shown in that first run only.
 - **First launch of the new version**: when the database has migrations pending, `bluey.db` is
   first copied to `bluey.db.bak-<version>` next to it (`VACUUM INTO`). If startup still fails
   (database, migration, settings), a dialog shows the error and the log folder and offers
-  *Reveal Data Folder* or *Quit* instead of the app vanishing (CRIT-003).
+  *Reveal Data Folder* or *Quit* instead of the app vanishing (CRIT-003). The backup holds
+  everything the database held, so *Reset all data* deletes the `.bak-*` copies too.
 - **Debug builds** (`tauri dev`) report `supported: false`: a manual check answers, nothing is
   installed and no background check runs. The browser mock simulates the whole cycle (it always
   "finds" `0.2.0`, or `0.2.0-nightly.…` on the Nightly channel).

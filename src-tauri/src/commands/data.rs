@@ -87,6 +87,7 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
         Err(error) => failures.push("database", error),
     }
     clear_screenshot_dirs(&core);
+    crate::storage::Storage::remove_db_backups(&core.paths.db_path);
 
     // Re-seed built-in modes and restore defaults in memory + on disk.
     failures.note(
