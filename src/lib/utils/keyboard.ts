@@ -24,6 +24,10 @@ const KEY_GLYPHS: Record<string, string> = {
   Down: "↓",
   Left: "←",
   Right: "→",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+  ArrowLeft: "←",
+  ArrowRight: "→",
   Backslash: "\\",
   Comma: ",",
   Period: ".",
@@ -43,6 +47,13 @@ const KEY_GLYPHS: Record<string, string> = {
   Backquote: "`",
 };
 
+/** Rust stores `Code` names ("KeyR", "Digit3"): show the bare character. */
+function keyCapLabel(key: string): string {
+  const code = /^(?:Key|Digit)([A-Z0-9])$/.exec(key);
+  if (code?.[1]) return code[1];
+  return key.length === 1 ? key.toUpperCase() : key;
+}
+
 function isModifier(part: string): boolean {
   return part in MODIFIER_GLYPHS;
 }
@@ -55,7 +66,7 @@ export function acceleratorToGlyphs(accelerator: string): string[] {
   modifiers.sort((a, b) => MODIFIER_ORDER.indexOf(a as (typeof MODIFIER_ORDER)[number]) - MODIFIER_ORDER.indexOf(b as (typeof MODIFIER_ORDER)[number]));
   return [
     ...modifiers.map((m) => MODIFIER_GLYPHS[m] ?? m),
-    ...keys.map((k) => KEY_GLYPHS[k] ?? (k.length === 1 ? k.toUpperCase() : k)),
+    ...keys.map((k) => KEY_GLYPHS[k] ?? keyCapLabel(k)),
   ];
 }
 
@@ -98,7 +109,9 @@ export function eventToAccelerator(event: Pick<KeyboardEvent, "key" | "metaKey" 
   if (IGNORED_KEYS.has(event.key)) return null;
 
   const parts: string[] = [];
-  if (event.metaKey || event.ctrlKey) parts.push("CmdOrCtrl");
+  // ⌃ is its own modifier on macOS: folding it into ⌘ would store ⌃⌥← as ⌘⌥←.
+  if (event.metaKey) parts.push("CmdOrCtrl");
+  if (event.ctrlKey) parts.push("Ctrl");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
 

@@ -284,6 +284,14 @@ describe("HUD shortcut scope", () => {
     expect(shortcuts.onNewChat).toHaveBeenCalledOnce();
   });
 
+  it("opens Settings on a HUD-local ⌘, now that the global binding is off by default (UX-001)", () => {
+    const open = vi.spyOn(bluey.window, "open");
+    renderHook(() => useHudShortcuts(handlers()));
+    expect(fireEvent.keyDown(document.body, { key: ",", metaKey: true })).toBe(false);
+    fireEvent.keyDown(document.body, { key: ",", metaKey: true, repeat: true });
+    expect(open).toHaveBeenCalledExactlyOnceWith({ label: "settings" });
+  });
+
   it("leaves toggle_listening to Rust: the HUD starts or stops no audio itself (LIVE-007)", async () => {
     const start = vi.spyOn(bluey.audio, "start");
     const stop = vi.spyOn(bluey.audio, "stop");

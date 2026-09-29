@@ -63,6 +63,7 @@ import {
   createMockAccounts,
   FIXTURE_ACCOUNT_IDENTITIES,
 } from "./fixtures";
+import { detectConflict, normalizeAccelerator } from "./accelerators";
 
 const now = () => new Date().toISOString();
 
@@ -2179,10 +2180,24 @@ export class MockTransport implements Transport {
     // Shortcuts
     shortcuts_list: () => this.settings.shortcuts,
     shortcuts_update: (args) => {
+      // Mirrors ShortcutManager::update: normalise, reject clashes with other Bluey
+      // bindings (a macOS-shortcut clash is only logged there).
+      const accelerator = normalizeAccelerator(args.accelerator);
+      if (!accelerator) {
+        throw blueyError({
+          kind: "internal",
+          code: "internal.invalid_params",
+          message: `\`${args.accelerator}\` is not a valid shortcut`,
+        });
+      }
+      const conflict = detectConflict(accelerator, this.settings.shortcuts, args.id);
+      if (conflict?.conflictsWith === "bluey") {
+        throw blueyError({ kind: "internal", code: "internal.invalid_params", message: conflict.detail });
+      }
       this.settings = {
         ...this.settings,
         shortcuts: this.settings.shortcuts.map((s) =>
-          s.id === args.id ? { ...s, accelerator: args.accelerator, enabled: args.enabled ?? s.enabled } : s,
+          s.id === args.id ? { ...s, accelerator, enabled: args.enabled ?? s.enabled } : s,
         ),
       };
       this.emitSettings();
@@ -2193,23 +2208,8 @@ export class MockTransport implements Transport {
       this.emitSettings();
       return this.settings.shortcuts;
     },
-    shortcuts_check_conflict: (args): ShortcutConflict | null => {
-      const system = ["CmdOrCtrl+Q", "CmdOrCtrl+W", "CmdOrCtrl+Space", "CmdOrCtrl+Tab"];
-      if (system.includes(args.accelerator)) {
-        return { accelerator: args.accelerator, conflictsWith: "system", detail: "Reserved by macOS." };
-      }
-      const clash = this.settings.shortcuts.find(
-        (s) => s.accelerator === args.accelerator && s.id !== args.ignoreId,
-      );
-      if (clash) {
-        return {
-          accelerator: args.accelerator,
-          conflictsWith: "bluey",
-          detail: `Already used by “${clash.label}”.`,
-        };
-      }
-      return null;
-    },
+    shortcuts_check_conflict: (args): ShortcutConflict | null =>
+      detectConflict(args.accelerator, this.settings.shortcuts, args.ignoreId),
 
     // Panel / windows
     panel_show: () => this.setPanel({ visible: true }),

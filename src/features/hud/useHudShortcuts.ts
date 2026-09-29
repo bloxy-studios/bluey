@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { hasActiveHudOverlay, isComposingKey } from "./hud-keyboard";
 
@@ -20,7 +21,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 /**
  * Wires global shortcut events (`shortcut.triggered` from the backend),
- * panel events, and local key handling (Esc, ⌘↵, ⌘⇧↵, ⌘R when the HUD
+ * panel events, and local key handling (Esc, ⌘↵, ⌘⇧↵, ⌘R, ⌘, when the HUD
  * window itself has focus).
  */
 export function useHudShortcuts(handlers: HudShortcutHandlers): void {
@@ -92,6 +93,12 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
       if ((event.key === "r" || event.key === "R") && !isEditableTarget(event.target)) {
         event.preventDefault();
         if (!event.repeat) handlersRef.current.onNewChat();
+        return;
+      }
+      // ⌘, is HUD-local by default: the global binding is off so the frontmost app keeps it (UX-001).
+      if (event.key === "," && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        if (!event.repeat) void bluey.window.open({ label: "settings" }).catch(() => undefined);
       }
     };
 

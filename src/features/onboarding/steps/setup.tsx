@@ -44,7 +44,8 @@ export function DefaultModeStep(_props: StepProps) {
   );
 }
 
-const ONBOARDING_SHORTCUTS: ShortcutId[] = ["toggle_panel", "capture_analyze", "generate_response", "new_chat", "toggle_listening"];
+// The global chords only: New Chat (⌘R) is HUD-local by default (UX-001).
+const ONBOARDING_SHORTCUTS: ShortcutId[] = ["toggle_panel", "capture_analyze", "generate_response", "toggle_listening"];
 
 export function ShortcutsStep(_props: StepProps) {
   const shortcuts = useSettingsStore((s) => s.settings?.shortcuts ?? []);

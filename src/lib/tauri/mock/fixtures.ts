@@ -134,21 +134,24 @@ const shortcut = (
   label: string,
   group: ShortcutBinding["group"],
   accelerator: string,
-): ShortcutBinding => ({ id, label, group, accelerator, defaultAccelerator: accelerator, enabled: true });
+  enabled = true,
+): ShortcutBinding => ({ id, label, group, accelerator, defaultAccelerator: accelerator, enabled });
 
+/** `bluey_core::shortcuts::default_bindings()` — same order, strings and flags. */
 export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
   shortcut("toggle_panel", "Toggle visibility of Bluey", "general", "CmdOrCtrl+Backslash"),
   shortcut("capture_analyze", "Ask Bluey about your screen or audio", "general", "CmdOrCtrl+Enter"),
   shortcut("generate_response", "Generate a suggested response", "general", "CmdOrCtrl+Shift+Enter"),
-  shortcut("new_chat", "Start a new chat", "general", "CmdOrCtrl+R"),
-  shortcut("open_settings", "Open Bluey settings", "general", "CmdOrCtrl+Comma"),
-  shortcut("toggle_listening", "Start or stop a Bluey session", "general", "CmdOrCtrl+Shift+Backslash"),
-  shortcut("move_up", "Move the window position up", "window", "CmdOrCtrl+Up"),
-  shortcut("move_down", "Move the window position down", "window", "CmdOrCtrl+Down"),
-  shortcut("move_left", "Move the window position left", "window", "CmdOrCtrl+Left"),
-  shortcut("move_right", "Move the window position right", "window", "CmdOrCtrl+Right"),
-  shortcut("scroll_up", "Scroll the response window up", "scroll", "CmdOrCtrl+Shift+Up"),
-  shortcut("scroll_down", "Scroll the response window down", "scroll", "CmdOrCtrl+Shift+Down"),
+  shortcut("toggle_listening", "Start or stop listening", "general", "CmdOrCtrl+Shift+KeyL"),
+  // HUD-local by default: ⌘R and ⌘, belong to the frontmost app (UX-001).
+  shortcut("new_chat", "Start a new chat", "general", "CmdOrCtrl+KeyR", false),
+  shortcut("open_settings", "Open Bluey settings", "general", "CmdOrCtrl+Comma", false),
+  shortcut("move_up", "Move the window position up", "window", "Ctrl+Alt+ArrowUp"),
+  shortcut("move_down", "Move the window position down", "window", "Ctrl+Alt+ArrowDown"),
+  shortcut("move_left", "Move the window position left", "window", "Ctrl+Alt+ArrowLeft"),
+  shortcut("move_right", "Move the window position right", "window", "Ctrl+Alt+ArrowRight"),
+  shortcut("scroll_up", "Scroll the response window up", "scroll", "CmdOrCtrl+Alt+ArrowUp"),
+  shortcut("scroll_down", "Scroll the response window down", "scroll", "CmdOrCtrl+Alt+ArrowDown"),
 ];
 
 /* ── Built-in modes ────────────────────────────────────────────────────── */

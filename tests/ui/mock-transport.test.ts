@@ -224,10 +224,13 @@ describe("MockTransport", () => {
     const system = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+Q" });
     expect(system?.conflictsWith).toBe("system");
     const bluey = await mock.invoke("shortcuts_check_conflict", {
-      accelerator: "CmdOrCtrl+R",
+      accelerator: "CmdOrCtrl+Enter",
       ignoreId: "toggle_panel",
     });
     expect(bluey?.conflictsWith).toBe("bluey");
+    // New Chat is HUD-local by default, so ⌘R only clashes with the frontmost app (UX-001).
+    const reload = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+R" });
+    expect(reload).toMatchObject({ conflictsWith: "system", accelerator: "CmdOrCtrl+KeyR" });
     const ok = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+Alt+P" });
     expect(ok).toBeNull();
   });
