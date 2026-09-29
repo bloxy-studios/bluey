@@ -244,3 +244,39 @@ describe("AITab", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 });
+
+describe("AITab — removing a provider (UX-008)", () => {
+  it("confirms with the roles it serves, then drops it, unassigns them and deletes its key", async () => {
+    const mock = await setupMockApp();
+    await mock.invoke("secrets_set", { key: "provider:gemini:api_key", value: "AIza-test" });
+    const user = userEvent.setup();
+    renderTab();
+    const card = (await screen.findByText("Google Gemini", { selector: "span" })).closest("div.rounded-card");
+    if (!(card instanceof HTMLElement)) throw new Error("Gemini card not found");
+    expect(within(card).getByText(/^Used by Default, Fast/)).toBeInTheDocument();
+
+    await user.click(within(card).getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("deleted from the macOS Keychain");
+    expect(dialog).toHaveTextContent("Default, Fast, Reasoning, Vision, Research, Transcription, Embedding");
+    await user.click(within(dialog).getByRole("button", { name: "Remove provider" }));
+
+    await waitFor(() =>
+      expect(useSettingsStore.getState().settings?.ai.providers.map((p) => p.id)).not.toContain("gemini"),
+    );
+    expect(models()?.default).toBeNull();
+    expect(models()?.embedding).toBeNull();
+    expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBeNull();
+    expect(await mock.invoke("secrets_has", { key: "provider:gemini:api_key" })).toBe(false);
+  });
+
+  it("marks keyless providers in the card and in the role pickers", async () => {
+    await setupMockApp();
+    renderTab();
+    const card = (await screen.findByText("Claude (Foundry)", { selector: "span" })).closest("div.rounded-card");
+    if (!(card instanceof HTMLElement)) throw new Error("Anthropic card not found");
+    expect(within(card).getByText("No key")).toBeInTheDocument();
+    const picker = screen.getByLabelText("Default provider");
+    expect(within(picker).getByRole("option", { name: "Claude (Foundry) (no key)" })).toBeInTheDocument();
+  });
+});

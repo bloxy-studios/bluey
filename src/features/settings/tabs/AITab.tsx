@@ -135,7 +135,7 @@ function ModelRoleRow({
           ...(providerId ? [] : [{ value: "", label: "Choose provider" }]),
           ...providers.map((p) => ({
             value: p.id,
-            label: p.enabled ? p.name : `${p.name} (disabled)`,
+            label: providerOptionLabel(p),
             disabled: !p.enabled,
           })),
         ]}
@@ -171,6 +171,13 @@ function ModelRoleRow({
       ) : null}
     </div>
   );
+}
+
+/** A role's provider option says why it can't answer yet (UX-008). */
+function providerOptionLabel(p: AIProviderConfig): string {
+  if (!p.enabled) return `${p.name} (disabled)`;
+  if (p.hasApiKey) return p.name;
+  return p.authMethod === "oauth_subscription" ? `${p.name} (not connected)` : `${p.name} (no key)`;
 }
 
 export default function AITab() {
@@ -233,6 +240,24 @@ export default function AITab() {
     }
     void update({ ai: { providers: next } }); // failures toast from the store
     setDialog(null);
+  };
+
+  /**
+   * One patch drops the provider and unassigns the roles it served (UX-008); Rust's settings side
+   * effects delete its Keychain key with it. Nothing reroutes silently: the roles show as unassigned.
+   */
+  const removeProvider = async (provider: AIProviderConfig) => {
+    const models = Object.fromEntries(
+      ROLES.filter(({ role }) => ai.models[role]?.providerId === provider.id).map(({ role }) => [role, null]),
+    );
+    const saved = await update({
+      ai: {
+        providers: ai.providers.filter((p) => p.id !== provider.id),
+        models: { ...ai.models, ...models },
+        ...(ai.bootstrapProvider === provider.id ? { bootstrapProvider: null } : {}),
+      },
+    });
+    if (saved) showToast(`${provider.name} removed`, 2000);
   };
 
   const switchDefaultProvider = async (providerId: string) => {
@@ -312,6 +337,8 @@ export default function AITab() {
                 ai: { providers: ai.providers.map((p) => (p.id === provider.id ? { ...p, enabled } : p)) },
               })
             }
+            usedBy={ROLES.filter(({ role }) => ai.models[role]?.providerId === provider.id).map((r) => r.label)}
+            onRemove={() => removeProvider(provider)}
           />
         ))}
       </div>
