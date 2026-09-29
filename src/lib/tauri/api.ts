@@ -189,6 +189,9 @@ export const bluey = {
     set: call("secrets_set"),
     has: call("secrets_has"),
     delete: call("secrets_delete"),
+    state: call("secrets_state"),
+    health: callNoArgs("secrets_health"),
+    allowAccess: call("secrets_allow_access"),
   },
   shortcuts: {
     list: callNoArgs("shortcuts_list"),

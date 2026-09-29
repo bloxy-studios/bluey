@@ -19,7 +19,7 @@ use std::time::Duration;
 use bluey_core::events::BlueyEvent;
 use bluey_core::presets;
 use bluey_core::types::{
-    AiProviderKind, AppEvent, AudioDevice, AudioLevels, AudioSessionConfig,
+    AiProviderKind, AppEvent, AppState, AudioDevice, AudioLevels, AudioSessionConfig,
     AudioSessionConfigPatch, AudioSessionState, AudioSource, AudioSourcePreference, AudioStatus,
     TranscriptSegment, TranscriptionProviderKind,
 };
@@ -382,6 +382,10 @@ impl AudioManager {
         if self.is_running() {
             return Ok(self.status());
         }
+        // The sign-in gate is enforced here, not only in the UI: the shortcut,
+        // the tray and the command all start listening through this call.
+        // (Without a configured sign-in, boot never enters `AuthRequired`.)
+        ensure_signed_in(self.hub.state())?;
         let config = self.resolve_config(patch);
         if !config.microphone.enabled && !config.system_audio.enabled {
             return Err(BlueyError::audio(
@@ -1349,10 +1353,30 @@ impl AudioManager {
     }
 }
 
+/// Listening needs a signed-in user wherever sign-in is required.
+fn ensure_signed_in(state: AppState) -> BlueyResult<()> {
+    if state == AppState::AuthRequired {
+        return Err(BlueyError::authentication(
+            "sign_in_required",
+            "sign in to Bluey before listening",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bluey_core::types::VadSensitivity;
+
+    #[test]
+    fn listening_is_refused_while_signed_out() {
+        let error = ensure_signed_in(AppState::AuthRequired).unwrap_err();
+        assert_eq!(error.code, "auth.sign_in_required");
+        // Signed in, or no sign-in configured (boot goes straight to Ready).
+        assert!(ensure_signed_in(AppState::Ready).is_ok());
+        assert!(ensure_signed_in(AppState::Listening).is_ok());
+    }
 
     #[test]
     fn apple_route_asks_the_helper_to_transcribe_on_device() {

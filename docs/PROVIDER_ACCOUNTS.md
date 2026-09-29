@@ -381,6 +381,23 @@ An alternative to a fresh browser flow on the owner's own Mac: Bluey reads the o
 local credential store, copies the tokens into its own Keychain entry and continues exactly like
 *Connect*. It never writes to the other client's store.
 
+Semantics (ADR 0011):
+
+* The other client's Keychain item is read **only when the user clicks Import** — never at boot or
+  during requests. macOS may ask once; if the user denies it (`-25293` / `-128`) the error is
+  `account.import_denied` — "macOS blocked Bluey from reading <App>'s sign-in — click Import again
+  and choose Allow" — not "not signed in".
+* The account remembers how it was connected (`accounts:origin:<id>`: `import` or `browser`,
+  recorded before the tokens are kept; a connection whose origin cannot be recorded fails). An
+  account without a record (connected by an older build) is treated as an import. ChatGPT and
+  Claude rotate refresh tokens, so Bluey
+  **never refreshes an imported ChatGPT or Claude session**: the copy would sign the original
+  client out (or be signed out by it). When the imported access token expires, the account moves
+  to *needs sign-in* (`account.needs_reauth`, details `imported: true`): sign in in the browser
+  (Bluey's own session) or import again.
+* Google (Antigravity) refresh tokens do not rotate, so an imported Google session keeps
+  refreshing like a Bluey-owned one.
+
 | Client | Location on macOS | Format | Verified |
 |---|---|---|---|
 | Codex CLI | `~/.codex/auth.json` (default store; `$CODEX_HOME` overrides); or Keychain service `Codex Auth`, account `cli\|<sha256(codex_home)[:16]>` when `cli_auth_credentials_store = "keyring"\|"auto"` | `{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token","access_token","refresh_token","account_id"},"last_refresh"}`; treat `last_refresh` older than 8 days as refresh-first | 2026-09-11 (`openai/codex` @ `ab95cd4`, `login/src/auth/storage.rs`) |

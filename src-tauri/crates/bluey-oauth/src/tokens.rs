@@ -123,6 +123,37 @@ impl TokenCache {
         *slot = Some(fresh.clone());
         Ok(fresh)
     }
+
+    /// Refresh although the tokens are not expiring: the provider rejected
+    /// `rejected_access_token` (revoked early, clock skew). Single-flight like
+    /// [`Self::fresh`] — when the stored token already differs from the
+    /// rejected one, a concurrent caller has refreshed it and the stored set is
+    /// returned without a second refresh.
+    pub async fn force_refresh<E, F, Fut>(
+        &self,
+        rejected_access_token: &str,
+        refresh: F,
+    ) -> Result<TokenSet, RefreshError<E>>
+    where
+        F: FnOnce(TokenSet, String) -> Fut,
+        Fut: Future<Output = Result<TokenSet, E>>,
+    {
+        let mut slot = self.slot.lock().await;
+        let Some(current) = slot.as_ref() else {
+            return Err(RefreshError::NoTokens);
+        };
+        if current.access_token != rejected_access_token {
+            return Ok(current.clone());
+        }
+        let Some(refresh_token) = current.refresh_token.clone() else {
+            return Err(RefreshError::NoRefreshToken);
+        };
+        let fresh = refresh(current.clone(), refresh_token)
+            .await
+            .map_err(RefreshError::Refresh)?;
+        *slot = Some(fresh.clone());
+        Ok(fresh)
+    }
 }
 
 #[cfg(test)]
@@ -244,6 +275,38 @@ mod tests {
             cache.current().await.unwrap().refresh_token.as_deref(),
             Some("rt2")
         );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_token_is_force_refreshed_once() {
+        let cache = TokenCache::new(
+            Some(tokens(Some(10_000), Some("rt"))),
+            DEFAULT_REFRESH_LEEWAY,
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 {
+            // Both callers saw `a` rejected; the second finds it replaced.
+            let counted = calls.clone();
+            let set = cache
+                .force_refresh("a", |_, refresh_token| async move {
+                    assert_eq!(refresh_token, "rt");
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>(TokenSet {
+                        access_token: "b".into(),
+                        ..tokens(Some(20_000), Some("rt2"))
+                    })
+                })
+                .await
+                .unwrap();
+            assert_eq!(set.access_token, "b");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let empty = TokenCache::new(None, DEFAULT_REFRESH_LEEWAY);
+        let outcome = empty
+            .force_refresh("a", |_, _| async { Ok::<_, ()>(tokens(None, None)) })
+            .await;
+        assert_eq!(outcome, Err(RefreshError::NoTokens));
     }
 
     #[tokio::test]

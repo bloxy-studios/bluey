@@ -88,8 +88,9 @@ impl LoopbackListener {
     /// Accept exactly one connection and read its request head. `target` is
     /// `None` when the head was malformed, too large, or did not arrive in
     /// time — the caller still answers, with its failure page. Cancelling
-    /// `cancel` before a connection arrives ends the wait.
-    pub async fn accept_one(self, cancel: &CancellationToken) -> Result<Accepted, LoopbackError> {
+    /// `cancel` before a connection arrives ends the wait. Call again to keep
+    /// listening (a stray request must not end a sign-in).
+    pub async fn accept_one(&self, cancel: &CancellationToken) -> Result<Accepted, LoopbackError> {
         let accepted = tokio::select! {
             _ = cancel.cancelled() => return Err(LoopbackError::Cancelled),
             accepted = self.listener.accept() => accepted,

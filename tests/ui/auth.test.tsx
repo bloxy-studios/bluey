@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { SignInStep } from "@/features/onboarding/steps/basics";
@@ -55,6 +55,30 @@ describe("auth (developer mode)", () => {
       </AuthGate>,
     );
     expect(screen.getByText("gated content")).toBeInTheDocument();
+  });
+});
+
+describe("auth status failures", () => {
+  it("offers a retry instead of the setup screen when the status cannot be read", async () => {
+    const mock = await setupMockApp();
+    const realInvoke = mock.invoke.bind(mock);
+    const spy = vi.spyOn(mock, "invoke").mockImplementation((command, args) =>
+      command === "auth_get_status"
+        ? Promise.reject({ kind: "internal", code: "storage.keychain_unavailable", message: "x", retryable: true })
+        : realInvoke(command, args),
+    );
+    await useAuthStore.getState().load();
+    render(
+      <AuthGate>
+        <div>gated content</div>
+      </AuthGate>,
+    );
+    expect(screen.getByText("Couldn't check your sign-in.")).toBeInTheDocument();
+    expect(screen.queryByText("Sign-in isn't configured")).not.toBeInTheDocument();
+
+    spy.mockRestore();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("gated content")).toBeInTheDocument());
   });
 });
 

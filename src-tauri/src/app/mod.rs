@@ -127,6 +127,12 @@ fn bootstrap(app: &mut tauri::App) -> BlueyResult<()> {
 
     let storage = Arc::new(Storage::open(paths.clone())?);
     let secrets = Arc::new(SecretsStore::new());
+    // One attribute-only enumeration answers every presence question (API-key
+    // flags, the stored sign-in, research availability) without a decrypting
+    // read — so boot never shows a Keychain prompt (ADR 0011).
+    if let Err(error) = secrets.preload_presence() {
+        tracing::warn!(code = %error.code, "could not list saved credentials");
+    }
     let settings = Arc::new(SettingsManager::load(
         storage.clone(),
         secrets.clone(),

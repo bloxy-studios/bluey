@@ -25,6 +25,7 @@ pub mod claude;
 pub mod profile;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bluey_core::accounts::{self as rules, codes};
@@ -44,7 +45,7 @@ use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
-use crate::secrets::{account_tokens_key, SecretsStore};
+use crate::secrets::{account_tokens_key, SecretState, SecretsStore};
 use crate::settings::SettingsManager;
 use crate::state::AppCore;
 use crate::storage::Storage;
@@ -84,8 +85,34 @@ fn load_or_create_device_id(storage: &Storage) -> BlueyResult<String> {
     Ok(fresh)
 }
 
+/// How an account's tokens were obtained. Persisted per account
+/// ([`origin_key`]); an account without a record — connected before origins
+/// were recorded — is treated as an import (see [`AccountsManager::may_refresh`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Origin {
+    /// Imported from the official app's local session.
+    Import,
+    /// A Bluey browser sign-in.
+    Browser,
+}
+
+/// Whether Bluey may refresh a session it imported from the official app —
+/// an allow-list, so a provider added later does not refresh by default.
+/// Claude Code and Codex rotate refresh tokens: a refresh by Bluey would
+/// invalidate the official app's copy and sign it out, so their imports are
+/// used until they expire and then need a new import (or a browser sign-in).
+/// Google's refresh tokens do not rotate, so an Antigravity import refreshes.
+fn refreshes_imported_session(provider_id: &str) -> bool {
+    matches!(provider_id, "antigravity")
+}
+
 fn catalog_key(account_id: &str) -> String {
     format!("accounts:catalog:{account_id}")
+}
+
+fn origin_key(account_id: &str) -> String {
+    format!("accounts:origin:{account_id}")
 }
 
 /// A sign-in in flight: how to abandon it and, for manual-code flows, where
@@ -106,6 +133,8 @@ pub struct AccountsManager {
     catalogs: parking_lot::RwLock<HashMap<String, ProviderModelCatalog>>,
     tokens: parking_lot::Mutex<HashMap<String, Arc<TokenCache>>>,
     pending: parking_lot::Mutex<HashMap<String, PendingConnect>>,
+    /// How each account's tokens were obtained ([`origin_key`]).
+    origins: parking_lot::RwLock<HashMap<String, Origin>>,
     device_id: String,
 }
 
@@ -147,6 +176,16 @@ impl AccountsManager {
                 catalogs.insert(account.account_id.clone(), catalog);
             }
         }
+        let mut origins = HashMap::new();
+        for account in &accounts {
+            let key = origin_key(&account.account_id);
+            if let Some(origin) = storage
+                .run_sync(|db| SettingsRepository::get_json(db, &key))?
+                .and_then(|value| serde_json::from_value::<Origin>(value).ok())
+            {
+                origins.insert(account.account_id.clone(), origin);
+            }
+        }
         let device_id = load_or_create_device_id(&storage)?;
         let _ = DEVICE_ID.set(device_id.clone());
         Ok(Self {
@@ -160,6 +199,7 @@ impl AccountsManager {
             catalogs: parking_lot::RwLock::new(catalogs),
             tokens: parking_lot::Mutex::new(HashMap::new()),
             pending: parking_lot::Mutex::new(HashMap::new()),
+            origins: parking_lot::RwLock::new(origins),
             device_id,
         })
     }
@@ -341,6 +381,32 @@ impl AccountsManager {
             .await
     }
 
+    /// Whether `account_id`'s tokens come from a Bluey browser sign-in. An
+    /// import, or an account without a recorded origin, is not.
+    fn signed_in_by_bluey(&self, account_id: &str) -> bool {
+        self.origins.read().get(account_id) == Some(&Origin::Browser)
+    }
+
+    /// Record (or, with `None`, forget) how `account_id`'s tokens were
+    /// obtained — persisted first, so memory never claims an origin that a
+    /// restart would lose.
+    async fn set_origin(&self, account_id: &str, origin: Option<Origin>) -> BlueyResult<()> {
+        if self.origins.read().get(account_id).copied() == origin {
+            return Ok(());
+        }
+        let key = origin_key(account_id);
+        let value = serde_json::to_value(origin).unwrap_or(serde_json::Value::Null);
+        self.storage
+            .run(move |db| SettingsRepository::set_json(db, &key, &value))
+            .await?;
+        let mut origins = self.origins.write();
+        match origin {
+            Some(origin) => origins.insert(account_id.to_string(), origin),
+            None => origins.remove(account_id),
+        };
+        Ok(())
+    }
+
     fn cancel_pending(&self, account_id: &str) -> bool {
         match self.pending.lock().remove(account_id) {
             Some(pending) => {
@@ -415,7 +481,7 @@ impl AccountsManager {
             };
             app.state::<AppCore>()
                 .accounts
-                .finish_connect(&account_id, outcome)
+                .finish_connect(&account_id, outcome, Origin::Browser)
                 .await;
         });
         tracing::info!(provider = provider_id, "subscription sign-in started");
@@ -430,7 +496,8 @@ impl AccountsManager {
         self.cancel_pending(&account_id);
         let outcome = profile.import(&self.http).await;
         let failed = outcome.as_ref().err().cloned();
-        self.finish_connect(&account_id, outcome).await;
+        self.finish_connect(&account_id, outcome, Origin::Import)
+            .await;
         match failed {
             Some(error) => Err(error),
             None => self.stored(&account_id),
@@ -440,7 +507,12 @@ impl AccountsManager {
     /// A sign-in completed (or failed): keep the tokens, resolve the catalog,
     /// publish; a failure moves the account to the matching status and
     /// surfaces through the error toast channel.
-    async fn finish_connect(&self, account_id: &str, outcome: BlueyResult<Connected>) {
+    async fn finish_connect(
+        &self,
+        account_id: &str,
+        outcome: BlueyResult<Connected>,
+        origin: Origin,
+    ) {
         self.pending.lock().remove(account_id);
         let Ok(mut account) = self.stored(account_id) else {
             return;
@@ -451,7 +523,13 @@ impl AccountsManager {
                     tracing::warn!(account = account_id, "cannot serialise the account tokens");
                     return;
                 };
-                if let Err(error) = self.secrets.set(&account_tokens_key(account_id), raw).await {
+                // The origin decides whether the tokens may ever be refreshed,
+                // so it is recorded before they are kept — or not at all.
+                let stored = match self.set_origin(account_id, Some(origin)).await {
+                    Ok(()) => self.secrets.set(&account_tokens_key(account_id), raw).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = stored {
                     tracing::warn!(account = account_id, code = %error.code, "cannot store the account tokens");
                     account.status = AccountStatus::Disconnected;
                     let _ = self.set_account(account).await;
@@ -538,13 +616,26 @@ impl AccountsManager {
     pub async fn disconnect(&self, account_id: &str) -> BlueyResult<()> {
         self.cancel_pending(account_id);
         let mut account = self.stored(account_id)?;
-        if let Ok(profile) = self.profile_for(&account.provider_id) {
-            if let Some(tokens) = self.load_tokens(account_id).await {
+        // Revocation is best effort and uses only tokens already in memory —
+        // never a Keychain read (a prompt) just to disconnect. Only a Bluey
+        // sign-in is revoked: an import (or an account of unknown origin)
+        // shares the official app's session.
+        if self.signed_in_by_bluey(account_id) {
+            if let (Ok(profile), Some(tokens)) = (
+                self.profile_for(&account.provider_id),
+                self.tokens_in_memory(account_id).await,
+            ) {
                 let _ = profile.revoke(&self.http, &tokens).await;
             }
         }
-        self.secrets.delete(&account_tokens_key(account_id)).await?;
         self.tokens.lock().remove(account_id);
+        // The account is disconnected even when macOS refuses the delete; the
+        // leftover item is reported (Settings → Privacy → Saved credentials).
+        let deleted = self.secrets.delete(&account_tokens_key(account_id)).await;
+        if let Err(error) = &deleted {
+            tracing::warn!(account = account_id, code = %error.code, "cannot delete the account tokens");
+        }
+        self.set_origin(account_id, None).await?;
         self.drop_catalog(account_id).await?;
         self.unassign_roles(&account.provider_id).await?;
         account.status = AccountStatus::Disconnected;
@@ -554,7 +645,7 @@ impl AccountsManager {
         account.catalog_fetched_at = None;
         self.set_account(account).await?;
         tracing::info!(account = account_id, "subscription account disconnected");
-        Ok(())
+        deleted
     }
 
     /// Roles assigned to `provider_id` go back to unassigned (the router then
@@ -739,55 +830,83 @@ impl AccountsManager {
         }
     }
 
-    async fn load_tokens(&self, account_id: &str) -> Option<TokenSet> {
-        let raw = self
-            .secrets
-            .get(&account_tokens_key(account_id))
-            .await
-            .ok()
-            .flatten()?;
-        serde_json::from_str(&raw).ok()
+    /// The stored tokens. A Keychain refusal is an error (the account is still
+    /// connected; macOS wants approval), not "no sign-in".
+    async fn load_tokens(&self, account_id: &str) -> BlueyResult<Option<TokenSet>> {
+        let raw = self.secrets.get(&account_tokens_key(account_id)).await?;
+        Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
     }
 
-    async fn token_cache(&self, account_id: &str) -> Arc<TokenCache> {
+    /// The tokens this process already holds — never a Keychain read.
+    async fn tokens_in_memory(&self, account_id: &str) -> Option<TokenSet> {
+        let cache = self.tokens.lock().get(account_id).cloned()?;
+        cache.current().await
+    }
+
+    async fn token_cache(&self, account_id: &str) -> BlueyResult<Arc<TokenCache>> {
         if let Some(cache) = self.tokens.lock().get(account_id).cloned() {
-            return cache;
+            return Ok(cache);
         }
-        let tokens = self.load_tokens(account_id).await;
+        // A failed read is not cached: the next request asks again.
+        let tokens = self.load_tokens(account_id).await?;
         let cache = Arc::new(TokenCache::new(tokens, DEFAULT_REFRESH_LEEWAY));
-        self.tokens
+        Ok(self
+            .tokens
             .lock()
             .entry(account_id.to_string())
             .or_insert_with(|| cache.clone())
-            .clone()
+            .clone())
     }
 
     /// A fresh access token for `account_id`, refreshing under a single-flight
     /// lock when it is about to expire. A dead refresh token flips the account
     /// to `NeedsReauth`; the adapters then fall back to the API-key provider.
+    /// The Keychain item is rewritten only after a refresh (ADR 0011).
     pub async fn credential_for(&self, account_id: &str) -> BlueyResult<TokenSet> {
         let account = self.stored(account_id)?;
         let profile = self.profile_for(&account.provider_id)?;
-        let cache = self.token_cache(account_id).await;
+        let cache = self.token_cache(account_id).await?;
+        let may_refresh = self.may_refresh(&account);
+        let refreshed = AtomicBool::new(false);
         let http = self.http.clone();
         let result = cache
             .fresh(unix_now(), |current, _refresh_token| {
-                let profile = profile.clone();
-                async move { profile.refresh(&http, &current).await }
+                let (refreshed, account) = (&refreshed, &account);
+                async move {
+                    if !may_refresh {
+                        return Err(imported_session_expired(account));
+                    }
+                    let fresh = profile.refresh(&http, &current).await?;
+                    refreshed.store(true, Ordering::Relaxed);
+                    Ok(fresh)
+                }
             })
             .await;
+        self.settle_refresh(account, result, refreshed.into_inner())
+            .await
+    }
+
+    /// Bluey refreshes its own sign-ins, and imports only where the official
+    /// app's refresh token does not rotate ([`refreshes_imported_session`]).
+    /// Fails closed: an account without a recorded origin (connected before
+    /// origins were recorded) may be an import, so it is treated as one.
+    fn may_refresh(&self, account: &ProviderAccount) -> bool {
+        self.signed_in_by_bluey(&account.account_id)
+            || refreshes_imported_session(&account.provider_id)
+    }
+
+    /// The outcome of a (possibly) refreshing token lookup: keep a refreshed
+    /// set, move a rejected account to `NeedsReauth`.
+    async fn settle_refresh(
+        &self,
+        account: ProviderAccount,
+        result: Result<TokenSet, RefreshError<BlueyError>>,
+        refreshed: bool,
+    ) -> BlueyResult<TokenSet> {
         match result {
             Ok(tokens) => {
-                if let Some(expires_at) = tokens.expires_at {
-                    let iso = iso_from_unix(expires_at);
-                    if account.expires_at.as_deref() != Some(iso.as_str()) {
-                        let mut updated = account;
-                        updated.expires_at = Some(iso);
-                        let _ = self.set_account(updated).await;
-                    }
-                    if let Ok(raw) = serde_json::to_string(&tokens) {
-                        let _ = self.secrets.set(&account_tokens_key(account_id), raw).await;
-                    }
+                if refreshed {
+                    self.persist_refreshed(account, &tokens).await;
                 }
                 Ok(tokens)
             }
@@ -796,15 +915,92 @@ impl AccountsManager {
                 "the account has no stored sign-in",
             )),
             Err(RefreshError::NoRefreshToken) => {
+                let error = self.reauth_error(&account);
                 self.mark_needs_reauth(account).await;
-                Err(needs_reauth(account_id, &account_id_provider(account_id)))
+                Err(error)
             }
             Err(RefreshError::Refresh(error)) => {
                 if error.kind == BlueyErrorKind::Authentication {
-                    self.mark_needs_reauth(account.clone()).await;
-                    return Err(needs_reauth(account_id, &account.provider_id));
+                    let error = self.reauth_error(&account);
+                    self.mark_needs_reauth(account).await;
+                    return Err(error);
                 }
                 Err(error)
+            }
+        }
+    }
+
+    fn reauth_error(&self, account: &ProviderAccount) -> BlueyError {
+        if self.may_refresh(account) {
+            needs_reauth(&account.account_id, &account.provider_id)
+        } else {
+            imported_session_expired(account)
+        }
+    }
+
+    /// Keep a refreshed token set — the only time the Keychain item is
+    /// rewritten — and the account's new expiry. A failed write is surfaced:
+    /// this process keeps working, but the next launch would load the old set.
+    async fn persist_refreshed(&self, account: ProviderAccount, tokens: &TokenSet) {
+        let account_id = account.account_id.clone();
+        match serde_json::to_string(tokens) {
+            Ok(raw) => {
+                if let Err(error) = self
+                    .secrets
+                    .set(&account_tokens_key(&account_id), raw)
+                    .await
+                {
+                    tracing::warn!(account = %account_id, code = %error.code, "cannot store the refreshed account tokens");
+                    self.bus.publish(BlueyEvent::AppError(error));
+                }
+            }
+            Err(_) => tracing::warn!(account = %account_id, "cannot serialise the account tokens"),
+        }
+        if let Some(iso) = tokens.expires_at.map(iso_from_unix) {
+            if account.expires_at.as_deref() != Some(iso.as_str()) {
+                let mut updated = account;
+                updated.expires_at = Some(iso);
+                let _ = self.set_account(updated).await;
+            }
+        }
+    }
+
+    /// The provider rejected `rejected_access_token` (HTTP 401) before it
+    /// expired: refresh once — single-flight, so concurrent rejections share
+    /// one refresh — and answer whether a retry has a new token to use. An
+    /// import that must not refresh, or a failed refresh, answers `false`
+    /// (the caller then reports the 401 and the account moves to `NeedsReauth`).
+    pub async fn refresh_rejected(&self, account_id: &str, rejected_access_token: &str) -> bool {
+        let Ok(account) = self.stored(account_id) else {
+            return false;
+        };
+        let (Ok(profile), Ok(cache)) = (
+            self.profile_for(&account.provider_id),
+            self.token_cache(account_id).await,
+        ) else {
+            return false;
+        };
+        if !self.may_refresh(&account) {
+            return false;
+        }
+        let refreshed = AtomicBool::new(false);
+        let http = self.http.clone();
+        let result = cache
+            .force_refresh(rejected_access_token, |current, _refresh_token| {
+                let refreshed = &refreshed;
+                async move {
+                    let fresh = profile.refresh(&http, &current).await?;
+                    refreshed.store(true, Ordering::Relaxed);
+                    Ok(fresh)
+                }
+            })
+            .await;
+        let refreshed = refreshed.into_inner();
+        match self.settle_refresh(account, result, refreshed).await {
+            Ok(tokens) => tokens.access_token != rejected_access_token,
+            Err(error) => {
+                tracing::warn!(account = account_id, code = %error.code, "forced refresh after a 401 failed");
+                false
             }
         }
     }
@@ -831,6 +1027,22 @@ impl AccountsManager {
             .map(|account| account.account_id.clone())
             .collect();
         for account_id in connected {
+            // Never prompt at boot: only an item the silent probe could read
+            // (and so cached) is checked. One this build may not read silently
+            // (after an update), or a failed probe, waits for the first
+            // request that needs it.
+            let key = account_tokens_key(&account_id);
+            match self.secrets.state(&key).await {
+                Ok(SecretState::Present) => {}
+                Ok(state) => {
+                    tracing::debug!(account = %account_id, ?state, "account check deferred");
+                    continue;
+                }
+                Err(error) => {
+                    tracing::debug!(account = %account_id, code = %error.code, "account check deferred");
+                    continue;
+                }
+            }
             match self.credential_for(&account_id).await {
                 Ok(_) => {}
                 Err(error) if error.kind == BlueyErrorKind::Authentication => {
@@ -859,6 +1071,9 @@ impl AccountsManager {
             }
             if let Err(error) = self.drop_catalog(&account.account_id).await {
                 failures.push((format!("account catalog {}", account.account_id), error));
+            }
+            if let Err(error) = self.set_origin(&account.account_id, None).await {
+                failures.push((format!("account origin {}", account.account_id), error));
             }
         }
         self.tokens.lock().clear();
@@ -896,9 +1111,58 @@ fn needs_reauth(account_id: &str, provider_id: &str) -> BlueyError {
     .recoverable(RecoveryAction::reconnect_account(account_id, provider_id))
 }
 
-/// Accounts are keyed by provider id in this version (one per provider).
-fn account_id_provider(account_id: &str) -> String {
-    account_id.to_string()
+/// An imported session Bluey must not refresh has expired: the official app
+/// holds the live refresh token, so the way back is a new import (one macOS
+/// prompt for the app's item) or Bluey's own browser sign-in.
+fn imported_session_expired(account: &ProviderAccount) -> BlueyError {
+    BlueyError::new(
+        BlueyErrorKind::Authentication,
+        codes::NEEDS_REAUTH,
+        "the sign-in imported from the official app expired — import it again, or sign in in the browser",
+    )
+    .recoverable(RecoveryAction::reconnect_account(
+        &account.account_id,
+        &account.provider_id,
+    ))
+    .with_details(serde_json::json!({ "imported": true }))
+}
+
+/// Read another app's Keychain item for an explicit "Import" click — the only
+/// place Bluey decrypts a foreign item, and the one legitimate foreign prompt.
+/// `app` names the owner in the error when macOS refuses (the user denied the
+/// prompt, or it was cancelled): that is not the same as "not signed in".
+#[cfg_attr(not(feature = "subscription-accounts"), allow(dead_code))]
+pub(crate) fn read_foreign_secret(
+    service: &str,
+    account: &str,
+    app: &str,
+) -> BlueyResult<Option<zeroize::Zeroizing<String>>> {
+    foreign_read_outcome(
+        crate::secrets::keychain::read_foreign_item(service, account),
+        app,
+    )
+}
+
+#[cfg_attr(not(feature = "subscription-accounts"), allow(dead_code))]
+fn foreign_read_outcome(
+    result: Result<Option<zeroize::Zeroizing<String>>, crate::secrets::backend::KeychainStatus>,
+    app: &str,
+) -> BlueyResult<Option<zeroize::Zeroizing<String>>> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(status) if status.is_locked() => Err(BlueyError::account(
+            "import_denied",
+            format!(
+                "macOS blocked Bluey from reading {app}'s sign-in — click Import again and choose Allow"
+            ),
+        )
+        .recoverable(RecoveryAction::Retry)
+        .with_details(serde_json::json!({ "status": status.0 }))),
+        Err(status) => {
+            tracing::warn!(status = status.0, "reading another app's keychain item failed");
+            Ok(None)
+        }
+    }
 }
 
 fn iso_from_unix(secs: u64) -> String {
@@ -920,14 +1184,26 @@ fn role_key(role: ModelRole) -> &'static str {
 }
 
 #[cfg(test)]
+mod token_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn keys_and_timestamps_are_stable() {
         assert_eq!(catalog_key("chatgpt"), "accounts:catalog:chatgpt");
+        assert_eq!(origin_key("claude"), "accounts:origin:claude");
         assert_eq!(iso_from_unix(1_700_000_000), "2023-11-14T22:13:20Z");
         assert_eq!(role_key(ModelRole::Transcription), "transcription");
+    }
+
+    #[test]
+    fn only_listed_providers_refresh_an_imported_session() {
+        assert!(refreshes_imported_session("antigravity"));
+        for provider in ["claude", "chatgpt", "a-provider-added-later"] {
+            assert!(!refreshes_imported_session(provider), "{provider}");
+        }
     }
 
     #[test]
@@ -939,5 +1215,25 @@ mod tests {
             Some(RecoveryAction::reconnect_account("claude", "claude"))
         );
         assert!(!error.message.contains("sk-"));
+    }
+
+    #[test]
+    fn a_refused_foreign_read_is_reported_as_blocked_not_missing() {
+        use crate::secrets::backend::KeychainStatus;
+        for status in [-25293, -128, -25308] {
+            let error = foreign_read_outcome(Err(KeychainStatus(status)), "Claude Code")
+                .expect_err("a refusal is an error");
+            assert_eq!(error.code, "account.import_denied");
+            assert!(error.message.contains("Claude Code"));
+            assert!(error.message.contains("Import again"));
+        }
+        assert!(foreign_read_outcome(Ok(None), "Claude Code")
+            .unwrap()
+            .is_none());
+        assert!(
+            foreign_read_outcome(Err(KeychainStatus(-26275)), "Claude Code")
+                .unwrap()
+                .is_none()
+        );
     }
 }

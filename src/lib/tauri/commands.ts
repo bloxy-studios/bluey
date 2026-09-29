@@ -27,6 +27,7 @@ import type {
   CaptureProtection,
   ConnectionTestResult,
   ContextSnapshot,
+  CredentialHealth,
   DeepResearchRequest,
   ResearchBackend,
   DevInfo,
@@ -66,6 +67,7 @@ import type {
   SessionSummary,
   EmbedPurpose,
   ModelRole,
+  SecretState,
   Settings,
   SettingsPatch,
   SetupCheck,
@@ -322,6 +324,12 @@ export interface CommandMap {
   secrets_set: { args: { key: string; value: string }; result: void };
   secrets_has: { args: { key: string }; result: boolean };
   secrets_delete: { args: { key: string }; result: void };
+  /** API-key fields only; never prompts. */
+  secrets_state: { args: { key: string }; result: SecretState };
+  /** Every saved Bluey-owned credential — names and states, never values. */
+  secrets_health: { args: void; result: CredentialHealth[] };
+  /** The one read that may show macOS's Keychain prompt; returns the new state. */
+  secrets_allow_access: { args: { key: string }; result: SecretState };
 
   // ── Shortcuts ──────────────────────────────────────────────────────────
   shortcuts_list: { args: void; result: ShortcutBinding[] };
@@ -493,6 +501,9 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "secrets_set",
   "secrets_has",
   "secrets_delete",
+  "secrets_state",
+  "secrets_health",
+  "secrets_allow_access",
   "shortcuts_list",
   "shortcuts_update",
   "shortcuts_reset",

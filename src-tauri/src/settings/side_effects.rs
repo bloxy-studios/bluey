@@ -86,6 +86,15 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
         });
     }
 
+    // A removed provider takes its API key with it (FEATURE-001) — an
+    // attribute-only delete, so no Keychain prompt.
+    for provider_id in removed_provider_ids(old, new) {
+        let key = crate::secrets::provider_key(&provider_id);
+        if let Err(e) = core.secrets.delete(&key).await {
+            tracing::warn!(error = %e, "failed to delete a removed provider's API key");
+        }
+    }
+
     // Log level.
     if old.advanced.log_level != new.advanced.log_level {
         crate::app::set_log_level(new.advanced.log_level.as_str());
@@ -119,5 +128,49 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
                 Err(e) => tracing::warn!(error = %e, "retention sweep failed"),
             }
         });
+    }
+}
+
+/// Providers present in `old` but gone from `new`.
+fn removed_provider_ids(old: &Settings, new: &Settings) -> Vec<String> {
+    old.ai
+        .providers
+        .iter()
+        .filter(|p| !new.ai.providers.iter().any(|n| n.id == p.id))
+        .map(|p| p.id.clone())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use bluey_core::types::{AiProviderConfig, AiProviderKind};
+
+    fn provider(id: &str) -> AiProviderConfig {
+        AiProviderConfig {
+            id: id.into(),
+            kind: AiProviderKind::OpenaiCompatible,
+            name: id.into(),
+            base_url: "https://example.invalid".into(),
+            api_version: None,
+            deployments: None,
+            enabled: true,
+            has_api_key: true,
+            auth_method: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_provider_dropped_from_settings_is_reported_for_key_cleanup() {
+        let mut old = Settings::default();
+        old.ai.providers = vec![provider("gemini"), provider("custom-1")];
+        let mut new = old.clone();
+        new.ai.providers.retain(|p| p.id == "gemini");
+        assert_eq!(
+            removed_provider_ids(&old, &new),
+            vec!["custom-1".to_string()]
+        );
+        assert!(removed_provider_ids(&old, &old).is_empty());
     }
 }

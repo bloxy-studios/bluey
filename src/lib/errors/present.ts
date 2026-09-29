@@ -203,6 +203,10 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "Sign-in not completed",
     message: "The provider did not finish the sign-in. Try again from the account card.",
   },
+  "auth.sign_in_required": {
+    title: "Sign in first",
+    message: "Sign in to Bluey before you start listening.",
+  },
   "account.not_connected": {
     title: "Account not connected",
     message: "Connect the account in Settings → AI → Accounts first.",
@@ -210,6 +214,22 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
   "account.import_not_found": {
     title: "No existing sign-in found",
     message: "Bluey found no sign-in of the official app on this Mac. Connect in the browser instead.",
+  },
+  // Keychain (ADR 0011): a saved credential exists but macOS wants the user's approval — after an
+  // update or a rebuild Bluey is a new app to the Keychain until it is allowed again.
+  "storage.keychain_access_denied": {
+    title: "macOS blocked a saved credential",
+    message:
+      "Bluey changed since this credential was saved, so macOS asks again. Retry and choose Always Allow — or re-enter the key in Settings.",
+  },
+  "storage.keychain_interaction_not_allowed": {
+    title: "Credential needs your approval",
+    message:
+      "macOS wants your approval before Bluey uses a saved credential. Open Settings → Privacy → Saved credentials and choose Allow access.",
+  },
+  "storage.keychain_unavailable": {
+    title: "Keychain unavailable",
+    message: "Bluey can't reach your login keychain. Unlock your Mac's login keychain, then try again.",
   },
   "account.browser_open_failed": {
     title: "Couldn't open the browser",
@@ -278,6 +298,18 @@ export function describeError(error: BlueyError): { title: string; message: stri
   if (error.code === "account.provider_pending") {
     // Rust names the provider and the PR that lands it.
     return { title: "Not available yet", message: error.message };
+  }
+  if (error.code === "account.needs_reauth" && details.imported === true) {
+    // Claude Code / Codex rotate refresh tokens: Bluey never refreshes an imported session.
+    return {
+      title: "Imported sign-in expired",
+      message:
+        "Import the sign-in again from the official app (macOS asks once to share it), or reconnect in the browser. Bluey uses your API key meanwhile.",
+    };
+  }
+  if (error.code === "account.import_denied") {
+    // Rust names the app whose sign-in macOS refused to share ("… reading Claude Code's sign-in …").
+    return { title: "macOS blocked the import", message: error.message };
   }
   if (error.code === "ai.invalid_request") {
     // Rust names the provider and quotes its reason ("ChatGPT rejected the request: Invalid

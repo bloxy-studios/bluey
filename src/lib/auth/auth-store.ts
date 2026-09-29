@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 import { bluey } from "@/lib/tauri/api";
 import { getTransport } from "@/lib/tauri/transport";
-import type { AuthState, AuthStatus, AuthUser } from "@/lib/types";
+import { toBlueyError, type AuthState, type AuthStatus, type AuthUser, type BlueyError } from "@/lib/types";
 
 export type AuthMode =
   /** Sign-in is configured: the browser flow (Clerk OAuth + deep link / loopback). */
@@ -23,6 +23,11 @@ export interface AuthSnapshot {
 interface AuthStore extends AuthSnapshot {
   /** The first `auth_get_status` (or `auth.changed`) has been applied. */
   loaded: boolean;
+  /**
+   * The last `auth_get_status` failed and no status has arrived since. The gate then offers a
+   * retry — never the developer configuration screen, which only a real `configured: false` shows.
+   */
+  statusError: BlueyError | null;
   applyStatus(status: AuthStatus): void;
   load(): Promise<void>;
   set(snapshot: Partial<AuthSnapshot>): void;
@@ -54,15 +59,17 @@ export const useAuthStore = create<AuthStore>((set) => ({
   user: null,
   signInPending: false,
   loaded: false,
+  statusError: null,
   set: (snapshot) => set(snapshot),
-  applyStatus: (status) => set({ ...snapshotFromStatus(status, getTransport().kind), loaded: true }),
+  applyStatus: (status) =>
+    set({ ...snapshotFromStatus(status, getTransport().kind), loaded: true, statusError: null }),
   load: async () => {
     try {
       const status = await bluey.auth.getStatus();
-      set({ ...snapshotFromStatus(status, getTransport().kind), loaded: true });
+      set({ ...snapshotFromStatus(status, getTransport().kind), loaded: true, statusError: null });
     } catch (error) {
       console.warn("[auth] status unavailable", error);
-      set({ loaded: true });
+      set({ loaded: true, statusError: toBlueyError(error) });
     }
   },
 }));

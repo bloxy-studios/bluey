@@ -120,6 +120,51 @@ describe("describeError", () => {
   it("explains a cloud transcription outage as reconnecting, not a dead end", () => {
     expect(describeError(error({ kind: "audio", code: "audio.stt_degraded" })).title).toBe("Reconnecting transcription");
   });
+
+  it("tells a Keychain refusal apart from a missing key (ADR 0011)", () => {
+    const denied = describeError(error({ kind: "storage", code: "storage.keychain_access_denied" }));
+    expect(denied.title).toBe("macOS blocked a saved credential");
+    expect(denied.message).toMatch(/Always Allow/);
+    expect(denied.message).toMatch(/re-enter the key/);
+    expect(describeError(error({ kind: "storage", code: "storage.keychain_interaction_not_allowed" })).message).toMatch(
+      /Allow access/,
+    );
+    expect(describeError(error({ kind: "storage", code: "storage.keychain_unavailable" })).title).toBe(
+      "Keychain unavailable",
+    );
+  });
+
+  it("asks a signed-out user to sign in before listening", () => {
+    expect(describeError(error({ kind: "authentication", code: "auth.sign_in_required" }))).toEqual({
+      title: "Sign in first",
+      message: "Sign in to Bluey before you start listening.",
+    });
+  });
+
+  it("offers a new import when an imported sign-in expires", () => {
+    const presented = describeError(
+      error({ kind: "authentication", code: "account.needs_reauth", details: { imported: true } }),
+    );
+    expect(presented.title).toBe("Imported sign-in expired");
+    expect(presented.message).toMatch(/Import the sign-in again/);
+    expect(describeError(error({ kind: "authentication", code: "account.needs_reauth" })).title).toBe(
+      "Subscription sign-in expired",
+    );
+  });
+
+  it("names the app whose sign-in macOS refused to share on import", () => {
+    const presented = describeError(
+      error({
+        kind: "authentication",
+        code: "account.import_denied",
+        message: "macOS blocked Bluey from reading Claude Code's sign-in — click Import again and choose Allow",
+      }),
+    );
+    expect(presented.title).toBe("macOS blocked the import");
+    expect(presented.message).toBe(
+      "macOS blocked Bluey from reading Claude Code's sign-in — click Import again and choose Allow",
+    );
+  });
 });
 
 describe("presentError", () => {

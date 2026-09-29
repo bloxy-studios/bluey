@@ -35,6 +35,14 @@ pub async fn auth_cancel_sign_in(core: State<'_, AppCore>) -> BlueyResult<AuthSt
 /// Sign out: revoke (best effort) and forget the tokens and the cached user.
 #[tauri::command]
 pub async fn auth_clear_session(core: State<'_, AppCore>) -> BlueyResult<AuthStatus> {
+    // Nothing keeps running for a signed-out user: capture stops and answers
+    // in flight are cancelled before the session is cleared.
+    if core.audio.is_running() {
+        if let Err(error) = core.audio.stop().await {
+            tracing::warn!(code = %error.code, "could not stop listening on sign-out");
+        }
+    }
+    core.ai.cancel_all();
     core.auth.clear_session().await
 }
 

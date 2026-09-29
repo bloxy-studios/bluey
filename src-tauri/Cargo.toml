@@ -93,7 +93,7 @@ tauri-plugin-updater = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "stream", "native-tls", "http2"] }
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 eventsource-stream = "0.2"
-keyring = { version = "3", features = ["apple-native"] }
+zeroize = "1"
 dirs = "6"
 parking_lot = "0.12"
 bytes = "1"
@@ -105,6 +105,10 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSDictionary", "NSURL", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSScreen", "NSRunningApplication", "NSWorkspace", "NSPanel", "NSResponder", "NSGraphics", "NSMenu", "NSMenuItem", "NSView", "NSCell", "NSImage", "NSColor", "NSAttributedString"] }
 core-foundation = "0.10"
+# Keychain items of Bluey's service, called directly so every lookup, delete and
+# enumeration stays attribute-only (ADR 0011).
+security-framework = "3"
+security-framework-sys = "2"
 # CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess
 core-graphics = "0.25"
 # AXIsProcessTrusted / AXIsProcessTrustedWithOptions

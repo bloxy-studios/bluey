@@ -22,6 +22,7 @@ import {
   RAW_AUDIO_RETENTION_MAX_MINUTES,
   RAW_AUDIO_RETENTION_MIN_MINUTES,
 } from "../privacy-retention";
+import { SavedCredentials } from "../SavedCredentials";
 
 interface DangerAction {
   id: string;
@@ -280,6 +281,8 @@ export default function PrivacyTab() {
           Disable all capture
         </Button>
       </SettingRow>
+
+      <SavedCredentials />
 
       <SectionHeader title="Data" description="Everything Bluey stores lives on this Mac" />
 

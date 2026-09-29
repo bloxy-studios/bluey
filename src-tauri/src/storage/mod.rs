@@ -76,6 +76,21 @@ impl Storage {
         })
     }
 
+    /// A migrated in-memory database (unit tests of the managers above it).
+    #[cfg(test)]
+    pub fn in_memory() -> Self {
+        let dir = std::env::temp_dir().join("bluey-test-storage");
+        Self {
+            db: Arc::new(Database::in_memory().expect("in-memory database")),
+            paths: Arc::new(AppPaths {
+                db_path: dir.join("bluey.db"),
+                frames_dir: dir.join("frames"),
+                logs_dir: dir.join("logs"),
+                data_dir: dir,
+            }),
+        }
+    }
+
     /// Run a blocking storage closure on the blocking pool.
     pub async fn run<T, F>(&self, f: F) -> BlueyResult<T>
     where

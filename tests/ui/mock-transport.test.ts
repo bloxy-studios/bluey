@@ -103,6 +103,32 @@ describe("MockTransport", () => {
     expect(interview?.systemInstructions).toContain("candidate in a job interview");
   });
 
+  it("drops a removed provider's API key, as Rust's settings side effects do", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    const settings = await mock.invoke("settings_get", undefined);
+    const [gemini] = settings.ai.providers;
+    if (!gemini) throw new Error("the mock seeds Gemini");
+    const custom = { ...gemini, id: "custom-1", name: "Custom" };
+    await mock.invoke("settings_update", { patch: { ai: { providers: [...settings.ai.providers, custom] } } });
+    await mock.invoke("secrets_set", { key: "provider:custom-1:api_key", value: "k" });
+
+    await mock.invoke("settings_reset", undefined);
+
+    expect(await mock.invoke("secrets_has", { key: "provider:custom-1:api_key" })).toBe(false);
+  });
+
+  it("allows access only to the credentials Rust's Saved credentials list shows", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    for (const key of ["auth:clerk:oauth_tokens", "account:claude:oauth_tokens", "research:exa:api_key"]) {
+      expect(await mock.invoke("secrets_allow_access", { key })).toMatch(/^(present|absent)$/);
+    }
+    for (const key of ["auth:clerk:client_token", "account::oauth_tokens", "settings:theme"]) {
+      await expect(mock.invoke("secrets_allow_access", { key })).rejects.toMatchObject({
+        code: "internal.invalid_params",
+      });
+    }
+  });
+
   it("seeds Gemini as the first provider and applies its presets per role", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     const settings = await mock.invoke("settings_get", undefined);

@@ -167,6 +167,9 @@ pub fn run() {
         commands::settings::secrets_set,
         commands::settings::secrets_has,
         commands::settings::secrets_delete,
+        commands::settings::secrets_state,
+        commands::settings::secrets_health,
+        commands::settings::secrets_allow_access,
         // Shortcuts
         commands::shortcuts::shortcuts_list,
         commands::shortcuts::shortcuts_update,

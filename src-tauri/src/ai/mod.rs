@@ -195,6 +195,16 @@ impl AiManager {
     }
 
     async fn adapter_for(&self, config: &AiProviderConfig) -> BlueyResult<Box<dyn AiProvider>> {
+        Ok(self.adapter_and_token(config).await?.0)
+    }
+
+    /// [`Self::adapter_for`] plus the subscription access token it carries, so
+    /// a 401 can force a refresh of exactly that token.
+    async fn adapter_and_token(
+        &self,
+        config: &AiProviderConfig,
+    ) -> BlueyResult<(Box<dyn AiProvider>, Option<String>)> {
+        let mut oauth_token = None;
         let credential = if config.kind == AiProviderKind::Mock {
             ProviderCredential::None
         } else if config.auth_method == ProviderAuthMethod::OauthSubscription {
@@ -203,6 +213,7 @@ impl AiManager {
             let accounts = self.accounts()?;
             let tokens = accounts.credential_for(&config.id).await?;
             let identity = accounts.identity(&config.id);
+            oauth_token = Some(tokens.access_token.clone());
             ProviderCredential::OAuth(OAuthCredential {
                 access_token: tokens.access_token,
                 account_id: identity.as_ref().and_then(|i| i.account_id.clone()),
@@ -217,13 +228,29 @@ impl AiManager {
             }
         };
         let dims = self.settings.get().ai.embedding_dimensions;
-        build_provider(
+        let adapter = build_provider(
             config,
             credential,
             self.http.clone(),
             self.dev.clone(),
             dims,
-        )
+        )?;
+        Ok((adapter, oauth_token))
+    }
+
+    /// A subscription provider rejected `token` (HTTP 401) before it expired:
+    /// force one refresh (single-flight). `true` = retry with the new token.
+    async fn refreshed_after_rejection(
+        &self,
+        config: &AiProviderConfig,
+        token: Option<&str>,
+        error: &BlueyError,
+    ) -> bool {
+        let (Some(token), Some(accounts)) = (token, self.accounts.get()) else {
+            return false;
+        };
+        error.code == bluey_core::accounts::codes::NEEDS_REAUTH
+            && accounts.refresh_rejected(&config.id, token).await
     }
 
     /// A subscription provider's request outcome moves its account: a 401 to
@@ -612,8 +639,8 @@ impl AiManager {
             Ok(config) => config,
             Err(error) => return StreamOutcome::Failed { error },
         };
-        let adapter = match self.adapter_for(&config).await {
-            Ok(adapter) => adapter,
+        let (adapter, oauth_token) = match self.adapter_and_token(&config).await {
+            Ok(built) => built,
             Err(error) => return StreamOutcome::Failed { error },
         };
         let provider_request = ProviderRequest {
@@ -628,7 +655,22 @@ impl AiManager {
             session_id: request.session_id.clone(),
         };
         rust.request_sent = Some(crate::clock::mono_ms());
-        let mut stream = match adapter.stream(&provider_request, token.clone()).await {
+        let opened = match adapter.stream(&provider_request, token.clone()).await {
+            // A subscription token rejected before its expiry (revoked early,
+            // clock skew): one forced refresh and one retry, before any byte.
+            Err(error)
+                if self
+                    .refreshed_after_rejection(&config, oauth_token.as_deref(), &error)
+                    .await =>
+            {
+                match self.adapter_for(&config).await {
+                    Ok(adapter) => adapter.stream(&provider_request, token.clone()).await,
+                    Err(error) => Err(error),
+                }
+            }
+            opened => opened,
+        };
+        let mut stream = match opened {
             Ok(stream) => {
                 rust.response_headers = Some(crate::clock::mono_ms());
                 stream

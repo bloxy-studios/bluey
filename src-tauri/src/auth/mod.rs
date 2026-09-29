@@ -41,7 +41,7 @@ use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
-use crate::secrets::{SecretsStore, CLERK_OAUTH_TOKENS_KEY, CLERK_TOKEN_KEY};
+use crate::secrets::{SecretState, SecretsStore, CLERK_OAUTH_TOKENS_KEY, CLERK_TOKEN_KEY};
 use crate::state::{AppCore, StateHub};
 use crate::storage::Storage;
 
@@ -132,13 +132,25 @@ impl AuthManager {
         self.config.is_some()
     }
 
-    /// Whether OAuth tokens are stored (bootstrap decides the initial state).
+    /// Whether OAuth tokens are stored (bootstrap decides the initial state) —
+    /// an attribute-only answer (the boot enumeration) that never prompts. A
+    /// saved session this build may not read yet still counts as stored.
     pub fn has_stored_session(&self) -> bool {
-        self.secrets.has_sync(CLERK_OAUTH_TOKENS_KEY)
+        self.secrets
+            .has_sync(CLERK_OAUTH_TOKENS_KEY)
+            .unwrap_or(false)
     }
 
     pub async fn status(&self) -> BlueyResult<AuthStatus> {
-        let has_stored_session = self.secrets.has(CLERK_OAUTH_TOKENS_KEY).await?;
+        // A Keychain hiccup must not fail the status (the UI would take it
+        // for an unconfigured build): the item then counts as absent.
+        let has_stored_session = match self.secrets.has(CLERK_OAUTH_TOKENS_KEY).await {
+            Ok(present) => present,
+            Err(error) => {
+                tracing::warn!(code = %error.code, "could not check the stored sign-in");
+                false
+            }
+        };
         let user = self.user.lock().clone();
         let state = match (&user, has_stored_session) {
             (Some(_), _) => AuthState::SignedIn,
@@ -293,13 +305,7 @@ impl AuthManager {
         };
         let config = self.config.clone().ok_or_else(not_configured)?;
         // One shot: whatever happens next, this flow is over.
-        let Some(pending) = self.pending.lock().take() else {
-            tracing::warn!("sign-in callback arrived with no sign-in in progress");
-            return Err(BlueyError::authentication(
-                "no_pending_sign_in",
-                "no sign-in is in progress — start again from Bluey",
-            ));
-        };
+        let pending = self.take_pending_for(&outcome)?;
         pending.cancel.cancel();
 
         let result = self.complete_sign_in(&config, &pending, outcome).await;
@@ -324,6 +330,38 @@ impl AuthManager {
         self.status().await
     }
 
+    /// The pending flow, taken only by the callback that answers it: a link
+    /// with another (or no) `state` — forged, or from an abandoned flow — is
+    /// refused and leaves the sign-in in progress untouched.
+    fn take_pending_for(&self, outcome: &CallbackOutcome) -> BlueyResult<PendingSignIn> {
+        let state = match outcome {
+            CallbackOutcome::Code { state, .. } => Some(state.as_str()),
+            CallbackOutcome::Denied { state, .. } => state.as_deref(),
+        };
+        let mut slot = self.pending.lock();
+        match slot.as_ref() {
+            None => {
+                tracing::warn!("sign-in callback arrived with no sign-in in progress");
+                Err(BlueyError::authentication(
+                    "no_pending_sign_in",
+                    "no sign-in is in progress — start again from Bluey",
+                ))
+            }
+            Some(pending) if state != Some(pending.state.as_str()) => {
+                tracing::warn!(
+                    "ignored a sign-in callback that does not match the sign-in in progress"
+                );
+                Err(BlueyError::authentication(
+                    "state_mismatch",
+                    "the sign-in response did not match the request — start again from Bluey",
+                ))
+            }
+            Some(_) => slot
+                .take()
+                .ok_or_else(|| BlueyError::internal("pending sign-in vanished")),
+        }
+    }
+
     async fn complete_sign_in(
         &self,
         config: &OAuthConfig,
@@ -332,12 +370,13 @@ impl AuthManager {
     ) -> BlueyResult<()> {
         let (code, state) = match outcome {
             CallbackOutcome::Code { code, state } => (code, state),
-            CallbackOutcome::Denied {
-                error, description, ..
-            } => {
-                let message = description
-                    .filter(|d| !d.trim().is_empty())
-                    .unwrap_or_else(|| format!("the sign-in was not completed ({error})"));
+            // Fixed copy: the redirect's own text is never shown.
+            CallbackOutcome::Denied { error, .. } => {
+                let message = if error == "access_denied" {
+                    "the sign-in was cancelled in the browser"
+                } else {
+                    "the sign-in was not completed — start again from Bluey"
+                };
                 return Err(BlueyError::authentication("denied", message));
             }
         };
@@ -490,9 +529,20 @@ impl AuthManager {
     /// Persist tokens (Keychain) and the user (SQLite, no tokens); the state
     /// machine leaves `auth_required`.
     async fn store(&self, tokens: TokenSet, user: &AuthUser) -> BlueyResult<()> {
-        let raw = serde_json::to_string(&tokens)
+        self.save_tokens(&tokens).await?;
+        self.remember_user(user).await
+    }
+
+    /// The Keychain item — written only for new tokens (a sign-in or a
+    /// refresh), never to re-save an unchanged set (ADR 0011).
+    async fn save_tokens(&self, tokens: &TokenSet) -> BlueyResult<()> {
+        let raw = serde_json::to_string(tokens)
             .map_err(|_| BlueyError::internal("cannot serialise the sign-in tokens"))?;
-        self.secrets.set(CLERK_OAUTH_TOKENS_KEY, raw).await?;
+        self.secrets.set(CLERK_OAUTH_TOKENS_KEY, raw).await
+    }
+
+    /// The user (SQLite, no tokens); the state machine leaves `auth_required`.
+    async fn remember_user(&self, user: &AuthUser) -> BlueyResult<()> {
         let cache = user.clone();
         self.storage
             .run(move |db| {
@@ -521,52 +571,76 @@ impl AuthManager {
         let Some(config) = self.config.clone() else {
             return;
         };
+        // Never prompt at boot (ADR 0011): only an item the silent probe could
+        // read (and so cached) is checked now. A locked item (an update changed
+        // Bluey's code identity) or a failed probe keeps the cached user, as
+        // offline does; the token is read on first use or via Allow access.
+        match self.secrets.state(CLERK_OAUTH_TOKENS_KEY).await {
+            Ok(SecretState::Present) => {}
+            Ok(state) => {
+                tracing::debug!(?state, "sign-in check deferred");
+                return;
+            }
+            Err(error) => {
+                tracing::debug!(code = %error.code, "sign-in check deferred");
+                return;
+            }
+        }
         let Some(mut tokens) = self.load_tokens().await else {
             return;
         };
         if tokens.is_expiring(DEFAULT_REFRESH_LEEWAY, unix_now()) {
-            match self.refresh(&config, &tokens).await {
+            match self.refresh_and_save(&config, &tokens).await {
                 Ok(fresh) => tokens = fresh,
-                Err(error) if error.kind == BlueyErrorKind::Authentication => {
-                    tracing::warn!(code = %error.code, "stored sign-in could not be renewed; signing out");
-                    let _ = self.clear_session().await;
-                    return;
-                }
-                Err(error) => {
-                    tracing::debug!(code = %error.code, "sign-in renewal deferred (offline?)");
-                    return;
-                }
+                Err(error) => return self.after_failed_restore(error).await,
             }
         }
-        match self.fetch_user(&config, &tokens.access_token).await {
+        let user = match self.fetch_user(&config, &tokens.access_token).await {
+            Ok(user) => Ok(user),
+            // The access token may just be stale: one refresh attempt.
+            Err(error) if error.kind == BlueyErrorKind::Authentication => {
+                match self.refresh_and_save(&config, &tokens).await {
+                    Ok(fresh) => self.fetch_user(&config, &fresh.access_token).await,
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        match user {
+            // Known tokens: only the user row is refreshed, the Keychain item
+            // is left alone (a refresh above already saved new tokens).
             Ok(user) => {
-                if let Err(error) = self.store(tokens, &user).await {
+                if let Err(error) = self.remember_user(&user).await {
                     tracing::warn!(code = %error.code, "could not persist the restored sign-in");
                 }
                 self.publish().await;
             }
-            Err(error) if error.kind == BlueyErrorKind::Authentication => {
-                // The access token may just be stale: one refresh attempt.
-                match self.refresh(&config, &tokens).await {
-                    Ok(fresh) => match self.fetch_user(&config, &fresh.access_token).await {
-                        Ok(user) => {
-                            let _ = self.store(fresh, &user).await;
-                            self.publish().await;
-                        }
-                        Err(_) => {
-                            tracing::warn!("stored sign-in rejected by Clerk; signing out");
-                            let _ = self.clear_session().await;
-                        }
-                    },
-                    Err(_) => {
-                        tracing::warn!("stored sign-in rejected by Clerk; signing out");
-                        let _ = self.clear_session().await;
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::debug!(code = %error.code, "sign-in check deferred (offline?)");
-            }
+            Err(error) => self.after_failed_restore(error).await,
+        }
+    }
+
+    /// Refresh, and keep the new tokens at once — a rotated refresh token
+    /// must not be lost to a later failure.
+    async fn refresh_and_save(
+        &self,
+        config: &OAuthConfig,
+        tokens: &TokenSet,
+    ) -> BlueyResult<TokenSet> {
+        let fresh = self.refresh(config, tokens).await?;
+        if let Err(error) = self.save_tokens(&fresh).await {
+            tracing::warn!(code = %error.code, "could not store the renewed sign-in");
+        }
+        Ok(fresh)
+    }
+
+    /// Only Clerk rejecting the sign-in signs the user out; a network or
+    /// server failure keeps the cached user until the next launch.
+    async fn after_failed_restore(&self, error: BlueyError) {
+        if restore_signs_out(&error) {
+            tracing::warn!(code = %error.code, "stored sign-in rejected by Clerk; signing out");
+            let _ = self.clear_session().await;
+        } else {
+            tracing::debug!(code = %error.code, "sign-in check deferred (offline?)");
         }
     }
 
@@ -574,7 +648,13 @@ impl AuthManager {
     /// user, move the state machine to `auth_required`.
     pub async fn clear_session(&self) -> BlueyResult<AuthStatus> {
         self.cancel_pending();
-        if let (Some(config), Some(tokens)) = (self.config.as_ref(), self.load_tokens().await) {
+        // Revocation is best effort, with tokens already in memory only: a
+        // Keychain read here could prompt, and sign-out must never wait on one.
+        let in_memory = self
+            .secrets
+            .peek(CLERK_OAUTH_TOKENS_KEY)
+            .and_then(|raw| serde_json::from_str::<TokenSet>(&raw).ok());
+        if let (Some(config), Some(tokens)) = (self.config.as_ref(), in_memory) {
             for token in
                 std::iter::once(tokens.access_token.clone()).chain(tokens.refresh_token.clone())
             {
@@ -587,7 +667,13 @@ impl AuthManager {
                     .await;
             }
         }
-        self.secrets.delete(CLERK_OAUTH_TOKENS_KEY).await?;
+        // Signed out locally even when macOS refuses the delete; the error is
+        // returned after the state is cleared (the item shows in Settings →
+        // Privacy → Saved credentials).
+        let deleted = self.secrets.delete(CLERK_OAUTH_TOKENS_KEY).await;
+        if let Err(error) = &deleted {
+            tracing::warn!(code = %error.code, "could not delete the stored sign-in");
+        }
         self.storage
             .run(|db| {
                 UserRepository::clear(db)?;
@@ -600,6 +686,7 @@ impl AuthManager {
         }
         tracing::info!("signed out");
         self.publish().await;
+        deleted?;
         self.status().await
     }
 
@@ -621,6 +708,12 @@ impl AuthManager {
     }
 }
 
+/// Whether a failed session restore means the sign-in is dead (sign out) —
+/// not merely unreachable right now.
+fn restore_signs_out(error: &BlueyError) -> bool {
+    error.kind == BlueyErrorKind::Authentication
+}
+
 fn transport_error(error: reqwest::Error) -> BlueyError {
     if error.is_timeout() {
         BlueyError::network("timeout", "the sign-in request timed out")
@@ -640,26 +733,37 @@ fn spawn_loopback(
     cancel: CancellationToken,
 ) {
     tauri::async_runtime::spawn(async move {
-        let Ok(accepted) = listener.accept_one(&cancel).await else {
-            return;
-        };
-        let outcome = match accepted.target {
-            Some(target) => {
-                let core = app.state::<AppCore>();
-                core.auth
-                    .handle_callback_url(&app, &format!("http://127.0.0.1:{port}{target}"))
-                    .await
-                    .map(|_| ())
+        // Keep listening until the request that answers this flow arrives: a
+        // stray or forged hit (malformed, wrong `state`) must not end it.
+        loop {
+            let Ok(accepted) = listener.accept_one(&cancel).await else {
+                return;
+            };
+            let outcome = match accepted.target {
+                Some(target) => {
+                    let core = app.state::<AppCore>();
+                    core.auth
+                        .handle_callback_url(&app, &format!("http://127.0.0.1:{port}{target}"))
+                        .await
+                        .map(|_| ())
+                }
+                None => Err(BlueyError::authentication(
+                    "invalid_callback",
+                    "malformed callback request",
+                )),
+            };
+            accepted
+                .responder
+                .respond_html(&clerk::loopback_html(outcome.is_ok()))
+                .await;
+            match outcome {
+                Err(error)
+                    if error.code == "auth.invalid_callback"
+                        || error.code == "auth.state_mismatch"
+                        || error.code == "auth.not_callback" => {}
+                _ => return,
             }
-            None => Err(BlueyError::authentication(
-                "invalid_callback",
-                "malformed callback request",
-            )),
-        };
-        accepted
-            .responder
-            .respond_html(&clerk::loopback_html(outcome.is_ok()))
-            .await;
+        }
     });
 }
 
@@ -761,6 +865,9 @@ fn fapi_host(setting: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     let key = setting("VITE_CLERK_PUBLISHABLE_KEY").or_else(|| setting("CLERK_PUBLISHABLE_KEY"))?;
     clerk::fapi_host_from_publishable_key(&key)
 }
+
+#[cfg(test)]
+mod session_tests;
 
 #[cfg(test)]
 mod tests {
