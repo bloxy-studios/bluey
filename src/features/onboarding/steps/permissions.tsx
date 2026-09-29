@@ -2,6 +2,7 @@ import { Accessibility, AudioWaveform, Mic, MonitorUp, type LucideIcon } from "l
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { useLivePermissions } from "@/hooks/useLivePermissions";
 import { cn } from "@/lib/utils/cn";
 import type { PermissionKind } from "@/lib/types";
 import { usePermissionsStore } from "@/stores/permissionsStore";
@@ -55,6 +56,7 @@ export function PermissionsStep({ onReady }: StepProps) {
   const permissions = usePermissionsStore((s) => s.permissions);
   const request = usePermissionsStore((s) => s.request);
   const openSystemSettings = usePermissionsStore((s) => s.openSystemSettings);
+  useLivePermissions();
   const [sub, setSub] = useState(0);
 
   const current = PERMISSIONS[Math.min(sub, PERMISSIONS.length - 1)] ?? PERMISSIONS[0]!;

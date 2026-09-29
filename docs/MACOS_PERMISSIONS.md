@@ -23,8 +23,9 @@ microphone.
 ## Permission flow
 1. **First run wizard** explains each permission (what / why / access) before requesting it,
    one screen per permission, with *Continue* and *Open System Settings*.
-2. `PermissionState` is refreshed on app focus, on window activation, every 30 s while a
-   session is active, and after each request. Revocation stops the dependent subsystem (audio
+2. `PermissionState` is refreshed at launch, after each request, every 30 s while a session is
+   active, and — while the onboarding permissions step or Settings → Permissions is open — when
+   that window regains focus and every 2 s (`useLivePermissions`). Revocation stops the dependent subsystem (audio
    session, observation) and surfaces a repair flow.
 3. Deep links used for *Open System Settings*:
    * Screen Recording: `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`
