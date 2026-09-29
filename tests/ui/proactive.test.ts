@@ -141,6 +141,40 @@ describe("proactive preparation loop", () => {
     expect(engine.prepared.at(-1)?.detectedEvent?.id).toBe("q3");
   });
 
+  it("coalesces a question split by a pause into one classification (LIVE-010)", async () => {
+    const lead = makeSegment({ text: "So tell me about" });
+    const rest = makeSegment({ text: "your experience with Kafka?" });
+    mock.emit("transcript.final", lead);
+    await flush();
+    expect(engine.classified).toHaveLength(0); // held for the rest of the question
+
+    mock.emit("transcript.final", rest);
+    await waitFor(() => expect(engine.prepared).toHaveLength(1));
+    expect(engine.classified).toHaveLength(1);
+    expect(engine.classified[0]?.segment.text).toBe("So tell me about your experience with Kafka?");
+    expect(engine.classified[0]?.segmentIds).toEqual([lead.id, rest.id]);
+    expect(engine.classified[0]?.recent.map((s) => s.id)).not.toContain(lead.id);
+    expect(engine.prepared[0]?.detectedEvent?.segmentIds).toEqual([lead.id, rest.id]);
+  });
+
+  it("classifies a held fragment on its own once the window passes, and never holds complete questions", async () => {
+    mock.emit("transcript.final", makeSegment({ text: "Where did you work before" }));
+    mock.emit("transcript.final", makeSegment({ text: "Okay.", source: "microphone", speaker: "You" }));
+    await flush();
+    // A different voice releases the held fragment; the user's own words are never held.
+    expect(engine.classified.map((c) => c.segment.text)).toEqual(["Where did you work before", "Okay."]);
+
+    mock.emit("transcript.final", makeSegment({ text: "And why did you leave" }));
+    await flush();
+    expect(engine.classified).toHaveLength(2);
+    await waitFor(() => expect(engine.classified).toHaveLength(3), { timeout: 2_000 });
+    expect(engine.classified[2]?.segmentIds).toBeUndefined();
+
+    mock.emit("transcript.final", makeSegment({ text: "What is your notice period?" }));
+    await flush();
+    expect(engine.classified).toHaveLength(4); // ends in "?": classified at once
+  });
+
   it("dedupes question ids and serializes preparation (newest waiting question wins)", async () => {
     await useSettingsStore.getState().update({ ai: { suggestionDisplay: "on_request" } });
     engine.hold = true;

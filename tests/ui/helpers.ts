@@ -219,7 +219,7 @@ export class ProactiveFakeEngine extends FakeEngine {
       confidence: 0.9,
       requiresResponse: true,
       text: input.segment.text,
-      segmentIds: [input.segment.id],
+      segmentIds: input.segmentIds ?? [input.segment.id],
       speaker: input.segment.speaker,
       detectedAt: new Date().toISOString(),
     };

@@ -867,6 +867,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       segment: input.segment,
       recent: input.recent,
       mode: input.mode,
+      ...(input.segmentIds ? { segmentIds: input.segmentIds } : {}),
       now,
       idGen,
     });

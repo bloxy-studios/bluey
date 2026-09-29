@@ -1,4 +1,4 @@
-import { classifySegment, isQuestionText } from "@/transcript/classifier";
+import { classifySegment, isOpenFragment, isQuestionText } from "@/transcript/classifier";
 import { makeMode, makeSegment } from "../../fixtures/helpers/builders";
 import { loadAllFixtures } from "../../fixtures/helpers/fixtures";
 
@@ -54,6 +54,18 @@ describe("classifySegment rules", () => {
     const implied = classify("how we handle the rollout is still open");
     expect(implied?.type).toBe("question");
     expect(implied?.requiresResponse).toBe(false);
+  });
+
+  it("attributes a coalesced question to every final it was built from (LIVE-010)", () => {
+    const event = classifySegment({
+      segment: makeSegment({ id: "seg-b", text: "So tell me about your experience with Kafka?" }),
+      recent: [],
+      mode: interviewMode,
+      segmentIds: ["seg-a", "seg-b"],
+      now: NOW,
+      idGen,
+    });
+    expect(event?.segmentIds).toEqual(["seg-a", "seg-b"]);
   });
 
   it("recognises questions opened by short fillers", () => {
@@ -162,5 +174,20 @@ describe("isQuestionText", () => {
     expect(withMark.confidence).toBeGreaterThan(rising.confidence);
     expect(rising.confidence).toBeGreaterThan(lead.confidence);
     expect(isQuestionText("This is a statement.").question).toBe(false);
+  });
+});
+
+describe("isOpenFragment (LIVE-010)", () => {
+  it("holds finals that read like the first half of a question", () => {
+    expect(isOpenFragment("So tell me about")).toBe(true);
+    expect(isOpenFragment("Walk me through.")).toBe(true);
+    expect(isOpenFragment("How would you")).toBe(true);
+  });
+
+  it("never holds complete questions or finished statements", () => {
+    expect(isOpenFragment("What is your notice period?")).toBe(false);
+    expect(isOpenFragment("We shipped the new billing service last quarter.")).toBe(false);
+    expect(isOpenFragment("Thanks.")).toBe(false);
+    expect(isOpenFragment("   ")).toBe(false);
   });
 });

@@ -36,7 +36,9 @@ import {
   conversationalMode,
   DIRECT_QUESTION_MIN_CONFIDENCE,
   DIRECT_QUESTION_TYPES,
+  isOpenFragment,
 } from "@/transcript/classifier";
+import { labelSpeaker } from "@/transcript/speaker";
 import { recentSegments } from "@/transcript/window";
 import { useAppStore } from "./appStore";
 import { completedResponses, shownResponse, useChatStore, type SuggestionMeta } from "./chatStore";
@@ -51,6 +53,10 @@ import { useTranscriptStore } from "./transcriptStore";
 export const CLASSIFY_WINDOW_SECONDS = 45;
 /** Event ids remembered for dedupe. */
 const MAX_TRACKED_EVENT_IDS = 64;
+/** How long a fragment ("So tell me about") waits for the rest of its question (LIVE-010). */
+export const COALESCE_WINDOW_MS = 900;
+/** Finals merged into one utterance at most, so a monologue is not held forever. */
+const MAX_COALESCED_FINALS = 3;
 
 const BUSY_PHASES: ReadonlySet<EnginePhase> = new Set(["capturing", "analyzing", "thinking", "streaming"]);
 
@@ -271,6 +277,8 @@ export function startProactiveLoop(): Unlisten {
   let busy = false;
   /** Questions that opened a suggestion recently (dedupe + cooldown). */
   let surfaced: SurfaceContext["surfaced"] = [];
+  /** A counterpart's fragment waiting for the rest of its question (LIVE-010). */
+  let held: { segment: TranscriptSegment; ids: string[]; timer: ReturnType<typeof setTimeout> } | null = null;
 
   const remember = (id: string) => {
     seen.add(id);
@@ -385,6 +393,8 @@ export function startProactiveLoop(): Unlisten {
     const before = previous.status;
     // Stop listening: a question still waiting is no longer worth answering (LIVE-017).
     if (before?.audioActive && now && !now.audioActive) {
+      if (held) clearTimeout(held.timer);
+      held = null;
       queued = null;
       deferred = null;
       dismissals = 0;
@@ -397,12 +407,11 @@ export function startProactiveLoop(): Unlisten {
     }
   });
 
-  const onFinal = async (segment: TranscriptSegment): Promise<void> => {
-    if (!isHudWindow() || !proactiveEnabled()) return;
+  const classifyFinal = async (segment: TranscriptSegment, segmentIds: string[]): Promise<void> => {
     const settings = useSettingsStore.getState().settings;
     const mode = activeMode();
     if (!settings || !mode) return;
-    const others = useTranscriptStore.getState().segments.filter((s) => s.id !== segment.id);
+    const others = useTranscriptStore.getState().segments.filter((s) => !segmentIds.includes(s.id));
     try {
       // The engine emits `question.detected` itself when the event needs a response.
       await getEngine().classify({
@@ -410,19 +419,58 @@ export function startProactiveLoop(): Unlisten {
         recent: recentSegments(others, CLASSIFY_WINDOW_SECONDS),
         mode,
         settings,
+        ...(segmentIds.length > 1 ? { segmentIds } : {}),
       });
     } catch (error) {
       console.warn("[proactive] classify failed", error);
     }
   };
 
-  const offFinal = eventBus.on("transcript.final", (segment) => void onFinal(segment));
+  const releaseHeld = (): void => {
+    if (!held) return;
+    const { segment, ids, timer } = held;
+    clearTimeout(timer);
+    held = null;
+    void classifyFinal(segment, ids);
+  };
+
+  const onFinal = (segment: TranscriptSegment): void => {
+    if (!isHudWindow() || !proactiveEnabled()) return;
+    const mode = activeMode();
+    if (!mode) return;
+    let merged = segment;
+    let ids = [segment.id];
+    const previous = held;
+    if (previous && previous.segment.source === segment.source && previous.segment.speaker === segment.speaker) {
+      // The same voice went on within the window: classify the whole utterance once.
+      clearTimeout(previous.timer);
+      held = null;
+      merged = {
+        ...segment,
+        text: `${previous.segment.text.trim()} ${segment.text.trim()}`,
+        startTime: previous.segment.startTime,
+      };
+      ids = [...previous.ids, segment.id];
+    } else {
+      releaseHeld();
+    }
+    const counterpart = labelSpeaker(merged, mode).speaker !== "You";
+    if (counterpart && ids.length < MAX_COALESCED_FINALS && isOpenFragment(merged.text)) {
+      held = { segment: merged, ids, timer: setTimeout(releaseHeld, COALESCE_WINDOW_MS) };
+      return;
+    }
+    void classifyFinal(merged, ids);
+  };
+
+  const offFinal = eventBus.on("transcript.final", onFinal);
   const offDetected = eventBus.on("question.detected", onDetected);
   return () => {
     offFinal();
     offDetected();
     offPanel();
     offApp();
+    if (held) clearTimeout(held.timer);
+    held = null;
     queued = null;
     deferred = null;
   };

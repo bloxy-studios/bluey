@@ -106,6 +106,8 @@ export interface ClassifyInput {
   recent: TranscriptSegment[];
   mode: BlueyMode;
   settings: Settings;
+  /** Finals coalesced into `segment` (a question split by a pause); defaults to `[segment.id]`. */
+  segmentIds?: string[];
 }
 
 export interface ResponseEngine {
