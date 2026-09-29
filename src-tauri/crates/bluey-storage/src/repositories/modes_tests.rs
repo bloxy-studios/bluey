@@ -301,6 +301,7 @@ fn duplicate_copies_files_so_the_copy_lists_and_retrieves_them() {
             strategy: Some(RetrievalStrategy::Keyword),
         },
         None,
+        None,
     )
     .unwrap();
     assert!(!hits.is_empty());
