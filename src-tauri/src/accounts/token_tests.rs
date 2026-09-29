@@ -226,7 +226,9 @@ async fn an_account_without_a_recorded_origin_is_never_refreshed() {
     let (fake, profile, manager) = connected(&tokens("a", unix_now() - 10), None).await;
     let error = manager.credential_for("claude").await.unwrap_err();
     assert_eq!(error.code, "account.needs_reauth");
-    assert_eq!(error.details.as_ref().unwrap()["imported"], true);
+    // It may equally be a browser sign-in: the copy must not claim an import.
+    assert!(error.details.is_none(), "{:?}", error.details);
+    assert!(!error.message.contains("import"), "{}", error.message);
     assert!(!manager.refresh_rejected("claude", "a").await);
     assert_eq!(profile.refreshes(), 0);
     assert_eq!(fake.writes(), 0);

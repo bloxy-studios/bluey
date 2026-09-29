@@ -867,6 +867,7 @@ impl AccountsManager {
         let profile = self.profile_for(&account.provider_id)?;
         let cache = self.token_cache(account_id).await?;
         let may_refresh = self.may_refresh(&account);
+        let origin = self.origins.read().get(account_id).copied();
         let refreshed = AtomicBool::new(false);
         let http = self.http.clone();
         let result = cache
@@ -874,7 +875,7 @@ impl AccountsManager {
                 let (refreshed, account) = (&refreshed, &account);
                 async move {
                     if !may_refresh {
-                        return Err(imported_session_expired(account));
+                        return Err(refresh_withheld(account, origin));
                     }
                     let fresh = profile.refresh(&http, &current).await?;
                     refreshed.store(true, Ordering::Relaxed);
@@ -934,7 +935,10 @@ impl AccountsManager {
         if self.may_refresh(account) {
             needs_reauth(&account.account_id, &account.provider_id)
         } else {
-            imported_session_expired(account)
+            refresh_withheld(
+                account,
+                self.origins.read().get(&account.account_id).copied(),
+            )
         }
     }
 
@@ -1109,6 +1113,24 @@ fn needs_reauth(account_id: &str, provider_id: &str) -> BlueyError {
         "the account's sign-in expired — reconnect it",
     )
     .recoverable(RecoveryAction::reconnect_account(account_id, provider_id))
+}
+
+/// An account Bluey will not refresh has expired. Without a recorded origin
+/// (connected before origins were recorded) it may as well be a browser
+/// sign-in, so the copy does not claim an import.
+fn refresh_withheld(account: &ProviderAccount, origin: Option<Origin>) -> BlueyError {
+    if origin.is_some() {
+        return imported_session_expired(account);
+    }
+    BlueyError::new(
+        BlueyErrorKind::Authentication,
+        codes::NEEDS_REAUTH,
+        "the account's sign-in expired, and it was connected before Bluey recorded how — reconnect it once to keep it refreshing",
+    )
+    .recoverable(RecoveryAction::reconnect_account(
+        &account.account_id,
+        &account.provider_id,
+    ))
 }
 
 /// An imported session Bluey must not refresh has expired: the official app
