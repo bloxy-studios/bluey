@@ -420,7 +420,8 @@ export default function AITab() {
           <div>
             <div className="text-[14px] font-medium text-fg">Deep research agent</div>
             <div className="text-[13px] text-fg-muted">
-              Multi-step research in a sandboxed sidecar (public queries only).
+              Multi-step research in a sandboxed sidecar (public queries only). Needs an Exa key; Firecrawl
+              lets it read whole pages.
             </div>
           </div>
           <Switch
