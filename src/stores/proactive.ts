@@ -136,6 +136,8 @@ const META_PHRASES =
   /^(?:(?:so|okay|ok|um|uh|and|but|sorry|alright|well|hey|hi)\s+)*(?:can you (?:hear|see) (?:me|us|my screen|the screen)|(?:is|was) my (?:screen|audio|mic|microphone|video) (?:visible|working|ok|okay|clear)|(?:can|could) you repeat(?: that| the question)?|(?:does|did) (?:that|this|it) make sense|makes? sense|(?:is|was) (?:that|this) (?:right|clear|ok|okay)|sounds? good|any (?:other )?questions(?: so far)?|are you (?:there|still there|with me)|am i (?:audible|on mute|muted)|you know)(?:\s+(?:right|so far|now))?$/;
 
 const GENERIC_TYPES: ReadonlySet<DetectedEvent["type"]> = new Set(["question", "follow_up"]);
+/** A speaker restating what they just asked ("sorry, I mean…"): the newest wording wins. */
+const CORRECTION_LEAD = /^(?:sorry|i mean|i meant|actually|rather|let me rephrase|scratch that|no,? wait)\b/i;
 
 export type SurfaceVerdict =
   "surface" | "not_substantive" | "below_threshold" | "duplicate" | "cooldown" | "stale";
@@ -203,6 +205,7 @@ export function shouldSurface(event: DetectedEvent, ctx: SurfaceContext): Surfac
     last &&
     GENERIC_TYPES.has(event.type) &&
     last.speaker === event.speaker &&
+    !CORRECTION_LEAD.test(event.text.trim()) &&
     ctx.now - last.at < SURFACE_COOLDOWN_MS
   ) {
     return "cooldown";

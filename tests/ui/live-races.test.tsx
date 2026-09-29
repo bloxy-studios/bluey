@@ -68,6 +68,40 @@ describe("live suggestion races", () => {
     expect(useChatStore.getState().turns.at(-1)?.response?.content).toBe("Prepared for"); // the draft, never completed
   });
 
+  it("New chat during a live suggestion ends its stream and leaves an empty thread", async () => {
+    engine.hold = true;
+    const { result } = renderHook(() => useAsk());
+    mock.emit("question.detected", detected("q1"));
+    await waitFor(() => expect(useChatStore.getState().phase).toBe("streaming"));
+
+    act(() => result.current.newChat());
+    engine.release();
+    await flush();
+
+    expect(engine.cancelledPrepares).toHaveLength(1);
+    expect(useChatStore.getState().turns).toHaveLength(0);
+    expect(useChatStore.getState().prepared).toBeNull();
+  });
+
+  it("a corrected question waiting behind a suggestion replaces the one it corrects", async () => {
+    engine.hold = true;
+    mock.emit("question.detected", detected("q1"));
+    await waitFor(() => expect(useChatStore.getState().phase).toBe("streaming"));
+    mock.emit("question.detected", { ...detected("q2"), text: "How do you size a thread pool?" });
+    mock.emit("question.detected", { ...detected("q3"), text: "Sorry — how do you size a connection pool?" });
+
+    engine.release();
+    await waitFor(() => expect(engine.prepared).toHaveLength(2));
+    engine.release();
+    await waitFor(() => expect(useChatStore.getState().turns.at(-1)?.status).toBe("done"));
+
+    expect(engine.prepared.map((input) => input.detectedEvent?.id)).toEqual(["q1", "q3"]);
+    expect(useChatStore.getState().turns.map((turn) => turn.suggestion?.question)).toEqual([
+      "Question q1?",
+      "Sorry — how do you size a connection pool?",
+    ]);
+  });
+
   it("a manual ask cancels the live suggestion and owns the thread", async () => {
     engine.hold = true;
     const { result } = renderHook(() => useAsk());

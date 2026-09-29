@@ -91,6 +91,12 @@ describe("shouldSurface (LIVE-009)", () => {
     expect(shouldSurface(next, ctx({ surfaced: [later] }))).toBe("surface");
   });
 
+  it("lets the same speaker correct a question inside the cooldown", () => {
+    const last = { text: "How do you size a thread pool?", speaker: "Interviewer", at: NOW - 2_000 };
+    const correction = event("Sorry, I mean how do you size a connection pool?");
+    expect(shouldSurface(correction, ctx({ surfaced: [last] }))).toBe("surface");
+  });
+
   it("drops a question that waited past the staleness window", () => {
     const old = event("Which database would you pick?", {
       detectedAt: new Date(NOW - QUESTION_STALE_MS - 1).toISOString(),
