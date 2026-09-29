@@ -29,6 +29,24 @@ describe("GeneralTab", () => {
     // The backend agrees (round-trip through the transport).
     expect((await bluey.settings.get()).general.launchAtLogin).toBe(true);
   });
+
+  it("shows the stored language code by name and saves the picked code (UX-042)", async () => {
+    const user = userEvent.setup();
+    render(<GeneralTab />);
+
+    const picker = screen.getByLabelText<HTMLSelectElement>("Output language");
+    expect(picker).toHaveValue("en"); // the Rust default
+    expect(picker.selectedOptions[0]?.textContent).toBe("English");
+
+    await user.selectOptions(picker, "Spanish");
+    await waitFor(() => expect(useSettingsStore.getState().settings?.general.outputLanguage).toBe("es"));
+  });
+
+  it("reads a language name stored by an older build as its code", async () => {
+    await useSettingsStore.getState().update({ general: { outputLanguage: "Japanese" } });
+    render(<GeneralTab />);
+    expect(screen.getByLabelText("Output language")).toHaveValue("ja");
+  });
 });
 
 describe("ModeEditor", () => {

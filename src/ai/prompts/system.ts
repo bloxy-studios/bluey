@@ -5,6 +5,8 @@
  * answer is comes per request, as the `Voice:` line under the task.
  */
 
+import { outputLanguageCode, outputLanguageName } from "@/lib/output-languages";
+
 export const BLUEY_IDENTITY = [
   "You are Bluey, a real-time desktop copilot. You see fragments of the user's screen,",
   "hear fragments of their conversation, and know a little about their background.",
@@ -43,9 +45,11 @@ export function identityBlock(blueyName?: string): string {
   return `${identity}\n\n${SAFETY_RULES}`;
 }
 
+/** `language` is the stored code (`"es"`) or, from older builds, a name (`"Spanish"`). */
 export function outputLanguageLine(language: string): string {
-  if (!language || language === "auto" || language.toLowerCase() === "english" || language === "en") {
+  const code = outputLanguageCode(language);
+  if (!code || code === "auto" || code === "en") {
     return "";
   }
-  return `Respond in ${language} unless the user's question is written in another language.`;
+  return `Respond in ${outputLanguageName(code)} unless the user's question is written in another language.`;
 }
