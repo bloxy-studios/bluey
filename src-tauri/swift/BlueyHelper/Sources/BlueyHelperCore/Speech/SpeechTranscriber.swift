@@ -266,15 +266,9 @@ public final class SpeechTranscriber {
     ) -> UtteranceTracker.Result {
         let transcription = result.bestTranscription
         let segments = transcription.segments
-        var startMs = epochMs
-        var endMs = Double(totalFrames) * 1000.0 / sampleRate
-        if let first = segments.first, let last = segments.last {
-            // SFTranscriptionSegment.timestamp/.duration are seconds within the
-            // current request's audio stream:
-            // https://developer.apple.com/documentation/speech/sftranscriptionsegment
-            startMs = epochMs + first.timestamp * 1000.0
-            endMs = epochMs + (last.timestamp + last.duration) * 1000.0
-        }
+        let (startMs, endMs) = UtteranceTracker.times(
+            segments: segments.map { (timestamp: $0.timestamp, duration: $0.duration) },
+            epochMs: epochMs, nowMs: Double(totalFrames) * 1000.0 / sampleRate)
         var confidence: Double?
         if result.isFinal, !segments.isEmpty {
             confidence = segments.reduce(0.0) { $0 + Double($1.confidence) } / Double(segments.count)
@@ -283,7 +277,7 @@ public final class SpeechTranscriber {
             generation: generation, text: transcription.formattedString, isFinal: result.isFinal,
             // Set when the recognizer closes a stretch of speech (a pause).
             hasMetadata: result.speechRecognitionMetadata != nil,
-            startMs: Int(startMs.rounded()), endMs: Int(endMs.rounded()), confidence: confidence)
+            startMs: startMs, endMs: endMs, confidence: confidence)
     }
 
     private func reportUnavailable(_ message: String) {

@@ -10,10 +10,14 @@ import Foundation
 ///   (MAC-003) and their late partials are dropped.
 /// - On-device recognition often *resets* after a pause instead of sending
 ///   `isFinal`: the next partial starts over with new words. The previous
-///   partial is then committed as the utterance's final (MAC-002). A reset
-///   needs a signal (the previous result carried speech metadata, or the word
-///   count dropped sharply) *and* a new opening word, so a recognizer that
-///   keeps the words across the pause never duplicates text.
+///   partial is then committed as the utterance's final (MAC-002). After a
+///   pause (the previous result carried speech metadata) anything that does
+///   not continue the previous words is a reset, so a recognizer that keeps
+///   the words across the pause never duplicates text. Without that signal
+///   only a sharp drop in the word count counts as one.
+/// - Partials often carry all-zero segment timing; they are stamped with the
+///   audio position instead, and every event of an utterance keeps the start
+///   of its first partial, so a committed final spans its own speech.
 struct UtteranceTracker {
     /// One recognizer callback, reduced to what the rules need.
     struct Result {
@@ -38,6 +42,8 @@ struct UtteranceTracker {
 
     private struct Open {
         let id: String
+        /// When the utterance's first event began.
+        let startMs: Int
         var last: Emission?
         var hadMetadata = false
     }
@@ -81,9 +87,14 @@ struct UtteranceTracker {
             open = nil
         }
         let id = open?.id ?? nextId()
-        let event = emission(result, id: id)
+        let startMs = min(open?.startMs ?? result.startMs, result.startMs)
+        let event = emission(result, id: id, startMs: startMs)
         out.append(event)
-        open = result.isFinal ? nil : Open(id: id, last: event, hadMetadata: result.hasMetadata)
+        if result.isFinal {
+            open = nil
+        } else {
+            open = Open(id: id, startMs: startMs, last: event, hadMetadata: result.hasMetadata)
+        }
         return out
     }
 
@@ -92,20 +103,34 @@ struct UtteranceTracker {
         return "\(generation)-\(counter)"
     }
 
-    private func emission(_ result: Result, id: String) -> Emission {
+    private func emission(_ result: Result, id: String, startMs: Int? = nil) -> Emission {
         Emission(
             isFinal: result.isFinal, utteranceId: id, text: result.text,
-            startMs: result.startMs, endMs: result.endMs, confidence: result.confidence)
+            startMs: startMs ?? result.startMs, endMs: result.endMs, confidence: result.confidence)
     }
 
     /// The recognizer started a new utterance instead of revising this one.
     static func isReset(from previous: String, hadMetadata: Bool, to next: String) -> Bool {
         let before = words(previous)
         let after = words(next)
-        guard let first = before.first, let opening = after.first else { return false }
-        let dropped = before.count >= 4 && after.count * 2 < before.count
-        guard hadMetadata || dropped else { return false }
-        return opening != first || dropped
+        guard !before.isEmpty, !after.isEmpty else { return false }
+        if hadMetadata { return !after.starts(with: before) }
+        return before.count >= 4 && after.count * 2 < before.count
+    }
+
+    /// One callback's times relative to `audio.start`. Segment timestamps are
+    /// seconds within the request that began at `epochMs`
+    /// (https://developer.apple.com/documentation/speech/sftranscriptionsegment);
+    /// without real timing the result is stamped with the audio position.
+    static func times(
+        segments: [(timestamp: Double, duration: Double)], epochMs: Double, nowMs: Double
+    ) -> (startMs: Int, endMs: Int) {
+        guard let first = segments.first, let last = segments.last,
+            last.timestamp + last.duration > 0
+        else { return (Int(nowMs.rounded()), Int(nowMs.rounded())) }
+        let startMs = epochMs + first.timestamp * 1000.0
+        let endMs = epochMs + (last.timestamp + last.duration) * 1000.0
+        return (Int(startMs.rounded()), Int(endMs.rounded()))
     }
 
     /// Lower-cased words without punctuation (partials rewrite both).
