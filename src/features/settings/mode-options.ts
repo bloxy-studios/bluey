@@ -14,15 +14,31 @@ export const RESPONSE_FORMAT_OPTIONS: Array<{ value: ResponseSchemaId; label: st
   { value: "lecture", label: "Lecture" },
 ];
 
-/** Context sources a mode gathers before answering. */
-export const CONTEXT_SOURCE_LABELS: Record<ContextRequirement, string> = {
-  screen: "Screen",
-  accessibility: "Accessibility tree",
-  transcript: "Transcript",
-  resume: "Résumé / CV",
-  job_description: "Job description",
-  documents: "Documents",
-  session_memory: "Session memory",
-};
+/**
+ * Context-source chips: what a mode gathers before answering, and the stored
+ * requirements each chip turns on or off. Every screen ask also reads the
+ * accessibility tree, so Screen covers it; session memory applies in every mode,
+ * so it has no chip (MODE-011).
+ */
+export const CONTEXT_SOURCE_CHIPS: ReadonlyArray<{
+  source: ContextRequirement;
+  label: string;
+  /** Requirements the chip turns on and off with its source. */
+  covers?: readonly ContextRequirement[];
+}> = [
+  { source: "screen", label: "Screen", covers: ["accessibility"] },
+  { source: "transcript", label: "Transcript" },
+  { source: "resume", label: "Résumé / CV" },
+  { source: "job_description", label: "Job description" },
+  { source: "documents", label: "Documents" },
+];
 
-export const CONTEXT_SOURCES = Object.keys(CONTEXT_SOURCE_LABELS) as ContextRequirement[];
+/** `requirements` with a chip toggled; requirements without a chip are kept. */
+export function toggleContextChip(
+  requirements: readonly ContextRequirement[],
+  chip: (typeof CONTEXT_SOURCE_CHIPS)[number],
+): ContextRequirement[] {
+  const owned = [chip.source, ...(chip.covers ?? [])];
+  const others = requirements.filter((r) => !owned.includes(r));
+  return requirements.includes(chip.source) ? others : [...others, ...owned];
+}

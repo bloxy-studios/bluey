@@ -21,14 +21,13 @@ import {
   toBlueyError,
   type BlueyDocument,
   type BlueyMode,
-  type ContextRequirement,
   type ModeDraft,
   type ResponseSchemaId,
 } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { formatBytes } from "@/lib/utils/format";
 import { validateModeDraft } from "@/modes/registry";
-import { CONTEXT_SOURCE_LABELS, CONTEXT_SOURCES, RESPONSE_FORMAT_OPTIONS } from "./mode-options";
+import { CONTEXT_SOURCE_CHIPS, RESPONSE_FORMAT_OPTIONS, toggleContextChip } from "./mode-options";
 import { ModeFilesDropzone } from "./ModeFilesDropzone";
 
 const LATENCY_OPTIONS = [
@@ -173,11 +172,8 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
     void patch({ responseStyle });
   };
 
-  const toggleContextSource = (source: ContextRequirement) => {
-    const current = new Set(mode.contextRequirements);
-    if (current.has(source)) current.delete(source);
-    else current.add(source);
-    void patch({ contextRequirements: CONTEXT_SOURCES.filter((s) => current.has(s)) });
+  const toggleContextSource = (chip: (typeof CONTEXT_SOURCE_CHIPS)[number]) => {
+    void patch({ contextRequirements: toggleContextChip(mode.contextRequirements, chip) });
   };
 
   const removeDocument = async (doc: BlueyDocument) => {
@@ -344,15 +340,15 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
 
             <FieldLabel hint="What Bluey gathers before answering in this mode">Context sources</FieldLabel>
             <div role="group" aria-label="Context sources" className="flex flex-wrap gap-2">
-              {CONTEXT_SOURCES.map((source) => {
-                const enabled = mode.contextRequirements.includes(source);
+              {CONTEXT_SOURCE_CHIPS.map((chip) => {
+                const enabled = mode.contextRequirements.includes(chip.source);
                 return (
                   <button
-                    key={source}
+                    key={chip.source}
                     type="button"
                     role="checkbox"
                     aria-checked={enabled}
-                    onClick={() => toggleContextSource(source)}
+                    onClick={() => toggleContextSource(chip)}
                     className={cn(
                       "h-8 rounded-full border px-3 text-[12.5px] font-medium transition-colors",
                       enabled
@@ -360,7 +356,7 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
                         : "border-border bg-bg-elevated text-fg-muted hover:text-fg",
                     )}
                   >
-                    {CONTEXT_SOURCE_LABELS[source]}
+                    {chip.label}
                   </button>
                 );
               })}

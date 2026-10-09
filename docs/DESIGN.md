@@ -80,8 +80,9 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   bottom bar with hairline and right-aligned primary button "Set Active" / disabled "Active".
   Between context and files: "Response style" (length / tone / latency / preferred model
   selects, available on built-in modes too) and "Context sources" — a row of 32px pill
-  toggles (Screen, Accessibility tree, Transcript, Résumé / CV, Job description, Documents,
-  Session memory; on = `accent-soft` fill with accent text). Custom modes additionally get
+  toggles (Screen, Transcript, Résumé / CV, Job description, Documents; on = `accent-soft`
+  fill with accent text). Screen includes the accessibility tree, and session memory applies
+  in every mode, so neither has a toggle of its own. Custom modes additionally get
   Description, Sidebar group and Response format above the meeting context.
 * **Keybinds tab**: header "Keyboard shortcuts" + description "Bluey works with these easy to
   remember commands. Click any of the keybinds to edit." Groups General / Window / Scroll
