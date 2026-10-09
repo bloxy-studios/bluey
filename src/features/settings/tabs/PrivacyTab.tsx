@@ -8,6 +8,7 @@ import { SegmentedTabs } from "@/components/ui/Tabs";
 import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
 import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { clearOnboardingStep } from "@/features/onboarding/progress";
 import { useCaptureProtection } from "@/hooks/useCaptureProtection";
 import { bluey } from "@/lib/tauri/api";
 import type { DataUsageStats } from "@/lib/tauri/commands";
@@ -110,6 +111,10 @@ export default function PrivacyTab() {
       confirmTitle: "Reset Bluey completely?",
       run: async () => {
         await bluey.data.resetAll();
+        // Nothing is left, the sign-in included: start over in onboarding (DOC-003).
+        clearOnboardingStep();
+        await bluey.window.open({ label: "onboarding" });
+        await bluey.panel.hide();
         await refreshStats();
       },
     },
