@@ -169,9 +169,12 @@ export interface Settings {
   updates: UpdatesSettings;
 }
 
+/** An optional field patched to `null` is cleared (Rust maps it to `None`). */
+type SectionPatch<T> = { [P in keyof T]?: undefined extends T[P] ? T[P] | null : T[P] };
+
 /** Deep partial patch applied by `settings_update`. */
 export type SettingsPatch = {
-  [K in keyof Settings]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K];
+  [K in keyof Settings]?: Settings[K] extends object ? SectionPatch<Settings[K]> : Settings[K];
 };
 
 /** Logical native frame, including shadow insets; not the appearance surface. */

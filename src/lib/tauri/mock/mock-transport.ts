@@ -2596,7 +2596,9 @@ function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
     if (Array.isArray(value) || typeof value !== "object" || value === null) {
       next[key] = value;
     } else {
-      next[key] = { ...(base[key] as object), ...value };
+      // Like Rust, an explicit null clears an optional field (it is then absent).
+      const merged = Object.entries({ ...(base[key] as object), ...value }).filter(([, v]) => v !== null);
+      next[key] = Object.fromEntries(merged);
     }
   }
   return next as unknown as Settings;

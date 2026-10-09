@@ -279,7 +279,7 @@ describe("AITab — removing a provider (UX-008)", () => {
     );
     expect(models()?.default).toBeNull();
     expect(models()?.embedding).toBeNull();
-    expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBeNull();
+    expect(useSettingsStore.getState().settings?.ai).not.toHaveProperty("bootstrapProvider");
     expect(await mock.invoke("secrets_has", { key: "provider:gemini:api_key" })).toBe(false);
   });
 
@@ -324,7 +324,7 @@ describe("AITab — a provider's first key (FEATURE-004)", () => {
     // Undo as the Settings window renders it, not through the store (the info toast used to drop it).
     await user.click(within(toast.closest("[role=status]") as HTMLElement).getByRole("button", { name: "Undo" }));
     await waitFor(() => expect(models()?.default).toBeNull());
-    expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBeNull();
+    expect(useSettingsStore.getState().settings?.ai).not.toHaveProperty("bootstrapProvider");
   });
 
   it("leaves assigned roles and the default provider alone", async () => {

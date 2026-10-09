@@ -578,6 +578,25 @@ mod tests {
     }
 
     #[test]
+    fn a_null_microphone_follows_the_system_default_again() {
+        let pinned = Settings::default()
+            .apply_patch(&serde_json::json!({ "audio": { "microphoneDeviceId": "usb-mic" } }))
+            .unwrap();
+        assert_eq!(
+            pinned.audio.microphone_device_id.as_deref(),
+            Some("usb-mic")
+        );
+
+        let unpinned = pinned
+            .apply_patch(&serde_json::json!({ "audio": { "microphoneDeviceId": null } }))
+            .unwrap();
+        assert_eq!(unpinned.audio.microphone_device_id, None, "UX-033");
+        assert!(serde_json::to_value(&unpinned).unwrap()["audio"]
+            .get("microphoneDeviceId")
+            .is_none());
+    }
+
+    #[test]
     fn a_stored_region_target_reads_as_the_active_window() {
         let parsed: CaptureTargetPreference = serde_json::from_str("\"region\"").unwrap();
         assert_eq!(parsed, CaptureTargetPreference::ActiveWindow);
