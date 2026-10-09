@@ -137,3 +137,10 @@ budget for everything Bluey does before the request leaves the Mac.
 ## Explicitly out of scope
 On-device models, changing which provider serves the fast role, routing inline images through the
 Files API, and any capture that the user has not already enabled.
+
+## Addendum 2026-10-09 — what has shipped (DOC-001)
+The decision above is the plan, not a description of the build. Shipped: the trace and the bench
+(§2), the 150 ms OCR soft deadline after the frame (part of §3, PERF-002) and per-frame
+coalescing of streamed drafts in the HUD (PERF-003). Planned: the raced accessibility snapshot,
+the 1440 px image pipeline, retrieval in parallel, connection warm-up, the stable prompt prefix,
+and the warm frame and prefetch (§3–§8). `docs/LATENCY.md` › *Status* tracks each piece.
