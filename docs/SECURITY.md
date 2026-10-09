@@ -13,7 +13,11 @@
    *Saved credentials* list shows, reads only an item the silent probe reports *locked*, and
    returns just its state.
 3. **Minimal retention by default.** Raw audio is never persisted; screenshots are off by
-   default; transcripts and session history can be disabled; deletion really deletes.
+   default; transcripts and session history can be disabled; deletion really deletes. Not
+   persisting is not staying local: while listening, audio streams to the transcription
+   provider — Gemini Live (Google) by default when a Google AI Studio key is connected. Apple
+   Speech (no key, selected, or Privacy → Cloud AI off) transcribes on the Mac, or on Apple's
+   servers for a language without an on-device model.
 4. **Model output is untrusted data.** It is rendered as text/markdown, never executed, and the
    system prompt instructs models that screen/transcript content is data, not instructions.
 5. **Least privilege everywhere.** Per-window Tauri capabilities, scoped agent tools, no shell
