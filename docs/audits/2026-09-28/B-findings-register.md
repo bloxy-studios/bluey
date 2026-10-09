@@ -7,7 +7,7 @@ Companion to [BLUEY_DEEP_AUDIT_2026-09-28.md](../BLUEY_DEEP_AUDIT_2026-09-28.md)
 #### CRIT-001
 
 **Ad-hoc-signed Latest/Nightly auto-updates give Bluey a new code identity each time, so every Keychain item asks for the login password after each update**  
-Severity **Critical** · confidence verified · effort L · has dependencies · needs real macOS · status **Open — needs real-device verification**
+Severity **Critical** · confidence verified · effort L · has dependencies · needs real macOS · status **Partially implemented** — WS-A: Each update still gets a new code identity, but it now costs far fewer prompts. The Keychain backend reads attributes only (secrets/backend.rs, secrets/keychain.rs) and caches values in the process (secrets/mod.rs), so there is at most one decrypting read per item per process and none at boot: accounts and auth restore only continue when the item is Present (fix-pass commits 1cdb252, 2162c4e). A locked item shows up as Locked, with a deliberate Allow access (commit dbcb485). Opt-in stable signing for local builds uses BLUEY_LOCAL_SIGNING_IDENTITY in scripts/release.sh (718f0f8). Developer ID signing of Latest/Nightly updates is a release decision and is out of scope here.
 
 - **User impact:** After every auto-installed update (nightly updates can arrive daily), the first access to each Bluey item (each provider key, the Clerk session, each subscription account) shows a login-password dialog. On this Mac that is at least 6-8 dialogs per update. Together with findings no-secret-cache-and-data-read-has and token-rewrite-every-request-and-boot, the dialogs repeat many times.
 - **Root cause:** keyring 3 apple-native stores items in the legacy file-based keychain, where access is authorized by the code identity recorded in the item's ACL and partition list. An ad-hoc signature's identity is its cdhash, which changes with every build. Bluey ships only ad-hoc builds and auto-updates them.
@@ -45,7 +45,7 @@ The interim mitigations are sound, with these adjustments:
 #### PERF-001
 
 **No in-process secret cache, and has() is a full decrypting read: provider keys are re-read on every AI request, every settings save and every AI-tab open**  
-Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Implemented** — WS-A: SecretsStore has an in-process Zeroizing value cache plus attribute-only presence, so has() never decrypts and provider keys are read at most once per process (src-tauri/src/secrets/mod.rs, 79ff256).
 
 - **User impact:** Whenever the running build is not yet trusted for an item, and permanently for users who click 'Allow' rather than 'Always Allow', each of these reads shows the password dialog. That means N dialogs per settings toggle, one per ask, and one per live suggestion. This is the most direct cause of 'Bluey keeps asking for my password'.
 - **Root cause:** SecretsStore is a thin pass-through to keyring. Existence checks decrypt the item, and callers re-query instead of relying on state that is already known.
@@ -60,7 +60,7 @@ Severity **High** · confidence verified · effort M · independent · needs rea
 #### SEC-001
 
 **Account tokens are rewritten to the Keychain after every subscription-backed request, and Clerk tokens on every boot, even when unchanged. Each rewrite is a prompting read plus an in-place modify that resets the item's partition**  
-Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Implemented** — WS-A: Account tokens are written only after a real refresh (credential_for with a refreshed flag, then persist_refreshed). Clerk tokens are written only on sign-in or refresh; restore never rewrites them (b106a65, a675eb7).
 
 - **User impact:** Every ask on a ChatGPT/Claude/Google subscription does a Keychain write. After an update, or when the dev build and the installed app are both used, each write prompts. It then moves the item's partition to the writer, so the other build prompts on its next access, and the cycle repeats. A failed write is silently ignored (`let _`), so a token rotated by a refresh can be lost and the account later needs re-auth.
 - **Root cause:** Persist-after-fetch is unconditional, and keyring 3's set path modifies the existing item in place, which requires decrypting it first.
@@ -74,7 +74,7 @@ Severity **High** · confidence verified · effort S · independent · needs rea
 #### SEC-002
 
 **Denied, cancelled or locked Keychain access is reported as 'no key' or 'not signed in': a single Cancel disables a provider or subscription for the whole session, and re-entering the key prompts again and can fail with a generic write error**  
-Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-A: Denied, interaction-not-allowed and unavailable statuses are no longer reported as missing: they map to storage.keychain_access_denied, storage.keychain_interaction_not_allowed and storage.keychain_unavailable, with present.ts copy. They also give the SecretState Locked. A locked account is not marked disconnected. Fix pass: restore never does a prompting read at boot, and Allow access reads only a locked item. Device check: Cancel the real prompt once and confirm the key field shows Locked with Allow access (not 'no key').
 
 - **User impact:** A user who dismisses one dialog sees their provider as keyless, their subscription as broken, or is asked to sign in again. Their natural fix (re-entering the key or signing in) causes more dialogs, and the errors do not explain what happened. Support cannot diagnose it because no OSStatus is logged.
 - **Root cause:** The error model has only Present/Absent/generic-error, and several call sites convert errors into Absent (has_sync, load_tokens) or cache them.
@@ -89,7 +89,7 @@ Severity **High** · confidence verified · effort M · independent · needs rea
 #### PERF-004
 
 **refresh_provider_keys holds the settings write lock across N blocking Keychain reads, so a pending dialog stalls every settings reader**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-A: Provider-key presence comes from the cache or attribute probes, and the settings write lock is no longer held across Keychain I/O (settings/mod.rs, 79ff256).
 
 - **User impact:** After saving a key while Bluey is untrusted for other items, a Keychain dialog can stay up. Until it is answered, every component that reads settings (AI adapter, HUD, audio) blocks, and the app looks frozen.
 - **Root cause:** The flags are computed under the lock with a potentially interactive call. replace() already computes them before locking.
@@ -102,7 +102,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### SEC-005
 
 **Imported Claude Code sessions are refreshed by Bluey after the first expiry, although the docs promise 'read-only, no refresh'. Rotation would sign Claude Code out**  
-Severity **Medium** · confidence likely · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort M · independent · needs real macOS · status **Implemented** — WS-A: Rotating imports (Claude, ChatGPT) are never refreshed. Fix pass (1cdb252): the origin (import or browser) is stored per account under accounts:origin:<id>, and it is persisted before the Keychain write. If it cannot be persisted, the connect fails (Disconnected plus an AppError). An account with no origin record (connected by a pre-upgrade build) is treated as an import: it is never refreshed and it returns imported_session_expired. Only a Bluey browser sign-in is revoked on disconnect. refreshes_imported_session is now an allow-list (antigravity).
 
 - **User impact:** A few hours after importing, the first Bluey request refreshes the shared Claude session. If Anthropic rotates refresh tokens (which the module's own comment asserts), Claude Code on the same Mac is signed out. Docs and UI tell the user this won't happen.
 - **Root cause:** 'No refresh' is enforced only at import time. The account record does not remember that its tokens are borrowed.
@@ -115,7 +115,7 @@ Severity **Medium** · confidence likely · effort M · independent · needs rea
 #### DEBT-002
 
 **`tauri dev` binaries are unsigned (Intel) or ad-hoc (Apple Silicon) and use the same Keychain service as the installed app, so they prompt on every rebuild and take items from the installed app**  
-Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-A: Debug builds use their own Keychain service, com.codewithabdul.bluey.dev (secrets/mod.rs). An opt-in dev-sign-runner plus src-tauri/.cargo/config.toml signs `tauri dev` binaries with a stable local identity (718f0f8). Documented in DEVELOPMENT.md and ADR 0011. Device check: With BLUEY_LOCAL_SIGNING_IDENTITY set, rebuild twice and confirm no new prompt for .dev items.
 
 - **User impact:** The developer (the reporting user) gets a password dialog per item after every Rust rebuild. Because dev and prod rewrite shared items (see token-rewrite-every-request-and-boot), the installed app then prompts again. Every dev 'Always Allow' also leaves another trusted-app entry on production secrets.
 - **Root cause:** There is no separation between the dev and prod secret namespaces, and there is no stable signing step for dev binaries.
@@ -128,7 +128,7 @@ Severity **Medium** · confidence verified · effort S · independent · needs r
 #### SEC-006
 
 **Deleting a secret decrypts it first (prompt), and a failed delete aborts sign-out, so after an update, sign-out/disconnect/reset each prompt and a denial leaves secrets behind**  
-Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Implemented** — WS-A: Delete is attribute-only and checks its status. Sign-out and disconnect revoke using in-memory tokens only (peek), and a failed delete does not abort them; the leftover item is reported in Saved credentials (a675eb7, b106a65). Fix pass: auth restore probes the item before reading, so boot never holds the io mutex behind a prompt (2162c4e).
 
 - **User impact:** 'Reset all data' after an update can show one dialog per item. If the user denies any, the key stays in the Keychain while the UI suggests it was reset. Sign-out stops half-way on a denial.
 - **Root cause:** The keyring 3 delete path needs a data read, and clear_session treats the Keychain delete as a precondition.
@@ -141,7 +141,7 @@ Severity **Medium** · confidence verified · effort S · independent · needs r
 #### FEATURE-001
 
 **There is no UI to remove a stored key, and deleting a provider leaves its key item behind**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-A: SecretKeyField has a tri-state and a confirmed Remove. Deleting a provider deletes its API key (settings side_effects, mock dropRemovedProviderKeys) (9630789, 8fe047a).
 
 - **User impact:** Stale keys accumulate. If such a provider is still configured, it is read at boot and on every save, and it prompts because only an old build is trusted.
 - **Root cause:** The backend supports delete but the product flow never uses it.
@@ -155,7 +155,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### DEBT-003
 
 **Keychain delete reports success even when SecKeychainItemDelete fails**  
-Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Implemented** — WS-A: The new security-framework backend checks the status of every delete. A failure returns a storage.keychain_* error instead of Ok (secrets/keychain.rs).
 
 - **Root cause:** keyring 3's macOS delete path calls a security-framework delete that returns () and drops the OSStatus.
 - **Evidence:** ~/.cargo/registry/src/*/keyring-3.6.3/src/macos.rs:101-106 delete_credential: `item.delete(); Ok(())`; security-framework-3.7.0/src/os/macos/passwords.rs:81-85 `pub fn delete(self) { unsafe { SecKeychainItemDelete(..); } }`: the OSStatus is discarded; `src-tauri/Cargo.lock: keyring 3.6.3 depends on security-framework 3.7.0`; callers that trust the result: auth/mod.rs:590 (sign-out), accounts/mod.rs:546 (disconnect), commands/data.rs:62-78 (reset all data)
@@ -166,7 +166,7 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 #### DEBT-004
 
 **'Reset all data' leaves API keys of removed providers in the Keychain**  
-Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Implemented** — WS-A: Reset all data enumerates every item in Bluey's service (delete_all) instead of known keys only, so keys of removed providers go too (6b14460). Fix pass: reset also clears each account's origin record.
 
 - **Root cause:** Reset enumerates keys from the current settings instead of from the Keychain service.
 - **Evidence:** `commands/data.rs:62-68 iterates only `core.settings.get().ai.providers``; No code path deletes provider:<id>:api_key when a provider is removed (rg secrets.delete: only data.rs, auth:517/590, accounts:546, commands/settings.rs:54); The auditor's ACL dump lists provider:azure-foundry:api_key and provider:provider_<custom-id> still present
@@ -177,7 +177,7 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 #### DEBT-005
 
 **Interactive Keychain reads run synchronously on tokio workers in async settings paths**  
-Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Implemented** — WS-A: Keychain I/O runs on spawn_blocking (SecretsStore::blocking), and async settings paths use cached presence instead of synchronous reads (79ff256).
 
 - **Root cause:** The has_api_key refresh uses has_sync from async contexts.
 - **Evidence:** `settings/mod.rs:57-66 async update() -> replace() -> has_sync per provider (:150-153)`; commands/settings.rs:37-43/51-56 async secrets_set/secrets_delete -> sync refresh_provider_keys (:160-176); secrets/mod.rs:159-165 shows the intended pattern (spawn_blocking) that these paths bypass
@@ -188,7 +188,7 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 #### TEST-013
 
 **SecretsStore is hard-wired to keyring, so no test can assert how many Keychain reads/writes an action performs**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-A: KeychainBackend trait with CountingFake (secrets/backend.rs), injected through SecretsStore::with_backend, so tests can pin Read/Add/Remove/Probe counts per action.
 
 - **User impact:** Regressions that add Keychain reads or writes on hot paths (like live suggestions in PR #45) are invisible in CI, and they show up to users as password dialogs.
 - **Root cause:** There is no abstraction between SecretsStore policy (allow-list, caching, error mapping) and the platform backend.
@@ -201,7 +201,7 @@ Severity **Low** · confidence verified · effort M · independent · provable o
 #### UX-018
 
 **Denying the macOS prompt during Claude/Antigravity import is reported as 'not signed in' / 'not found'**  
-Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-A: A denied prompt while reading the other app's item on import maps to account.import_denied ('macOS blocked Bluey from reading <App>'s sign-in — click Import again and choose Allow'), via accounts::read_foreign_secret and present.ts copy (79ff256). Device check: Click Import for Claude Code, deny the prompt, and confirm the copy.
 
 - **User impact:** The user clicks Deny or Cancel on the foreign-item prompt (expected and legitimate) and is told the other app isn't signed in. They may sign in again in Claude Code or Antigravity for no reason.
 - **Root cause:** Foreign reads discard the keyring error kind.
@@ -214,7 +214,7 @@ Severity **Low** · confidence verified · effort S · independent · needs real
 #### PERF-016
 
 **Opportunity: consolidate Bluey-owned secrets into one Keychain item (vault) so an identity change costs one prompt instead of N**  
-Severity **Opportunity** · confidence likely · effort M · has dependencies · needs real macOS · status **Open — needs real-device verification**
+Severity **Opportunity** · confidence likely · effort M · has dependencies · needs real macOS · status **Deferred** — WS-A: Merging the secrets into a single vault item is a larger migration and a product decision. The cache, attribute-only probes and Allow access already cap the cost of an identity change at one prompt per used item. Recorded in ADR 0011.
 
 - **User impact:** While builds stay ad-hoc, users would see a single 'Always Allow' dialog per update instead of one per stored secret.
 - **Root cause:** The one-item-per-secret layout multiplies the per-identity cost.
@@ -228,7 +228,7 @@ Severity **Opportunity** · confidence likely · effort M · has dependencies ·
 #### FEATURE-005
 
 **Credential health: show which saved credentials this build can use silently, and repair them without guesswork**  
-Severity **Opportunity** · confidence verified · effort M · has dependencies · needs real macOS · status **Open — needs real-device verification**
+Severity **Opportunity** · confidence verified · effort M · has dependencies · needs real macOS · status **Implemented — needs real-device verification** — WS-A: Settings → Privacy → Saved credentials lists names and states (secrets_health, secrets/health.rs, SavedCredentials.tsx) with Allow access and Remove. Fix pass (dbcb485): secrets_allow_access goes through health::allow_access. It accepts only listed keys (WebView API keys, auth:clerk:oauth_tokens, account:<id>:oauth_tokens) and probes silently first. It does an interactive read only when the item is Locked; Present or Absent return with no read. The mock transport enforces the same list. SECURITY.md and the secrets module doc name the exception. Device check: Allow access on a locked item shows the macOS prompt once, and after Always Allow the row turns Present.
 
 - **User impact:** After an ad-hoc update the user sees a string of password dialogs with no explanation, and after a Cancel, providers silently look keyless.
 - **Root cause:** Bluey never tells the user which of its saved credentials need macOS approval, or why.
@@ -244,7 +244,7 @@ Severity **Opportunity** · confidence verified · effort M · has dependencies 
 #### DATA-001
 
 **Every screen capture is written to ~/Library/Caches as a JPEG and never deleted, even with 'Store screenshots' off (default); Delete/Reset don't remove them**  
-Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: Frame files now follow a full lifecycle. FrameCache returns evicted frames and their files are deleted. A context snapshot that has OCR'd and inlined a frame releases its temp file (src-tauri/src/context/mod.rs). With Store screenshots on, the frame is first copied into <data dir>/screenshots (AppPaths.screenshots_dir) and the stored row points at that copy. data_delete_screenshots and data_reset_all empty both the frames and screenshots folders (Storage::clear_dir). The Swift helper TempFrames now deletes frames older than 10 minutes at startup and every 5 minutes (HelperApp.swift). Docs updated in HELPER_PROTOCOL.md. Device check: After a few captures with Store screenshots off, check that ~/Library/Caches/com.codewithabdul.bluey/frames empties. With it on, check that stored screenshots survive the helper's sweep.
 
 - **User impact:** The docs and UI say screenshots are off by default and deletion really deletes. In reality every ⌘↵ leaves a full-screen JPEG in a folder any non-sandboxed process of the user can read, with no TCC protection. Files stay there for days while the app runs, and 'Delete screenshots' and 'Reset all' leave them in place. Users who opt in to storing screenshots silently lose them after a helper restart.
 - **Root cause:** The helper always writes a file so OCR can work by path. No Rust path ever discards frames: cache eviction forgets the path, and no caller invokes the discard command. The 'stored' screenshot just reuses the temp path, and deletion code only knows DB-referenced paths.
@@ -258,7 +258,7 @@ Severity **High** · confidence verified · effort M · independent · needs rea
 #### SEC-003
 
 **Privacy → 'Cloud AI' off does not stop live audio streaming to Gemini Live, document/query embeddings, boot re-embedding or recording uploads**  
-Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Implemented** — Split across workstreams: D1 keeps live audio on the Mac when Cloud AI is off; E1 refuses stream/embed/transcribe_file with a privacy error in AiManager; FX2 extends the gate to research.
 
 - **User impact:** A user who turns Cloud AI off expects nothing to leave the Mac. Microphone and system audio (the most sensitive data Bluey handles) keep streaming to Google whenever they listen, and resume/document text is still embedded by the cloud provider at import and at every launch.
 - **Root cause:** The master switch is implemented as a TypeScript engine precondition. Rust managers that talk to cloud providers on their own (audio, documents, batch transcription) never consult it.
@@ -272,7 +272,7 @@ Severity **High** · confidence verified · effort M · independent · needs rea
 #### SEC-004
 
 **Privacy-mode note promises exclusion from ScreenCaptureKit/Zoom/Meet, but sharingType=.none is not honoured by ScreenCaptureKit on macOS 15+ (this Mac: macOS 26); native menus are never protected**  
-Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: CaptureProtection now reports a partial state on macOS 15+ or when the version is unknown (platform::parse_major_version reads sw_vers). PROTECTED_NOTE, the privacy tooltips, README, docs/SECURITY.md and an addendum to ADR 0006 now say protection hides Bluey from apps that honour macOS window protection (legacy capture), and that ScreenCaptureKit screen sharing on macOS 15+ may still show Bluey. NSMenu popups are never protected. set_content_protected is still called. The mock transport mirrors the partial field. Device check: On macOS 15+, confirm what Zoom, Meet and the macOS screenshot tools actually show with Privacy mode on, so the copy stays accurate.
 
 - **User impact:** Users of an interview/meeting copilot may turn on Privacy mode and trust the in-app note that Bluey is hidden from screen shares. On macOS 15+ the HUD (and its dropdown menus) can be visible to the other party in Zoom, Meet, Teams or QuickTime.
 - **Root cause:** The ADR was written against pre-Sequoia behaviour. The note text is static and never verified on the running OS.
@@ -286,7 +286,7 @@ Severity **High** · confidence likely · effort S · independent · needs real 
 #### SEC-007
 
 **No app ACL manifest: all 142 Bluey commands (arbitrary-file document ingest, dev_*, settings/base-URL rewrites, data_reset_all) are callable from every window**  
-Severity **Medium** · confidence verified · effort L · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort L · independent · needs real macOS · status **Deferred** — Per-window command ACL manifest (142 commands, 3 capabilities) is defence in depth behind CSP and sanitised Markdown; large and risky for this cycle. Tracked for a dedicated change.
 
 - **User impact:** Nothing is exploitable today without script execution in a WebView, and the CSP and markdown rendering make that hard. But the HUD renders attacker-influenced content (screen, OCR, web results, model output). Any future XSS, a mermaid or shiki bug, or a dependency compromise turns straight into reading arbitrary user files and exfiltrating API keys (by rewriting a provider base_url) with no second layer. The security doc overstates the isolation.
 - **Root cause:** Tauri v2 allows every app command in every window unless the app declares an app manifest. Rust commands trust WebView-supplied paths and URLs.
@@ -300,7 +300,7 @@ Severity **Medium** · confidence verified · effort L · independent · needs r
 #### SEC-008
 
 **Updater minisign private key is exposed as job-level env to bun install/test/lint and every cargo build script in nightly/release builds**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-G: The minisign key and password are no longer job-level env in nightly.yml and release.yml; they are now env on the scripts/release.sh step only. release.sh strips them (env -u) from installs, typecheck/lint/test, check-rust.sh and the sidecar builds, so only tauri build sees them. docs/ci copies and RELEASING.md are updated. Device check: Needs a real GitHub Actions nightly or release run to confirm signing still works.
 
 - **User impact:** A single compromised npm dev dependency or crate build script that runs during the nightly could read the signing key. That key lets an attacker sign malicious updates that every installed Bluey auto-installs, with no Apple notarization to stop it.
 - **Root cause:** Convenience: the key is set once at job level because `tauri build` signs during bundling.
@@ -313,7 +313,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### CRIT-002
 
 **Importing a malformed/unusual PDF (or a DOCX zip bomb) can abort the whole app: pdf-extract 0.9 panics and release uses panic="abort"**  
-Severity **Medium** · confidence likely · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-G: Picked the in-process fix. The release profile now uses panic=unwind (src-tauri/Cargo.toml), and bluey-storage documents/parse.rs runs pdf-extract under catch_unwind, so a parser panic comes back as a parse error instead of aborting the app. A compile_error! stops anyone switching the profile back to abort. DOCX entries are read through read_capped with a decompressed-size cap and return storage.document_too_large. I chose this over an out-of-process parser because it is much smaller and still keeps the app alive. Device check: Import a crafted malformed PDF in a packaged release build to confirm the unwind profile holds end to end.
 
 - **User impact:** The core onboarding step (add your resume) can crash Bluey instantly with no error message. Crash output is lost because there is no panic hook and no stderr logging in release. A crafted DOCX can exhaust memory.
 - **Root cause:** Third-party parsers with panic paths run in-process in a panic=abort binary. No output limits on decompression.
@@ -326,7 +326,7 @@ Severity **Medium** · confidence likely · effort M · independent · needs rea
 #### DATA-004
 
 **Public repo tracks 25 screenshots including the owner's e-mail/connected Google account and public IP addresses with city-level geolocation**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Owner decision: removing cluely-screenshorts/ from a public history needs a history rewrite and force-push.
 
 - **User impact:** Personal identifiers and approximate location of the developer are published, plus competitor product screenshots. Anyone cloning the repo keeps them forever unless history is rewritten.
 - **Root cause:** Research screenshots were committed alongside the code.
@@ -339,7 +339,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### SEC-014
 
 **Any bluey://auth/callback (or first loopback hit) consumes the pending sign-in before state is checked; error links need no state and their text is shown verbatim**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-A: A callback is matched by state (take_pending_for) before the pending sign-in is consumed. A mismatched loopback hit is rejected and the listener keeps accepting. Denied copy is fixed (a675eb7).
 
 - **User impact:** While a sign-in is pending, a web page (after the browser's 'Open Bluey?' prompt) or a local process hitting the loopback port can abort it and show arbitrary text in Bluey's error toast, which could be used for phishing copy. PKCE still prevents account takeover.
 - **Root cause:** The one-shot flow is taken first 'whatever happens next'.
@@ -352,7 +352,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### SEC-015
 
 **Release builds load .env/.env.local from the current directory and executable dir; values persist provider base URLs and can point the agent at an arbitrary 'claude' binary**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-A: Release builds read .env only from BLUEY_ENV_FILE. The current-directory and executable-directory lookups are debug only (dotenv_dirs/dotenv_files) (cc3dd6b).
 
 - **User impact:** Launching the binary from a terminal inside an untrusted directory with a crafted .env (e.g. a cloned repo) can permanently redirect the user's Gemini/OpenAI key and context to another host, or run an arbitrary executable on the next deep-research job. Finder and launchd launches (cwd '/') are not affected.
 - **Root cause:** The dev convenience loader was not limited to debug builds.
@@ -365,7 +365,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### SEC-016
 
 **Redaction runs on the serialized JSON line, so key:value patterns inside string fields (escaped quotes) are missed; no generic JWT/access_token patterns; debug stderr unredacted**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: logging/mod.rs redaction runs on the formatted JSON line. The key patterns now accept JSON-escaped quotes and also cover access/refresh/id tokens, client_secret and password. A bare-JWT pattern is added. The debug stderr layer goes through the same redacting line sink. I did not write a field visitor: redacting the final line covers every field and message in one place.
 
 - **User impact:** None today. The defence-in-depth layer the docs rely on would miss secrets that a future `error = %e` carrying provider JSON puts in the log.
 - **Root cause:** Regexes were designed for raw text, not JSON-escaped output.
@@ -378,7 +378,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### SEC-017
 
 **Claude research backend runs the Claude Code CLI with default telemetry (and Exa/Firecrawl keys) in its environment**  
-Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Implemented** — WS-R: buildSubprocessEnv sets DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC to 1 and strips EXA_API_KEY and FIRECRAWL_API_KEY from the Claude Code CLI environment.
 
 - **User impact:** Deep research on the Claude backend sends usage metrics (no prompts, per Anthropic) to Anthropic and third-party logging without disclosure. Tool keys are exposed to a process that does not need them.
 - **Root cause:** Only provider-routing vars are rewritten for the subprocess.
@@ -391,7 +391,7 @@ Severity **Low** · confidence likely · effort S · independent · provable off
 #### DEBT-009
 
 **Daily log files in ~/Library/Logs/Bluey are never rotated or deleted, and reset does not remove them**  
-Severity **Low** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort M · independent · provable off-device · status **Implemented** — WS-G: Daily log files older than 14 days are deleted at startup (prune_old_logs). 'Reset all data' deletes every log file (commands/data.rs calls app delete_log_files), and logging continues into a fresh file. SECURITY.md documents both.
 
 - **Root cause:** The file sink creates one file per day, with no retention policy and no reset hook.
 - **Evidence:** src-tauri/src/logging/mod.rs:182 opens bluey-YYYY-MM-DD.log in append mode each day; the logging module has no read_dir/remove_file/prune logic; rg for logs_dir outside logging/: only storage/mod.rs:24,41 (creation) and app/checks.rs:139 (display); commands/data.rs data_reset_all has no step for logs; WARN/ERROR records also carry error strings that the redaction regexes can miss (see log-redaction-json-escaped-gap)
@@ -404,7 +404,7 @@ Severity **Low** · confidence likely · effort M · independent · provable off
 #### AI-001
 
 **Coding answers stream the whole `code` field before `content` and generate the solution twice**  
-Severity **High** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence likely · effort S · independent · provable off-device · status **Implemented** — WS-B1: The coding fragment and schema no longer ask for a separate `code` field; the code is taken from the first fence in `content`, as the optimizer already did. The prompt now asks for the solution first in a fenced block, then the approach in at most two lines. Enabling serde_json preserve_order for one crate only is not possible (the feature applies across the whole workspace build). Instead, a test checks that, in sorted key order, only citations and confidence come before content in every schema. Commit 095d071.
 
 - **User impact:** In Coding Interview, and whenever General or Interview is upgraded to the coding schema, the HUD stays blank for the entire time the model writes the full solution into `code` (on Gemini default, OpenAI, Azure and ChatGPT/Codex). It then spends the same time again writing the same code into `content`. Visible latency and output cost roughly double on the most latency-sensitive screen. Long solutions risk truncation, and on a double truncation raw JSON is shown.
 - **Root cause:** A redundant `code` field is requested from the model although the optimizer already derives `code` from the first fenced block (optimizer.ts:272-281). Combined with alphabetical key serialisation, that field is emitted first.
@@ -469,7 +469,7 @@ Better tests than the ones proposed:
 #### MODE-001
 
 **Debugging, regex and 'why is this failing' asks are routed to the full-solution coding schema**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-B1: relevance.ts now has separate markers for a problem statement, source code and errors, plus debug cues. A debug shape (in ai.ts, task.ts and request.ts) uses the answer schema: 'First line: the exact fix; then the cause in one sentence; only the changed lines in a fence'. Code on screen forces the coding task only on a solve request. A bare stack trace on ⌘↵ routes to debug. Commits d4ceae2 and 5c752c5.
 
 - **User impact:** A stack trace or 'why is this failing?' gets a rewritten full program with complexity analysis instead of the one-line cause and the minimal fix. That is slower (2200-token budget, balanced latency) and harder to apply. The optimizer can also delete the diagnosis sentence (see the optimizer finding).
 - **Root cause:** Task classification has one 'coding' bucket for 'solve this problem' and 'fix this code'. The schema and fragment are designed for interview problems.
@@ -538,7 +538,7 @@ Nothing here touches security, and it is independent of other work. No real-macO
 #### CTX-001
 
 **On ⌘↵, any question heard in the last few minutes ("Can you see my screen?") replaces the screen as the question and flips the task to yes/no or spoken**  
-Severity **High** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort S · independent · provable off-device · status **Partially implemented** — WS-B1: On ⌘↵ and assist, a question heard earlier no longer replaces the screen as the question: relevance.ts keeps the screen as the subject, and the heard text stays context only (commit 724fb5d). The recency limit on the fusion-side fallback question was not changed because src/context/fusion.ts belongs to workstream C.
 
 - **User impact:** In a live coding interview, the interviewer typically says "Can you see my screen?" or "Does that make sense?" just before sharing a problem. When the candidate presses ⌘↵ to solve it, Bluey answers in spoken form or tells the model to start with yes/no, instead of solving the problem on screen. This breaks the core screen-solve loop exactly when a call is running.
 - **Root cause:** currentQuestionText is shared by the live, spoken triggers and the screen-capture trigger. For ⌘↵ the screen is the subject, but the fallback promotes any stale transcript question to 'the question', and shape and task detection trust it over the screen.
@@ -551,7 +551,7 @@ Severity **High** · confidence verified · effort S · independent · provable 
 #### AI-003
 
 **Optimizer's restatement stripper deletes the answer, the diagnosis or the spoken opener**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B1: The fix list from the finding is applied in src/ai/optimizer.ts. A first sentence is stripped only when an answer remains, never when it carries the answer (option markers, numbers and backticks are protected). No restatement stripping for spoken, written, code, choice or debug answers. The match no longer runs across a ':'. Commit 6c50670.
 
 - **User impact:** After the model has produced a correct, answer-first reply, the client post-processor silently removes the answer (MCQ pick), the cause of an error, or the first spoken line of an interview answer. The user reads or speaks a fragment. This hits exactly the flows the contract was built for.
 - **Root cause:** The regex heuristics treat any sentence starting with 'Let's…', 'The error shows…', 'I can help…' as narration. There is no check that the removed sentence carries no answer. The spans cross ':' and the filler list strips 'Sure'/'Of course' even when they are part of the sentence. The stripping also runs on spoken and written shapes, where the text is the deliverable.
@@ -564,7 +564,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### SEC-009
 
 **Untrusted OCR, transcript, document and web text can forge `### Current question` / `Task:` sections, and on Claude subscription `<\system-reminder>` tags**  
-Severity **Medium** · confidence verified · effort M · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · has dependencies · provable off-device · status **Implemented — needs real-device verification** — WS-B1: New file src/ai/prompts/untrusted.ts. Untrusted sources (OCR, accessibility text, transcript, heard question, documents, web research) are wrapped in per-request nonce blocks: <context source=… id=…>…</context id=…>, with an 8-hex nonce from the CSPRNG. Lines inside that look like prompt structure (#, Task:, Shape:, Voice:, My question:) get a prefix, and <context and <system look-alikes are defanged. The safety rule now names this scheme. On the Claude subscription transport, claude_code.rs also defangs reminder tags in captured context. Commits 134688f and 100f78e. Device check: Run the opt-in live tier (BLUEY_PROMPT_EVAL_LIVE=1) to check real model behaviour against injected screen text and documents.
 
 - **User impact:** A web page, email, PDF, meeting participant or scraped search result can inject text the model reads as the user's current question or a Bluey rule. It can steer answers (e.g. spoken words in an interview, a curl command in a 'fix'), or ask for resume and personal-instruction content that sits in the same prompt. The Claude subscription path is weakest because Bluey's own rules have no system-role authority there.
 - **Root cause:** Section boundaries are plain markdown that untrusted text can reproduce. There are no per-request unforgeable delimiters or escaping. The Claude OAuth transport demotes the system prompt to user content.
@@ -579,7 +579,7 @@ Severity **Medium** · confidence verified · effort M · has dependencies · pr
 #### MODE-002
 
 **Global 'write as the user, first person' rule forces the wrong voice for explanations, recaps, debugging and research**  
-Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Implemented** — WS-B1: Intent gains a voice field ('speak-as-user', 'write-as-user' or 'explain-to-user'), set by voiceFor in relevance.ts. Explain, why and summary cues win when typed in conversational modes; 'what should I say' cues stay spoken. The global first-person contract line is replaced by one Voice: line per request (task.ts VOICE_LINES, rendered by prompt-builder; engine.ts passes intent.voice). A typed explanation in a suggested-response, behavioral, sales or recruiting mode now uses the answer schema, because those schemas define content as 'exactly what I say'. MODE_SYSTEM.md updated. Commits 5e36e92, 5c752c5 and 378960d.
 
 - **User impact:** Asking Bluey to explain a concept, recap a meeting, summarise a lecture, diagnose an error or research a fact returns answers phrased as the user's own speech ('I'd say a mutex is…'), or a script to speak when the user asked to understand. In Interview and Sales, typed study questions become speakable lines. This undercuts learning and review use cases and reads oddly in written contexts.
 - **Root cause:** PR #36 fixed third-person 'the candidate should…' by making first person global. Voice should follow the deliverable (words to say or submit vs. an explanation for the user), not be fixed for the whole prompt.
@@ -592,7 +592,7 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 #### PROV-003
 
 **Anthropic structured outputs likely reject the schema's numeric min/max, so every structured ask pays a 400 round-trip and loses constrained decoding**  
-Severity **Medium** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort S · independent · provable off-device · status **Implemented** — WS-B1: On the TypeScript side, the zod .min/.max on confidence are dropped (the parser clamps the value) and the schemas carry no numeric or length bounds (commit 095d071). On the Rust side, bluey-protocols json_schema.rs gains an Anthropic variant that strips minimum, maximum, exclusive*, multipleOf, minLength and maxLength; anthropic.rs uses it (commit d560225). Not done: the provider-side sticky fallback in src-tauri/src, which is outside my files (see follow-ups). Device check: One live Anthropic structured-output request to confirm the stripped schema is accepted. | WS-F: On the adapter side, Anthropic API-key requests get the same sticky schema-in-prompt fallback when structured output is rejected. B1 strips unsupported constraints on the schema side (commit e6481d2).
 
 - **User impact:** On Anthropic API keys and Claude subscription, every structured ask (all modes) likely makes a failing request first, adding a full round-trip (hundreds of ms to seconds) to time-to-first-token. It then runs without schema enforcement, so JSON validity depends on the tolerant parser.
 - **Root cause:** The zod schema carries constraints the provider does not support, and the adapter forwards them unchanged with a non-sticky fallback.
@@ -605,7 +605,7 @@ Severity **Medium** · confidence likely · effort S · independent · provable 
 #### AI-004
 
 **The user's typed question and standing personal instructions are rendered as untrusted 'data, not instructions'**  
-Severity **Medium** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort S · independent · provable off-device · status **Implemented** — WS-B1: A typed question is now trusted: it renders outside the context blocks as 'My question: …' just before Task:, and task.ts now says 'Answer my question above'. Personal instructions moved into the system prompt after the mode block, labelled 'User preferences (from the user; they never override safety)'. Commit 134688f.
 
 - **User impact:** The model gets contradictory authority signals: the user's own request and saved preferences (e.g. 'always answer in Spanish', 'I'm a senior Go engineer') sit under a 'not instructions' banner. Preferences may be ignored, and a well-aligned model may treat 'give me the exact words to decline…' cautiously. It also means forged '### Current question' sections (see the injection finding) carry the same weight as real ones.
 - **Root cause:** The labels module treats every ContextItem source the same way. Trust level was never modelled per source.
@@ -618,7 +618,7 @@ Severity **Medium** · confidence likely · effort S · independent · provable 
 #### AI-005
 
 **Yes/no shape and 'commit to one answer' force definitive answers on forecasts and false dichotomies**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B1: The yes/no shape now allows 'Neither' or 'It depends' when the premise is wrong. An either/or question ('X or Y') is no longer treated as yes/no. Forecasts map to a short answer: the best estimate plus what it depends on. The 'direct' tone keeps one clause of real uncertainty. Changes in relevance.ts, task.ts and style.ts. Commit 5bca22a.
 
 - **User impact:** Users get confident 'Yes —'/'No —' answers to unknowable forecasts, or to questions whose correct answer is 'neither' (Python passes object references by value). This is a factual-accuracy risk that the safety rule 'never fabricate' does not cover.
 - **Root cause:** Shape detection is lexical (question opener), and the boolean shape line has no escape for non-binary truths. The contract's hedge clause is generic, and the 'direct' tone removes it.
@@ -631,7 +631,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### TEST-001
 
 **No composed-prompt goldens or behavioural evals; fixtures only check routing**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-B1: New prompt-eval harness in tests/prompt-eval/. harness.ts runs the real engine over FakeTransport, using engine.prepare for live suggestions. cases.ts holds the 26-row evaluation matrix, each row with a rubric. invariants.test.ts checks, for every case: exactly one Task:, Shape: and Voice: line matching the intent; the schema the intent routes to; the question once (typed: trusted, right before Task; heard: inside a nonce block); no forged tags or headings outside nonce blocks; chronological transcript with the last turn kept; the static-layer token budget and the context budget. golden.test.ts keeps file snapshots of 6 composed prompts in __golden__ (nonces normalised). live.test.ts is the model-graded tier, skipped unless BLUEY_PROMPT_EVAL_LIVE=1 and ANTHROPIC_API_KEY are set. docs/audits/2026-09-28/prompt-eval-before-after.md shows before (abc0693) and after composed prompts with per-layer token counts for four cases: General ⌘↵ multiple choice, Interview spoken answer, Coding problem and live suggestion. All four are smaller after. Commits 69d9de9 and 5629549. Device check: The live tier has not been run; it needs an API key and costs tokens.
 
 - **User impact:** Prompt regressions (voice, ordering, dropped context, injection surface) ship unnoticed. Mock-only tests stayed green in PR #18, and the same pattern applies here.
 - **Root cause:** Tests stop at the builder API. Nothing renders the full engine → request → provider-body chain for realistic fixtures.
@@ -644,7 +644,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### AI-011
 
 **Contract, mode text, fragments and custom modes contradict each other under 'equal' precedence**  
-Severity **Low** · confidence verified · effort S · has dependencies · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · has dependencies · provable off-device · status **Implemented** — WS-B1: There is now one precedence line: safety > the user's custom mode instructions > this contract > built-in mode guidance > style. A user's custom mode is labelled as theirs. Built-in texts in bluey-core modes.rs were edited: Interview no longer claims every answer is speech, the coding and system-design modes gained off-topic lines, and Team Meeting says 'Nothing to flag.' instead of staying silent. Commit f43998b. Commit 501dabe fixes that commit's Rust test, which looked modes up by ids that do not exist; it now uses coding-interview and team-meeting. Workstream B2 delivers the new texts to existing installs.
 
 - **User impact:** The model resolves conflicts arbitrarily, so the same ask yields inconsistent shapes across providers and runs. Coding answers alternate between approach-first and code-first. Custom 'tutor' modes are half-overridden by the contract (user intent loses). A meeting 'nothing significant' reply shows an error banner.
 - **Root cause:** Rules were layered without an explicit hierarchy for the cases where they genuinely differ.
@@ -658,7 +658,7 @@ Severity **Low** · confidence verified · effort S · has dependencies · prova
 #### AI-012
 
 **Parser and optimizer fallbacks can put section rationale and headings into a spoken answer**  
-Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Implemented** — WS-B1: The parser fallback no longer builds spoken content from rationale sections such as 'Why it works'. Leading headings and rationale sections are stripped from spoken and written answers (changes in src/modes/schemas.ts, the optimizer and relevance). Commit 3f69750.
 
 - **User impact:** Occasionally the HUD shows 'Why it works' notes or a markdown heading as the thing to say. A user reading aloud under pressure could speak the rationale.
 - **Root cause:** The salvage path synthesises content from sections regardless of schema, and there is no spoken-shape sanitiser.
@@ -671,7 +671,7 @@ Severity **Low** · confidence likely · effort S · independent · provable off
 #### AI-015
 
 **About 1.1k static system tokens per ask, with a duplicated shape rule and duplicated OCR/AX text**  
-Severity **Opportunity** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Opportunity** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B1: Dropped the contract's 'Match the shape' bullet, which the per-request Shape: line already states. The static layers (identity, safety, contract) went from 653 estimated tokens at abc0693 to 529. tests/prompt-eval/invariants.test.ts keeps them at or under 653. Commit 817b56f.
 
 - **User impact:** Small prefill latency per ask (tens of ms). Duplicate context competes for the model's attention. The prefix hovers around provider auto-cache minimums (~1024 tokens for OpenAI and Gemini implicit caching), so caching is inconsistent.
 - **Root cause:** Layers were added independently. The fusion step does not dedupe AX text already present in OCR.
@@ -686,7 +686,7 @@ Severity **Opportunity** · confidence verified · effort S · independent · pr
 #### CTX-002
 
 **Files attached in Modes → Files never reach the prompt in 6 of the 9 editable built-in modes and in new custom modes**  
-Severity **High** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-C: Every ask now searches the active mode's own scope with no kind filter, gated on attachedDocumentIds as the critique suggested; files dropped on a mode are stored as notes. Files: src/context/retrieval.ts, plus the mock documents_retrieve in src/lib/tauri/mock/mock-transport.ts, which now applies scope, kind and the leading strategy the same way Rust does.
 
 - **User impact:** The most natural action, dropping your résumé or the JD into Interview/Behavioral mode, or a syllabus into Lecture, uploads, indexes and lists the file, but Bluey never uses it. Answers stay generic or use bracketed placeholders and the user has no signal why.
 - **Root cause:** Retrieval kinds are derived only from the mode's contextRequirements. The mode-scoped dropzone hardcodes kind `notes`, and `notes` is only allowed when the mode requires `documents`, which most built-ins do not.
@@ -742,7 +742,7 @@ Files: src/context/retrieval.ts, src/features/settings/ModeFilesDropzone.tsx (pl
 #### CTX-003
 
 **Global 'My Context' documents (résumé, personal instructions, session docs) are never retrieved in General, Coding Interview, System Design, Team Meeting or Lecture**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-C: Every mode now runs a small keyword pass over the session and global library (limit 3, relevance floor), including modes with no document requirements. Personal-instruction documents are loaded on every ask, whatever the question: the global, active-mode and session documents are fetched with the new `leading` strategy, joined and capped at 1500 chars into userContext.personalInstructions (src/context/snapshot.ts joinPersonalInstructions). B1 will move their rendering into the trusted system prompt.
 
 - **User impact:** In the default General mode and four other built-ins, the résumé, company notes and personal instructions the user added in Settings → Context are silently ignored, contradicting the Settings copy and the documented context-priority order (docs/MODE_SYSTEM.md 'Context priority').
 - **Root cause:** Mode requirements gate all document retrieval, global and session scopes included, not only mode-specific kinds. Personal instructions depend on a keyword retrieval that never runs in these modes.
@@ -812,7 +812,7 @@ Add a Personal instructions or résumé doc in Settings → Context, stay in Gen
 #### MODE-003
 
 **The onboarding 'Choose your default mode' step and the Default mode setting never change the running mode**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-B2: Choosing a default mode (in onboarding or Settings) now switches to it right away when no session is running. A running session keeps its current mode. At launch Bluey starts in the default mode, unless it is resuming an active session, which keeps its own mode. If the default mode no longer exists, launch falls back to 'general'. Code: ModeManager::set_default/load in src-tauri/src/modes/mod.rs. modes_set_default in src-tauri/src/commands/modes.rs now calls core.modes.set_default. The onboarding step already calls setDefault, so it gets this for free. The mock transport follows the same rules. Documented in docs/MODE_SYSTEM.md. Device check: Check in the real app: pick a default mode in onboarding, then relaunch the app and confirm it comes back in that mode (tests use a temporary data directory).
 
 - **User impact:** A new user who picks Interview during onboarding lands in General, so there are no live suggestions and no spoken candidate voice in their first session. After any manual switch, the Default mode setting has no effect at all: the last active mode is always restored.
 - **Root cause:** 'Default' and 'active' are separate states. Default is only consulted when no active mode was ever persisted, or when the active mode was deleted.
@@ -825,7 +825,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### MODE-004
 
 **Coding Interview and System Design modes answer every question, including behavioral and intro questions, as code or a design**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B1: In coding and system-design modes, the coding or design schema is forced only for coding or design asks. Otherwise a typed ask gets the plain answer schema, and a spoken trigger gets a spoken answer, or behavioral when behavioral markers match (uses BEHAVIORAL_MARKERS exported from src/transcript/classifier.ts). A follow-up to a code answer stays coding. The built-in coding and system-design texts in bluey-core modes.rs gained a one-line off-topic rule. Commits ba89801, 5c752c5, f43998b and 501dabe (a test fix).
 
 - **User impact:** Real coding and design interviews include intro, behavioral and clarification questions. In these modes Bluey returns an 'approach + runnable solution' or a six-section design for them, routed to slower default/reasoning models at deep effort, while the user needs one spoken sentence now.
 - **Root cause:** The mode's schema is treated as the task for every ask. Only the generic schemas can switch task, so the specialised modes can never fall back to a spoken answer.
@@ -838,7 +838,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### AI-006
 
 **Under the default Concise style, System Design and Behavioral prompts contain contradictory length instructions**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B1: The concise style's ~120-word ceiling now depends on the answer shape: design, code and summary answers are exempt, both in the style line (style.ts, prompt-builder) and in the optimizer's length cap. Commit 8a245c8.
 
 - **User impact:** The model gets conflicting instructions in two flagship modes. The result is either truncated designs and clipped STAR stories, or the ceiling is ignored at random, so answer length is unpredictable.
 - **Root cause:** The global style ceiling applies to every mode unless the mode sets responseStyle, and no built-in sets one.
@@ -851,7 +851,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### MODE-005
 
 **Improvements to built-in modes (instructions, schema, latency, requirements, role) never reach existing installs**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-B2: Migration 0005_modes_lifecycle.sql adds a modes.seed_hash column. Built-in modes seeded before this release get the marker 'legacy-unedited' if they were never edited (created_at = updated_at). At startup, seed_built_in in bluey-storage/src/repositories/modes.rs refreshes an unedited built-in to the shipped text. A mode counts as unedited when its current columns match the stored fingerprint (64-bit FNV-1a) or it carries the legacy marker. Built-ins the user edited keep their text. Reset to default restores the shipped text and records the new hash. The optional 'update available' flag was not built. Device check: Upgrade a real 0.1.2 data directory in place and confirm unedited built-ins pick up the new text while edited ones keep theirs.
 
 - **User impact:** Any future prompt-quality fix, or fixes that change requirements (e.g. adding `documents`), ships to new users only. Existing users keep stale behaviour forever unless they find 'Reset to default', which also discards their own edits.
 - **Root cause:** Insert-only seeding keeps user edits, but there is no way to detect whether a row was ever edited.
@@ -864,7 +864,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### DATA-005
 
 **Deleting a custom mode leaves its attached documents, chunks and FTS rows in SQLite despite 'removes the mode and its attached files'**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B2: Deleting a custom mode now deletes its mode-scoped documents in the same transaction; their chunks and search-index (FTS) rows are removed with them. Migration 0005 removes the files that earlier deletes left behind (scope 'mode' with a scope_id that matches no mode). The mock transport also removes the files when a mode is deleted.
 
 - **User impact:** Privacy and trust: file contents the user believes are deleted stay on disk, invisible and unreachable from any UI, until they wipe all data.
 - **Root cause:** The mode delete path does not delete documents scoped to the mode, and the scope_id column has no referential integrity.
@@ -878,7 +878,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### MODE-006
 
 **Team Meeting and Lecture have no live behaviour: decision, action-item and important-statement detections are computed and discarded**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E1: Detections that need no answer become session events through sessions_add_event when the active mode's schema lists that kind: Team Meeting (decision, action item, important statement, topic change) and Lecture (important statement, topic change). New pure mapper in src/transcript/notable.ts, called from recordNotable in src/stores/proactive.ts. Rust publishes session.event, so the timeline and the summary pick the events up. The spoken text is stored only when privacy.storeTranscripts is on. docs/MODE_SYSTEM.md updated.
 
 - **User impact:** The two note-taking modes behave exactly like General during a live session. Decisions and action items are not captured on the timeline, so the summary can only recover them from the raw transcript, and the documented live callouts do not exist.
 - **Root cause:** The classifier output is used only for the respond/not-respond decision. Nothing handles non-response events.
@@ -892,7 +892,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### MODE-007
 
 **'Prepare answers while listening' does nothing in General, Team Meeting, Lecture or any new custom mode, and nothing in the UI says so**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — E1 (LIVE-009): live suggestions are enabled per mode — conversational modes as before; General, Team Meeting, Lecture and custom modes surface direct questions above a higher confidence bar.
 
 - **User impact:** A user on the default General mode, or a freshly created custom mode, turns on listening and live suggestions (the feature shipped in PR #45). Direct questions in the transcript never produce a suggestion, and nothing explains why. Only a manual ask (⌘⇧↵) works. The same happens in Team Meeting when someone asks the user a question.
 - **Root cause:** Proactive answering is gated on a hard-coded set of 'conversational' schemas rather than on the question itself or a per-mode setting. The default schema for new modes falls outside that set.
@@ -905,7 +905,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### MODE-008
 
 **Switching mode mid-session never updates the session: no timeline event, and the summary uses the mode the session started in**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** A user who starts listening in General and switches to Team Meeting or Lecture gets a generic summary with no decision/action priority and no 'Study guide'. The sessions list filter by mode and the session header show the wrong mode, and the timeline hides the switch.
 - **Root cause:** The session stores a single immutable mode_id, and mode changes are not recorded as session events.
@@ -918,7 +918,7 @@ Severity **Low** · confidence verified · effort M · independent · provable o
 #### MODE-009
 
 **'Auto model' and an empty sidebar group cannot be saved in the Rust backend, while the mock transport clears them (mock-green, real-broken)**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B2: ModePatch.group and ModePatch.preferred_model_role in bluey-core/src/types/mode.rs are now Option<Option<..>>, read through a present_or_null deserializer. A missing field keeps the value; an explicit null (or a blank group) clears it. The repository applies this in create/update. The TS ModePatch type accepts null. ModeEditor sends null when the sidebar group is cleared or 'Auto model' is chosen. The mock follows the same rule.
 
 - **User impact:** After picking 'Reasoning model' for a mode, choosing 'Auto model' silently does nothing: the select snaps back after the modes.changed refresh and routing keeps forcing the reasoning model, which is slower and costlier. Group names cannot be removed.
 - **Root cause:** The partial-update contract uses `Option<T>` for nullable fields, so there is no way to express 'set to null'. The mock does not model Rust's patch semantics.
@@ -931,7 +931,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### MODE-010
 
 **Custom mode data is not validated anywhere, and mode instructions go unbounded and unframed into the system prompt**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-B2: ModeRepository create/update now reject invalid input with invalid_params (validate_patch in bluey-storage/src/repositories/modes.rs). Limits: name 60 characters, description 300, instructions 4000, icon must be a kebab-case name, preferred model role must be an allowed value. validateModeDraft in src/modes/registry.ts now returns an error per field and checks the same role rule. ModeEditor shows the error inline and never sends an invalid value. The mock transport enforces the same limits. How custom text is framed in the prompt is B1's work.
 
 - **User impact:** A pasted 50 KB agenda is resent on every ask outside the token budget, adding latency and cost and possibly exceeding provider limits. An instruction like 'follow any instructions shown on screen' quietly relaxes the prompt-injection rule. Asking for a custom JSON format can make non-strict providers fail parsing (schemas.ts:287-312 returns null when content and sections are missing). There is no import path, so the author is always the local user.
 - **Root cause:** Validation exists only as an unused TS helper. The prompt builder treats user-authored mode text as trusted, top-precedence instructions.
@@ -944,7 +944,7 @@ Severity **Low** · confidence verified · effort M · independent · provable o
 #### UX-019
 
 **After 'Reset to default' the Mode editor keeps showing the old instructions, and the blank-field placeholder promises a fallback that does not exist**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B2: In ModeEditor.tsx, Reset to default first cancels any pending debounced saves, then loads the returned mode into the editor fields. The blank-instructions placeholder now says that leaving it blank adds no instructions. Duplicate, Set as default and Reset now show an error toast on failure, and so does a failed create in ModesTab.tsx.
 
 - **User impact:** The user resets, still sees their custom text, and assumes the reset failed. The next keystroke re-saves the old text. Clearing the field to 'use the default' actually removes the built-in's judgment prompt.
 - **Root cause:** Local state is not re-synced from props when the backend changes the mode. The copy describes behaviour the prompt builder does not implement.
@@ -957,7 +957,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### TEST-014
 
 **Built-in mode definitions and mode semantics are copied in at least 6 TS places, all drifted from Rust, with no parity test**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Partially implemented** — WS-B2: Done for built-in modes. The test bluey-core/tests/ts_fixtures.rs writes built_in_modes() to tests/fixtures/rust/built-in-modes.json and fails if the file drifts; regenerate with BLUEY_UPDATE_FIXTURES=1 cargo test -p bluey-core --test ts_fixtures. The mock transport's built-ins (src/lib/tauri/mock/fixtures.ts) and the scenario helpers (tests/fixtures/helpers/fixtures.ts) now load that JSON. I deleted the seven hand-written tests/fixtures/*/mode.json files. The parity test checks the ids, that the mock serves the Rust definitions, the limits and prompt rendering. Not done: fixtures for Settings::default() and the default shortcut bindings (D2 is changing the shortcut defaults this wave). The duplicate isCandidateMode in src/ai/research.ts was left because that file belongs to R.
 
 - **User impact:** Indirect: prompt, context and classifier tests never exercise the prompts users actually get (which is why the style conflict and the retrieval gaps went unnoticed). Browser/mock development shows modes that differ from production.
 - **Root cause:** Modes are 'data' in Rust but the TS side keeps hand-written copies and id/schema switch statements.
@@ -970,7 +970,7 @@ Severity **Low** · confidence verified · effort M · independent · provable o
 #### DEBT-010
 
 **'Duplicate' claims to copy attachments, but the copy shows no files and retrieves none; mode_documents is a dead parallel mechanism**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-B2: A mode's files are now tracked in one place: its mode-scoped documents (documents.scope_id). attachedDocumentIds is worked out from that column. DocumentsManager::add no longer writes to mode_documents; it only publishes modes-changed. Duplicate copies each file, with its chunks, to the new mode, so the copy lists them and can retrieve from them. The mode_documents table is left in place but no longer written, because retention.rs, which is not my file, still refers to it.
 
 - **User impact:** A duplicated mode loses its files silently. Two sources of truth for mode attachments invite further bugs.
 - **Root cause:** Attachments exist both as documents.scope_id and as the mode_documents join table, and the readers and writers disagree.
@@ -983,7 +983,7 @@ Severity **Low** · confidence verified · effort M · independent · provable o
 #### MODE-011
 
 **Several mode knobs do nothing: the 'Session memory' chip, the 'Accessibility tree' chip when Screen is on, and the Sales competitor detector**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: The mode editor offers only context chips that change what a mode gathers: Screen covers the accessibility tree and session memory applies in every mode (commit 5f56615).
 
 - **User impact:** Users tune chips that have no effect and cannot turn off session memory for modes where earlier answers pollute new ones. New custom modes feel 'blind' by default.
 - **Root cause:** The requirements were only partly wired into fusion and capture.
@@ -996,7 +996,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### MODE-012
 
 **Switching mode during an ask or a live suggestion does not cancel or invalidate it, and Rust routes by the new mode's model role**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E1: AiRequest carries preferred_model_role, and Rust routes by the request's role before falling back to the active mode (src-tauri/src/ai/mod.rs preferred_role_for). A mode change clears the engine's prepared cache and the prepared hint. A suggestion already in flight finishes with its original mode's role; it is not cancelled.
 
 - **User impact:** Mostly benign. Occasionally an answer built for the old mode (prompt and schema) is routed to the new mode's model role, or a Sales-prepared answer is shown via ⌘⇧↵ after switching to Interview.
 - **Root cause:** Mode is resolved on two sides (TS for the prompt, Rust for routing) at different times.
@@ -1009,7 +1009,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DOC-002
 
 **docs/MODE_SYSTEM.md disagrees with the code on context sources, validation limits, word counts and live/summary behaviour**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX6: docs/MODE_SYSTEM.md: the built-in table's Context column now matches bluey_core::modes requirements. Every mode includes session_memory; General drops documents; Interview drops screen; System Design adds accessibility; Case adds documents; Recruiting adds screen. The word bounds are 80–220, as the tests enforce. The Summary item now says the summary is generated on demand from the session's starting mode (MODE-008 is still open), with one shared field set plus a per-schema section from src/ai/prompts/summary.ts; General and Recruiting get the common fields only. The lifecycle and limits sections were already right (B1/B2). docs/reference/bluey-sidecar-and-frontend-audit.md is now explicitly marked historical.
 
 - **User impact:** Contributors trust the doc and ship changes against the wrong contract.
 - **Root cause:** The doc was not updated alongside code changes.
@@ -1022,7 +1022,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### MODE-013
 
 **Deleting a custom mode that is the default leaves general.defaultModeId dangling, so deleting the active mode later fails**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-B2: ModeManager::delete (src-tauri/src/modes/mod.rs) resets general.defaultModeId to 'general' when the deleted mode was the default. When the deleted mode was the active one, Bluey switches to the default only if that mode still exists, and to 'general' otherwise. The mock does the same.
 
 - **User impact:** The user sets custom mode A as default, switches to custom mode B, and deletes A. A later attempt to delete B while B is active fails with a 'not found' error. The General tab's Default mode selector then points at a mode that no longer exists.
 - **Root cause:** The mode delete path does not keep the default-mode setting consistent. The fallback logic trusts the setting without checking that the mode exists.
@@ -1037,7 +1037,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### CTX-004
 
 **Transcript ring is never scoped to session or time: old conversations leak into new asks and replace the live one after listening restarts**  
-Severity **High** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-D1: New src-tauri/src/audio/ring.rs TranscriptRing: each entry carries run_id (bumped in AudioManager::start) and session_id. recent() returns the current run's finals while listening, otherwise the active session's, with the cutoff measured from that scope's own newest segment. Segments with no session are never returned. The ring is not cleared on start, so list() still works without persistence. Deleting one or all sessions purges their ring entries (src-tauri/src/commands/sessions.rs).
 
 - **User impact:** (a) After the user stops listening, every later ask in a mode that needs the transcript (including the default general mode, typed or ⌘↵) sends the last ~3 minutes of the old meeting to the cloud model, with no time limit until the app quits. (b) After listening restarts, ⌘⇧↵ and live suggestions answer the previous meeting's question, because the whole old ring outranks the new conversation. The old transcript is a privacy leak across sessions, and new sessions get wrong answers.
 - **Root cause:** The ring is an app-lifetime cache whose recency window is measured against its own newest element, while segment timestamps restart at 0 on every audio.start. Nothing ties ring entries to the current audio run or session, or to wall-clock time.
@@ -1098,7 +1098,7 @@ The fix touches src-tauri/src/audio/mod.rs only. It is independent of other work
 #### CTX-005
 
 **Live-detected question is never rendered as the 'Current question' the task line points to**  
-Severity **High** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-C: Added the new 'detected_question' ContextSource (src/lib/types/context.ts, after user_instruction). When an ask has no typed instruction, src/context/fusion.ts turns the detected event into one item, '<speaker ?? Speaker>: <text>' with ref event:<id> and relevance 1. The budget never drops it and its transcript segment is not repeated. The label 'Question just asked (heard; may be mis-transcribed)' is in src/ai/prompts/labels.ts, placed first after user_instruction in SECTION_ORDER. The detected_event task line in src/ai/prompts/task.ts points at that label.
 
 - **User impact:** Live suggestions (the proactive interview/sales loop) point the model at a section that does not exist. The model must guess which of several recent questions to answer. Both saturate at relevance 0.95 and the older one is listed first, so answers to the previous or wrong question are likely.
 - **Root cause:** The detected event is threaded into PromptBuilder but only the typed instruction is turned into a context item. The task-line wording assumed both paths.
@@ -1114,7 +1114,7 @@ Severity **High** · confidence verified · effort S · independent · provable 
 #### CTX-006
 
 **Conversation is rendered in relevance order (questions hoisted, rest newest-first), not the order it was spoken**  
-Severity **High** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-C: ContextItem gains an optional `at` field (segment start / turn time), which fusion sets on transcript items. src/ai/prompt-builder.ts now renders the transcript and transcript_old buckets sorted by `at` ascending, with transcript_old directly before the recent turns. Budget selection is unchanged (still by relevance).
 
 - **User impact:** ⌘⇧↵ ('what do I say next'), live suggestions and follow-ups rely on who said what, in what order. The model sees answers after questions they did not answer and questions grouped out of order. References like 'that migration' point the wrong way, and ⌘⇧↵ cannot reliably tell what the last turn was.
 - **Root cause:** Relevance is used both to choose what fits the budget and to order the output. Transcript items carry no timestamp or order field for the renderer.
@@ -1130,7 +1130,7 @@ Severity **High** · confidence verified · effort S · independent · provable 
 #### CTX-007
 
 **Follow-ups lose the previous answer without an active session, and never see the previous code or question**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-C: The chat turns now become conversation memory whether or not a session is active. The last two turns render as 'Q: ...\nA: ...' (the newest keeps its code block, capped) and older turns as short summaries. They use a new 'conversation' source labelled 'Earlier in this chat', rendered before the question. Session memory no longer repeats these turns. enrichSnapshot in src/context/snapshot.ts keeps the responses loaded from the DB when the UI passes none. A follow-up with no earlier turn falls back to the typed task line. Files: src/context/fusion.ts, snapshot.ts, labels.ts, types/context.ts.
 
 - **User impact:** The core chat loop (⌘↵ then 'make it shorter', 'rewrite in Go', 'why O(n)?') fails for anyone not inside a session, which is the normal casual use. The model answers blind. Even in a session it cannot see the code it wrote or the question it answered, so coding follow-ups are regenerated from scratch or guessed.
 - **Root cause:** Conversation memory depends on the session concept instead of the chat thread. The memory projection was designed as short summaries for proactive context, not for follow-ups.
@@ -1148,7 +1148,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### CTX-008
 
 **Interview modes retrieve the résumé only by word overlap; canonical questions ('Tell me about yourself', 'biggest weakness') get no résumé**  
-Severity **High** · confidence likely · effort M · has dependencies · provable off-device · status **Open**
+Severity **High** · confidence likely · effort M · has dependencies · provable off-device · status **Implemented** — WS-C: Candidate modes now pin the résumé's leading chunks (about 800 tokens, via the new `leading` strategy) when the question matched none of the résumé or is a standard intro/behavioural question. It is never pinned outside candidate modes. The Rust side is the new RetrievalStrategy::Leading in bluey-storage retrieve.rs and bluey-core types/documents.rs, which returns the first chunks per document in scope order without matching the query.
 
 - **User impact:** In the flagship interview modes, the most common questions are answered with no background from the user's own résumé. The answers come out generic or with invented experience, which is the opposite of the product promise.
 - **Root cause:** Résumés are small, always-relevant documents in candidate modes, but they go through the same query-matched top-k retrieval as a large knowledge base. There is no pinned or always-include path.
@@ -1164,7 +1164,7 @@ Severity **High** · confidence likely · effort M · has dependencies · provab
 #### CTX-009
 
 **Screenshot is withheld for charts/diagrams whenever browser AX chrome adds ~80+ chars, because vision is decided by a raw OCR+AX char count**  
-Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-B1: The vision gate in src/context/relevance.ts now judges whether the text is enough using OCR text only. Accessibility text is mostly app chrome, so it no longer counts. On ⌘↵ and assist, where the screen is the subject, visual cues on screen (chart, graph, diagram, figure, legend, axis and similar) now require the image. AI_ARCHITECTURE.md intent paragraph updated. Commit 3c3da46. Device check: Spot-check on a real screen that a chart or diagram with plenty of axis-label OCR still sends the image.
 
 - **User impact:** ⌘↵ on a chart, graph, diagram, UI mockup or image-based question in a browser or any AX-rich app sends only OCR fragments (axis labels, legend). The model cannot read bar heights or diagram structure and will guess. The screenshot was already captured, so withholding it saves nothing on capture.
 - **Root cause:** The heuristic treats 'enough text' as 'the screen is textual'. AX chrome text is irrelevant to that question, and visual cues are only looked for in the question, never on the screen.
@@ -1183,7 +1183,7 @@ Severity **High** · confidence verified · effort S · independent · needs rea
 #### CTX-010
 
 **A failed screen capture (e.g. Screen Recording not granted, or helper down) fails the whole snapshot, so every ask in a screen-requiring mode errors instead of falling back to text-only context**  
-Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-C: A failed screen capture (Screen Recording not granted, or the helper is down) no longer fails the whole snapshot. build_snapshot in src-tauri/src/context/mod.rs keeps the accessibility tree, the transcript and the app identity, and sets screen=None. It adds a structured SnapshotWarning {kind: screen_unavailable, code, message, recovery} to the new `warnings` field (bluey-core types/context.rs and the TS types), so the UI can offer the Screen Recording pane. The mock transport does the same when the permission is denied. Device check: Deny Screen Recording on a real Mac and confirm the ask still answers from the accessibility tree and transcript. Also confirm the warning reaches the HUD: there is no UI yet that shows the Open Settings action, and that belongs to the UI workstream.
 
 - **User impact:** If Screen Recording is missing or was reset (likely after each ad-hoc-signed auto-update), even a plain typed question like 'What is TCP?' in General mode fails with a capture error instead of being answered from the transcript, AX and the question itself.
 - **Root cause:** The capture branch of the parallel gather propagates errors with `?`, unlike the AX and OCR branches, and nothing on the TS side degrades gracefully.
@@ -1197,7 +1197,7 @@ Severity **High** · confidence likely · effort S · independent · needs real 
 #### CTX-011
 
 **Rust removes OCR lines that duplicate AX text, but intent/shape detection reads only OCR, so coding and multiple-choice screens are misclassified**  
-Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Implemented** — WS-B1: Classification (task, answer shape and markers) in relevance.ts now reads OCR, the accessibility visible text and the focused element's value together, not OCR alone. Commit 6b2d098.
 
 - **User impact:** In apps whose AX tree exposes the same short lines (native apps, Electron, web views within the depth-6 walk), a coding problem gets a prose answer with no code schema. A multiple-choice question loses the 'answer with the letter first' shape. How often this happens depends on how much content AX exposes (see verification debt).
 - **Root cause:** Rust applies the size hygiene step before TS classifies. The classifier was written assuming OCR holds all screen text.
@@ -1211,7 +1211,7 @@ Severity **Medium** · confidence likely · effort S · independent · needs rea
 #### PERF-005
 
 **The same on-screen text is sent up to three times (focused value, AX visible text, OCR), and window text is mislabelled 'Focused UI'**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-C: The accessibility window text is now its own window_text item. Lines already in the OCR, the focused value or the title are removed (compared ignoring whitespace and case), and the whole item is skipped when less than 20% of it is new. The focused value is capped at 1500 chars, and 'Focused UI' now carries only the focused element and the selection. File: src/context/fusion.ts.
 
 - **User impact:** More input tokens mean higher TTFT and cost on every screen-aware ask. The 'Focused UI' label tells the model that sidebar and chrome text is what the user is working on, which misdirects answers.
 - **Root cause:** Three independent producers of the same text are merged with exact-match dedupe only. The label table has one label for all AX content.
@@ -1228,7 +1228,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### PERF-006
 
 **Relevance scores never gate inclusion: an unrelated typed question ships ~6k tokens of screen, AX and transcript**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-C: A typed ask or follow-up with no screen cue and no keyword in common with the OCR or accessibility text now drops the OCR, the window text and all but the last two transcript turns. It keeps the focused/selected accessibility element. This never applies to a heard (detected) question. File: src/context/fusion.ts.
 
 - **User impact:** Every typed question in the default mode pays capture, OCR and AX latency plus several thousand irrelevant input tokens: slower first token, higher cost, a distracted model. Whatever is on screen (chats, email, documents) is sent to the cloud with unrelated questions.
 - **Root cause:** The budget allocator is used as a packer, not a selector. The relevance scores exist but only order items.
@@ -1247,7 +1247,7 @@ A larger product option is to capture the screen for typed asks only when screen
 #### FEATURE-002
 
 **'Smart' screen observation runs a capture stream but nothing consumes screen.changed: no precompute, no proactive preparation**  
-Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Implemented** — WS-FX7: Smart observation is shown as not yet available (disabled, with honest copy) and the backend no longer starts the observation stream for it; an old stored value still loads (commit 2a57bb9).
 
 - **User impact:** Users who turn on Smart observation pay for a continuous screen stream and a larger privacy footprint and get nothing in return.
 - **Root cause:** The helper and Rust halves were built; the consumer (precompute or proactive screen classifier) never was.
@@ -1263,7 +1263,7 @@ Severity **Medium** · confidence verified · effort M · independent · needs r
 #### CTX-012
 
 **Active app, window title and adapter hints are collected but never reach the prompt**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-C: When screen context was captured, fusion now adds one compact active_app item of about 20 tokens (e.g. 'App: Google Chrome (chrome) — Window: Two Sum - LeetCode'), labelled as the app identity rather than 'Focused UI'. It is left out when there is no screen context (screen off, or a text-only mode). File: src/context/fusion.ts, with the label in labels.ts.
 
 - **User impact:** The model is never told 'you are looking at VS Code, file foo.ts', 'Chrome — leetcode.com/problems/two-sum' or 'in a Zoom meeting'. This cheap, high-signal context (about 20 tokens) would clarify ambiguous screens and questions.
 - **Root cause:** The context producer was built without a fusion consumer.
@@ -1277,7 +1277,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### TEST-002
 
 **Context tests run on mock modes and budget that differ from production and never assert the failing prompt properties**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Deferred** — C and B1 added pipeline-level context and prompt-eval tests on the Rust-generated modes fixture; a broader 'failing prompt properties' suite is a follow-up.
 
 - **User impact:** Regressions in what the model actually sees ship with a green suite (same pattern as PR #18). Every High finding in this dimension passes the current tests.
 - **Root cause:** Tests exercise units in isolation with hand-built items, and the mock fixtures drifted from the Rust seeds.
@@ -1292,7 +1292,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### CTX-014
 
 **On the Apple Speech fallback transcripts carry no '?', and question detection falls back to fragile sentence-start patterns**  
-Severity **Low** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence likely · effort S · independent · needs real macOS · status **Implemented** — D1 sets addsPunctuation on Apple Speech so finals carry '?'; E1's classifier tolerates short fillers before an interrogative lead.
 
 - **User impact:** Users on the Apple route (no Gemini key, offline) miss live suggestions for many spoken questions ('Okay so why are you leaving Acme', 'And what would you change'). Fusion's current-question pick can differ from the classifier's.
 - **Root cause:** The punctuation opt-in is missing, and the heuristics depend on it.
@@ -1309,7 +1309,7 @@ Severity **Low** · confidence likely · effort S · independent · needs real m
 #### CTX-015
 
 **Semantic retrieval has no score floor and does not check the embedding model; keyword scores are normalised so the weakest match scores 1.0**  
-Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-C: In bluey-storage src/documents/retrieve.rs, semantic candidates below a raw cosine of 0.25 (SEMANTIC_MIN_COSINE) are dropped. DocumentRepository::chunks_with_embeddings now filters by the current embedding model tag (providerId/model), which src-tauri/src/documents/mod.rs passes through embedding_tag(). Keyword matches whose best FTS rank is below MIN_KEYWORD_RANK, meaning no matched term discriminates, get a flat weak score. Device check: Check the 0.25 cosine floor against real Gemini/OpenAI embeddings on a real library. The value is a heuristic taken from the audit.
 
 - **User impact:** With embeddings on, up to 8 unrelated chunks are always added. After switching to a same-dimension embedding model, answers use mismatched vectors until re-embedding finishes.
 - **Root cause:** No absolute relevance threshold; model identity is not part of the semantic filter.
@@ -1323,7 +1323,7 @@ Severity **Low** · confidence likely · effort S · independent · provable off
 #### CTX-016
 
 **Session notes and timeline events are loaded on every ask but never rendered**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** Notes a user adds to a session ('interviewer is Priya, focus on Kafka') have no effect on answers; each ask does DB work for nothing.
 - **Root cause:** The SessionContext shape outgrew what fusion renders.
@@ -1336,7 +1336,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### CTX-017
 
 **An oversized typed instruction keeps only its head, so a question after a long paste is cut**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-C: src/context/budget.ts now compresses an oversized typed instruction as head plus tail (60/40) with a truncation marker in the middle, so a question at the end of a long paste survives.
 
 - **User impact:** Rare: pasting a very long log or file followed by 'why does this fail?' drops the actual question.
 - **Root cause:** Keeping the head suits OCR, not user messages, where the ask usually comes last.
@@ -1349,7 +1349,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### CTX-018
 
 **Rust and TS assign counterpart speaker labels differently (custom candidate modes, lecture)**  
-Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** In custom interview modes the prompt says 'Speaker:' where the classifier and UI say 'Interviewer'. It is a minor source of confusion for role-aware answers.
 - **Root cause:** Duplicated heuristic with drifted rules.
@@ -1364,7 +1364,7 @@ Severity **Low** · confidence likely · effort S · independent · provable off
 #### LIVE-001
 
 **A live suggestion cannot be cancelled: Escape, Stop and a manual ask only restyle the turn, and the stream comes back as 'done' and is saved**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-E1: prepare() now has the same cancellation as ask(): an AbortSignal-backed handle exposed via onHandle (src/ai/engine.ts). Esc, Stop, a manual ask, New chat and ⌘⇧↵ call cancelLiveSuggestion (src/stores/proactive.ts, src/features/hud/useAsk.ts). A cancelled suggestion is not completed and is not persisted. The cancel signal is on the pipeline options so research (workstream R) can use it. Device check: Press Esc/Stop during a real live suggestion and confirm the provider stream stops and nothing is saved to the session.
 
 - **User impact:** The user presses Esc on an unwanted or wrong suggestion. It shows 'Stopped', then the text keeps growing and finishes as a normal answer. Tokens and subscription quota are spent anyway. The dismissed answer lands in History and in the session timeline. The next question the interviewer asks waits behind it. With a manual ⌘↵ the hidden suggestion still streams in the background (Rust cancels it only when the counters happen to line up, see cross-scope finding).
 - **Root cause:** prepare() was built for silent background work and returns only a Promise. PR #45 reused it for the visible live path without giving it a cancellation handle, and chatStore.markCancelled does not invalidate the generation.
@@ -1378,7 +1378,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### LIVE-002
 
 **Rust supersede compares generations across TS scopes, so a background suggestion can cancel the user's own manual answer mid-stream**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-E1: AiRequest gains scope and background (bluey-core types/ai.rs, src/lib/types/ai.ts). Rust AiManager now supersedes only when the session and scope match and the generation is older (src-tauri/src/ai/mod.rs, ActiveRequest::superseded_by). The TS engine tags every request with its scope: ask, live, prepare or classify.
 
 - **User impact:** While listening in a meeting, the prepare counter quickly climbs above the ask counter (one per detected question). If the other party asks something while the user's own ⌘↵/typed answer is streaming (the suggestion then prepares silently), Rust kills the user's answer halfway. The turn freezes with a streaming caret and the pill is stuck on 'Thinking' (see state finding). In 'on request' mode this happens on every detected question during a manual answer.
 - **Root cause:** The TS gate is per scope, but the wire `generation` is compared in Rust as if it came from one global sequence within a session. The Rust ActiveRequest has no scope, so the ADR contract was never enforced end-to-end.
@@ -1391,7 +1391,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### LIVE-003
 
 **Background and live prepares drive the global app state: a cancel leaves 'Thinking' stuck, a silent failure puts the app in Error, and discreet mode shows 'Thinking'**  
-Severity **High** · confidence verified · effort M · has dependencies · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · has dependencies · provable off-device · status **Implemented — needs real-device verification** — WS-E1: Background requests and non-answer tasks (drives_state) never publish ThinkingStarted or Failed into the app state machine; ai.* events still flow. A cancel returns the app to idle via leave_thinking_after_cancel when no other state-driving answer is running. The state machine is also recoverable (bluey-core state/mod.rs). Device check: Check that the pill never sticks on Thinking or Error during discreet or live preparation on a real session.
 
 - **User impact:** (1) After Esc, or after a supersede of any answer, the pill says 'Thinking' until the next answer completes or ⌘R. (2) With suggestions set to 'On request', whose purpose is to be discreet, the pill flashes 'Thinking' every time the other party asks something. (3) A background prepare the user never asked for (429, timeout, network blip) turns the whole HUD into an error state mid-meeting. Its Retry regenerates an unrelated earlier turn, and listening start/stop is rejected until the user clicks the pill.
 - **Root cause:** ADR 0005's state machine models a single user-initiated request. Proactive prepares reuse the same primary AiTask and ai_stream path, and Rust has no notion of background/silent requests or of returning from Thinking after a cancel.
@@ -1405,7 +1405,7 @@ Severity **High** · confidence verified · effort M · has dependencies · prov
 #### LIVE-008
 
 **The first live suggestion unmounts the idle composer: the user's half-typed question is lost, focus jumps, and the next Enter becomes a follow-up without the screen**  
-Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-E2: There is now one persistent composer (HudInputRow.tsx). Its draft lives in hudUiStore, so it survives layout changes and is never thrown away when a live turn opens. The composer takes focus only when the HUD panel becomes visible, not when a live or suggested turn appears. Typed questions and follow-ups are told apart by counting only turns that are not suggestions. Device check: On a real NSPanel: check that the input takes focus when the HUD is shown and keeps it (and the half-typed text) when a live transcript turn arrives.
 
 - **User impact:** In an interview or sales call the user starts typing their own question into the HUD. The other party asks something, the suggestion turn opens, and the typed text disappears while the caret jumps into 'Ask follow-up'. When they retype and press Enter, the question is sent as a follow-up to the suggestion with no screen capture, even with Screen enabled, and begin() hides the suggestion that is still streaming in the background (see uncancellable finding).
 - **Root cause:** The composer's value lives in per-layout component state and the layout switches on turns.length. The proactive loop has no signal about user input activity.
@@ -1419,7 +1419,7 @@ Severity **Medium** · confidence verified · effort M · independent · needs r
 #### LIVE-009
 
 **Suggestion gating is noisy: any '?' from the other party opens a live, billed suggestion, with no substance filter, text dedupe, cooldown or queue staleness check**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-E1: Added a pure shouldSurface(event, ctx) in src/stores/proactive.ts. It filters for substance (back-channel and meta phrases), dedupes near-identical text within 90 s, applies an 8 s same-speaker cooldown (a correction lead such as 'sorry, I mean' bypasses it), drops queued questions older than 20 s, and enables per mode (other modes surface only direct questions above a higher bar). Each dismissal raises the bar a little, up to a cap. The classifier's INTERROGATIVE_LEAD now tolerates short fillers (src/transcript/classifier.ts). Device check: Tune the thresholds against a real interview or meeting transcript.
 
 - **User impact:** In the default configuration, the opening small talk of every call ('Can you hear me?', 'Is my screen visible?') and back-channel questions ('Right?', 'Okay?', 'Does that make sense?') each open a 'Suggested' card and spend a full LLM generation. The question the user actually cares about can end up queued behind them. Repeated questions produce duplicate cards, and a question queued behind a long answer is still answered after the conversation has moved on. This is the kind of intrusiveness that makes users switch the feature off.
 - **Root cause:** Detection confidence is a surface heuristic. The only downstream gates are requiresResponse and event-id dedupe, and the cheap model refinement band excludes exactly the high-recall '?' case.
@@ -1432,7 +1432,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### LIVE-010
 
 **Questions split by a ~0.6 s pause (default Gemini Live VAD) or by the Apple Speech 55 s rotation fire a suggestion on the fragment, and the real question queues behind it**  
-Severity **Medium** · confidence likely · effort M · has dependencies · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort M · has dependencies · needs real macOS · status **Implemented — needs real-device verification** — WS-E1: Fragment coalescing in proactive onFinal: a non-'You' final with no terminal punctuation, or with a short open lead, is held for about 900 ms and merged with the same voice's next final. A different voice, Stop listening or the timeout releases it. isOpenFragment is in classifier.ts, and segmentIds are carried on ClassifyInput. Device check: Check with real Gemini Live VAD pauses and the Apple Speech 55 s rotation.
 
 - **User impact:** A natural thinking pause ('So tell me about… your experience scaling Kafka?') produces a suggestion for 'So tell me about' first. The real question waits until that answer finishes, which adds seconds at the moment speed matters most.
 - **Root cause:** Finals are treated as complete utterances. Neither the Rust assembler nor the proactive loop merges same-speaker continuations before classifying.
@@ -1446,7 +1446,7 @@ Severity **Medium** · confidence likely · effort M · has dependencies · need
 #### LIVE-011
 
 **⌘⇧↵ while an answer or live suggestion is streaming leaves that turn spinning forever**  
-Severity **Medium** · confidence verified · effort S · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · has dependencies · provable off-device · status **Implemented** — WS-E1: ⌘⇧↵ over a streaming turn now stops it first (useAsk generateOrTakePrepared calls cancelStreaming), then shows the prepared answer and saves it.
 
 - **User impact:** Question A arrives while the user's answer streams, so it becomes the ⌘⇧↵ hint. Question B then streams live. When the user takes A with ⌘⇧↵, B's card stays stuck mid-thread with a spinner or caret, while B keeps generating and gets saved in the background.
 - **Root cause:** showResponse was written for an idle thread and was never updated for concurrent live turns.
@@ -1460,7 +1460,7 @@ Severity **Medium** · confidence verified · effort S · has dependencies · pr
 #### TEST-003
 
 **No tests cover live-suggestion races, and the mock transport differs from Rust exactly where these bugs live**  
-Severity **Medium** · confidence verified · effort M · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · has dependencies · provable off-device · status **Implemented** — WS-E1: Live-races suite in tests/ui/live-races.test.tsx (13 tests): Esc/Stop, manual ask, ⌘⇧↵, New chat, correction, Retry/Regenerate, previousResponses, hidden HUD with TTL, Stop listening, mode switch, hint expiry. Two rapid questions and serialization are covered in proactive.test.ts, truncation in truncation-retry.test.ts. The mock transport now matches Rust: it supersedes by (session, scope, generation), keeps background work out of app state, sets Error only for primary non-background failures, leaves the state alone on cancel, and ai_cancel/cancel_all only act on in-flight streams. Pinned in tests/ui/mock-ai-parity.test.ts.
 
 - **User impact:** All of the High findings above ship with green CI. This is the same failure pattern as PR #18: mock-transport tests pass while real Tauri behaviour differs.
 - **Root cause:** UI tests validate against a mock whose AI lifecycle (cancel, supersede, error-to-state) was written for convenience rather than to match Rust.
@@ -1474,7 +1474,7 @@ Severity **Medium** · confidence verified · effort M · has dependencies · pr
 #### LIVE-012
 
 **Live suggestions keep generating billed turns into a hidden HUD**  
-Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-E1: While the HUD is hidden no live turn is generated. Only the newest question is kept (deferred) and prepared when the HUD is shown within the TTL; otherwise it is dropped (src/stores/proactive.ts). Device check: Hide the HUD during a real call and confirm no billed requests are made.
 
 - **User impact:** If the user hides the HUD (⌘\) while listening continues, every detected question still opens a live turn, streams it and saves it. Each one is billed, and each one can push the app into Thinking or Error (see the state-machine finding). When the HUD is shown again, the thread holds a stack of stale answers instead of one current suggestion or hint.
 - **Root cause:** The live/silent choice depends on settings and the chat phase, not on whether the user can see the HUD.
@@ -1487,7 +1487,7 @@ Severity **Medium** · confidence likely · effort S · independent · needs rea
 #### LIVE-014
 
 **Live suggestions are generated with no memory of earlier answers in the thread**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E1: Live suggestions pass previousResponses (completedResponses of the thread) to engine.prepare (src/stores/proactive.ts).
 
 - **User impact:** The interviewer's follow-up ('Why that approach over X?') is answered without knowing what Bluey just suggested, which leads to contradictory or repeated suggestions and weak answers to follow-up questions.
 - **Root cause:** prepareFor was written for silent background preparation; PR #45 made it a thread turn without adding thread context.
@@ -1500,7 +1500,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### LIVE-015
 
 **When an answer hits the output limit, the retry wipes the visible draft and regrows it from scratch**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E1: A length retry keeps the visible draft and only replaces it once the retry's text outgrows it (src/ai/engine.ts).
 
 - **User impact:** On long live suggestions (system design, behavioral stories), the text the user is reading collapses to a few words and restarts. It is jarring during a live conversation and doubles latency and tokens.
 - **Root cause:** The draft high-water mark is reset per attempt, so the retry's first delta always overwrites the first attempt's text.
@@ -1513,7 +1513,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### LIVE-016
 
 **The 'Bluey has a suggestion' hint and chatStore.prepared never expire, so ⌘⇧↵ can show an answer to a long-gone question**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E1: Prepared entries expire (PREPARED_TTL_MS in engine-contract.ts). chatStore.prepared and the ⌘⇧↵ hint expire with them.
 
 - **User impact:** Twenty minutes later the pill still offers a suggestion, and ⌘⇧↵ shows an answer to an old question instead of generating a fresh 'Suggested response' from the current transcript.
 - **Root cause:** There are two sources of truth for prepared responses with different lifetimes.
@@ -1526,7 +1526,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### LIVE-017
 
 **After Stop listening, a queued question still opens a new live suggestion**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E1: Stop listening (audioActive going from true to false) clears the held fragment, the queued question, the hidden-HUD deferred question and the dismissal count (src/stores/proactive.ts).
 
 - **User impact:** The user ends the call and stops listening, then a few seconds later a new 'Suggested' card appears and spends tokens.
 - **Root cause:** The proactive loop does not subscribe to audio/session lifecycle events.
@@ -1541,7 +1541,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### PROV-001
 
 **A subscription account holding the Default role has no fallback: every default-role request fails with config.no_model, while the UI says 'Bluey uses your API key meanwhile'**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-F: bluey-core/src/router.rs: select() now has a Blocked tracker. When a role's assignment points at an unusable OAuth account or at a missing provider, the role falls back to the first usable API-key provider (Gemini preferred), using that kind's preset model for the role. The reason gets '→ fallback <id> (<account> unavailable)', which E1's engine.ts maps to selection.fallbackReason. ai/mod.rs with_fallback_hint puts details.fallbackProviderId on the errors of failed account requests. present.ts only says 'uses your API key meanwhile' when that detail is present. docs/PROVIDER_ACCOUNTS.md routing section updated. Device check: End-to-end check with a real expired ChatGPT/Claude account plus a Gemini key: the HUD should show the 'via API key' provenance.
 
 - **User impact:** A user connects Claude or ChatGPT and clicks 'Use recommended models', or sets up a subscription during onboarding. When the plan window runs out (a daily occurrence on Pro plans), the sign-in expires, or the extra-usage guard trips, every Answer, Coding or long-summary request fails. The first failure says the API key is being used. The next ones say 'No model assigned', even though a working Gemini key is stored.
 - **Root cause:** Fallback is modelled only as role→role (fast→default, and so on), never as 'the same role on another usable provider'. The account layer's design (ADR 0009 §3.6) assumed the chain would reach API-key providers.
@@ -1564,7 +1564,7 @@ On macOS: connect Claude, click 'Use recommended models', revoke the token (or w
 #### PROV-002
 
 **Microsoft Foundry's own preset models (GPT-5.6/GPT-6 reasoning family) are always sent `temperature`, which Azure reasoning models reject. Every Foundry request, including Test connection, likely fails with a generic 'usually temporary' error**  
-Severity **High** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence likely · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-F: bluey-protocols openai.rs decides by model family (reasoning-capable models), not by provider name. For those families it never sends temperature or other sampling knobs, on Azure, OpenAI-compatible and Anthropic API-key requests alike (providers/azure.rs, openai.rs, anthropic.rs). The Anthropic API-key path also drops context_management when thinking is off (commit c65a68f). Device check: A live call against an Azure o-series/gpt-5 deployment would confirm there is no 400 on temperature.
 
 - **User impact:** A user who picks Microsoft Foundry and applies its recommended models (the 'Default provider' switch, the env import or 'Use recommended models') likely gets every answer rejected with HTTP 400, and even 'Test connection' fails. The HUD calls it temporary, so the user has no path to a fix.
 - **Root cause:** The shared OpenAI-style body builder forwards the WebView's per-task temperature unconditionally. The Foundry presets were updated to reasoning-model deployments without adapting the Azure body (drop temperature, send reasoning_effort).
@@ -1577,7 +1577,7 @@ Severity **High** · confidence likely · effort S · independent · provable of
 #### PROV-004
 
 **Azure Foundry, OpenAI-compatible and Anthropic API-key errors drop the response body: 404/400/5xx become 'usually temporary', with no retry and no retry-after**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-F: New bluey-protocols/src/api_error.rs (parse_error_body, retry_after, map_api_error). Azure, OpenAI-compatible and Anthropic API-key errors read a bounded body that is never logged, and map 404 DeploymentNotFound/model_not_found to config.model_not_found naming the model or deployment, 400 to invalid params with the provider's reason, 401/403 to auth, 429 with retry-after, and 5xx to specific codes. send_with_retry retries 429/5xx. present.ts copy names the missing model (commits e6481d2, 01afe1a). Shared HTTP test stub in providers/test_http.rs.
 
 - **User impact:** A Foundry user whose deployment name differs from the model id, or whose preset model (gpt-5.6-terra) isn't deployed, is told the failure is 'usually temporary' and gets no 'Configure provider' action. The same happens when a model is retired on OpenAI-compatible or Anthropic. Anthropic 529 'overloaded' errors and brief 5xx errors fail at once instead of being retried. 429 errors show no wait time.
 - **Root cause:** Only Gemini and the OAuth adapters got a provider-specific error mapper. The other three share a status-only mapper that was written before the error taxonomy existed.
@@ -1602,7 +1602,7 @@ Vitest: presentError(config.model_not_found) shows a 'Configure provider' action
 #### PROV-005
 
 **The reasoning level is dropped for Anthropic API key, Azure Foundry and OpenAI-compatible, so the 'Reasoning' role model runs without thinking or effort**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-F: ReasoningLevel and latency now map to reasoning_effort (OpenAI/Azure) or thinking/effort (Anthropic API key) where the model family supports it (commit c65a68f).
 
 - **User impact:** System-design and deep-reasoning modes on Anthropic or Foundry keys get the same shallow behaviour as normal answers, while paying frontier-model prices. If a Foundry reasoning deployment accepts only the default temperature, both 'Test connection' and normal requests fail with HTTP 400. That part is not verified for the gpt-5.6 family.
 - **Root cause:** Reasoning mapping was implemented per adapter as each one was added. The shared OpenAI-style body builder and the Anthropic API-key path never got it.
@@ -1619,7 +1619,7 @@ Mock-server adapter tests assert the request bodies. Real check: one Foundry dep
 #### PROV-006
 
 **Switching 'Default provider' to Microsoft Foundry moves the Transcription role to MAI-Transcribe-1.5, after which Import recording fails with NotSupported**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-F: ai/mod.rs batch_transcription_target: when the transcription assignment cannot batch-transcribe (for example Foundry), transcribe_file falls back to the first enabled Gemini provider that has a key. With no such provider it raises an error that asks for one (commit 232b158).
 
 - **User impact:** A user who picks Foundry as the default provider (the documented one-switch path) can no longer import meeting recordings, even though their Gemini key is still stored. The error tells them to undo the switch they just made.
 - **Root cause:** The Foundry preset assigns a transcription model that only the live Voice Live route can use. The batch path supports Gemini only, and presets don't check whether the provider can serve each role in-app.
@@ -1632,7 +1632,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### PROV-007
 
 **A request-time 401 on an unexpired OAuth token flips the account straight to NeedsReauth; nothing forces a refresh-and-retry first**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-A: A 401 on an unexpired token forces one single-flight refresh (bluey-oauth TokenCache::force_refresh, accounts::refresh_rejected). ai/mod.rs drive_provider retries once, before the first byte. It falls back to NeedsReauth only if the refresh is rejected. Rotating or unknown-origin imports are never force-refreshed.
 
 - **User impact:** Clock skew, a server-side token rotation, or signing in from the official CLI can put Bluey's account into 'Sign-in expired'. A silent refresh would have fixed it. The user has to go through the browser OAuth flow again, and meanwhile hits the dead end described in F1.
 - **Root cause:** The refresh policy is purely expiry-based. Request errors never feed back into the token cache.
@@ -1645,7 +1645,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### PROV-008
 
 **Structured output is always requested; OpenAI-compatible endpoints that reject json_schema fail every schema-backed answer, with no plain-text fallback**  
-Severity **Medium** · confidence likely · effort S · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort S · has dependencies · provable off-device · status **Implemented** — WS-F: On a 400 that rejects response_format/json_schema, OpenAI-compatible and Azure requests are sent again without it, with the schema carried in the prompt. The fallback sticks per provider+model for the life of the process (commit e6481d2).
 
 - **User impact:** Users of endpoints that support only `json_object` or no response_format (reportedly DeepSeek's API, some OpenRouter or Groq models, older local servers) get 'The model didn't answer' on every mode that uses a schema.
 - **Root cause:** The Anthropic adapter got a capability fallback; the OpenAI-compatible adapter never did.
@@ -1659,7 +1659,7 @@ Severity **Medium** · confidence likely · effort S · has dependencies · prov
 #### PROV-010
 
 **Vision routing is a per-provider-kind constant (always true); the per-model vision flag in the catalog is never consulted**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** Take a text-only model on the Default role with Vision unassigned: GPT-OSS through Antigravity, a local OpenAI-compatible model, or a Codex model without image input. A question about the screen then either fails with a generic HTTP 400, or the image is silently dropped and the answer ignores the screen.
 - **Root cause:** Capability is modelled per provider kind rather than per model. Catalog capability data was added for accounts, but routing was never wired to it.
@@ -1676,7 +1676,7 @@ Add an integration test in ai/mod.rs with a stub catalog.
 #### UX-020
 
 **Choosing an OpenAI-compatible provider as 'Default provider' changes only the label and badge; no role is re-pointed and the router ignores bootstrapProvider**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** The user sees their OpenAI-compatible endpoint marked Default, but answers keep coming from Gemini (or fail with 'No model assigned' if Gemini isn't set up). This is confusing and can send data to a provider the user thinks they switched away from.
 - **Root cause:** 'Default provider' is really 'apply this kind's presets'. For a kind with no presets, the only thing that changes is a UI-only field.
@@ -1689,7 +1689,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### PROV-011
 
 **The 'Research' role is labelled 'Deep research agent', but the deep-research sidecar ignores assignments on other provider kinds and needs a separate Anthropic 'agent' key**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: The Research role label and hint say it drives answers that need research and point to the Deep research backend setting (commit 1c08547).
 
 - **User impact:** A user who assigns Research to ChatGPT, Claude subscription or Foundry believes deep research uses it, but it quietly runs on Gemini (or fails 'unavailable' without a Gemini key). Claude-backend users must paste the same Anthropic key twice.
 - **Root cause:** The deep-research sidecar has its own backend selection (ADR 0004/0007), and the role picker was never reconciled with it.
@@ -1702,7 +1702,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### PROV-012
 
 **Preset model ids are hard-coded and never checked against catalogs; the Azure 'catalog' is a static list; a model that disappears is not repaired automatically for API-key providers**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** When Google, Microsoft or Anthropic retire an id, every install on the defaults breaks until a release ships or the user edits the models by hand. Foundry users are offered model ids their resource doesn't have.
 - **Root cause:** Presets are compile-time constants, and there is no reconciliation step against list_models.
@@ -1716,7 +1716,7 @@ Severity **Low** · confidence verified · effort M · independent · provable o
 #### UX-021
 
 **Role fallbacks (vision→default, fast→default, research→reasoning→default) are never shown to the user; selection.reason is dropped by the WebView**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — F (PROV-001) carries the router's fallback reason into response.selection; E2 (UX-035) shows it in the provenance line under the answer.
 
 - **User impact:** Users can't tell why an answer came from a different model, for example a screenshot question answered by the default text model. Debugging routing needs the logs.
 - **Root cause:** The routing reason is produced but never used by the UI.
@@ -1729,7 +1729,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-034
 
 **Provider setup is too technical: 7 role rows with free-text model ids, saving a key assigns nothing, and roles accept providers that can't serve them**  
-Severity **Opportunity** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Opportunity** · confidence verified · effort M · independent · provable off-device · status **Partially implemented** — F (FEATURE-004): the first key saved for a preset provider fills unassigned roles with its presets and becomes the default, with Undo. Key-prefix inference and collapsing Models behind Advanced are follow-ups.
 
 - **User impact:** A normal user who adds an Anthropic or Foundry key outside onboarding gets 'No model assigned' until they find the right button. Power-user settings (Fast, Reasoning, Vision, Research) sit alongside the essential ones, and invalid combinations are only discovered when requests fail.
 - **Root cause:** Role assignment is exposed as the main configuration model. Presets exist but aren't applied automatically on key save, and roles have no eligibility metadata.
@@ -1744,7 +1744,7 @@ Severity **Opportunity** · confidence verified · effort M · independent · pr
 #### ONB-001
 
 **Onboarding says '<name> is ready' when no role can reach a usable provider (failed key, skip, 'Use another provider', account-only)**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-F: New ai_readiness command: AiManager::readiness runs router select for Answer and Vision against the real provider state (keys, enabled flags, accounts, Cloud AI) and returns AiReadiness {ok, providerId, model, vision, error}. It is registered in lib.rs, commands.ts and api.ts, and the mock transport routes the same way. The useAiReadiness hook drives onboarding's TestAIStep and ReadyStep ('Bluey can't answer yet' with the cause and a fix action; it never claims ready otherwise). TestAIStep tests the provider the router picks. connect.tsx uses keyUsable. The Settings → AI tab shows a readiness banner (commit c69c75f).
 
 - **User impact:** A new user can finish onboarding (typo'd key, skipped, or set up Anthropic/OpenAI via 'Use another provider', or a ChatGPT/Claude subscription) and be told Bluey is ready. The first ⌘↵ then fails with 'No model assigned'. The Test-AI step reinforces the confusion by testing Gemini ('API key missing') when the user configured something else.
 - **Root cause:** Readiness is computed piecewise in the UI (key stored / any provider keyed / account connected) instead of asking the router whether the Default role resolves to a usable provider. Saving a key outside the Gemini step never assigns roles. TestAIStep resolves providers from settings.ai.providers only.
@@ -1757,7 +1757,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### SEC-010
 
 **The sign-in gate only exists in the UI: sign-out leaves mic/system-audio capture running, and signed-out users can start listening from the shortcut or menu bar with no visible state**  
-Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Implemented** — WS-A: Sign-out stops audio capture and cancels AI work (commands/auth.rs). Audio start is refused with AuthRequired when signed out (audio/mod.rs guard) (6b14460, a675eb7).
 
 - **User impact:** If a user logs out (Settings → General or Profile) during a listening session, microphone and system-audio capture plus cloud transcription keep running. The HUD shows only 'Sign in to use Bluey' and the menu bar offers 'Start Listening'. A signed-out user can also start capture with ⌘⇧L without any sign-in. Only macOS's orange mic dot reveals it.
 - **Root cause:** Auth is enforced by React gates and soft state-machine transitions. Native entry points (global shortcuts, menu bar) and the sign-out path don't consult or change the audio manager.
@@ -1770,7 +1770,7 @@ Severity **Medium** · confidence verified · effort S · independent · needs r
 #### UX-007
 
 **Routing failures always say 'No model assigned' even when a model IS assigned but its provider has no key, is disabled, or is an expired account**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-F: The router returns config.provider_unusable with {providerId, providerName, cause: missing_key|locked_key|disabled|account_<state>} instead of 'No model assigned'. AiManager::name_account_state fills in the account state. present.ts has per-cause copy and an Open AI settings action (commit 565e949).
 
 - **User impact:** Users can't tell why Bluey can't answer. They see their model assigned in Settings → AI → Models while the error insists none is. The real fix (add or replace a key, re-enable the provider, reconnect the account) is never named.
 - **Root cause:** The router collapses all failure causes into one code and throws away the per-candidate reason; the UI maps that code to text that assumes 'unassigned'.
@@ -1783,7 +1783,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### UX-008
 
 **API-key providers cannot be removed and keys cannot be deleted; disabling or leaving a provider keyless silently breaks roles, and no card shows why a provider is unusable**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-F: ProviderCard has a Remove action with a ConfirmDialog that lists the roles the provider serves. AITab.removeProvider sends one settings patch that drops the provider, nulls its roles and clears bootstrapProvider. The existing side_effects removed_provider_ids deletes its Keychain key. Cards show a 'No key' badge and 'Used by …'. Role pickers label keyless providers '(no key)' / '(not connected)'. The AISettings.bootstrapProvider type now allows null (commit ea8f373). A confirm before disabling a provider is not included.
 
 - **User impact:** Users who rotate providers keep stale cards forever. They can't revoke a key from Bluey short of 'Reset Bluey' (which erases everything). Disabling a provider silently breaks the roles that point at it, and nothing explains which provider or role is broken.
 - **Root cause:** Provider management UI was built for add/edit only. Removal, key deletion and role-impact feedback were left out, even though the backend already supports deleting keys and provider rows (settings/mod.rs:132-139).
@@ -1797,7 +1797,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### ONB-002
 
 **Permission badges don't update after the user grants access in System Settings; the docs' refresh-on-focus, repair flow and restart offer are not implemented**  
-Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-F: New src/hooks/useLivePermissions.ts, used by the onboarding PermissionsStep and Settings → PermissionsTab. It re-reads permissions_get, which runs the Rust refresh, on mount, on window focus, and every 2 s while the window is visible, and stops on unmount. docs/MACOS_PERMISSIONS.md refresh sentence corrected (commit d2346c5). Not done: the restart offer and mapping 'denied' to 'not requested yet'. Device check: Grant Accessibility in System Settings, return to onboarding: the badge should flip within 2 s.
 
 - **User impact:** In onboarding the user clicks 'Open System Settings', enables Accessibility or Screen Recording and comes back to a card that still says 'Denied'/'Not granted yet'. That invites repeated clicks or a belief that it failed. First-run cards show 'Denied' before anything was asked. Revocations while idle are only discovered when a feature fails.
 - **Root cause:** The permission manager was built around explicit requests and an audio-session poll. The focus-driven refresh described in the docs was never wired.
@@ -1811,7 +1811,7 @@ Severity **Medium** · confidence verified · effort S · independent · needs r
 #### UX-009
 
 **If auth status can't be read (e.g. keychain error), release builds show the developer 'Sign-in isn't configured — copy .env.example' screen in Settings and the HUD**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-A: auth status() tolerates Keychain errors, and AuthGate shows a StatusErrorPrompt instead of the developer 'Sign-in isn't configured' screen.
 
 - **User impact:** After a keychain hiccup (locked login keychain, or the user denying an access prompt, which is likely after ad-hoc updates, see keychain-has-reads-secret-data), a normal user sees setup instructions meant for developers, in a tiny HUD panel, with no retry. In the Unknown state the HUD just doesn't appear.
 - **Root cause:** The store treats 'status unknown because the call failed' the same as 'not configured', because mode defaults to unconfigured. Rust makes status() fail on a keychain read instead of degrading.
@@ -1824,7 +1824,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### ONB-003
 
 **Mandatory sign-in has no functional purpose yet blocks offline first run and locks Settings; signing out keeps all keys and data**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Deferred** — Owner decision (product policy: keep, explain or make sign-in optional). This cycle only fixed the security part (sign-out stops capture; backend auth guard on listening, SEC-010).
 
 - **User impact:** Users without network at first launch can't use a local, BYO-key app at all. Signed-out users can't even reach Settings. 'Log out' suggests account separation that doesn't exist.
 - **Root cause:** ADR 0008 introduced browser sign-in as a gate, but no feature depends on identity. The gate was applied to whole windows.
@@ -1837,7 +1837,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### ONB-004
 
 **Onboarding progress is in-memory, so a relaunch (e.g. macOS 'Quit & Reopen' after granting Screen Recording) restarts at Welcome**  
-Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-F: New src/features/onboarding/progress.ts stores the current step id in the onboarding window's localStorage (key bluey.onboarding.step). OnboardingFlow resumes at that step, or at Welcome if the id is unknown. The saved step is cleared on completion and on 'Reset onboarding' in GeneralTab (commit d0c84f1). Not done: auto-skipping the sign-in step when the user is already signed in. Device check: Grant Screen Recording with 'Quit & Reopen' and confirm onboarding resumes at Permissions. This relies on WKWebView keeping localStorage across launches.
 
 - **User impact:** The user reaches step 5 (Permissions), grants Screen Recording, and accepts 'Quit & Reopen'. Bluey comes back at step 1 and they must click through Welcome, Sign-in, Name and Connect again.
 - **Root cause:** No persisted step pointer.
@@ -1850,7 +1850,7 @@ Severity **Medium** · confidence likely · effort S · independent · needs rea
 #### DOC-003
 
 **'Reset Bluey' erases everything but leaves the user in Settings (now signed out); the docs say it returns to onboarding**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: After a successful Reset all data, the HUD hides and onboarding opens, as the docs say (commit 1500e3e).
 
 - **User impact:** After a full reset the user sees the Settings window flip to a sign-in card and a HUD sign-in prompt, instead of the first-run wizard.
 - **Root cause:** The flag reset isn't followed by the window transition that boot performs.
@@ -1863,7 +1863,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-022
 
 **Onboarding copies Settings logic and copy and has drifted: hardcoded shortcuts on Ready, unguarded recorder and default-mode calls, 'Denied' before asking, no Notifications**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** Small inconsistencies: wrong shortcut shown after a remap, silent failures, and alarming 'Denied' badges on first view.
 - **Root cause:** Onboarding reimplements Settings pieces instead of sharing components and copy.
@@ -1876,7 +1876,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### ONB-005
 
 **Finishing onboarding opens the HUD and closes the wizard even when saving onboardingCompleted failed, so the wizard silently returns on next launch**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: Finishing onboarding keeps the wizard open with an error when saving onboardingCompleted fails (commit da4d1d4).
 
 - **User impact:** If the settings write fails (storage error), the error toast shows in the onboarding window, which is then closed right away. The user never sees it, and the full wizard reappears on the next launch with no explanation.
 - **Root cause:** The last-step handler treats update() as if it throws on failure, but the store swallows errors and returns null.
@@ -1889,7 +1889,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### FEATURE-004
 
 **Bluey makes users understand model roles: saving a key in Settings assigns nothing, and the default provider is never inferred**  
-Severity **Opportunity** · confidence verified · effort M · has dependencies · provable off-device · status **Open**
+Severity **Opportunity** · confidence verified · effort M · has dependencies · provable off-device · status **Partially implemented** — WS-F: Implements the decided scope: src/features/settings/first-key-presets.ts adoptFirstKey, called from ProviderCard's key onSaved when the provider had no key. It applies presets with overwrite:false, sets bootstrapProvider when there was no default, and shows a toast 'Roles now use X's recommended models' with Undo, which restores the previous roles and default. Assigned roles are never touched. This runs in the frontend, not after Rust secrets_set, so Undo can use the snapshot taken before the change (commit f5c1b26). Not done: key-prefix inference, choosing the transcription provider, and collapsing Models behind Advanced.
 
 - **User impact:** Users adding Anthropic/OpenAI/Foundry keys end up keyed but unrouted. Every non-Gemini user sees fallback notices for transcription.
 - **Root cause:** The routing model is exposed directly rather than derived from what the user has configured.
@@ -1905,7 +1905,7 @@ Severity **Opportunity** · confidence verified · effort M · has dependencies 
 #### MAC-002
 
 **Apple on-device route never commits utterances that the recognizer resets after a pause, so most speech never becomes a final segment**  
-Severity **High** · confidence likely · effort M · has dependencies · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence likely · effort M · has dependencies · needs real macOS · status **Implemented — needs real-device verification** — WS-D1: New pure Swift UtteranceTracker (Speech/UtteranceTracker.swift), used by SpeechTranscriber. When on-device recognition resets after a pause without isFinal, the previous partial is committed as the utterance's final. A reset needs a signal (speech metadata on the previous result, or a sharp drop in word count) plus a new opening word, so a recognizer that keeps its words never duplicates text. I used this pure-tracker seam instead of a RecognizerFactory seam. Device check: Real speech with pauses on on-device SFSpeech (macOS 14/15), to confirm the reset heuristic commits once per utterance and never duplicates.
 
 - **User impact:** On the Apple route, only about the last utterance of every 55 s request reaches transcript.final. Everything earlier appears briefly as an italic partial and is then overwritten. The ring used for ⌘↵ context, stored transcripts and question detection (finals only) miss most of the conversation.
 - **Root cause:** Finalization relies on isFinal, which the OS no longer sends at utterance boundaries for on-device recognition.
@@ -1969,7 +1969,7 @@ This doesn't affect security. It also does not fix the separate loss at session 
 #### MAC-003
 
 **Terminal callbacks from retired SFSpeech tasks rotate the live request, causing endless sub-second request churn after the first rotation**  
-Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D1: Every recognition request is now a generation. Callbacks from a retired request may only deliver its final, under its partials' utterance id, and can never rotate or restart the live request. This ends the sub-second request churn after the first 55 s rotation. Routine kLSRErrorDomain cancellations restart quietly. Five consecutive non-routine errors report speech_unavailable instead of restarting in a hot loop (SpeechTranscriber.swift). Device check: Listen for more than 3 minutes on Apple Speech, and confirm rotations happen about every 55 s with no churn in the helper log.
 
 - **User impact:** After the first 55 s rotation (or the first final), each retired request's final or error ends the brand-new request, which ends the next one, and so on. Transcripts come out as fragments split mid-word, with poorer accuracy and higher CPU, for the rest of the session.
 - **Root cause:** There is no generation check: callbacks from a retired task are treated as events of the active request.
@@ -2029,7 +2029,7 @@ None of this weakens security or affects the Gemini or cloud paths. The change s
 #### LIVE-004
 
 **A few seconds of network loss permanently ends Gemini Live and Voice Live transcription for that source while listening still shows as active**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-D1: New src-tauri/src/transcription/reconnect.rs holds one reconnect policy shared by Gemini Live and Voice Live. A lost connection is re-opened with capped exponential backoff (0.5 s doubling to 8 s) until Close arrives or the service rejects the configuration. Sends time out after 5 s. A read watchdog reconnects when speech went out but nothing came back for 15 s. The outage is reported once via TranscriptionEvent::Degraded/Recovered. Wired into gemini_live.rs and cloud_realtime.rs. Device check: Drop the network for more than 10 s during a Gemini Live / Voice Live run, and confirm transcripts resume and exactly one degraded notice is shown.
 
 - **User impact:** Switching Wi-Fi, a VPN reconnect or sleep/wake mid-meeting shows one error toast. After that, the mic and/or system transcript stays silent until the user stops and restarts listening, and the HUD still says 'Live transcript'.
 - **Root cause:** Reconnect logic treats a second failed connect as fatal, and the manager has no retry once a source has failed.
@@ -2108,7 +2108,7 @@ Security: none of these changes weaken security. The fatal handling for Configur
 #### MAC-004
 
 **After a helper crash and restart, AudioManager stays 'Running' and observation stays 'on' although the new helper is doing nothing**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-D1: The sidecar supervisor (src-tauri/src/sidecar/mod.rs) publishes typed HelperEvent::Exited{restarting} and HelperEvent::Restarted on the event channel, defined in src-tauri/crates/bluey-protocols/src/helper.rs. AudioManager (helper_exit_plan, on_helper_exited/restarted) stops a live run when the helper dies, so status never says 'running' for a dead helper. It re-issues the run once with its stored config when the replacement helper comes up. If the helper is gone for good, the auto-started session ends. Device check: Kill BlueyHelper while listening and confirm the run resumes after the supervisor restart, and that status shows Stopped if it does not come back.
 
 - **User impact:** A helper crash during a meeting (for example from a CoreAudio or SCK fault) silently ends listening. The HUD keeps its live indicator, levels freeze, and pressing 'listen' does nothing until the user stops and starts again. Smart observation stays off for the rest of the run.
 - **Root cause:** Nothing reconciles app state with the helper's state after the helper restarts.
@@ -2122,7 +2122,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### CTX-013
 
 **'Display with focus' (the default) captures the menu-bar display, not the display the user is working on**  
-Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: New FocusDisplay.swift: a capture without a displayId now resolves the display that contains the midpoint of the frontmost app's front window (FrontmostAppService / CGWindowList), then the display under the mouse (CGEvent location, Quartz coordinates), then the main display, then the first display. ShareableContent.display(withId:nil) uses it. Documented in CAPTURE_ARCHITECTURE.md. A compile error found by the Swift gate (wrong type name) was fixed inside the commit. Device check: With two displays, focus a window on the secondary display, press Cmd+Return, and check the frame's displayId.
 
 - **User impact:** On multi-monitor setups, ⌘↵ with the question on a secondary monitor sends the wrong screen to the model, so the answer ignores what the user is looking at.
 - **Root cause:** 'Active' was never resolved to a focus-based display.
@@ -2135,7 +2135,7 @@ Severity **Medium** · confidence verified · effort S · independent · needs r
 #### MAC-005
 
 **A failed mic engine restart (device switch or unplug) leaves the mic dead for the session while status says mic active**  
-Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D1: MicrophoneCapture.swift keeps a wantRunning flag separate from live. A rebuild that fails after a device change is retried on the next device change, and a vanished explicit device falls back to the default input. Losing or recovering the mic mid-run re-sends audio.started, so Rust's microphone_active stays in step (AudioSession.swift). audio.error forwards the HelperError unchanged, keeping permission kinds and details for the repair flow. Device check: Unplug and replug a USB/Bluetooth mic mid-run, and confirm capture resumes and the mic status line follows.
 
 - **User impact:** Connecting or disconnecting AirPods or a USB mic at the wrong moment stops 'You' transcription for the rest of the meeting, with only a transient toast.
 - **Root cause:** The restart path has no retry and no state propagation to the session or Rust.
@@ -2148,7 +2148,7 @@ Severity **Medium** · confidence verified · effort M · independent · needs r
 #### MAC-006
 
 **Async permission errors lose their kind, and revocation mid-session has no repair flow (contrary to the docs)**  
-Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Partially implemented** — D1 (MAC-005) forwards the helper's error kind and details unchanged, so permission errors are no longer flattened. Still open: a repair flow for permissions revoked mid-session (the post-update repair card, MAC-001, covers the update case).
 
 - **User impact:** The user sees 'audio' errors without an 'Open System Settings' action when Screen Recording is missing or revoked. A system-audio stream error also kills mic transcription.
 - **Root cause:** The event error path hard-codes kind and drops details. There is no revocation reaction.
@@ -2161,7 +2161,7 @@ Severity **Medium** · confidence verified · effort M · independent · needs r
 #### MAC-007
 
 **Transcription language 'auto' (the default) runs Apple Speech in en-US regardless of the user's locale**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-D1: audio.started carries speech {locale, onDevice} from the transcriber (WireSpeechRoute in bluey-protocols). AudioStatus exposes speechLocale and speechOnDevice (bluey-core types/transcript.rs, src/lib/types/transcript.ts). When recognition runs on Apple's servers because the locale has no on-device model, a one-time audio.speech_server info notice is shown instead of it happening silently. The 'auto' language uses the Mac's locale with an en-US fallback. Device check: Pick a locale without an on-device model, and confirm the notice appears and AudioStatus.speechOnDevice is false.
 
 - **User impact:** Non-English users without a Google key (Apple fallback) get English-model gibberish transcripts and no question detection.
 - **Root cause:** 'auto' has no meaning for SFSpeech and the helper default is hard-coded.
@@ -2174,7 +2174,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### UX-010
 
 **Partial/final id correlation relies on startMs, and the store keeps one partial for both sources, leaving stale or flickering partials**  
-Severity **Medium** · confidence likely · effort M · has dependencies · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort M · has dependencies · needs real macOS · status **Implemented** — WS-D1: transcript.partial and transcript.final now carry an optional utteranceId. The TranscriptAssembler in bluey-protocols/src/helper.rs prefers it and falls back to startMs for older helpers. Cloud workers get a per-source utterance id via ChunkTiming::stamp_cloud. Swift ids use the form <generation>-<counter>. src/stores/transcriptStore.ts keeps one partial per source, and a source's final clears only its own partial. The HUD strip (src/features/hud/transcript-strip.ts, TranscriptStrip.tsx) shows both partials.
 
 - **User impact:** A duplicate italic line stays under the committed final until the next partial arrives. In cross-talk, the mic and system partials replace each other. The Rust pending map grows with orphaned keys during a session.
 - **Root cause:** Utterance identity is derived from unstable timing instead of a producer-assigned id, and the UI partial state is not per source.
@@ -2188,7 +2188,7 @@ Severity **Medium** · confidence likely · effort M · has dependencies · need
 #### MAC-008
 
 **'You' at 0.95 confidence for all mic audio without echo cancellation doubles remote speech and hides in-person questions**  
-Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Deferred** — Echo cancellation / speaker attribution changes capture quality; needs real-meeting A/B testing on hardware.
 
 - **User impact:** On laptop speakers, remote participants are transcribed twice (as 'You' and as 'Interviewer'), which pollutes the context. In person or in mic-only mode, every interviewer question is labelled 'You', so proactive question detection never fires.
 - **Root cause:** Labels are derived purely from channel, with no AEC or cross-source dedupe.
@@ -2201,7 +2201,7 @@ Severity **Medium** · confidence verified · effort M · independent · needs r
 #### LIVE-013
 
 **Gemini Live has no send timeout or read watchdog, so a half-open socket stalls transcription silently**  
-Severity **Medium** · confidence likely · effort S · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort S · has dependencies · provable off-device · status **Implemented** — WS-D1: New src-tauri/src/audio/stt_health.rs, wired into AudioManager. Each outage publishes a single audio.stt_degraded notice and sets AudioStatus.error, which clears when transcripts flow again. A source whose provider session gave up is re-opened after a 10 s cool-down instead of staying dead for the rest of the run. Configuration errors move listening to Apple Speech. Copy is in present.ts.
 
 - **User impact:** After a Wi-Fi drop without a TCP reset, transcripts stop for minutes with no error or toast, while the HUD shows live listening.
 - **Root cause:** Liveness is inferred only from socket errors.
@@ -2215,7 +2215,7 @@ Severity **Medium** · confidence likely · effort S · has dependencies · prov
 #### TEST-004
 
 **Helper restart, audio session, speech rotation and cloud reconnect have no tests; mocks never produce partials or failures**  
-Severity **Medium** · confidence verified · effort L · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort L · independent · provable off-device · status **Partially implemented** — D1 added pure-logic tests for the ring, reconnect policy, STT health, helper exit/restart plans and Swift UtteranceTracker/SpeechCapability; a fake-helper process harness and SFSpeech seam are follow-ups.
 
 - **User impact:** Every high-severity finding above ships green. Regressions in the core listening loop surface only on a user's Mac.
 - **Root cause:** The native pieces lack seams (engine, recognizer, socket) for deterministic tests.
@@ -2228,7 +2228,7 @@ Severity **Medium** · confidence verified · effort L · independent · provabl
 #### MAC-009
 
 **If audio.start exceeds the 5 s helper timeout, Rust marks the session Error while the helper keeps capturing the mic, and the listen toggle can no longer stop it**  
-Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D1: start_recovery in src-tauri/src/audio/mod.rs: after an audio.start timeout, a best-effort audio.stop goes to the helper. audio_already_running is treated as a resync: stop, then start once more. A late audio.started for a start that was given up on no longer marks sources active. Device check: Force a slow helper start (e.g. first microphone permission prompt) and confirm the mic indicator turns off after the timeout.
 
 - **User impact:** On a slow start (Bluetooth headset profile switch, first SCStream start, or a TCC prompt during start), the UI says listening failed while the macOS mic indicator stays on and transcripts may keep arriving. Pressing the listen toggle only produces 'audio session already active' errors. Only Settings > Privacy stop, a helper restart or quitting the app releases the mic. This is a privacy and trust problem for a copilot.
 - **Root cause:** The Rust and helper session states are not reconciled on request timeout, and the helper has no idempotent 'start while running' behaviour.
@@ -2241,7 +2241,7 @@ Severity **Medium** · confidence likely · effort S · independent · needs rea
 #### SEC-011
 
 **'Apple (on-device)' transcription silently falls back to Apple's servers when on-device recognition is unsupported for the locale**  
-Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Implemented** — D1 (MAC-007): audio.started reports {locale, onDevice}; server recognition is announced once (audio.speech_server) instead of happening silently. With Cloud AI off the route requires on-device recognition (FX2).
 
 - **User impact:** Meeting audio (including the other party's voice from system audio) can leave the device while the UI tells the user transcription is on-device. For a privacy-positioned product this misrepresents where data goes.
 - **Root cause:** The helper treats on-device as a preference, not a requirement, and never reports which path it chose.
@@ -2254,7 +2254,7 @@ Severity **Medium** · confidence likely · effort S · independent · needs rea
 #### DOC-004
 
 **Audio and permission docs claim behaviours the code does not have**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-FX6: docs/AUDIO_ARCHITECTURE.md VAD section: the helper feeds every chunk to the recognizer (AudioSession.deliver). isSpeech only stamps utterance starts and feeds the Gemini Live and Voice Live stall watchdogs. Failure handling now describes the start-time permission error with Open System Settings (into_bluey adds the pane), the partial start, and how a system-audio stop ends the whole session. Mid-session revocation is described as undetected because MAC-006 is not fixed. The MACOS_PERMISSIONS restart and revocation claims are fixed under DOC-009. CAPTURE_ARCHITECTURE's frame deletion statement is already accurate after DATA-001, so it is unchanged. Device check: Whether macOS revoking Microphone or Screen Recording mid-session stops the SCStream or AVAudioEngine, and how; the doc only states what Bluey's own code does.
 
 - **User impact:** Maintainers and auditors make decisions from wrong guarantees, including privacy ones.
 - **Root cause:** Docs were written ahead of, or diverged from, the implementation.
@@ -2267,7 +2267,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-023
 
 **Every listen start without a Google key shows an error toast for the expected Apple fallback**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-D1: audio.stt_fallback (the expected Apple Speech fallback) is shown once per app run as an info notice, not as an error toast on every start (src/stores/errorSurface.ts).
 
 - **User impact:** Privacy-minded or key-less users see an 'error' on every session even though listening works.
 - **Root cause:** An informational notice uses the error channel.
@@ -2280,7 +2280,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### MAC-013
 
 **The macOS 15+/26 monthly 'bypass the system private window picker' re-approval is neither documented nor handled, and together with the fail-whole-snapshot behaviour it breaks ⌘↵ until the user approves**  
-Severity **Low** · confidence likely · effort S · has dependencies · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence likely · effort S · has dependencies · needs real macOS · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** About once a month, a system alert interrupts the first ⌘↵ or listen. Until the user approves it, capture or system audio fails with no in-app explanation.
 - **Root cause:** A platform re-authorization flow the product has not accounted for.
@@ -2294,7 +2294,7 @@ Severity **Low** · confidence likely · effort S · has dependencies · needs r
 #### CTX-019
 
 **Opportunity: enable AXManualAccessibility for Electron apps so AX context works for Slack, VS Code, Teams and Notion**  
-Severity **Opportunity** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Opportunity** · confidence likely · effort S · independent · needs real macOS · status **Deferred** — Opportunity: not scheduled in this cycle; kept on the backlog.
 
 - **User impact:** In many work apps the AX context is nearly empty, and the answer depends entirely on OCR of a downscaled frame.
 - **Root cause:** The Electron-specific opt-in attribute is not set.
@@ -2309,7 +2309,7 @@ Severity **Opportunity** · confidence likely · effort S · independent · need
 #### MAC-001
 
 **Every ad-hoc auto-update gives Bluey a new code identity, so Screen Recording, Accessibility and Microphone grants and Keychain ACLs stop matching**  
-Severity **Critical** · confidence likely · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Critical** · confidence likely · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: This covers the code side only. Signing with a Developer ID is still an owner action. PermissionManager.track_grants saves the last-known granted set together with the app version (a PermissionSnapshot in bluey-core types/permissions.rs). On the first refresh after a version change, any identity-bound grant that is now off is reported in PermissionState.lostAfterUpdate. At boot this opens Settings > Permissions, where UpdateRepairCard.tsx names the lost permissions, explains that unsigned updates reset macOS permissions and Keychain approvals, and offers Open System Settings for each one. A permission leaves the card once it is granted again. Documented in docs/UPDATES.md and docs/MACOS_PERMISSIONS.md. Device check: Install an ad-hoc-signed update over a granted install and confirm the repair card appears once with the right permissions, and that the System Settings deep links open the right panes.
 
 - **User impact:** After each update (daily on Nightly), screen capture, system audio, accessibility context and possibly the microphone stop working. System Settings still shows Bluey enabled, so users cannot see why. Keychain may prompt for every stored secret. The core screen-and-audio loop breaks for every user after every update.
 - **Root cause:** Distributed builds are ad-hoc signed, so the designated requirement is the cdhash of that specific binary. TCC stores that requirement with each grant and legacy Keychain ACLs trust it. Any rebuild no longer matches.
@@ -2347,7 +2347,7 @@ Microphone and Keychain need no special handling beyond the notice, because macO
 #### MAC-010
 
 **LSUIElement is overridden at launch: Bluey runs as a Regular app with a Dock icon and a ⌘-Tab entry**  
-Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: Bootstrap sets ActivationPolicy::Accessory before the HUD is attached, so Bluey has no Dock icon and no Cmd-Tab entry (the runtime had been overriding LSUIElement). The app menu keeps the Edit key equivalents so copy, paste and select-all still work in Settings inputs. docs/ARCHITECTURE.md updated. Device check: Check there is no Dock icon and no Cmd-Tab entry, that Cmd+C/V/X/A/Z work in Settings text fields, and that the Settings window still takes focus when opened from the tray.
 
 - **User impact:** A Dock icon and a ⌘-Tab entry appear. They are visible in every screen share, which works against Privacy mode and the menu-bar design. Clicking the Dock icon does nothing (see reopen finding).
 - **Root cause:** tao applies its default Regular activation policy after launch, overriding the Info.plist key, and Bluey never sets Accessory.
@@ -2360,7 +2360,7 @@ Severity **Medium** · confidence verified · effort S · independent · needs r
 #### MAC-011
 
 **The helper handshake times out at every cold boot (helper.version > 2 s), so the helper is killed and respawned and an error toast appears**  
-Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D1: helper.version no longer builds an SFSpeechRecognizer on the serial read queue. New Swift SpeechCapability.swift (CachedCapability) probes speech.onDevice once on a background queue at startup, and the handshake reports whatever is known by then. The host gives helper.version 5 s (src-tauri/src/sidecar/mod.rs) and retries the boot handshake once quietly before surfacing an error (src-tauri/src/app/mod.rs). Also adds the default locale: Locale.current, falling back to en-US. Device check: Cold boot (first launch after reboot), and confirm the helper is not killed and respawned during the handshake.
 
 - **User impact:** Every launch on this Intel Mac shows a helper error and delays capture, permissions and audio readiness by several seconds. Captures or listening started in that window fail.
 - **Root cause:** The version probe does slow Speech-framework work (XPC to speechd on a cold start) inline on the serial read queue, inside a 2 s host timeout.
@@ -2373,7 +2373,7 @@ Severity **Medium** · confidence likely · effort S · independent · needs rea
 #### SEC-012
 
 **In Privacy mode the HUD is shown before content protection is applied, leaving it unprotected for several seconds after every launch**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-D2: At boot, Privacy mode now protects every window before panel.attach first shows the HUD (app/mod.rs), not at the end of finish_boot. The tray's Toggle Privacy Mode now patches settings.privacy.displayMode, the single source of truth, and runs settings side effects (platform/mod.rs) instead of flipping the capture manager's flag. Device check: Start with Privacy mode on while screen recording and confirm the HUD is never captured unprotected at launch. Toggle from the tray and check that the HUD eye and Settings update.
 
 - **User impact:** At login autostart or an update relaunch during a call, the HUD can be captured (legacy capture paths / macOS 14) until the helper is up.
 - **Root cause:** The privacy side effect is ordered after slow async helper work instead of before the first show.
@@ -2386,7 +2386,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### MAC-012
 
 **A handshake timeout on respawn re-kills the helper repeatedly (ready then exit about 2 s later), and each failure counts toward the 5-restart crash-loop limit that disables the helper**  
-Severity **Medium** · confidence likely · effort S · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort S · has dependencies · provable off-device · status **Partially implemented** — D1 (MAC-011): helper.version no longer blocks on Speech, the handshake gets 5 s and one quiet retry, so cold boots no longer kill/respawn the helper. A backoff reset after a successful handshake was not separately tested.
 
 - **User impact:** On a slow cold start (for example a busy Intel Mac after login), a few consecutive version timeouts can use up the restart budget. Capture, OCR and audio are then disabled until the user finds 'Restart helper' in Advanced settings.
 - **Root cause:** A handshake timeout is treated like a crash. It kills the process and consumes restart budget instead of retrying the probe on the live process.
@@ -2400,7 +2400,7 @@ Severity **Medium** · confidence likely · effort S · has dependencies · prov
 #### UX-024
 
 **Relaunching Bluey.app while it runs (Finder, Spotlight, Dock) does nothing: RunEvent::Reopen is not handled**  
-Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: RunEvent::Reopen (Finder or Spotlight launching Bluey.app again) now shows the onboarding wizard until it is complete, then the HUD (app/mod.rs reopen / reopen_target). Before this, it did nothing. Device check: With Bluey running, double-click Bluey.app and confirm the HUD, or onboarding, appears.
 
 - **User impact:** A user who hid the HUD with ⌘\ (or has the shortcut hijacked or failing) and opens Bluey again from Spotlight or Applications gets no response, and may think it is broken or force-quit it.
 - **Root cause:** The Reopen event is never handled.
@@ -2413,7 +2413,7 @@ Severity **Low** · confidence verified · effort S · independent · needs real
 #### MAC-014
 
 **'Restart to update' exits without running app::shutdown: audio is not stopped and a running agent job is orphaned**  
-Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: updates_relaunch is now async. It runs app::shutdown() (stops audio, the agent sidecar and the helper) and then calls request_restart(). Before, it called restart() synchronously on the main thread, which skipped RunEvent::Exit and orphaned the helper and agent. Files: commands/updates.rs, updates/mod.rs, docs/UPDATES.md. Device check: Install an update and relaunch while listening, and confirm no orphaned bluey-helper or agent process is left.
 
 - **User impact:** Clicking 'Restart to update' during listening skips session and transcript finalization. A research job keeps running headless, spending network and tokens, until it finishes or hits EPIPE. The relaunched instance is spawned by direct exec rather than through LaunchServices, which may confuse TCC attribution.
 - **Root cause:** A synchronous command makes restart() take the main-thread path, which bypasses the run loop's Exit event where cleanup lives.
@@ -2427,7 +2427,7 @@ Severity **Low** · confidence verified · effort S · independent · needs real
 #### MAC-015
 
 **After a background auto-install, new sidecar binaries run under the old host until the user relaunches, and the agent has no protocol handshake**  
-Severity **Low** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort M · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** Between install and relaunch (hours or days), every research job runs a newer agent against the older host. A changed JSONL contract fails in confusing ways, and a helper crash-restart can land in a protocol mismatch or crash loop.
 - **Root cause:** The bundle is swapped under a live process whose sidecars are resolved by path on each spawn, with no compatibility negotiation.
@@ -2440,7 +2440,7 @@ Severity **Low** · confidence likely · effort M · independent · provable off
 #### MAC-016
 
 **Persisted 'pinned' and 'always on top = off' are not applied at launch (the panel is always Floating)**  
-Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: attach now applies the persisted pinned / always-on-top level through a single hud_level() function, which apply_level also uses. It no longer always sets Floating (overlay/mod.rs). docs/HUD_GEOMETRY.md updated. Device check: Turn always-on-top off, relaunch, and confirm the HUD is not floating.
 
 - **User impact:** After a relaunch, a pinned HUD drops to Floating (below Status-level UI), and a user who turned always-on-top off gets a floating HUD again until they toggle it.
 - **Root cause:** attach() hard-codes the level instead of calling apply_level().
@@ -2453,7 +2453,7 @@ Severity **Low** · confidence verified · effort S · independent · needs real
 #### MAC-017
 
 **Per-display position memory is keyed by monitor name, so identical monitors collide**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** With two monitors of the same model, the HUD's remembered position is shared or overwritten between them.
 - **Root cause:** The monitor name is not unique.
@@ -2466,7 +2466,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DOC-005
 
 **Platform docs claim behavior that does not exist (restart offer, frames discarded after use, nightly version example)**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX6: docs/UPDATES.md nightly example changed to X.Y.(Z+1)-nightly.YYYYMMDD, i.e. 0.1.3-nightly.20260913 for sources at 0.1.2 (per nightly.yml). The MACOS_PERMISSIONS restart offer was removed (see DOC-009). Two parts needed no change: CAPTURE_ARCHITECTURE 'deleted after use' is now true (capture/mod.rs FRAME_CACHE_CAPACITY plus helper sweep, DATA-001), and ADR 0006 already has its 2026-09-28 addendum (SEC-004/SEC-012) about ScreenCaptureKit on macOS 15+.
 
 - **User impact:** Maintainers and support rely on behavior that does not exist.
 - **Root cause:** The docs were written ahead of the implementation and not reconciled.
@@ -2481,7 +2481,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-001
 
 **Default global hotkeys take ⌘←/→/↑/↓, ⌘⇧↑/↓, ⌘R and ⌘, away from every app while Bluey runs**  
-Severity **Critical** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Critical** · confidence verified · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: New default shortcuts no longer take standard editing or app chords globally. Move is now Ctrl+Alt+arrows and Scroll is Cmd+Alt+Up/Down. NewChat and OpenSettings are HUD-local by default (enabled=false globally), and useHudShortcuts handles Cmd+R and Cmd+, locally. TogglePanel, CaptureAnalyze, GenerateResponse and ToggleListening stay global. Migration 0005_shortcut_defaults.sql moves only rows that still hold an old default and leaves customised rows alone. It runs once. Standard editing chords were added to KNOWN_SYSTEM_SHORTCUTS so recording one shows a warning. The mock transport (accelerators.ts, fixtures.ts) uses the same normalisation, conflict rules and defaults as bluey_core::shortcuts. keyboard.ts keeps Ctrl separate from Cmd and renders the ArrowUp/KeyR code names. The onboarding step lists only the global chords. Files: crates/bluey-core/src/shortcuts.rs, bluey-storage migrations/0005 and repositories/settings.rs, src/lib/utils/keyboard.ts, src/lib/tauri/mock/*, KeybindsTab.tsx, onboarding steps/setup.tsx, useHudShortcuts.ts. Device check: Check that Cmd+arrows, Cmd+Shift+arrows, Cmd+R and Cmd+, reach other apps while Bluey runs, and that the new Ctrl+Alt / Cmd+Alt chords register on an upgraded install where migration 0005 ran.
 
 - **User impact:** Bluey is a menu-bar app that runs all day. While it runs, ⌘←/⌘→ (start/end of line), ⌘↑/⌘↓ (top/bottom of document) and ⌘⇧↑/↓ (select to top/bottom) most likely stop working in every text field, ⌘, stops opening other apps' settings, and ⌘R stops reloading or replying. Each press moves or scrolls the HUD, opens Bluey Settings, or wipes the current chat. That is the opposite of 'invisible until useful'.
 - **Root cause:** The Cluely-style defaults bind common macOS editing chords as always-on Carbon hotkeys, which take the key away from the focused app. Only the HUD needs Move/Scroll/NewChat/OpenSettings, but they are registered globally and permanently.
@@ -2519,7 +2519,7 @@ None of these changes weaken security.
 #### UX-002
 
 **The HUD 'Screen off' toggle does not stop screen capture (⌘↵ and screen-requiring modes ignore it)**  
-Severity **High** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-E2: UI side. The Screen toggle state lasts for the session and shows an ImageOff icon plus aria-pressed when the screen is off. hudUiStore.screenWarning copies the screen_unavailable warning from the latest snapshot (context.updated). HudNotice.tsx then shows a compact 'Screen not included' notice with an Open Settings (Screen Recording) action. The engine side, passing screenAllowed, was already done by C. Device check: Revoke Screen Recording permission, ask a question, and check that the notice appears and that Open Settings goes to the Screen Recording pane.
 
 - **User impact:** A user who turns Screen off (for example before sharing something sensitive) still has the screenshot, OCR and accessibility tree captured and sent to the AI provider on ⌘↵, on every typed ask and follow-up in the default mode, and on every live suggestion. The control misstates what Bluey does with the screen. In addition, 'Reading screen…' shows even when no screen is read (chatStore.ts:90 default phase "capturing"; context/mod.rs:89 CaptureStarted on every snapshot).
 - **Root cause:** The toggle is only one input to an OR expression. The mode requirement and the trigger override it, so the toggle can only add the screen, never remove it.
@@ -2532,7 +2532,7 @@ Severity **High** · confidence verified · effort S · independent · provable 
 #### UX-003
 
 **After any AI failure the app stays in Error: audio start/stop is dropped (mic live with no HUD indicator) and the error pill stays over later successful answers**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-E1: The state machine is recoverable (src-tauri/crates/bluey-core/src/state/mod.rs). CaptureStarted and ThinkingStarted leave Error and clear it. AudioStarted and AudioStopped update audio_active in every state except Booting and AuthRequired, so starting or stopping the mic after a failure is no longer dropped. Device check: After an AI failure, start and stop listening and confirm the HUD mic indicator and the pill follow.
 
 - **User impact:** Example: an answer fails (network blip, 429, bad key) and the pill shows '! The AI request failed'. The user clicks Start Audio Session. The microphone starts (and the proactive loop can answer detected questions), but the button still says Start, there is no green dot, no Listening pill and no transcript strip. After dismissing the error the HUD says 'Bluey · General' while the mic is live, and clicking the button again does nothing. The reverse case leaves the HUD showing Listening forever after the audio stopped. Separately, the stale error pill with a Retry button stays over later answers that succeeded, and clicking it re-asks a duplicate.
 - **Root cause:** Audio is documented as an 'orthogonal region', but it is gated on the main state, and new user work does not clear Error. The HUD derives listening only from AppStatus and ignores the audio manager's own events.
@@ -2546,7 +2546,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### UX-004
 
 **The HUD 'Detectable / Content-protected' eye can show the wrong stealth state, and the HUD toggle is lost on relaunch**  
-Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-E2: The eye button in HudToolbar.tsx now reads settings.privacy.displayMode from the settings store and writes it back through settings update. The saved setting is the only source of truth, so the eye is correct after a relaunch and after a tray toggle. The mock transport's settings_update now applies content protection the same way Rust does. Device check: With D2's tray wiring merged: toggle privacy from the tray, relaunch, and check that the eye matches and the window is actually excluded from screen capture.
 
 - **User impact:** The eye icon is the user's promise about whether the HUD appears in a screen share or recording (interviews, demos). After toggling privacy from the tray or Settings, the HUD can show 'Content-protected' while the panel is actually visible to the other side, or the reverse. Protection set from the HUD quietly goes back to 'Detectable' on the next launch while Settings shows 'Standard' the whole time.
 - **Root cause:** Two sources of truth: a HUD-only direct capture command and the saved privacy.displayMode setting, plus a one-time fetch with no subscription.
@@ -2560,7 +2560,7 @@ Severity **High** · confidence verified · effort S · independent · needs rea
 #### UX-005
 
 **Code blocks are unreadable in the Light theme (near-black box with light-theme token colors); hard-coded white hovers disappear**  
-Severity **High** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-E2: Added a --color-code-bg token in src/app/styles/theme.css: #0d0d0d in the dark theme and a light surface in the light theme. The hard-coded white hover fills are replaced with theme-aware bg-fg/N tints. A new useDocumentTheme hook (src/features/hud/useDocumentTheme.ts) makes CodeBlock.tsx pick the matching Shiki theme and MermaidDiagram.tsx the matching Mermaid theme. Documented in docs/DESIGN.md. Device check: Look at code blocks and diagrams in both the light and dark themes on a real display and check contrast.
 
 - **User impact:** Every Light-mode Mac user on the default theme gets unreadable code in the HUD. That breaks the Coding Interview and System Design modes, whose answer is the code, and 'Copy code' becomes the only way to see it. Active and hover states (for example the selected 👍) can't be seen.
 - **Root cause:** The code surface color and the white-alpha interaction colors were written as dark-only literals instead of theme tokens, while the highlighter does follow the theme.
@@ -2573,7 +2573,7 @@ Severity **High** · confidence verified · effort S · independent · provable 
 #### UX-011
 
 **Retry and Regenerate always re-ask the LAST turn as 'regenerate' with no screen: wrong question and lost context**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-E1: ChatTurn stores its TurnRequest (trigger, instruction, captureScreen, detectedEvent, promptLabel) (src/stores/chatStore.ts). useAsk exposes retry(turnId) and regenerate(turnId), which re-send that turn's own request. HudPanel and ResponseThread pass the turn id.
 
 - **User impact:** Retry after a failed screen Assist can give an answer with no context at all. Retry on an earlier failed turn re-asks a different (later) question. Regenerating a live suggestion loses its transcript anchoring. Users learn not to trust Retry, which is the main recovery button for AI errors.
 - **Root cause:** The chat turn stores only prompt and label, not the original request, so every recovery rebuilds the request from the last turn with fixed defaults.
@@ -2587,7 +2587,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### UX-012
 
 **Clearing the HUD chat (Esc, ←, ⌘R) can't be undone, and answers asked outside a session can't be found afterwards**  
-Severity **Medium** · confidence likely · effort M · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · has dependencies · provable off-device · status **Partially implemented** — WS-E2: Esc now clears a non-empty draft first; a later Esc does the existing hide or cancel. Clearing the thread shows a 'Chat cleared · Undo' row in HudNotice for UNDO_CLEAR_MS (5 s), backed by chatStore.cleared and undoNewChat. initStores resets this state. Not done: listing answers that have no session in History. That needs a change to the Rust responses_list, which I do not own.
 
 - **User impact:** Pressing Esc to clear a half-typed follow-up, or ⌘R to reload a browser tab, wipes the whole conversation. If no session was running (typed or ⌘↵ asks without listening), those answers are gone from the UI for good.
 - **Root cause:** Esc is overloaded as 'clear everything', there is no soft-delete, and the only history browser is organised by session.
@@ -2601,7 +2601,7 @@ Severity **Medium** · confidence likely · effort M · has dependencies · prov
 #### UX-013
 
 **Error toasts render inside the auto-sized HUD window, covering the toolbar for up to 12 s and clipping when stacked**  
-Severity **Medium** · confidence likely · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-E2: HUD errors now show in one inline notice row (src/features/hud/HudNotice.tsx) above the toolbar. The row is inside the measured, auto-sized frame, so errors no longer appear as a toast covering the toolbar. toast-store has inline error hosts: the HUD claims errors via claimInlineErrors, and Toasts accepts a limit prop. Documented in docs/HUD_GEOMETRY.md. Device check: Check that the HUD window grows to fit the notice row and that nothing is clipped at the screen edge.
 
 - **User impact:** Right after an audio or helper error, the controls the user needs to fix it (the audio button, or the pill's Restart helper) are covered by the toast and can't be clicked until it is dismissed or times out. A second concurrent error is invisible.
 - **Root cause:** A generic bottom-centre toast host designed for the Settings window is reused inside a tightly content-sized transparent panel.
@@ -2614,7 +2614,7 @@ Severity **Medium** · confidence likely · effort M · independent · needs rea
 #### UX-014
 
 **The panel-opacity preference fades the text as well as the background; muted and subtle text fails contrast over bright backdrops**  
-Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-E2: Panel opacity now changes only the background alpha. .hud-surface in theme.css mixes the background with --hud-opacity, set by HudPanel, so text stays fully opaque. Added HUD-specific muted and subtle foreground tokens that pass contrast over the translucent surface. Documented in docs/HUD_GEOMETRY.md. Device check: At minimum opacity, check that text is still readable over busy wallpapers in both themes.
 
 - **User impact:** Over a light document or web page (LeetCode, Google Docs, a white slide), section labels, speaker names and transcript partials are close to invisible. Lowering opacity to see through the panel makes the answer itself unreadable (primary text under 3:1 at 60%), right when the user needs to glance at it and say it.
 - **Root cause:** Opacity is implemented as group CSS opacity instead of background alpha, and the HUD reuses the Settings text scale, which was tuned for an opaque dark background.
@@ -2627,7 +2627,7 @@ Severity **Medium** · confidence verified · effort S · independent · needs r
 #### UX-015
 
 **There is no keyboard way to type into the HUD: panel.focusInput is never sent and the panel is never made key**  
-Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-FX7: A second press of the toggle-panel shortcut while the HUD is visible focuses the HUD input: the non-activating panel becomes key and publishes PanelFocusInput, and the other app stays active (commit 747db34). Device check: Press the toggle-panel shortcut twice over another app and type: the text lands in the HUD composer.
 
 - **User impact:** A keyboard-driven copilot needs the mouse to type a question: ⌘\ shows the HUD but keystrokes keep going to the other app. Keyboard-only and switch-access users can't use typed asks or follow-ups at all, and can't stop a runaway answer without clicking.
 - **Root cause:** The decision not to take focus is correct for show-on-⌘↵, but no deliberate way to take focus was added (the event exists; its producer was never written).
@@ -2641,7 +2641,7 @@ Severity **Medium** · confidence verified · effort M · independent · needs r
 #### UX-025
 
 **VoiceOver gets no announcement for thinking, answer ready, listening or errors in the HUD**  
-Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-E2: Added one visually hidden aria-live=polite announcer (HudAnnouncer.tsx, announce.ts, with state from useStatePill.ts). It announces thinking, answer ready, listening and errors once per state change, not per token. Spinner.tsx is decorative (aria-hidden), and the eye button has aria-pressed. Device check: Check with VoiceOver that each state is announced once and not repeated.
 
 - **User impact:** Screen-reader users can't tell when Bluey starts or finishes answering, when listening starts or stops, or when an error needs action. The core ask-to-answer loop is silent for them.
 - **Root cause:** The HUD components were built visual-first, and the state lives in derived pills without a single announcer.
@@ -2654,7 +2654,7 @@ Severity **Low** · confidence verified · effort S · independent · needs real
 #### UX-026
 
 **HUD shortcut hints are hard-coded and the 'Bluey has a suggestion' pill can't be clicked**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E2: Shortcut hints now come from the saved settings through useShortcutAccelerator.ts and are hidden when a shortcut is disabled. keyGlyph in src/lib/utils/keyboard.ts learned KeyR. The 'Bluey has a suggestion' pill is now a real button that shows the prepared answer.
 
 - **User impact:** After rebinding or disabling a shortcut the HUD advertises a chord that does nothing. Mouse-only users can't open a prepared suggestion.
 - **Root cause:** The hints are string literals rather than values derived from the settings bindings.
@@ -2668,7 +2668,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-027
 
 **Auto-follow keeps the bottom of the stream in view, so the first ('say this') line of a long answer scrolls away while it streams**  
-Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-E2: When a turn starts, its top is scrolled into view. Following continues only while the turn's first line is still visible; after that the down-arrow button takes over. The logic is in src/features/hud/thread-scroll.ts and is used by ResponseThread.tsx. Device check: Check scroll-follow behaviour with real streaming in WKWebView.
 
 - **User impact:** For answers taller than the viewport (behavioral STAR answers, sections, code) the user loses the opening sentence they are reading aloud and has to scroll back up mid-sentence.
 - **Root cause:** A chat-style follow-the-tail policy is applied to a glance-and-speak surface.
@@ -2681,7 +2681,7 @@ Severity **Low** · confidence likely · effort S · independent · provable off
 #### UX-028
 
 **'Copy answer' copies only the raw markdown body; feedback failures are silent**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: Copy answer copies the title, content and sections as plain text, and a failed rating write is reported (commit def9392).
 
 - **User impact:** Pasted answers are incomplete or cluttered with markdown in chat or email, and feedback the user thinks was sent may be lost.
 - **Root cause:** Copy was implemented as a raw-content shortcut; feedback failures aren't shown.
@@ -2694,7 +2694,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-035
 
 **Opportunity: show which provider and model answered, and when an account has fallen back to the API key**  
-Severity **Opportunity** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Opportunity** · confidence likely · effort S · independent · provable off-device · status **Implemented** — WS-E2: Under the answer actions there is now a muted provenance line: model and latency, plus 'via API key' or the fallback reason when there is one. The data comes from response.selection (provenance.ts, ResponseProvenance.tsx). When research failed, ResponseThread shows a subtle research note. ResponseActions uses useAsk retry(turnId) and regenerate(turnId). The code-block 'Copied' check in tests/ui/response-view.test.tsx is now deterministic (fireEvent with a fake setTimeout). Documented in docs/DESIGN.md.
 
 - **User impact:** Users can't tell a slow or odd answer from a Flash vs Pro model, or notice that their API key (billed) is now answering instead of their subscription.
 - **Root cause:** Response metadata is collected for the dev overlay but never shown in the HUD.
@@ -2709,7 +2709,7 @@ Severity **Opportunity** · confidence likely · effort S · independent · prov
 #### DATA-002
 
 **Crash, force-quit or update relaunch leaves a 'Live' zombie session that absorbs later listening forever**  
-Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-G: SessionManager::load (src-tauri/src/sessions/mod.rs) no longer restores an active or paused session. SessionRepository::end_interrupted (repositories/sessions.rs) marks it completed at its last event, segment or response time and adds a new session_recovered timeline event (bluey-core SessionEventType plus TS type). If history is off, the session is deleted instead. The dead restore path in app/mod.rs is removed. Device check: Force-quit mid-session, relaunch and start listening: this should create a new session.
 
 - **User impact:** After relaunching into an update (auto-installed builds), or after a crash or force-quit during listening, the HUD shows a session as live with an ever-growing duration. Every later listening run, possibly days later, is appended to it, merging unrelated meetings into one session, summary and export. The session is never deleted even with history off, and the history row cannot be deleted from the list because it is 'Live'.
 - **Root cause:** Session liveness is persisted, but the 'auto-started by listening' fact is not. Restore trusts the database status, and the update relaunch bypasses the graceful shutdown hook.
@@ -2722,7 +2722,7 @@ Severity **High** · confidence verified · effort M · independent · needs rea
 #### DATA-003
 
 **Answers asked outside a session are stored with session_id NULL and survive every deletion and retention path except Reset all**  
-Severity **High** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: Answers asked outside a session (session_id NULL) and their requests are now removed by delete_all, by ending a session with history off, and by retention pruning. This is repositories/responses.rs delete_sessionless, called from sessions.rs and retention.rs; FTS rows go with them through the triggers. commands/responses.rs no longer saves a sessionless answer while history is off. The mock mirrors both. Deleting a single session does not touch sessionless rows, because they do not belong to that session.
 
 - **User impact:** Every Cmd+Enter or screen answer given while not listening (a very common path) keeps the typed prompt and the answer, which often contains interview or coding content, in bluey.db indefinitely. The rows are invisible in the UI, are not removed by 'Delete all sessions' or 'session history off', and the Privacy stats keep counting them.
 - **Root cause:** Persistence assumes every answer belongs to a session, while deletion and retention reach answers only through the sessions cascade.
@@ -2735,7 +2735,7 @@ Severity **High** · confidence verified · effort S · independent · provable 
 #### DATA-006
 
 **Deleting the live session publishes no event; the HUD keeps a deleted session id and later answers are silently not saved**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: Deleting the live session, on its own or through delete-all, now publishes session.ended so the HUD drops it (SessionManager announce_deleted_active). audio/mod.rs forget_session resets the auto-session binding. SessionDetail disables Delete for a session that has not ended, and the mock emits the same event.
 
 - **User impact:** After deleting the current session, every HUD answer and timeline event fails its foreign-key check and is silently dropped until the HUD reloads. 'End session' shows an error toast. If audio was listening, its transcript stops being saved (session_id None), and stopping logs a failed end().
 - **Root cause:** The delete paths change backend active-session state without notifying the webviews, and the storage failure is hidden by the engine's best-effort persistence.
@@ -2748,7 +2748,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### DATA-007
 
 **Prepared answers shown with Cmd+Shift+Enter (and cached answers opened live) are never saved to the session**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E1: engine.commitShown(response, session) persists a prepared answer shown with ⌘⇧↵ and logs response_generated. A cached answer opened live is persisted the same way (src/ai/engine.ts persistShown).
 
 - **User impact:** With proactive preparation on, the answers the user actually saw during a meeting or interview are missing from session history, search, export, the summary input and the Rust session context.
 - **Root cause:** Saving is tied to the non-silent pipeline, not to the moment a response is shown.
@@ -2762,7 +2762,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### DATA-008
 
 **Live transcript timestamps restart at 0 on each listening run, scrambling order in multi-run sessions**  
-Severity **Medium** · confidence verified · effort M · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · has dependencies · provable off-device · status **Implemented** — WS-D1: When a run attaches to a session that already has a transcript, its live segments are offset by that session's last end time (from stored segments, or from the ring when transcripts are not persisted) via on_session_timeline. The auto-started session is bound to the id it created, so stop never ends a session the user switched to. A helper-initiated stop (device lost, stream error) now ends the auto session too (src-tauri/src/audio/mod.rs).
 
 - **User impact:** A manual session (HUD 'Start session') with listening stopped and restarted, or a restored session, shows interleaved transcript lines in Session detail and export. The 'most recent 300' window picks the wrong lines, and the summary's keep-the-tail logic keeps the wrong part.
 - **Root cause:** Each run of the helper audio session uses its own time base, and the storage layer orders by that per-run time.
@@ -2776,7 +2776,7 @@ Severity **Medium** · confidence verified · effort M · has dependencies · pr
 #### AI-007
 
 **Post-session summary silently ignores the first part of sessions longer than ~25-30 minutes**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-G: src/sessions/summary.ts keeps the start (a third of the budget) and the end of long transcripts. It marks the dropped middle with its time range in the prompt and adds a note to the stored overview, so the detail view and the export tell the user which minutes were left out.
 
 - **User impact:** For a typical 45-60 minute meeting, lecture or interview, the overview, decisions and study guide cover only roughly the last half hour, with no indication to the user.
 - **Root cause:** A single-pass summary with a fixed tail budget and no chunked (map-reduce) pass over earlier transcript.
@@ -2789,7 +2789,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### UX-016
 
 **Mode-specific summary sections (Study guide, Interview debrief, Deal notes…) and 'answers' are generated and stored but never shown or exported**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: SessionDetail.tsx now shows the summary's answers, improvements and each mode section (Study guide, Interview debrief and so on). bluey-core session.rs export_markdown includes answers, improvements and the sections.
 
 - **User impact:** The per-mode value of summaries is invisible: a lecture session never shows its study guide and an interview never shows its debrief, even though tokens were spent generating them.
 - **Root cause:** The UI and the Markdown exporter were built for the base summary fields only.
@@ -2802,7 +2802,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### UX-017
 
 **Session history shows at most 50 sessions and has no way to page further**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: SessionsTab.tsx requests explicit 50-row pages (limit/offset), adds a 'Load more' button that appends the next page, and shows 'Showing N of M sessions'. M comes from data_usage_stats and is shown only when no filter is set. With a filter it shows 'Showing N sessions'. The mock sessions_search now pages and sorts newest first, like Rust.
 
 - **User impact:** Heavy users lose browse access to older sessions without any hint; 'Any time' misleadingly suggests the full history.
 - **Root cause:** The backend supports limit and offset, but the UI never pages.
@@ -2815,7 +2815,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### DEBT-006
 
 **auto_session flag outlives the session it marks: stopping listening can end a user's later manual session**  
-Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Implemented** — D1 (DATA-008): the auto-started session is bound to the id it created, so stopping listening never ends a session the user switched to.
 
 - **Root cause:** auto_session is a bare AtomicBool, not the id of the auto-started session, so it no longer matches reality once the user ends that session and starts another.
 - **Evidence:** src-tauri/src/audio/mod.rs:315-318 sets auto_session=true when listening auto-starts a session; src-tauri/src/audio/mod.rs:584-588 stop() calls sessions.end() on whatever session is active if the flag is set; src-tauri/src/sessions/mod.rs:189-208 end() works on the currently active session, and nothing resets AudioManager.auto_session; src/features/hud/SessionMenu.tsx:59-69 offers 'End session' and, once no session is active, 'Start session' while audio keeps running (session-actions.ts:45-47 ends only the session, not audio)
@@ -2826,7 +2826,7 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 #### DEBT-007
 
 **Device loss or a helper-side stop leaves the auto-started session Live, and the next listening run merges into it**  
-Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Implemented** — D1 (DATA-008): a helper-initiated stop (device lost, stream error) ends the auto-started session.
 
 - **Root cause:** Ending the auto session happens only in the user-initiated stop() path, not in the shared mark_stopped path.
 - **Evidence:** src-tauri/src/audio/mod.rs:808-827 the AudioStopped handler (device_lost or another reason) calls close_stt() and mark_stopped(error) but not the auto-session end in stop() (L584-588); src-tauri/src/audio/mod.rs:315 the next start() finds sessions.active() is Some and reuses the stale session; src-tauri/crates/bluey-storage/src/retention.rs:207-229 retention and the history-off prune only touch 'completed' sessions
@@ -2837,7 +2837,7 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 #### DATA-010
 
 **Session and document deletions do not VACUUM or secure-delete, contrary to SECURITY.md; deleted text stays recoverable in the database file and WAL**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: db.rs Database::configure turns on PRAGMA secure_delete, and FTS5 secure-delete is enabled after migrations. Every deletion and retention pass ends with wal_checkpoint(TRUNCATE), in retention.rs, commands/data.rs (plus VACUUM on bulk resets) and documents/mod.rs. SECURITY.md now describes what deletion actually does.
 
 - **User impact:** Deleted sessions (transcripts, answers), resumes and job descriptions stay readable in free pages and the WAL of bluey.db until they are overwritten.
 - **Root cause:** Vacuum was added per command, not centrally, and the doc was written for the intended design.
@@ -2851,7 +2851,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DATA-011
 
 **Retrieval compares vectors from different embedding models when their dimensions match**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** While a re-embed is in flight, or after it fails (offline, rate limits), semantic scores for resume and job-description chunks are meaningless, for example switching between two 1536-dimension models, so the wrong context is injected into answers.
 - **Root cause:** Space identity is recorded per document but not enforced at query time.
@@ -2864,7 +2864,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-029
 
 **History gaps: notes cannot be deleted, notes and summaries are not searchable, search snippets are hidden, and the export prints the mode id and UTC times**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** Minor friction when browsing and sharing history.
 - **Root cause:** Incremental UI coverage of backend capabilities.
@@ -2877,7 +2877,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DOC-006
 
 **Session-scoped documents are supported end to end in the backend and retrieval, but nothing can create them; the ContextTab comment says otherwise**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: The ContextTab comment no longer claims sessions have their own files (commit 5612c30).
 
 - **User impact:** You can't attach a JD or meeting brief to just one session; if added later, deleting a session would leave its files behind.
 - **Root cause:** The feature is only half-built.
@@ -2890,7 +2890,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DATA-012
 
 **If the database cannot open or migrate, bootstrap fails and the app aborts with no backup and no user-facing recovery**  
-Severity **Opportunity** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Opportunity** · confidence verified · effort M · independent · needs real macOS · status **Implemented** — D2 (CRIT-003): pending migrations back the database up first (VACUUM INTO) and a boot failure shows a native dialog with the log path and Reveal Data Folder / Quit.
 
 - **User impact:** On a corrupt database, a full disk or a future migration bug, the menu-bar app would crash on launch every time, with no message and no way to export or reset.
 - **Root cause:** Storage is a hard dependency of bootstrap, with no degraded mode.
@@ -2905,7 +2905,7 @@ Severity **Opportunity** · confidence verified · effort M · independent · ne
 #### LIVE-005
 
 **'Skip research' leaves no final event when a tool call is in flight: the ask stalls until 90 s and a stale 'Skipping research…' status sticks to later asks**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-R: The job table moved into src-tauri/src/agent/jobs.rs behind AgentProcess/DocumentSource seams. AgentJobs::cancel now publishes failed{cancelled} and kills the process if the job still exists after the 2 s grace. In the sidecar (sidecars/agent/src/agent.ts), cancel() emits the terminal cancelled event at once, and the job's abort signal reaches in-flight Exa/Firecrawl fetches (tools/errors.ts postJson uses AbortSignal.any). The researchStore skip ends local search jobs at once, so a stale 'Skipping research…' can no longer stick. Device check: Click Skip during a real deep job in the app. Confirm the HUD clears within about 2 s and the next ask shows no stale status.
 
 - **User impact:** The user presses Skip because research is slow, and nothing happens. The answer stays blocked for the rest of the 90 s window. After that, every later ask's streaming placeholder and the status pill keep showing 'Researching · Skipping research…' with a disabled button, until some future deep-research job starts. Firecrawl scrapes (often 3-15 s) and Claude/Gemini turns routinely take longer than 2 s, so this is the common case, not a corner case.
 - **Root cause:** Rust's cancel grace path removes the job and kills the child without sending a final event, and the sidecar only answers a cancel after the in-flight tool finishes because its tool fetches never see the job's abort signal. The researchStore also has no fallback that clears it when the ask ends.
@@ -2918,7 +2918,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### AI-002
 
 **search_scrape research is routinely dropped from the prompt by the 12k-token budget while its citations are still shown as Sources**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented** — WS-R: ResearchOutcome now holds items: one for the snippets, one per scraped page (capped at 6k chars, with a 'Source: title (url)' header and a truncation marker), and the agent report capped at 12k. Each becomes its own budget item. keptResearchCitations filters citations down to the items that budget.included kept.
 
 - **User impact:** For typical news or docs pages (often more than 14k characters of markdown), the answer model never sees the research. It answers from stale knowledge while the HUD shows a confident 'Sources' list, so users are misled into thinking the answer is grounded. It also pays the latency of up to 3 sequential scrapes (up to 45 s each in Rust) for nothing.
 - **Root cause:** The research outcome is a single, uncapped, all-or-nothing context item, and citations are attached independently of what reached the prompt.
@@ -2931,7 +2931,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### UX-006
 
 **HUD citation and markdown links cannot be opened: opener:allow-open-url is granted with no URL scope**  
-Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-R: The main, settings and onboarding capabilities now scope opener:allow-open-url to https://*, http://* and mailto:*. src/lib/utils/open-external.ts refuses other schemes and shows a toast on refusal or failure, using new CODE_COPY entries in present.ts. Device check: In the packaged app, click a citation and the About help/mailto links and confirm the browser or mail app opens.
 
 - **User impact:** Clicking a Source in the HUD, a link in a markdown answer, or the About-tab help link does nothing, with no error. Research citations become unverifiable.
 - **Root cause:** The capability grants the command but no URL scope. Plugin-opener denies everything that is not explicitly allowed.
@@ -2945,7 +2945,7 @@ Severity **High** · confidence verified · effort S · independent · needs rea
 #### LIVE-006
 
 **The search/search_scrape research path has no timeout, no Skip and no status, and a broad 'current/recent' cue triggers it: the ask can block for about 155 s showing 'Reading screen…'**  
-Severity **High** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-R: In src/ai/research.ts, search/search_scrape now run under a 10 s overall deadline. Scrapes run in parallel, each capped at 6 s; snippets are kept when pages are slow. These paths publish started/tool_call/terminal events on the research.event channel, so the HUD shows 'Searching the web…' and Skip works through skipLocalResearch (researchStore.skip). A bare 'current'/'recent' no longer triggers research unless it sits next to a time-sensitive noun. Device check: Check the HUD 'Searching the web…' pill and Skip button on a real search_scrape ask.
 
 - **User impact:** Users with an Exa (and Firecrawl) key who say 'current' or 'recent' in an everyday screen question get a web search plus up to three sequential page scrapes before any answer. The ask can hang for tens of seconds, up to about 2.5 minutes, with a misleading 'Reading screen…' status and no way to skip. The instruction text is also sent to Exa and Firecrawl unnecessarily.
 - **Root cause:** The deep-agent path got a timeout and a HUD status, but the Rust search/scrape path is awaited inline with only per-request HTTP timeouts. The research trigger reuses a very broad heuristic cue list.
@@ -2958,7 +2958,7 @@ Severity **High** · confidence verified · effort M · independent · provable 
 #### SEC-013
 
 **buildPublicQuery's display-name and private-document noun stripping never runs in production: the snapshot has no userContext yet**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-R: buildPublicQuery(instruction, PrivateTerms) now receives the private terms explicitly instead of reading the snapshot. src/ai/engine.ts maybeResearch passes the retrieved chunks and the signed-in user's first/last name and email local part (from useAuthStore). Proper nouns from private-kind chunk content and titles are stripped.
 
 - **User impact:** Whatever the user types into an ask that triggers research, including their own name, employer, or project/client names that appear in their resume or session documents, goes verbatim to Exa (and, for deep_agent, to the model provider and to Firecrawl-scraped queries). Only emails, phone numbers and @handles are removed. The security doc promises more than the code does.
 - **Root cause:** The research step was placed before context enrichment for latency, but privateTerms() still depends on fields that only enrichment fills in. The display name has no source at all.
@@ -2972,7 +2972,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### AI-008
 
 **Running out of turns (both backends) or the 90 s ask timeout throws away all gathered evidence instead of forcing a report**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-R: Gemini: when the turn budget runs out with tool results pending, the report instruction joins that user turn and the report turn runs instead of throwing. DeepResearchRequest gains deadlineMs (Rust core type, protocols, TS and sidecar schema); the TS side sends the ask timeout minus 15 s. At the deadline Gemini stops starting tool turns, and a hard stop (Gemini gets a 10 s report grace) aborts the run. A Claude error_max_turns or a hard stop completes with a 'Research stopped early' report listing the gathered sources. The job fails only when there is no evidence (max_turns_exceeded / deadline_exceeded). Device check: Check against the real Gemini API that a user turn mixing functionResponse parts with a text part is accepted (the audit flagged this as unverified).
 
 - **User impact:** On hard questions (the ones deep research exists for), 11 turns of paid Exa, Firecrawl and model calls are discarded and the user gets an unresearched answer after waiting up to 90 s.
 - **Root cause:** Budget exhaustion is treated as failure rather than as a signal to write the report, and the TS time limit is never communicated to the agent.
@@ -2985,7 +2985,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### AI-009
 
 **Citation guarantees cover only the structured citations list: report-body links and the answer model's citations are unvalidated, finalize appends every search hit, and IDs collide**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-R: Sidecar CitationStore.finalize now returns the validated model citations plus known URLs linked from the report body, falling back to pages read in full. It no longer appends every search hit. sanitizeReport de-links report URLs the tools never returned. Engine mergeCitations drops answer-model citations when research produced sources and gives answer citations their own ans_N ids, which removes the cit_N collision.
 
 - **User impact:** The Sources list for deep research can contain dozens of pages the agent only saw as search hits, which dilutes provenance. Made-up URLs can reach the final answer through the report body or the answer model's citations. Duplicate keys can cause React rendering glitches in the Sources list.
 - **Root cause:** Validation is applied at one layer (sidecar structured citations) and was assumed to cover the whole path.
@@ -2998,7 +2998,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### AI-010
 
 **Cancelling or superseding an ask does not cancel its research job; paid tool and model calls continue for up to 90 s**  
-Severity **Medium** · confidence verified · effort S · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · has dependencies · provable off-device · status **Implemented** — WS-R: RunResearchOptions accepts a signal and a polled isCancelled. maybeResearch wires isCancelled to opts.isCancelled() || isStale(...), because this branch has no ask AbortSignal yet. On cancel, runDeepAgent calls deepCancel and resolves null, and the search paths abort.
 
 - **User impact:** A user who cancels an ask, or quickly asks again, still spends Exa, Firecrawl and Gemini/Claude credits. Several sidecar processes can run at once in the background.
 - **Root cause:** The ask's cancellation token is not passed into research.
@@ -3012,7 +3012,7 @@ Severity **Medium** · confidence verified · effort S · has dependencies · pr
 #### PROV-009
 
 **Selecting the Claude research backend on shipped (lite) builds reports deepAgent available, but every job fails invalid_configuration**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-R: The sidecar answers agent.info with {variant, backends}; lite builds report no claude unless BLUEY_CLAUDE_CLI is set. AgentManager probes it once with credentials cleared and caches the result (OnceCell). available() requires the chosen backend to be supported, and research_available returns agentBackends. The new src/features/settings/ResearchBackendSelect.tsx disables Claude on lite builds. Device check: Run a packaged lite build and confirm the agent.info probe succeeds from the bundled binary, so Settings shows 'Claude (full build only)'.
 
 - **User impact:** A user who picks Claude with a valid Anthropic key silently gets no deep research on every official build.
 - **Root cause:** The sidecar variant is not reported to Rust or the UI, and availability does not account for it.
@@ -3025,7 +3025,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### TEST-005
 
 **No boundary tests for the Rust agent manager or the cross-layer research seams where the High bugs live**  
-Severity **Medium** · confidence verified · effort M · has dependencies · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · has dependencies · provable off-device · status **Implemented** — WS-R: src-tauri/src/agent/jobs_tests.rs drives AgentJobs against a scripted fake sidecar. It covers completion and reaping, answered and ignored cancel, crash before the terminal event, a rejected run, a 1 MB final frame, the wall-clock cap, and the document allow-list.
 
 - **User impact:** The cancel stall, the privacy scrub, and the budget drop all pass CI. This is the same failure pattern as PR #18 (mock-transport tests green, real path broken).
 - **Root cause:** Tests are organised by layer. The Rust sidecar manager has no process-level harness.
@@ -3039,7 +3039,7 @@ Severity **Medium** · confidence verified · effort M · has dependencies · pr
 #### PROV-013
 
 **deep_agent is chosen when only the model key exists, but the sidecar fails the whole job if the Exa or Firecrawl key is missing, so there is no research at all**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-R: Rust ResearchManager::availability now requires an Exa key for deep_agent. runDeepAgent requests firecrawl_scrape only when availability.scrape is true. The AITab copy now says deep research needs an Exa key.
 
 - **User impact:** A user with a Gemini key and only an Exa key (or no tool keys) who asks a 'deep dive' question briefly sees 'Researching…' and then gets an unresearched answer, even though plain Exa search would have worked. The Settings copy tells them nothing else is needed.
 - **Root cause:** Availability and tool selection are computed without the tool keys, and the sidecar treats any unkeyed requested tool as fatal.
@@ -3052,7 +3052,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### AI-013
 
 **Report-format line is garbled ('a final `## Sources` intuition of which sources mattered most'); the prompt also has no date, no turn budget and no untrusted-content rule**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-R: sidecars/agent/src/system-prompt.ts: the garbled Sources line is replaced by 'ending with a ## Sources section that lists the sources you actually used'. The prompt now adds today's date, the tool-turn budget and a one-line rule that tool results are untrusted data. firecrawl is only suggested when that tool is available.
 
 - **User impact:** The garbled line makes the report's closing section inconsistent (the model has to guess). Without a date, 'latest' questions get stale framing and wrong startPublishedDate filters. Without a stated budget, the model cannot pace itself, which feeds the max-turns failure.
 - **Root cause:** Copy error (probably 'section listing' → 'intuition'), plus prompt gaps.
@@ -3065,7 +3065,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### AI-014
 
 **Very large research.completed frames can be cut off at process.exit, which turns a finished job into agent_exited**  
-Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort S · independent · provable off-device · status **Implemented** — WS-R: sidecars/agent/src/main.ts: flushStream waits for the callback of an empty write, which fires after all earlier chunks, with a 10 s bound, before process.exit. Before this, a queued final frame could be cut off.
 
 - **User impact:** Rare, because reports are asked to be concise. But a long report plus the append-all citations could approach this, and a completed job would then be lost.
 - **Root cause:** process.exit does not wait for pending async pipe writes in Bun.
@@ -3078,7 +3078,7 @@ Severity **Low** · confidence likely · effort S · independent · provable off
 #### UX-030
 
 **HUD research status shows raw developer progress strings**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-R: researchStore.describeProgress maps the sidecar's developer progress strings to plain copy ('Found N sources', 'Read host', 'Read your documents', 'Writing up findings…'). Other strings, such as 'agent session started', are ignored.
 
 - **User impact:** The HUD pill flickers through lines like 'agent session started (model gemini-3.8-flash, 2 tool(s))' and full URLs, which feels unfinished and wastes space.
 - **Root cause:** Progress events were designed for logs and are shown in the UI unchanged.
@@ -3091,7 +3091,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DOC-007
 
 **Research docs overstate privacy and citation guarantees, and ADR 0004 points to a nonexistent router file and backend**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-R: ADR 0004 gets a dated addendum covering the router path, Gemini as default, agent.info, the scrub as built, and the bounds. docs/AGENT_SIDECAR_PROTOCOL.md now documents agent.info, deadlineMs, prompt cancellation, forced reports, flush, and the citation/link validation. The research privacy and agent sections of docs/SECURITY.md were made accurate, and the opener scope is noted. sidecars/agent/README.md citations and codes were updated.
 
 - **User impact:** Reviewers and future contributors rely on guarantees that do not hold.
 - **Root cause:** Docs were not updated after the Gemini backend and the pipeline reorder.
@@ -3106,7 +3106,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### PERF-002
 
 **⌘↵ waits for a fresh Vision OCR pass after every capture (ADR 0010 §3 not implemented)**  
-Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-C: When the image travels with the snapshot, OCR now runs on its own task and is raced against a 150 ms soft deadline after the capture (ocr_within in src-tauri/src/context/mod.rs). If OCR is slower, the snapshot goes out with the accessibility tree and the image plus an ocr_pending warning. OCR keeps running in the background, and the capture manager caches the result and publishes OcrCompleted. Without an inline image, OCR is still awaited, so there is never a snapshot with no screen text at all. Device check: Measure on a real Mac with Vision OCR how often the 150 ms deadline is missed, and check answer quality when the model gets only the image and the accessibility tree.
 
 - **User impact:** Every ⌘↵ with the screen on pays capture + a full Vision OCR pass before anything else starts. Estimated 100–400 ms at the default `fast` level on this Intel i5 (the Settings → Advanced 'OCR' metric shows the real value), 0.5–2 s at `accurate`, and up to 5 s when Vision stalls. That is the largest local share of the time to first token.
 - **Root cause:** OCR was put in the same future as capture so its text reaches the prompt and the retrieval query. The planned `context.enriched` split (ADR §3) and OCR-independent retrieval (§5) were never built. Change detection is disabled on ⌘↵ for freshness, which also disables the only OCR cache.
@@ -3119,7 +3119,7 @@ Severity **High** · confidence verified · effort M · independent · needs rea
 #### PERF-003
 
 **Every streamed delta re-renders the whole HUD and re-parses the markdown of every turn in the thread**  
-Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-E2: Streamed drafts are batched in src/stores/chatStore.ts, so the store updates at most once per animation frame. Callers can force a flush with flushDraft, and the draft is flushed on complete, error and cancel. Turn, ResponseView and Markdown are memoised, so a finished turn never re-renders or re-parses while a later answer streams. HudPanel uses a narrow selector for the expanded state. Scroll-follow runs on requestAnimationFrame instead of on every delta. Device check: Profile a long streamed answer in the real WKWebView HUD and check that frame pacing is smooth and the first-paint trace fires after commit.
 
 - **User impact:** As a session goes on, and especially during a meeting with live suggestions, each token or chunk makes the main thread re-parse the whole thread. Streaming stutters, the HUD drops frames, typing in the composer lags, and first visible text gets later. The effect is worse with per-token providers (ChatGPT/Codex, ~50–100 deltas/s) and on Intel Macs.
 - **Root cause:** The store update granularity is the delta, and the render tree has no memoisation boundary. Completed turns keep their object identity (`updateLast` replaces only the last turn), but nothing uses that.
@@ -3132,7 +3132,7 @@ Severity **High** · confidence likely · effort S · independent · needs real 
 #### PERF-007
 
 **No connection pre-warm: sporadic ⌘↵ asks pay DNS + TCP + TLS 1.2 on the critical path**  
-Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort S · independent · needs real macOS · status **Deferred** — Connection pre-warm needs a measured baseline first (the bench needs live providers, not available to this run).
 
 - **User impact:** Typical ⌘↵ use is sporadic, with asks more than 90 s apart, so most asks find the pooled connection evicted and pay DNS + TCP (1 RTT) + TLS 1.2 (2 RTT). That is roughly 60–250 ms added to time to first token, depending on RTT. It shows in the trace as a larger `response_headers − request_sent`.
 - **Root cause:** The warm-up in ADR §6 was never built, and the connection is only opened once the whole local pipeline has finished.
@@ -3145,7 +3145,7 @@ Severity **Medium** · confidence likely · effort S · independent · needs rea
 #### PERF-009
 
 **Screenshots are 1600 px / JPEG q0.8 base64 with no Gemini mediaResolution hint, and cross IPC twice**  
-Severity **Medium** · confidence likely · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence likely · effort M · independent · needs real macOS · status **Deferred** — Image size / quality change needs the LATENCY.md legibility guard run on fixture screens against a real provider.
 
 - **User impact:** A text-heavy 1600 px q0.8 frame is typically about 250–450 KB, or about 330–600 KB as base64. On a 10 Mbps uplink that is about 0.25–0.5 s of upload before the provider can start. Default HIGH image tokens also add prefill time and cost on every ask.
 - **Root cause:** The ADR §4 image changes and the provider hint were never implemented; quality is a literal, not a setting.
@@ -3158,7 +3158,7 @@ Severity **Medium** · confidence likely · effort M · independent · needs rea
 #### PERF-010
 
 **With embeddings on, every document-using ask does a Keychain read and a network embed call serially after the snapshot, even when no chunk is embedded**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Deferred** — Retrieval embed racing needs a measured baseline with embeddings enabled.
 
 - **User impact:** Users who turn embeddings on in interview/document modes add a full provider round trip (about 150–500 ms, more on a cold connection) plus a Keychain read to every ask, before the answer request is even built.
 - **Root cause:** Semantic retrieval was designed as sequential query-embed → SQL, and ADR §5's parallel/deadline/cache design was not built.
@@ -3171,7 +3171,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### DOC-001
 
 **LATENCY.md and SECURITY.md describe the ADR 0010 fast path (OCR off-path, warm-up, warm frame) as existing; the baseline was never measured**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX6: docs/LATENCY.md now has a Status table. Marked built: the trace and bench, the 150 ms OCR soft deadline (PERF-002) and per-frame streaming render (PERF-003). Marked planned: context.enriched, the raced accessibility snapshot, the 1440 px pipeline, parallel retrieval, connection warm-up (no AiManager::warm), the stable prompt prefix, and the warm frame and prefetch. The baseline now says the Vision default is `fast`. docs/SECURITY.md's fast-path section separates what is built (the OCR deadline, a fresh frame on every ⌘↵) from what is planned (warm frame, prefetch). Added a dated addendum to docs/adr/0010 listing what shipped and pointing at LATENCY.md › Status.
 
 - **User impact:** Contributors and auditors reading the docs will assume the latency and privacy behaviour described there already exists. SECURITY.md in particular documents prefetch semantics users cannot rely on, and nobody has a baseline to judge regressions against.
 - **Root cause:** The docs were written ahead of the implementation PRs (docs-first PR 0/4a) and never marked as planned.
@@ -3185,7 +3185,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### PERF-012
 
 **Session context DB reads run after the capture/OCR join instead of inside it, and load every session event**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-C: The session reads (events and notes) now run as a fourth branch of build_snapshot's join, alongside the frontmost app, accessibility and capture, and load only the newest events. They use the new SessionEventRepository::list_recent (a LIMIT query, returned in chronological order) in bluey-storage repositories/sessions.rs.
 
 - **User impact:** Adds a few ms, more in long sessions or when a background write holds the DB, to every ⌘↵ during an active session. The work is independent of the screen and could overlap it.
 - **Root cause:** The snapshot builder was written as join-then-assemble.
@@ -3198,7 +3198,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### PERF-013
 
 **`t_first_paint` is stamped by a single rAF that can fire before React commits the draft, so render cost is invisible to the trace**  
-Severity **Low** · confidence likely · effort S · has dependencies · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort S · has dependencies · provable off-device · status **Deferred** — First-paint trace stamp: E2 moved scroll/paint work to animation frames; stamping after commit is a follow-up.
 
 - **User impact:** The dev overlay can under-report first paint and hides regressions like the per-delta markdown cost, so the fast-path table would look healthier than the HUD feels.
 - **Root cause:** First paint is approximated from the engine side instead of observed at commit.
@@ -3212,7 +3212,7 @@ Severity **Low** · confidence likely · effort S · has dependencies · provabl
 #### PERF-014
 
 **One mutex-guarded SQLite connection serialises hot-path reads behind background writes**  
-Severity **Low** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort M · independent · provable off-device · status **Deferred** — A read-only SQLite connection for hot-path reads is a structural storage change; no contention measured yet.
 
 - **User impact:** Occasional tail latency on ⌘↵ when a long write (document ingest, re-embedding, retention) holds the connection; not measured.
 - **Root cause:** WAL permits concurrent readers, but a single shared connection throws that away.
@@ -3225,7 +3225,7 @@ Severity **Low** · confidence likely · effort M · independent · provable off
 #### PERF-015
 
 **Every ⌘↵ capture re-enumerates SCShareableContent (all windows/apps) before taking the screenshot**  
-Severity **Low** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: New generic ContentCache.swift. Display captures (captureDisplay, the Cmd+Return path) reuse the SCShareableContent enumeration for up to 1.5 s, and only while the display-configuration key (active display IDs plus bounds, from CGGetActiveDisplayList) is unchanged. Failures are not cached. An enumeration is only kept when it lists Bluey's own app, and ShareableContent.displayFilter then excludes Bluey by application (SCContentFilter excludingApplications). So a Bluey window opened after the cached fetch is still left out. If Bluey's app is not listed, the filter falls back to excluding its windows. A revoked Screen Recording grant clears the cache. Window and region captures still fetch fresh content. Documented in CAPTURE_ARCHITECTURE.md. The sub-timing measurement the audit suggested was not added. Device check: Confirm the HUD and Settings windows stay out of display captures with the by-app filter, including a window opened less than 1.5 s before Cmd+Return, and compare the bench:fastpath capture p50 before and after.
 
 - **User impact:** Each ⌘↵ pays a full window-server enumeration before the screenshot starts. This is serial inside the capture stage, which also gates OCR and retrieval. The size of the cost is unmeasured. It can be tens of ms and grows with the number of open windows.
 - **Root cause:** The screenshot needs a fresh SCContentFilter that excludes Bluey's own windows, and it is rebuilt from a fresh full SCShareableContent query per request.
@@ -3238,7 +3238,7 @@ Severity **Low** · confidence likely · effort S · independent · needs real m
 #### PERF-017
 
 **Stable context (resume, JD, documents) is placed after the volatile question, and Anthropic requests carry no cache_control**  
-Severity **Opportunity** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Opportunity** · confidence verified · effort M · independent · provable off-device · status **Deferred** — Cache-friendly prompt prefix needs a quality check on providers with prompt caching.
 
 - **User impact:** Interview and document modes re-send several thousand stable tokens that provider prefix caches (Gemini implicit ≥4,096, OpenAI ≥1,024, Anthropic explicit) cannot hit, which costs prefill time and money on every ask.
 - **Root cause:** The section order was chosen for readability, not prefix stability; the ADR §7 audit was not done.
@@ -3253,7 +3253,7 @@ Severity **Opportunity** · confidence verified · effort M · independent · pr
 #### LIVE-007
 
 **toggle_listening shortcut is handled twice (Rust native + HUD) and the two audio starts race**  
-Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence likely · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D1: AudioManager::start is now single-flight. claim_start sets Starting under the status lock before any await, and a duplicate toggle gets the current status back instead of an error. Only the caller that claimed the start can tear down on failure, so a losing duplicate no longer closes the winner's transcription sink (src-tauri/src/audio/mod.rs). Removing the duplicate TS handler is left to E1. | WS-E1: Removed the HUD's own toggle_listening and new_chat reactions to shortcut.triggered (src/features/hud/useHudShortcuts.ts). Rust starts and stops audio natively and publishes panel.newChat, which the HUD still handles, so the audio start no longer races and New chat no longer runs twice. Device check: Press the toggle_listening global shortcut in the real app and confirm a single audio start.
 
 - **User impact:** Pressing the listen shortcut (⌘⇧L) while not listening sends two audio_start calls. With a Google key configured, both can pass is_running(). The helper rejects the second, and the losing path tears down the winner's Gemini Live STT sink and marks audio as Error while the helper keeps capturing. The user gets an error toast, loses live transcripts, and the state stays inconsistent until they stop.
 - **Root cause:** Two owners for one action: Rust gained a native toggle, but the HUD handler was never removed. AudioManager::start is also not atomic: it awaits between the running check and setting Starting.
@@ -3267,7 +3267,7 @@ Severity **High** · confidence likely · effort S · independent · needs real 
 #### DATA-009
 
 **One incompatible settings field silently resets ALL settings (providers, models, privacy) to defaults**  
-Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Implemented** — WS-F: bluey-storage repositories/settings.rs: decode_settings lays the stored JSON over the defaults one top-level section at a time. For a section that fails, it goes one field at a time (try_accept). ai.providers entries that do not decode (an unknown kind) are dropped on their own. When anything falls back, the raw stored text is copied to settings.backup ({savedAt, raw}) before the next save, and only section names are logged (commit 82153d2).
 
 - **User impact:** If the stored settings contain any value this build cannot parse (for example a manual downgrade after a nightly added an enum variant, a provider entry of an unknown kind, or corruption), every preference, provider entry and privacy choice reverts to defaults. The first settings change then makes that loss permanent. Privacy defaults would also re-enable cloud AI.
 - **Root cause:** The fallback is all-or-nothing instead of per section, and the raw JSON is not backed up before it can be overwritten.
@@ -3281,7 +3281,7 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 #### FEATURE-003
 
 **Raw-audio retention setting (never / until session end / N minutes) is persisted and shown but nothing implements it**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: Nothing records audio to disk, so PrivacyTab.tsx now shows raw audio as 'Never kept' with honest copy (a later version may keep recordings). The selector, the custom-window row and privacy-retention.ts are removed. The settings fields stay in the schema, and a stored 'custom' value no longer makes the tab claim recordings are kept. AUDIO_ARCHITECTURE.md is updated.
 
 - **User impact:** Users who choose to keep raw audio (for example to review later) get nothing. The UI implies a capability and a retention policy that do not exist. It fails safe, since no audio is ever stored.
 - **Root cause:** The setting and UI shipped ahead of the recording and retention implementation.
@@ -3295,7 +3295,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### TEST-015
 
 **Mock transport defaults and validation diverge from Rust with no parity test, hiding real bugs**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Partially implemented** — B2 (TEST-014) generates the built-in modes fixture from Rust and the mock loads it; several lanes made mock handlers follow Rust (secrets allow-list, ai_* supersede, modes, shortcuts, protection, retrieval). Settings defaults and provider presets are still hand-copied.
 
 - **User impact:** UI, unit and e2e tests run against a backend that behaves differently from the shipped one, so bugs that depend on real defaults and validation pass CI. PR #18 was the same failure mode (mock green, real IPC broken).
 - **Root cause:** The fixtures are hand-written copies of the Rust defaults and validation, with nothing tying them together.
@@ -3309,7 +3309,7 @@ Severity **Low** · confidence verified · effort M · independent · provable o
 #### UX-031
 
 **Observation interval default (1.5 s) is not one of the select options; the UI shows 'Every 3 seconds' and there is no range validation**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: The observation-interval select offers the actual default (commit 2a57bb9).
 
 - **User impact:** After switching Observation to Smart, the UI says 3 s while the app samples every 1.5 s, and choosing '3 seconds' does nothing. A malformed patch can set 0 ms.
 - **Root cause:** The option list was not derived from the default, and there is no bounds check on the Rust side.
@@ -3322,7 +3322,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-032
 
 **appearance.followActiveDisplay has a toggle but no consumer**  
-Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Implemented** — WS-FX7: The Follow active display toggle, which nothing honoured, is hidden (commit 85c36da).
 
 - **User impact:** Toggling it changes nothing. Multi-monitor users expecting the HUD to follow focus do not get that behaviour.
 - **Root cause:** Placeholder setting that was never wired to overlay positioning.
@@ -3335,7 +3335,7 @@ Severity **Low** · confidence verified · effort S · independent · needs real
 #### DOC-008
 
 **privacy.debugLogTranscripts is persisted and documented but has no consumer and no UI**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: privacy.debugLogTranscripts is removed from the Rust and TypeScript types, defaults and mocks; a stored settings blob that still contains it loads (commit 335f0b4).
 
 - **User impact:** None at runtime. The docs mislead reviewers about what can be logged.
 - **Root cause:** Leftover field.
@@ -3348,7 +3348,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DEBT-011
 
 **AI cache table is never written; 'Clear AI cache' clears nothing**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: The Clear AI cache action, which cleared an always-empty table, is removed with its dead path on both sides (commit 13bc3b4).
 
 - **User impact:** The button reports success but removes nothing. A user who expects embeddings to be purged is misled.
 - **Root cause:** The cache layer was planned but never wired.
@@ -3361,7 +3361,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DEBT-012
 
 **bluey_core::budget (364 lines) is unused and diverges from the live TS allocator**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX7: The unused bluey_core::budget module is deleted (commit a93eb2b).
 
 - **User impact:** None directly. It invites someone to 'fix' the wrong allocator or to trust Rust tests that do not reflect runtime behaviour.
 - **Root cause:** Policy moved to TS without deleting the Rust twin.
@@ -3375,7 +3375,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### TEST-016
 
 **Provider presets duplicated in TS and Rust with no cross-check**  
-Severity **Low** · confidence verified · effort S · has dependencies · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · has dependencies · provable off-device · status **Deferred** — Provider presets parity fixture: follow-up (same approach as the built-in modes fixture).
 
 - **User impact:** A future model-id bump in Rust leaves the UI showing or pre-filling stale model ids.
 - **Root cause:** Two hand-maintained copies.
@@ -3389,7 +3389,7 @@ Severity **Low** · confidence verified · effort S · has dependencies · prova
 #### DEBT-013
 
 **34 registered commands have no caller; several events have no listener or no emitter**  
-Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort M · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** None directly (Tauri only evals events in webviews with listeners). It enlarges the IPC attack surface (see command-capabilities-not-scoped) and misleads contributors: for example, the HUD looks like it refocuses the input on panel.focusInput, but it never does.
 - **Root cause:** The surface was designed up front (docs/ARCHITECTURE.md), and the implementation took native paths without pruning.
@@ -3402,7 +3402,7 @@ Severity **Low** · confidence verified · effort M · independent · provable o
 #### UX-033
 
 **Microphone picker cannot restore 'follow system default' once a device is chosen**  
-Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Implemented** — WS-FX7: The microphone picker offers System default again; it sends null and Rust accepts null (commit 58802bd).
 
 - **User impact:** Picking 'Default — MacBook Mic' pins that device, so plugging in AirPods later does not switch input and Bluey keeps listening on the old mic.
 - **Root cause:** There is no sentinel option for None.
@@ -3417,7 +3417,7 @@ Severity **Low** · confidence verified · effort S · independent · needs real
 #### CRIT-003
 
 **A bootstrap failure (DB open/migration/settings) makes the app vanish with no dialog**  
-Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **High** · confidence verified · effort S · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: A bootstrap failure (database open, migration, settings) no longer hits .expect under panic=abort. setup keeps the event loop alive to show one native dialog with the error, the log folder and Reveal Data Folder / Quit (app/mod.rs show_boot_failure, boot_failure_message). A build failure is logged and exits with code 1. Before pending migrations run on an existing database, Database::open_with_backup copies it to bluey.db.bak-<version> with VACUUM INTO; a failed backup is logged, not fatal. Follow-up in this session: Reset all data also deletes the bluey.db.bak-* copies (Storage::remove_db_backups), because they hold all the old data. Documented in docs/UPDATES.md. Device check: Force a boot failure (for example an unreadable bluey.db) in a release build and check that the dialog appears and Reveal / Quit work.
 
 - **User impact:** If a migration fails after an auto-installed update, or the data dir is unwritable, corrupt or full, Bluey quits on every launch with no message. The in-app updater lives inside the crashing process, so a fixed build cannot be delivered, and the panic text goes to stderr, not the log file. For affected users the product is unusable.
 - **Root cause:** Bootstrap errors travel through Tauri's setup and then .expect(). Nothing turns them into user-visible UI, and panic=abort without a hook loses the message.
@@ -3430,7 +3430,7 @@ Severity **High** · confidence verified · effort S · independent · needs rea
 #### UX-036
 
 **Recovery buttons (Reconnect, Restart helper, Open Settings) swallow their own failures**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E2: Recovery actions now go through one runner, runRecovery in src/lib/errors/present.ts, with setRecoveryFailureReporter. If a recovery action itself fails, the runner catches the error and shows it instead of dropping it. Toast, ErrorBanner and StatePill all use the runner.
 
 - **User impact:** The user clicks 'Reconnect' or 'Restart helper' in an error toast, the toast disappears, and if the action fails nothing happens and no message appears. In the pill, a failing action also leaves the Error state in place.
 - **Root cause:** Actions are typed as returning a Promise, but no caller handles rejection, and there is no global rejection handler.
@@ -3443,7 +3443,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### UX-037
 
 **Settings side effects (Smart observation, content protection, retention sweep, autostart) fail silently**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-F: settings/side_effects.rs: failures of shortcut re-registration, content protection, launch at login, Smart observation start/stop and the retention sweep go through report(). It publishes BlueyEvent::AppError whose recovery opens the settings tab that controls the setting (keybinds, privacy, general, screen); a permission error keeps its own OpenSystemSettings action. Only error codes are logged. platform::set_autostart now returns BlueyResult, with config.autostart_failed and present.ts copy; at launch it is still only logged (commit e9cd328). Not done: an observation-status indicator in ScreenTab (ScreenTab is not a file this workstream owns); the app.error toast covers the permission case. Device check: Toggle Launch at login and Smart observation with Screen Recording denied: an actionable toast should appear.
 
 - **User impact:** The user selects Smart observation or turns off 'store screenshots'. The toggle saves and shows the new value, but observation never starts, or the old data is not deleted, and nothing tells them. Privacy expectations (deletion, content protection) can silently diverge from reality.
 - **Root cause:** apply() runs after the settings write succeeded, and its failures have no return channel to the caller.
@@ -3456,7 +3456,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### UX-038
 
 **No React error boundary: any render exception blanks the HUD, Settings or Onboarding window with no recovery**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-E2: New ErrorBoundary in src/components/ui/ErrorBoundary.tsx. Each window root (HudWindow, SettingsWindow, OnboardingWindow) is wrapped in one, with a compact 'Something went wrong — Reload' fallback. Each chat turn and each Mermaid diagram also has its own boundary, so one bad render no longer blanks the whole window. A separate commit adds the override modifiers needed for noImplicitOverride.
 
 - **User impact:** If any component throws during render, React 19 unmounts the whole root. The floating HUD panel becomes an empty transparent window, and showing or hiding the panel does not remount it, so the user must quit and relaunch. Settings or onboarding would go blank the same way.
 - **Root cause:** There is no top-level or per-surface error boundary, and the startup promise is fire-and-forget.
@@ -3469,7 +3469,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### UX-039
 
 **Global shortcuts that fail to register are never shown to the user**  
-Severity **Low** · confidence likely · effort M · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence likely · effort M · independent · needs real macOS · status **Implemented — needs real-device verification** — WS-D2: A binding macOS fails to register is now shown to the user. apply_bindings records the reason on the binding (ShortcutBinding.registrationError, cleared once it registers) and pushes the bindings through settings.changed. The KeybindsTab row shows a 'Not active' badge with the reason, and the onboarding shortcut step says the same. Files: shortcuts/mod.rs, bluey-core types, KeybindsTab.tsx, setup.tsx, mock. Device check: Bind a chord another app already owns and confirm the badge appears.
 
 - **User impact:** If an accelerator is unparsable or cannot be registered, the hotkey (for example 'ask about screen') does nothing. Settings shows it as bound and enabled, and nothing explains why pressing it has no effect.
 - **Root cause:** Registration results are treated as diagnostics (DevLog) instead of part of the binding state exposed to the UI.
@@ -3482,7 +3482,7 @@ Severity **Low** · confidence likely · effort M · independent · needs real m
 #### AI-016
 
 **Web research failures are invisible: the answer arrives ungrounded with no notice**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Partially implemented** — WS-R: Research failures now return an outcome with no items and a short note (configuration / timeout / generic copy via researchNote). The engine stamps it as response.researchNote (new optional BlueyResponse field). Rendering the note in ResponseThread belongs to E2 (next wave), and the field is not persisted in the Rust response struct.
 
 - **User impact:** For time-sensitive questions the user sees 'Researching…', then an answer with no citations and no sign that research failed (for example a missing EXA/Firecrawl key or a sidecar crash). They may trust stale model knowledge.
 - **Root cause:** runResearch collapses every failure into `null`, the same value as 'research not needed'.
@@ -3495,7 +3495,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-040
 
 **Clerk session restore signs the user out on a transient network error during the refresh fallback**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-A: Restore signs out only on an authentication rejection (restore_signs_out). Network errors keep the stored sign-in. Fix pass: a locked or unprobeable item also keeps the cached user, with no read.
 
 - **User impact:** Launching with a stale access token while the network is flaky signs the user out, and revokes the session, when a retry would have worked. Rotated tokens can also be lost, forcing a later sign-in.
 - **Root cause:** Wildcard `Err(_)` arms on the refresh-fallback path.
@@ -3508,7 +3508,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DEBT-014
 
 **Cluster of low-impact swallowed or console-only errors and dead stubs (about 30 sites)**  
-Severity **Low** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Low** · confidence likely · effort M · independent · provable off-device · status **Deferred** — Low-severity backlog: not scheduled in this cycle and unchanged on the integrated branch; the proposed solution above still applies.
 
 - **User impact:** Each site on its own is rare or low-stakes (storage/IPC failures in a local app). Together they mean missing feedback in Settings and history, and debugging relies on devtools.
 - **Root cause:** No shared 'invoke with toast' helper; each call site handles errors ad hoc.
@@ -3521,7 +3521,7 @@ Severity **Low** · confidence likely · effort M · independent · provable off
 #### UX-041
 
 **Helper auto-restart first shows a 'native helper is not running' error toast**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-D1: src/stores/errorSurface.ts shows an info toast ('restarting the helper') while the supervisor auto-restarts the helper, instead of the 'native helper is not running' error. Copy is in src/lib/errors/present.ts.
 
 - **User impact:** Every crash that is auto-recovering shows an alarming error toast with a Restart action. If the user clicks it during the backoff window, a manual restart races the scheduled one. The spawn_lock plus the is_running check prevents a double spawn, but the messaging is contradictory.
 - **Root cause:** The branch order in errorSurface does not treat restarted=true with running=false as 'restarting'.
@@ -3536,7 +3536,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DEBT-001
 
 **Stable (Latest) releases were manually uploaded developer builds, bypassing the gated publish pipeline, and they feed default auto-update**  
-Severity **High** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **High** · confidence likely · effort M · independent · provable off-device · status **Deferred** — Owner action. The Latest channel was fed by hand-uploaded ad-hoc builds. G (TEST-006) now publishes nightly only after ci.yml succeeded, and release.sh keeps its publish gates; blocking manual `gh release` uploads needs the owner to publish only through the gated pipeline, and the root fix is Developer ID signing (ADR 0011).
 
 - **Root cause:** Without Apple credentials, the only way to ship was a manual upload of developer-path artifacts. That skipped the arch check, the pair re-verification and the provenance record the pipeline was built to enforce, and it put those artifacts on the default auto-update feed.
 - **Evidence:** gh release view v0.1.2: body says 'not code-signed and not notarized … the signed pipeline (.github/workflows/release.yml) could not run. This release was published manually by the repository owner's decision, against the default policy in docs/RELEASING.md'; v0.1.2 assets include latest.json and Bluey_0.1.2_{aarch64,x64}.app.tar.gz(.sig), so the Latest feed (default channel, settings.rs:433) serves it with auto-install on (UPDATES.md:3-5); release.yml:108-152 publish path (verify_macos.py, publish_release.py re-verification) runs only when publish=='true' with Apple secrets; release.sh:122-127 skips verify_macos.py otherwise; `gh api repos/bloxy-studios/bluey/branches/main → protected=false`
@@ -3547,7 +3547,7 @@ Severity **High** · confidence likely · effort M · independent · provable of
 #### TEST-006
 
 **Nightly auto-publishes any main commit, whatever its CI status, without app-crate tests, Swift tests, arch checks or a launch smoke, and users auto-install it**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Implemented — needs real-device verification** — WS-G: nightly.py plan skips a commit unless its latest ci.yml push run on main concluded success. This applies even when the nightly is forced. The plan job gets actions:read. A manual ad-hoc stable upload is still possible outside the workflow; release.sh's existing plan validation is the only script-level guard. Device check: Needs a real Actions run to confirm the actions:read API call works.
 
 - **User impact:** A commit that fails the macOS app-crate tests, crashes at launch, or bundles a wrong-arch sidecar can reach every Nightly-channel user overnight and install itself. Rollback needs a new nightly.
 - **Root cause:** The nightly workflow reuses the developer-build path of release.sh, which by design skips verify_macos.py, and nothing ties it to CI results or branch protection.
@@ -3560,7 +3560,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### TEST-007
 
 **The helper/agent binaries are built but never executed in CI, and the 430-line helper supervisor has no tests**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Deferred** — A compiled-sidecar smoke in CI is a follow-up (G added the Swift unit tests to the macOS job).
 
 - **User impact:** Regressions in stdio framing, Bun-compiled stdin handling, the handshake or restart logic ship silently. A crash loop or a 'helper did not report ready' state shows up only on user machines.
 - **Root cause:** Tests stop at pure codecs (bluey-protocols) and in-process sidecar logic. No fake-process harness exists for the Rust supervisor, and no CI step pipes a request into the real binaries.
@@ -3573,7 +3573,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### TEST-008
 
 **The Swift helper unit tests are listed as an automated layer but no workflow runs them**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-G: The macOS job in ci.yml now runs scripts/test-helper.sh after building the helper, and the docs/ci/workflows/ci.yml copy is mirrored. Device check: Needs a GitHub macOS runner to execute the swift tests.
 
 - **User impact:** Envelope, VAD, dHash change detection and OCR ordering can regress unnoticed. VAD and dHash control what gets transcribed and when screens count as changed.
 - **Root cause:** The macOS CI job was set up to build the helper, not test it.
@@ -3586,7 +3586,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### TEST-009
 
 **`tauri dev` silently runs stale helper/agent binaries; on this Mac they predate the PR #34 helper and PR #8 agent changes**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: build-helper.sh and build-agent.sh write <binary>.stamp with a hash of the sidecar's sources (new scripts/sidecar-stamp.sh). ensure-sidecars.sh rebuilds any sidecar that is missing, has no stamp, or whose stamp no longer matches.
 
 - **User impact:** The owner's manual QA in `tauri dev` (research with the Gemini backend, OCR of every ⌘↵ frame) exercises old sidecar code. Results are invalid or misleading, and bugs get misattributed.
 - **Root cause:** The existence check has no freshness input, and sidecars carry no build identity the app could compare.
@@ -3600,7 +3600,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### TEST-010
 
 **All 32 UI suites run against a 2,226-line MockTransport that differs from the Rust handlers; the real TauriTransport has no test**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Deferred** — A TauriTransport contract test with @tauri-apps/api mocks is a follow-up.
 
 - **User impact:** UI flows can pass in CI and fail against Rust: settings patches, secret gating, provider-key badges, account flows, updater states. PR #18 is the precedent: every real event failed while mock tests stayed green.
 - **Root cause:** The mock is a second, hand-maintained implementation of the backend, and no contract test binds the two.
@@ -3613,7 +3613,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### TEST-011
 
 **Subscription-provider 'no drift' goldens compare Bluey against fixtures written from the same docs; no real capture exists**  
-Severity **Medium** · confidence verified · effort L · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Medium** · confidence verified · effort L · independent · needs real macOS · status **Deferred** — Needs real provider captures with the owner's accounts (fingerprints:capture) — owner action.
 
 - **User impact:** Connecting ChatGPT, Claude or Google AI subscriptions may fail on day one (400/403, redirect rejection) or trip provider abuse detection, while the tests stay green.
 - **Root cause:** The tests are self-consistency tests; the real-capture step of the runbook (PROVIDER_ACCOUNTS.md:339-372) was never done.
@@ -3626,7 +3626,7 @@ Severity **Medium** · confidence verified · effort L · independent · needs r
 #### TEST-012
 
 **No opt-in live/contract test tier; every real-provider and real-OS check exists only as prose**  
-Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort M · independent · provable off-device · status **Deferred** — An opt-in live contract tier exists for prompts (BLUEY_PROMPT_EVAL_LIVE); provider/OS contract tests are a follow-up.
 
 - **User impact:** Provider API changes (Gemini 3.x fields, Live binary frames, Files API) are found by users. Nothing can be re-run cheaply after a dependency bump.
 - **Root cause:** The team verifies by checklist in PR bodies without an executable harness for keys available on the owner's Mac.
@@ -3639,7 +3639,7 @@ Severity **Medium** · confidence verified · effort M · independent · provabl
 #### DEBT-008
 
 **The 374-line updater state machine (check/install/relaunch/channel switch) has zero tests**  
-Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Open**
+Severity **Medium** · confidence likely · effort M · independent · provable off-device · status **Deferred** — Updater state machine tests: follow-up (D2 changed relaunch to run shutdown first; the updater logic itself is unchanged).
 
 - **Root cause:** The updater is tied to AppHandle and cfg!, with no injectable seam, so neither phase transitions nor channel-switch behavior are covered. That is on the path every user takes when auto-install is on by default.
 - **Evidence:** rg -c '#[test]|#[tokio::test]' src-tauri/src/updates/ → no matches; wc -l src-tauri/src/updates/mod.rs = 374; updates/mod.rs:96-98 supported() keyed on !cfg!(debug_assertions); :311-320 relaunch phase guard; :203-216 per-channel feed query; UI side is tested only against the MockTransport updater that 'always finds 0.2.0' (docs/UPDATES.md:63)
@@ -3650,7 +3650,7 @@ Severity **Medium** · confidence likely · effort M · independent · provable 
 #### TEST-017
 
 **No x86_64 artifact is ever executed; Intel builds are cross-compiled on arm64 runners and shipped untested (the owner's Mac is Intel)**  
-Severity **Low** · confidence verified · effort S · has dependencies · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · has dependencies · provable off-device · status **Deferred** — CI has no Intel runner smoke; this audit ran the helper and app tests on an Intel Mac locally (x86_64).
 
 - **User impact:** Intel-only regressions reach Intel users with no signal: Bun x64 runtime issues, Swift x86_64 codegen or availability paths, Speech on-device capability differences, slower first capture against the 3 s timeout.
 - **Root cause:** The CI matrix is arm64-only and nothing smoke-tests the x64 slice.
@@ -3664,7 +3664,7 @@ Severity **Low** · confidence verified · effort S · has dependencies · prova
 #### DOC-009
 
 **The docs promise a 'Restart Bluey' offer after a denied→granted Screen Recording change, but it isn't implemented**  
-Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Open — needs real-device verification**
+Severity **Low** · confidence verified · effort S · independent · needs real macOS · status **Implemented** — WS-FX6: The fix is in docs/MACOS_PERMISSIONS.md; no code was changed. Removed the 'Restart Bluey' offer, which does not exist. The doc now describes what is built: macOS's own Quit & Reopen, the onboarding wizard resuming at its step (ONB-004), and live refresh on focus and every 2 s on an open permissions screen. Permission-flow step 2 now lists the real refresh triggers (launch, each request, every 30 s while listening, plus useLivePermissions) and says a revocation does not stop a running session by itself. Also fixed the speech-locale bullet: Apple's servers plus a notice, not a cloud-provider fallback. The post-update repair card text (MAC-001) was already accurate.
 
 - **User impact:** During onboarding the user grants Screen Recording and capture may keep failing (the per-process TCC cache in the helper) with no guidance. First-run experience breaks.
 - **Root cause:** A documented behavior was never built, and no test checks for it.
@@ -3677,7 +3677,7 @@ Severity **Low** · confidence verified · effort S · independent · needs real
 #### TEST-018
 
 **Every Rust test runs debug + dev-tools, so release-only branches (updater, deep-link sign-in, dotenv paths) never execute in any test**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Release-only branches: A added release=true coverage for dotenv/OAuth config paths it touched; updater release paths remain.
 
 - **User impact:** Sign-in redirect selection and updater enablement in shipped builds are checked only by shipping.
 - **Root cause:** Behavior is keyed on cfg! at the call site instead of an injectable flag.
@@ -3690,7 +3690,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### TEST-019
 
 **CI tests with Bun 'latest' and unpinned Rust stable while shipped builds pin Bun 1.4.2**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Toolchain pinning in CI: follow-up.
 
 - **User impact:** A Bun or rustc regression can pass CI and break the nightly (or the reverse). The compiled agent comes from a different Bun than the one CI tested.
 - **Root cause:** Pins were added only on the release path.
@@ -3703,7 +3703,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### TEST-020
 
 **Coverage has no threshold and isn't run; the browser regression script uses Chromium (not WebKit) and isn't in CI**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Coverage thresholds and a WebKit regression run: follow-up.
 
 - **User impact:** No coverage signal against the 80% target. WebKit-specific layout and IME issues in WKWebView go undetected.
 - **Root cause:** The tooling was added ad hoc and never wired into CI.
@@ -3716,7 +3716,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### TEST-022
 
 **UI suites run at the 5 s default timeout and fail on slower developer Macs (6 of 651 on the audit machine)**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-G: vitest.config.ts is split into unit and ui projects, and tests/ui gets testTimeout 15000. The SessionDetail rename tests paste text and wait on findByRole instead of typing one key at a time. I also raised the subprocess timeouts in the release script tests from 20/30 s to 60 s, after they timed out at load average 68.
 
 - **User impact:** Contributors on slower Macs see a red `bun run test` on a clean checkout and cannot tell regressions from noise.
 - **Root cause:** userEvent-driven flows take ~5 s on slow hosts; the suite relies on Vitest's 5 s default.
@@ -3729,7 +3729,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### TEST-021
 
 **Tauri event-name validity is checked against a copied regex, not Tauri's real emit**  
-Severity **Opportunity** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Opportunity** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Opportunity: an app-crate emit test with tauri::test::mock_builder.
 
 - **User impact:** If a Tauri upgrade tightens the rule, every event could fail again (the PR #18 class) with all tests green.
 - **Root cause:** No test runs app.emit through a Tauri runtime.
@@ -3744,7 +3744,7 @@ Severity **Opportunity** · confidence verified · effort S · independent · pr
 #### FEATURE-006
 
 **The 'Selected region' capture target quietly captures the whole display**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-D2: Removed 'Selected region' from ScreenTab, since no region picker exists and it silently captured the whole display. CaptureTargetPreference::Region is gone. A stored "region" now reads as ActiveWindow via a serde alias, which is narrower and never wider. snapshot.ts and capture/mod.rs no longer fall back from region to display. README and CAPTURE_ARCHITECTURE.md updated.
 
 - **User impact:** A user who picks 'Selected region' to limit what Bluey sees gets the full display captured and sent to the model.
 - **Root cause:** The region target was modelled end to end in the protocol (capture.region) but the UI picker and stored rect were never built, and the fallback widens instead of failing.
@@ -3757,7 +3757,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### DOC-011
 
 **ARCHITECTURE.md, README and several ADRs name missing folders and still describe Claude/Apple as defaults**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX6: docs/ARCHITECTURE.md: the layout block now lists folders that exist (features hud/onboarding/settings; app modules accounts/context/documents/sessions/updates; the bluey-fingerprints crate). The process table says research runs on Gemini function calling by default or the Claude Agent SDK, that the WebView holds only the sign-in gate while Rust owns OAuth (ADR 0008), and that OCR runs after capture. README feature bullets now name both research backends. Added a dated addendum to docs/adr/0001 covering: the Gemini default research backend, the security-framework KeychainBackend replacing keyring, the .dev service, and the secrets_* commands, which return states and never values. ADR 0004 already had its 2026-09-28 addendum, so it was left alone. In docs/DEVELOPMENT.md: the contracts path is now src-tauri/crates/bluey-core/src/types, and the workflow-copy sync claim is corrected (test_workflow.py only pins release.yml and nightly.yml). docs/ci/README.md now lists the five crates check-rust.sh actually runs.
 
 - **User impact:** New contributors look for folders that don't exist and form the wrong mental model of the defaults (Claude/Apple instead of Gemini).
 - **Root cause:** The docs weren't updated as the Gemini-default (#5/#8/#11), accounts (#25-31) and update (#41-42) work landed.
@@ -3770,7 +3770,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### SEC-018
 
 **README and MACOS_PERMISSIONS say transcription is on-device Apple Speech by default, but the default streams microphone audio to Google Gemini Live**  
-Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Medium** · confidence verified · effort S · independent · provable off-device · status **Partially implemented** — WS-FX6: The docs are fixed. The README live-transcription bullet, the Speech Recognition row in docs/MACOS_PERMISSIONS.md and principle 3 of docs/SECURITY.md now say: audio streams to Gemini Live (Google) by default when an enabled Gemini provider has a key; Apple Speech is used with no key, when it is selected, or with Privacy → Cloud AI off. Apple Speech runs on the Mac, or on Apple's servers for a language without an on-device model, with the audio.speech_server notice (checked against audio/mod.rs route_for and SpeechTranscriber requiresOnDeviceRecognition). Not done: the finding also proposed changing the onboarding Microphone copy (src/features/onboarding/steps/permissions.tsx:35, which only says raw audio is never stored). That UI file is outside this docs lane, so it is a follow-up.
 
 - **User impact:** Privacy-conscious users who read the README or the permissions doc believe their meeting audio stays on the Mac, but once a Gemini key is connected (the recommended onboarding path) mic and system audio are streamed to Google by default.
 - **Root cause:** The docs were written when Apple Speech was the default and weren't updated when ADR 0007 made Gemini Live the default.
@@ -3783,7 +3783,7 @@ Severity **Medium** · confidence verified · effort S · independent · provabl
 #### PROV-014
 
 **EXA_API_KEY / FIRECRAWL_API_KEY in .env are silently ignored, even though .env.example says they are imported**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-A: env_import seeds EXA_API_KEY and FIRECRAWL_API_KEY (RESEARCH_KEYS, import_key). Presence is checked without a read, and a locked entry is never overwritten (f63f079).
 
 - **User impact:** An owner who follows .env.example gets 'EXA_API_KEY is not set' and no web search or scrape in research until the keys are re-entered in Settings.
 - **Root cause:** The env import plan covers provider keys only. The research keys were left out.
@@ -3796,7 +3796,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DOC-010
 
 **Two doc table rows were broken by a sed `\1` artifact**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX6: docs/PROVIDER_ACCOUNTS.md:438 restored. A literal `\1` had replaced the `| 3 | Antigravity (…) |` cells; they are restored from `git show 0337d21^:docs/PROVIDER_ACCOUNTS.md` and the status text is unchanged. The TESTING.md `\1` row is left to the other lane.
 
 - **User impact:** The test matrix and the open-questions tables render broken. Readers can't see which command covers Rust storage or which question row 3 answers.
 - **Root cause:** A scripted sed replacement used `\1` without a capture group (BSD sed) and wrote the literal text.
@@ -3809,7 +3809,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### DOC-012
 
 **A 'Bluey is offline' HUD state and an offline-banner QA check are documented but don't exist**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-FX6: docs/AI_ARCHITECTURE.md › Offline behaviour no longer describes a 'Bluey is offline' banner, which does not exist. It now says each request fails on its own with BlueyError{kind: network} (BlueyError::network carries RecoveryAction::Retry), with a Retry action on that HUD turn and copy from src/lib/errors/present.ts. Local features keep working, and live transcription reports stt_degraded while it reconnects.
 
 - **User impact:** QA looks for a banner that can't appear. Offline users get per-request error toasts or pills with no persistent status.
 - **Root cause:** The doc describes an intended state that was never implemented.
@@ -3822,7 +3822,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-042
 
 **The output language dropdown uses names while settings store codes, so the current value never matches an option**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented** — WS-F: New src/lib/output-languages.ts (OUTPUT_LANGUAGES codes and names, outputLanguageCode, outputLanguageName). The GeneralTab select uses codes as values and names as labels; a legacy stored name reads as its code, and an unknown code stays selectable. src/ai/prompts/system.ts outputLanguageLine names the language ('Respond in Spanish') whether a code or a name is stored (commit 1950e7a).
 
 - **User impact:** General → Output language shows no matching selection on a fresh install. Choosing one stores a name instead of a code (earlier audit B3.16, still open).
 - **Root cause:** The option values are display names and the persisted default is a BCP-47 code.
@@ -3835,7 +3835,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### UX-043
 
 **The About tab's Help and Support links point to bluey.app, which did not resolve**  
-Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Low** · confidence verified · effort S · independent · provable off-device · status **Implemented — needs real-device verification** — WS-F: AboutTab: Help Center opens https://github.com/bloxy-studios/bluey#readme and Contact Support opens https://github.com/bloxy-studios/bluey/issues. Both are allowed by the settings capability's https://* opener scope (commit 18fa40b). Device check: Click both links in the packaged app to confirm the browser opens.
 
 - **User impact:** Help opens an error page and support mail bounces (earlier audit B3.21, still open).
 - **Root cause:** Placeholder URLs from the scaffold.
@@ -3848,7 +3848,7 @@ Severity **Low** · confidence verified · effort S · independent · provable o
 #### FEATURE-007
 
 **Opportunity: small unbuilt items from the Gemini migration brief (dynamic Audio tab description, research model/usage, quota hints)**  
-Severity **Opportunity** · confidence verified · effort S · independent · provable off-device · status **Open**
+Severity **Opportunity** · confidence verified · effort S · independent · provable off-device · status **Deferred** — Opportunity: not scheduled in this cycle; kept on the backlog.
 
 - **User impact:** Users can't see which transcription model and key will be used, or what research cost, before hitting an error.
 - **Root cause:** Deferred follow-ups.
