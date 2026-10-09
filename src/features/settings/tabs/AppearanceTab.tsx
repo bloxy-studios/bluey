@@ -4,7 +4,6 @@ import {
   Blend,
   Layers,
   LayoutPanelTop,
-  MonitorSmartphone,
   MoveHorizontal,
   Palette,
   Rows3,
@@ -151,17 +150,7 @@ export default function AppearanceTab() {
         />
       </SettingRow>
 
-      <SettingRow
-        icon={MonitorSmartphone}
-        title="Follow active display"
-        description="Move with the display that has focus."
-      >
-        <Switch
-          aria-label="Follow active display"
-          checked={appearance.followActiveDisplay}
-          onCheckedChange={(followActiveDisplay) => patch({ followActiveDisplay })}
-        />
-      </SettingRow>
+      {/* `followActiveDisplay` has no toggle until the panel manager honours it (UX-032). */}
 
       <SectionHeader title="Motion" description="Animations, pulses and fades" />
 
