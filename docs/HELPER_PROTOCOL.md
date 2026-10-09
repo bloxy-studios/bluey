@@ -41,7 +41,7 @@ side (`src-tauri/src/sidecar/`) is the only client; the WebView never talks to i
 | method | params | result |
 |---|---|---|
 | `helper.ping` | – | `{ "pong": true, "uptimeMs": n }` |
-| `helper.version` | – | `{ "version": "x.y.z", "macos": "15.1", "arch": "arm64", "capabilities": ["capture","ocr","accessibility","audio.microphone","audio.system","speech.onDevice"] }` |
+| `helper.version` | – | `{ "version": "x.y.z", "macos": "15.1", "arch": "arm64", "capabilities": ["capture","ocr","accessibility","audio.microphone","audio.system","speech.onDevice"] }` (`speech.onDevice` is left out until the background speech probe has answered; the handshake never waits for it) |
 | `helper.shutdown` | – | `{ "ok": true }` then exit |
 
 ### permissions
@@ -76,7 +76,7 @@ from the content filter).
 | `capture.region` | `{ "displayId"?: string, "rect": {x,y,width,height} (points, display-local), ...common }` | `Frame` |
 | `capture.activeWindow` | `{ ...common }` | `Frame` (frontmost app's focused window) |
 | `capture.discard` | `{ "path": string }` | `{ "ok": true }` |
-| `observe.start` | `{ "intervalMs": 1500, "displayId"?: string, "minDelta": 0.04 }` | `{ "ok": true }` — starts a low-FPS `SCStream`, computes a perceptual hash per sampled frame, emits `screen.changed` only when the Hamming distance ratio ≥ `minDelta` |
+| `observe.start` | `{ "intervalMs": 1500, "displayId"?: string, "minDelta": 0.04 }` | `{ "ok": true }` — watches `displayId`, else the main display; starts a low-FPS `SCStream`, computes a perceptual hash per sampled frame, emits `screen.changed` only when the Hamming distance ratio ≥ `minDelta` |
 | `observe.stop` | – | `{ "ok": true }` |
 
 ```jsonc
@@ -142,15 +142,28 @@ never dump the whole tree.
   "levels": { "enabled": true, "intervalMs": 100 }
 }
 ```
+* `microphone.deviceId`: a requested input that is missing, or disappears mid-run, falls back to
+  the default input instead of leaving the microphone dead.
+* `transcription.locale`: leave it out for `language: auto`. The helper then uses the user's own
+  locale when Apple Speech supports it (with an on-device model when `onDevice` is set), else
+  `en-US`.
+
 Events:
-* `audio.started` → `{ "microphone": bool, "systemAudio": bool, "device": Device? }`
+* `audio.started` → `{ "microphone": bool, "systemAudio": bool, "device": Device?, "speech": { "locale", "onDevice": bool }? }`
+  * `speech` is the recognizer route transcription settled on (absent when not transcribing).
+  * Re-sent mid-run when the microphone drops out or comes back (MAC-005), so the host's
+    status follows it.
 * `audio.stopped` → `{ "reason": "requested" | "device_lost" | "error" }`
 * `audio.level` → `{ "microphone": 0..1, "system": 0..1 }`
 * `audio.chunk` → `{ "source": "microphone" | "system", "pcm16": base64?, "sampleRate": 16000, "startMs": n, "endMs": n, "isSpeech": bool, "rms": 0..1 }` (`pcm16` only when `emitPcm`)
 * `audio.deviceChanged` → `{ "devices": [...], "currentInput": Device? }` (helper re-routes the engine automatically when the default input changes)
-* `audio.error` → `{ "code", "message", "kind": "audio" }`
-* `transcript.partial` / `transcript.final` → `{ "source": "microphone" | "system", "text", "startMs", "endMs", "confidence": 0..1?, "locale": "en-US" }`
+* `audio.error` → a helper error `{ "code", "message", "kind", "details"? }`: usually `kind: "audio"`,
+  but a missing grant is `kind: "permission"`, `code: "permission_denied"` with
+  `details.permission` (`microphone` / `screenRecording`). A failed source on a partial start is
+  reported this way while the other source keeps running.
+* `transcript.partial` / `transcript.final` → `{ "source": "microphone" | "system", "text", "startMs", "endMs", "confidence": 0..1?, "locale": "en-US", "utteranceId" }`
   * `startMs/endMs` are milliseconds since `audio.start`.
+  * `utteranceId` is shared by an utterance's partials and its final (see AUDIO_ARCHITECTURE.md).
   * Speaker labelling is done in Rust from `source` (`microphone` → "You", `system` → "Speaker"). The helper never guesses speakers.
 
 ### notifications
