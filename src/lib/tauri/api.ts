@@ -225,7 +225,6 @@ export const bluey = {
     usageStats: callNoArgs("data_usage_stats"),
     deleteScreenshots: callNoArgs("data_delete_screenshots"),
     clearTranscripts: callNoArgs("data_clear_transcripts"),
-    clearAiCache: callNoArgs("data_clear_ai_cache"),
     resetAll: callNoArgs("data_reset_all"),
     exportSession: call("data_export_session"),
   },

@@ -72,3 +72,15 @@ describe("PrivacyTab display mode (UX-004, SEC-004)", () => {
     expect(screen.getByRole("tab", { name: "Standard" })).toHaveAttribute("aria-selected", "true");
   });
 });
+
+describe("PrivacyTab data actions (DEBT-011)", () => {
+  it("offers no Clear AI cache action, since nothing is ever cached", async () => {
+    await setupMockApp();
+    render(<PrivacyTab />);
+
+    expect(await screen.findByRole("button", { name: "Clear transcripts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reset Bluey" })).toBeInTheDocument();
+    expect(screen.queryByText(/AI cache/i)).not.toBeInTheDocument();
+    expect("clearAiCache" in bluey.data).toBe(false);
+  });
+});

@@ -104,16 +104,6 @@ export default function PrivacyTab() {
       },
     },
     {
-      id: "cache",
-      label: "Clear AI cache",
-      description: "Cached AI responses and embeddings.",
-      confirmTitle: "Clear the AI cache?",
-      run: async () => {
-        await bluey.data.clearAiCache();
-        await refreshStats();
-      },
-    },
-    {
       id: "reset",
       label: "Reset Bluey",
       description: "Erase everything and restore defaults.",

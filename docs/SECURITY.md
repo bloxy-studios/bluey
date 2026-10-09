@@ -191,9 +191,9 @@ never hidden, so `CaptureProtection.partial` is reported there. Bluey does not a
 monitoring software.
 
 ## Data deletion
-`data_delete_screenshots`, `data_clear_transcripts`, `data_clear_ai_cache`,
-`sessions_delete(_all)`, `documents_delete(_all)` and `data_reset_all` remove rows **and** the
-files they reference (frame cache). The database runs with `PRAGMA secure_delete` (freed pages
+`data_delete_screenshots`, `data_clear_transcripts`, `sessions_delete(_all)`,
+`documents_delete(_all)` and `data_reset_all` remove rows **and** the files they reference
+(frame cache). The database runs with `PRAGMA secure_delete` (freed pages
 are zeroed) and FTS5 `secure-delete` (a deleted row's tokens leave the search index at once), and
 each of these deletions — plus retention pruning — ends with a `wal_checkpoint(TRUNCATE)`, so the
 deleted text is not left readable in `bluey.db` or `bluey.db-wal`; reset also runs `VACUUM`

@@ -2500,7 +2500,6 @@ export class MockTransport implements Transport {
       this.emit("transcript.cleared", {});
       return count;
     },
-    data_clear_ai_cache: () => 12,
     data_reset_all: () => {
       this.settings = createDefaultSettings();
       this.modes = createBuiltInModes();

@@ -12,9 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::error::SqlExt;
-use crate::repositories::{
-    AiCacheRepository, SessionRepository, SnapshotRepository, TranscriptRepository,
-};
+use crate::repositories::{SessionRepository, SnapshotRepository, TranscriptRepository};
 
 /// Mirrors `DataUsageStats` in `src/lib/tauri/commands.ts` (camelCase on the wire).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -115,13 +113,6 @@ pub fn delete_screenshots(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyErr
 /// Delete every transcript segment. Returns rows removed.
 pub fn clear_transcripts(db: &Database) -> Result<u64, BlueyError> {
     let deleted = TranscriptRepository::clear(db, None)?;
-    db.checkpoint()?;
-    Ok(deleted)
-}
-
-/// Delete every AI cache entry. Returns rows removed.
-pub fn clear_ai_cache(db: &Database) -> Result<u64, BlueyError> {
-    let deleted = AiCacheRepository::clear(db)?;
     db.checkpoint()?;
     Ok(deleted)
 }
@@ -273,7 +264,14 @@ mod tests {
             |_| unreachable!(),
         )
         .unwrap();
-        crate::repositories::AiCacheRepository::set(db, "k", "v", None).unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO ai_cache (key, value, created_at) VALUES ('k', 'v', '2026-01-01T00:00:00.000Z')",
+                [],
+            )
+            .sql()
+        })
+        .unwrap();
         SettingsRepository::set_active_mode_id(db, "general").unwrap();
         s.id
     }
@@ -329,9 +327,6 @@ mod tests {
         assert_eq!(clear_transcripts(&db).unwrap(), 1);
         assert_eq!(testutil::count(&db, "transcript_segments"), 0);
         assert_eq!(testutil::count(&db, "transcript_fts"), 0);
-
-        assert_eq!(clear_ai_cache(&db).unwrap(), 1);
-        assert_eq!(testutil::count(&db, "ai_cache"), 0);
 
         let paths = delete_session(&db, &sid).unwrap();
         assert!(paths.is_empty(), "screenshots were already gone");

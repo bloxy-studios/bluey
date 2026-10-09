@@ -33,11 +33,6 @@ pub async fn data_clear_transcripts(core: State<'_, AppCore>) -> BlueyResult<u64
     Ok(removed)
 }
 
-#[tauri::command]
-pub async fn data_clear_ai_cache(core: State<'_, AppCore>) -> BlueyResult<u64> {
-    core.storage.run(bluey_storage::clear_ai_cache).await
-}
-
 /// Wipe everything: sessions and their files, documents, responses, settings,
 /// shortcuts, provider configs, Keychain entries owned by Bluey, the Clerk
 /// session and the log files. Built-in modes are re-seeded so the app keeps
