@@ -4,12 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { OnboardingFlow } from "@/features/onboarding/OnboardingFlow";
-import { readOnboardingStep } from "@/features/onboarding/progress";
+import { readOnboardingStep, saveOnboardingStep } from "@/features/onboarding/progress";
 import { ConnectAIStep } from "@/features/onboarding/steps/connect";
 import { ShortcutsStep } from "@/features/onboarding/steps/setup";
 import type { MockTransport } from "@/lib/tauri/mock";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { setupMockApp } from "./helpers";
+import { setupInterceptedApp, setupMockApp } from "./helpers";
 
 /** The onboarding window's localStorage (Node's own global has none without a backing file). */
 function stubLocalStorage(): void {
@@ -172,6 +172,36 @@ describe("OnboardingFlow (MockTransport)", () => {
     await user.click(screen.getByRole("button", { name: "Open Bluey" }));
     await waitFor(() => expect(useSettingsStore.getState().settings?.general.onboardingCompleted).toBe(true));
     await waitFor(() => expect(readOnboardingStep()).toBeNull()); // the next run starts at Welcome
+  });
+});
+
+describe("OnboardingFlow finish (ONB-005)", () => {
+  it("stays open with the error when onboardingCompleted cannot be saved, and retries", async () => {
+    stubLocalStorage();
+    const { transport } = await setupInterceptedApp();
+    const windows: string[] = [];
+    transport.intercept("window_open", async (args) => void windows.push(`open:${args.label}`));
+    transport.intercept("window_close", async (args) => void windows.push(`close:${args.label}`));
+    let failSave = true;
+    transport.intercept("settings_update", (_args, next) => {
+      if (failSave) {
+        throw { kind: "storage", code: "storage.write", message: "The settings could not be saved.", recoverable: true };
+      }
+      return next();
+    });
+    saveOnboardingStep("ready");
+    const user = userEvent.setup();
+    render(<TooltipProvider><OnboardingFlow /></TooltipProvider>);
+
+    await user.click(screen.getByRole("button", { name: "Open Bluey" }));
+    await waitFor(() => expect(useSettingsStore.getState().lastError?.code).toBe("storage.write"));
+    expect(windows).toEqual([]);
+    expect(readOnboardingStep()).toBe("ready");
+
+    failSave = false;
+    await user.click(screen.getByRole("button", { name: "Open Bluey" }));
+    await waitFor(() => expect(windows).toEqual(["open:main", "close:onboarding"]));
+    expect(useSettingsStore.getState().settings?.general.onboardingCompleted).toBe(true);
   });
 });
 

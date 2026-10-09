@@ -50,7 +50,9 @@ export function OnboardingFlow() {
 
   const next = useCallback(async () => {
     if (isLast) {
-      await update({ general: { onboardingCompleted: true } });
+      // Unsaved, the wizard would return at the next launch: stay here with the
+      // store's error toast so "Open Bluey" can retry (ONB-005).
+      if (!(await update({ general: { onboardingCompleted: true } }))) return;
       clearOnboardingStep();
       await bluey.window.open({ label: "main" });
       await bluey.window.close({ label: "onboarding" });
