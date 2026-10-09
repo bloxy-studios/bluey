@@ -32,7 +32,10 @@ public final class ScreenCaptureService {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let content):
-                guard let display = ShareableContent.display(withId: params.displayId, in: content) else {
+                guard
+                    let display = ShareableContent.focusedDisplay(
+                        withId: params.displayId, in: content)
+                else {
                     completion(
                         .failure(
                             .capture("display_not_found", "display \(params.displayId ?? "main") not found")))
@@ -123,7 +126,10 @@ public final class ScreenCaptureService {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let content):
-                guard let display = ShareableContent.display(withId: params.displayId, in: content) else {
+                guard
+                    let display = ShareableContent.focusedDisplay(
+                        withId: params.displayId, in: content)
+                else {
                     completion(
                         .failure(
                             .capture("display_not_found", "display \(params.displayId ?? "main") not found")))
