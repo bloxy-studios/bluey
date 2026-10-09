@@ -7,6 +7,9 @@ Repository: `/agent/workspace/bluey` (Tauri v2 macOS copilot; Rust backend, Swif
 > presets, `.env` import, research backend), #7 (embedding-model tracking), #11 (transcription
 > providers / Gemini Live), #8 (sidecar Gemini backend + lite build), #6 (provider UX),
 > #9 / #10 (frontend P0 / P1 gaps). See `docs/adr/0007-gemini-default-provider.md`.
+> It is historical: nothing below describes the current tree (the Rust app crate is no longer a
+> shell; the mode editor has description, group, response format and context sources). For the
+> current design read `docs/ARCHITECTURE.md` and `docs/MODE_SYSTEM.md`.
 
 > **Headline finding that reframes both parts:** the Rust app crate is a shell. `src-tauri/src/lib.rs` (14 lines) is the untouched Tauri template (`greet` command only, no `mod` declarations). The modules that do exist under `src-tauri/src/` (`ai/`, `sidecar/`, `settings/`, `secrets/`, `sessions/`, `modes/`, `state/`, `storage/`, `events/`, `logging/`, `capture/`, `accessibility/`) are never compiled into the crate, and `src-tauri/src/state/mod.rs:166-189` (`AppCore`) references modules that do not exist at all: `crate::agent::AgentManager`, `crate::research::ResearchManager`, `crate::audio`, `crate::auth`, `crate::overlay`, `crate::shortcuts`, `crate::permissions`, `crate::documents`, `crate::platform`, `crate::app`. There is **no `commands/` directory** and no `generate_handler!` list beyond `greet`. Consequently: nothing in Rust spawns `bluey-agent`, no Tauri command in `src/lib/tauri/commands.ts` is implemented natively, and `tests/integration/command-surface.test.ts` must currently fail (Rust registers `greet`; TS declares 120 commands). Everything the UI does today runs only against `MockTransport`.
 
