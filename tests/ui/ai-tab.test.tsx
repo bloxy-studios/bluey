@@ -37,6 +37,15 @@ describe("AITab", () => {
     await setupMockApp();
   });
 
+  it("says what the Research role drives and where deep research picks its model (PROV-011)", async () => {
+    renderTab();
+
+    expect(await screen.findByText("Answers that need research. Deep research: see below")).toBeInTheDocument();
+    expect(screen.getByText(/Uses the Research model when it comes from a Gemini provider/)).toBeInTheDocument();
+    await useSettingsStore.getState().update({ ai: { researchBackend: "claude" } });
+    expect(await screen.findByText(/Uses the Research model when it comes from an Anthropic provider/)).toBeInTheDocument();
+  });
+
   it("lists Gemini first, marked as the default provider", async () => {
     renderTab();
     const toggles = await screen.findAllByRole("switch", { name: /^Enable / });
