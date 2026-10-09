@@ -87,7 +87,6 @@ export function makeSettings(
       storeTranscripts: true,
       storeRawAudio: "never",
       cloudAiEnabled: true,
-      debugLogTranscripts: false,
       ...overrides.privacy,
     },
     shortcuts: [],

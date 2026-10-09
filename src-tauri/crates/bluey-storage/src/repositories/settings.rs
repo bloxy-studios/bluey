@@ -528,6 +528,22 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_field_from_an_older_build_still_loads_cleanly() {
+        let db = testutil::db();
+        let stored = stored_with(|s| s["privacy"]["debugLogTranscripts"] = serde_json::json!(true));
+        SettingsRepository::set_json(&db, "settings", &stored).unwrap();
+
+        let s = SettingsRepository::get(&db).unwrap();
+        assert!(s.privacy.store_screenshots, "the privacy section is kept");
+        assert_eq!(s.ai.context_token_budget, 9000);
+        assert_eq!(
+            SettingsRepository::get_json(&db, "settings.backup").unwrap(),
+            None,
+            "an unknown field is not a decode failure (DOC-008)"
+        );
+    }
+
+    #[test]
     fn settings_that_decode_leave_no_backup() {
         let db = testutil::db();
         SettingsRepository::set_json(&db, "settings", &stored_with(|_| {})).unwrap();

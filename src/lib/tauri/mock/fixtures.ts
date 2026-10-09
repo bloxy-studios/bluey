@@ -269,7 +269,6 @@ export function createDefaultSettings(): Settings {
       storeTranscripts: true,
       storeRawAudio: "never",
       cloudAiEnabled: true,
-      debugLogTranscripts: false,
     },
     shortcuts: DEFAULT_SHORTCUTS.map((s) => ({ ...s })),
     advanced: {

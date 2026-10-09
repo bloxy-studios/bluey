@@ -306,7 +306,6 @@ pub struct PrivacySettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_audio_retention_minutes: Option<u32>,
     pub cloud_ai_enabled: bool,
-    pub debug_log_transcripts: bool,
 }
 
 impl Default for PrivacySettings {
@@ -319,7 +318,6 @@ impl Default for PrivacySettings {
             store_raw_audio: RawAudioRetention::Never,
             raw_audio_retention_minutes: None,
             cloud_ai_enabled: true,
-            debug_log_transcripts: false,
         }
     }
 }

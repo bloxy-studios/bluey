@@ -105,8 +105,6 @@ export interface PrivacySettings {
   storeRawAudio: RawAudioRetention;
   rawAudioRetentionMinutes?: number;
   cloudAiEnabled: boolean;
-  /** Debug-only switches, default false. */
-  debugLogTranscripts: boolean;
 }
 
 export interface ShortcutBinding {

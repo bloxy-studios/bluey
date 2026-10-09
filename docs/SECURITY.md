@@ -179,8 +179,8 @@ for Acme", never "John Doe, who worked at X per his resume, is interviewing at A
 
 ## Logging
 `tracing` with levels error/warn/info/debug/trace; production default `info`. Never logged:
-API keys, auth tokens, raw audio, screenshots, resume text, transcript text (unless
-`privacy.debugLogTranscripts` is enabled for local debugging), provider request bodies.
+API keys, auth tokens, raw audio, screenshots, resume text, transcript text, provider request
+bodies.
 Logs are daily files in `~/Library/Logs/Bluey`; files older than 14 days are deleted at startup
 and Reset all data deletes all of them.
 
