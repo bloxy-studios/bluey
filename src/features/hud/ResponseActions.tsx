@@ -2,11 +2,12 @@ import { Check, Copy, Code, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react
 import { useState } from "react";
 
 import { Tooltip } from "@/components/ui/Tooltip";
-import { showToast } from "@/components/ui/toast-store";
+import { showErrorToast, showToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
-import type { BlueyResponse, FeedbackCategory, FeedbackRating } from "@/lib/types";
+import { toBlueyError, type BlueyResponse, type FeedbackCategory, type FeedbackRating } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { copyText } from "@/lib/utils/clipboard";
+import { answerPlainText } from "./answer-text";
 import { extractCodeBlocks } from "./markdown";
 import { ResponseProvenance } from "./ResponseProvenance";
 
@@ -34,6 +35,7 @@ function ActionButton({
       <button
         type="button"
         aria-label={label}
+        aria-pressed={active}
         onClick={onClick}
         className={cn(
           "flex size-7 items-center justify-center rounded-[7px] text-fg-muted transition-colors",
@@ -61,7 +63,7 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
   const code = response.code?.code ?? codeBlocks[0]?.code;
 
   const copyAnswer = async () => {
-    if (await copyText(response.content)) {
+    if (await copyText(answerPlainText(response))) {
       setCopiedAnswer(true);
       showToast("Copied");
       setTimeout(() => setCopiedAnswer(false), 1000);
@@ -73,13 +75,17 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
   };
 
   const sendFeedback = async (nextRating: FeedbackRating, categories?: FeedbackCategory[]) => {
+    const saved = rating;
     setRating(nextRating);
     setShowChips(nextRating === "down" && !categories);
     try {
       await bluey.responses.feedback({ responseId: response.id, rating: nextRating, categories });
       if (categories?.length) showToast("Thanks for the feedback");
     } catch (error) {
-      console.warn("[feedback] failed", error);
+      // Not recorded: show the rating that really is saved, and say so (UX-028).
+      setRating(saved);
+      setShowChips(false);
+      showErrorToast(toBlueyError(error, "storage"));
     }
   };
 
