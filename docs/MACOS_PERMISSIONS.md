@@ -23,10 +23,13 @@ microphone.
 ## Permission flow
 1. **First run wizard** explains each permission (what / why / access) before requesting it,
    one screen per permission, with *Continue* and *Open System Settings*.
-2. `PermissionState` is refreshed at launch, after each request, every 30 s while a session is
-   active, and — while the onboarding permissions step or Settings → Permissions is open — when
-   that window regains focus and every 2 s (`useLivePermissions`). Revocation stops the dependent subsystem (audio
-   session, observation) and surfaces a repair flow.
+2. `PermissionState` is refreshed at launch, after each request, every 30 s while audio is
+   listening, and — while the onboarding permissions step or Settings → Permissions is open — when
+   that window regains focus and every 2 s (`useLivePermissions`); a change publishes
+   `permissions.changed` and the badges follow. A revocation does not stop a running session by
+   itself: the next capture or audio start that needs the permission fails with a permission error
+   whose *Open System Settings* action opens the right pane, and if macOS stops the system-audio
+   stream the helper ends the audio session with `audio.error`.
 3. Deep links used for *Open System Settings*:
    * Screen Recording: `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`
    * Microphone: `…?Privacy_Microphone`
@@ -51,10 +54,13 @@ attributes TCC checks of child processes to the *responsible* application, so pr
 
 ## Known platform limits
 * Screen Recording changes take effect only after the app restarts in some macOS versions;
-  Bluey detects `denied → granted` transitions and offers *Restart Bluey*.
+  Bluey has no restart offer of its own. macOS usually offers *Quit & Reopen* when the grant
+  changes, the onboarding wizard resumes at the step it reached (ONB-004), and an open
+  permissions screen re-checks on focus and every 2 s.
 * Notifications authorization requires a signed, bundled app (`.app`); it is unavailable when
   running the raw dev binary.
-* On-device speech models are downloaded per locale by macOS; unsupported locales fall back to
-  server-based recognition or the configured cloud transcription provider.
+* On-device speech models are downloaded per locale by macOS; with Apple Speech, a language
+  without an on-device model is recognised on Apple's servers and Bluey shows a notice
+  (`audio.speech_server`) instead of switching provider silently.
 * Accessibility trees of some apps (Electron without AX enabled, games) are empty; Bluey falls
   back to OCR.
