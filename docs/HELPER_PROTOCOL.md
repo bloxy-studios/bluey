@@ -67,7 +67,8 @@ Common params: `format` (`"jpeg"` default \| `"png"`), `quality` (0–1, default
 way, so `path` always serves `ocr.recognize` / `capture.discard`; should the write fail on an
 inline capture the frame comes back with `path: null` and the caller uses `image`),
 `changeDetection` (default true), `excludeSelf` (default true — Bluey's own windows are excluded
-from the content filter).
+from the content filter). Without a `displayId`, `capture.display` and `capture.region` use the
+display with focus (see CAPTURE_ARCHITECTURE.md).
 
 | method | params | result |
 |---|---|---|
