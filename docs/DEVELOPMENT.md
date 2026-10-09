@@ -122,7 +122,7 @@ final bundle require macOS.
 
 ## Project conventions
 
-- **Contracts first.** `src/lib/types` ⇄ `crates/bluey-core/src/types` are mirrored;
+- **Contracts first.** `src/lib/types` ⇄ `src-tauri/crates/bluey-core/src/types` are mirrored;
   `src/lib/tauri/commands.ts` and `events.ts` are the command/event surface. Change both sides.
 - No `invoke()` outside `src/lib/tauri`; use `bluey.*`. No SQL outside `bluey-storage`.
   No provider HTTP outside `src-tauri/src/ai`. No prompts outside `src/ai/prompts`.
@@ -169,4 +169,6 @@ complete signing/notarization/native validation of both macOS DMGs. Manual dispa
 to **build-only**; publication must be explicitly requested with an existing tag. See
 [Releasing](RELEASING.md) for owner credentials, environment/tag protection, manual instructions,
 manifest schema, failure/re-run semantics and the native checks that Linux cannot perform.
-Workflow install copies in `docs/ci/workflows/` are kept in sync with the release workflow.
+The install copies in `docs/ci/workflows/` must match `.github/workflows/`; a portable test
+enforces it for `release.yml` and `nightly.yml`, so after changing `ci.yml` a maintainer re-runs
+`scripts/install-workflows.sh` ([CI / release workflows](ci/README.md)).
