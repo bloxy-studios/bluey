@@ -58,7 +58,7 @@ The macOS release pipeline specifically pins **Bun 1.4.2** and requires Python 3
 ## Quick start
 ```bash
 bun install
-cp .env.example .env          # or .env.local — VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the key is imported into the Keychain on first run)
+cp .env.example .env          # or .env.local — VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (imported at launch into the Keychain when it has no entry; debug builds use their own `.dev` service — docs/DEVELOPMENT.md)
 bun run build:helpers         # Swift helper + research agent sidecars
 bun run tauri:dev
 ```
