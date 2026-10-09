@@ -2,9 +2,17 @@
  * Document retrieval: pull only the relevant chunks (never whole documents)
  * from the user's context library via `bluey.documents.retrieve`.
  *
- * Scopes are searched in priority order: session → mode → global.
- * Kinds are inferred from the mode (candidate-side modes want resume-ish
- * kinds; role/company questions want JD-ish kinds).
+ * Every ask runs a few small queries in parallel:
+ * - personal instructions: the leading chunks of every `personal_instructions`
+ *   document in scope, whatever the wording (they apply to every answer);
+ * - the active mode's own files, with no kind filter (files dropped on a mode
+ *   are stored as `notes`);
+ * - the session + global library: kinds inferred from the mode when it
+ *   declares document needs, plus a small relevance-floored pass in every mode;
+ * - candidate modes pin the résumé's leading chunks when the question matched
+ *   none of it or is a canonical intro/behavioral one.
+ *
+ * Scopes are listed in priority order: session → mode → global.
  */
 
 import type {
@@ -38,10 +46,28 @@ export interface RetrieveArgs {
 }
 
 const CANDIDATE_KINDS: readonly DocumentKind[] = ["resume", "cv", "experience", "skills"];
+const RESUME_KINDS: readonly DocumentKind[] = ["resume", "cv"];
 const ROLE_KINDS: readonly DocumentKind[] = ["job_description", "role_description", "company_notes"];
 
 const ROLE_QUESTION_CUES =
   /\b(role|position|job|company|team|responsibilit|requirement|the org|their stack|about (us|them)|why (us|this company|acme)|culture|benefits|salary|comp)\b/i;
+
+/** Questions answered from the whole résumé rather than a matching line. */
+const INTRO_QUESTION_CUES =
+  /\b(about yourself|introduce yourself|walk (me|us) through your|your (background|experience|resume|cv|career)|(biggest|greatest) (strength|weakness)|strengths?|weakness(es)?|why should we hire you|a time (when )?you|describe a (time|situation)|proudest|accomplishments?|where do you see yourself)\b/i;
+
+const MATCH_LIMIT = 8;
+/** Chunks pulled from outside the mode's declared document needs. */
+const OPPORTUNISTIC_LIMIT = 3;
+/**
+ * Minimum score for those chunks. Rust scores a non-discriminating keyword
+ * match 0.25, times at most 1.15 (session scope) × 1.25 (kind intent) ≈ 0.36.
+ */
+const OPPORTUNISTIC_MIN_SCORE = 0.4;
+/** Leading chunks of personal instructions (snapshot enrichment caps the text). */
+const PERSONAL_INSTRUCTION_CHUNKS = 6;
+/** Leading résumé chunks pinned in candidate modes (~350 tokens each). */
+const RESUME_PIN_CHUNKS = 2;
 
 /** First OCR line that looks like a heading/headline (short, non-empty). */
 export function ocrHeadline(snapshot: ContextSnapshot | undefined): string {
@@ -69,7 +95,7 @@ export function buildRetrievalQuery(args: Pick<RetrieveArgs, "instruction" | "sn
   return parts.join(" \n").slice(0, 480).trim();
 }
 
-/** Document kinds worth retrieving for this mode + ask. Empty = skip retrieval. */
+/** Library kinds the mode declares a need for. Empty = only the relevance-floored pass. */
 export function inferKinds(mode: BlueyMode, queryText: string): DocumentKind[] {
   const kinds = new Set<DocumentKind>();
   const wantsDocs =
@@ -86,41 +112,88 @@ export function inferKinds(mode: BlueyMode, queryText: string): DocumentKind[] {
     kinds.add("notes");
     kinds.add("other");
   }
-  // Personal instructions ride along whenever we retrieve at all.
-  if (kinds.size > 0) kinds.add("personal_instructions");
   return Array.from(kinds);
 }
 
+/** Whether the ask should see the résumé whatever its wording. */
+export function isIntroQuestion(queryText: string): boolean {
+  return INTRO_QUESTION_CUES.test(queryText);
+}
+
+async function run(api: RetrievalApi, query: RetrievalQuery): Promise<RetrievedChunk[]> {
+  try {
+    return await api.documents.retrieve({ query });
+  } catch {
+    return [];
+  }
+}
+
+const byScore = (a: RetrievedChunk, b: RetrievedChunk) => b.score - a.score;
+
 /**
- * Retrieve relevant chunks. Returns [] when the mode declares no document
- * needs or when there is nothing to query with. Never throws for backend
+ * Retrieve relevant chunks: matched content chunks sorted by score, then the
+ * personal-instruction chunks in document order. Never throws for backend
  * failures — retrieval is best-effort context.
  */
 export async function retrieveRelevantContext(args: RetrieveArgs): Promise<RetrievedChunk[]> {
   const { mode, session, settings, api } = args;
 
   const queryText = args.query?.trim() ?? buildRetrievalQuery(args);
+  const strategy = settings.ai.embeddingsEnabled ? "auto" : "keyword";
+  const sessionScope: RetrievalQuery["scopes"] = session ? [{ scope: "session", scopeId: session.id }] : [];
+  const modeScope: RetrievalQuery["scopes"] = [{ scope: "mode", scopeId: mode.id }];
+  const library: RetrievalQuery["scopes"] = [...sessionScope, { scope: "global" }];
+  const allScopes: RetrievalQuery["scopes"] = [...sessionScope, ...modeScope, { scope: "global" }];
+  const hasQuery = queryText.length > 0;
   const kinds = inferKinds(mode, queryText);
-  if (kinds.length === 0) return [];
-  if (queryText.length === 0) return [];
+  const limit = args.limit ?? MATCH_LIMIT;
+  const candidate = isCandidateMode(mode) || requires(mode, "resume");
 
-  const scopes: RetrievalQuery["scopes"] = [];
-  if (session) scopes.push({ scope: "session", scopeId: session.id });
-  scopes.push({ scope: "mode", scopeId: mode.id });
-  scopes.push({ scope: "global" });
+  const none = Promise.resolve<RetrievedChunk[]>([]);
+  const [personal, modeFiles, declared, opportunistic, resumePin] = await Promise.all([
+    run(api, {
+      query: queryText,
+      scopes: allScopes,
+      kinds: ["personal_instructions"],
+      limit: PERSONAL_INSTRUCTION_CHUNKS,
+      strategy: "leading",
+    }),
+    hasQuery && mode.attachedDocumentIds.length > 0
+      ? run(api, { query: queryText, scopes: modeScope, limit, strategy })
+      : none,
+    hasQuery && kinds.length > 0
+      ? run(api, { query: queryText, scopes: library, kinds, limit, strategy })
+      : none,
+    hasQuery
+      ? run(api, { query: queryText, scopes: library, limit: OPPORTUNISTIC_LIMIT, strategy: "keyword" })
+      : none,
+    candidate
+      ? run(api, {
+          query: queryText,
+          scopes: allScopes,
+          kinds: [...RESUME_KINDS],
+          limit: RESUME_PIN_CHUNKS,
+          strategy: "leading",
+        })
+      : none,
+  ]);
 
-  const query: RetrievalQuery = {
-    query: queryText,
-    scopes,
-    kinds,
-    limit: args.limit ?? 8,
-    strategy: settings.ai.embeddingsEnabled ? "auto" : "keyword",
+  const matched = new Map<string, RetrievedChunk>();
+  const keep = (chunk: RetrievedChunk) => {
+    // Personal instructions come from their own deterministic query.
+    if (chunk.documentKind === "personal_instructions") return;
+    const existing = matched.get(chunk.chunkId);
+    if (!existing || existing.score < chunk.score) matched.set(chunk.chunkId, chunk);
   };
+  modeFiles.forEach(keep);
+  declared.forEach(keep);
+  opportunistic.filter((chunk) => chunk.score >= OPPORTUNISTIC_MIN_SCORE).forEach(keep);
 
-  try {
-    const chunks = await api.documents.retrieve({ query });
-    return chunks.slice().sort((a, b) => b.score - a.score);
-  } catch {
-    return [];
-  }
+  const resumeMatched = Array.from(matched.values()).some((chunk) =>
+    RESUME_KINDS.includes(chunk.documentKind),
+  );
+  if (!resumeMatched || isIntroQuestion(queryText)) resumePin.forEach(keep);
+
+  const personalChunks = personal.filter((chunk) => chunk.documentKind === "personal_instructions");
+  return [...Array.from(matched.values()).sort(byScore), ...personalChunks];
 }

@@ -29,12 +29,15 @@ class ShellGateTests(ReleaseFixture):
 set -euo pipefail
 if [[ "${1:-}" == --version ]]; then printf '%s\\n' "${MOCK_BUN_VERSION:-1.4.2}"; exit 0; fi
 printf 'bun' >> "$MOCK_LOG"; printf ' [%s]' "$@" >> "$MOCK_LOG"; printf '\\n' >> "$MOCK_LOG"
+[[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] || printf '%s\\n' "bun $*" >> "$MOCK_LOG.key"
 if [[ "${1:-}" == install && "${MOCK_FAIL:-}" == install ]]; then exit 19; fi
 if [[ "${1:-} ${2:-}" == 'run typecheck' && "${MOCK_FAIL:-}" == typecheck ]]; then exit 20; fi
-if [[ "${1:-} ${2:-} ${3:-}" == 'run tauri build' ]]; then
+if [[ "${1:-} ${2:-} ${3:-}" == 'run tauri build' || "${1:-} ${2:-} ${3:-}" == 'run tauri bundle' ]]; then
+  printf 'identity=%s notary=%s\\n' "${APPLE_SIGNING_IDENTITY:-}" "${APPLE_ID:-}" >> "$MOCK_LOG"
   [[ "${MOCK_FAIL:-}" != build ]] || exit 21
-  # A real build leaves the DMG and the signed updater bundle; "silent-build" exits 0 without them.
-  if [[ "${MOCK_FAIL:-}" != silent-build ]]; then
+  # A real build leaves the DMG and the signed updater bundle (not with --no-bundle);
+  # "silent-build" exits 0 without them.
+  if [[ "${MOCK_FAIL:-}" != silent-build && " $* " != *" --no-bundle "* ]]; then
     bundle="src-tauri/target/$TARGET/release/bundle"
     mkdir -p "$bundle/dmg" "$bundle/macos"
     printf 'mock' > "$bundle/dmg/Bluey_0.0.0_aarch64.dmg"
@@ -45,10 +48,13 @@ fi
 ''')
         self.executable(self.bin / "uname", '#!/usr/bin/env bash\nprintf "Darwin\\n"\n')
         self.executable(self.bin / "git", '#!/usr/bin/env bash\ncase " $* " in *" rev-parse "*) printf "' + COMMIT + '\\n";; esac\n')
-        self.executable(scripts / "check-rust.sh", '#!/usr/bin/env bash\nprintf "rust-check\\n" >> "$MOCK_LOG"\n')
+        self.executable(scripts / "check-rust.sh", '#!/usr/bin/env bash\nprintf "rust-check\\n" >> "$MOCK_LOG"\n'
+                        + '[[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]]'
+                        + ' || printf "%s\\n" "check-rust $*" >> "$MOCK_LOG.key"\n')
         self.executable(scripts / "build-helper.sh", '''#!/usr/bin/env bash
 set -euo pipefail
 printf 'helper\\n' >> "$MOCK_LOG"
+[[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] || printf '%s\\n' "helper $*" >> "$MOCK_LOG.key"
 mkdir -p src-tauri/binaries
 for binary in bluey-helper bluey-agent; do
   printf 'mock' > "src-tauri/binaries/$binary-$TARGET"
@@ -58,6 +64,7 @@ done
         self.executable(scripts / "build-agent.sh", '''#!/usr/bin/env bash
 set -euo pipefail
 printf 'agent-%s\\n' "$BLUEY_AGENT_VARIANT" >> "$MOCK_LOG"
+[[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] || printf '%s\\n' "agent $*" >> "$MOCK_LOG.key"
 # Simulate the actual nested helper install (which lacks its own frozen flag).
 bun install --os darwin --cpu '*'
 ''')
@@ -76,7 +83,7 @@ bun install --os darwin --cpu '*'
 
     def run_shell(self, **environment):
         return subprocess.run(["bash", str(self.root / "scripts/release.sh")], cwd=self.root,
-                              env={**self.env, **environment}, capture_output=True, text=True, timeout=20)
+                              env={**self.env, **environment}, capture_output=True, text=True, timeout=60)
 
     def commands(self):
         return self.log.read_text() if self.log.exists() else ""
@@ -85,6 +92,17 @@ bun install --os darwin --cpu '*'
         return {"APPLE_CERTIFICATE_P12": "ZmFrZS1jZXJ0", "APPLE_CERTIFICATE_PASSWORD": "fixture-cert-password",
                 "APPLE_SIGNING_IDENTITY": "Developer ID Application: Fixture (ABCDEFGHIJ)",
                 "APPLE_ID": "fixture@example.test", "APPLE_PASSWORD": "fixture-notary-password", "APPLE_TEAM_ID": "ABCDEFGHIJ"}
+
+    def test_updater_key_reaches_only_the_signing_tauri_bundle(self):
+        # SEC-008: package install scripts, tests, sidecar builds and the compile itself
+        # (Vite plugins in beforeBuildCommand, build.rs, proc macros) never see the key.
+        result = self.run_shell()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        seen = Path(str(self.log) + ".key").read_text().splitlines()
+        self.assertTrue(seen, "the Tauri bundle step must still get the key")
+        for line in seen:
+            self.assertTrue(line.startswith("bun run tauri bundle "), line)
+        self.assertIn("[tauri] [build] [--no-bundle]", self.commands())
 
     def test_no_credentials_cannot_publish_or_begin_install(self):
         result = self.run_shell(PUBLISH_RELEASE="true")
@@ -107,6 +125,22 @@ bun install --os darwin --cpu '*'
         self.assertFalse((self.runner / "bluey-verified").exists())
         self.assertIn("not a published release", result.stdout)
 
+    def test_local_signing_identity_replaces_ad_hoc_for_developer_builds_only(self):
+        result = self.run_shell()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("identity=- notary=\n", self.commands())
+        identity = "Apple Development: Fixture (ABCDEFGHIJ)"
+        self.log.unlink()
+        result = self.run_shell(BLUEY_LOCAL_SIGNING_IDENTITY=identity, APPLE_ID="fixture@example.test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"identity={identity} notary=\n", self.commands())
+        self.assertIn("NOT eligible for publication", result.stdout)
+        self.log.unlink()
+        result = self.run_shell(BLUEY_LOCAL_SIGNING_IDENTITY=identity, PUBLISH_RELEASE="true", **self.credentials())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("developer builds only", result.stderr)
+        self.assertEqual(self.commands(), "")
+
     def test_missing_updater_signing_key_fails_before_install(self):
         for environment in ({"TAURI_SIGNING_PRIVATE_KEY": ""},
                             {"TAURI_SIGNING_PRIVATE_KEY": "", "PUBLISH_RELEASE": "true", **self.credentials()}):
@@ -124,6 +158,9 @@ bun install --os darwin --cpu '*'
         builds = [line for line in self.commands().splitlines() if "[tauri] [build]" in line]
         self.assertEqual(len(builds), 1)
         self.assertIn('[--config] [{"version":"0.1.3-nightly.20260913"}]', builds[0])
+        bundles = [line for line in self.commands().splitlines() if "[tauri] [bundle]" in line]
+        self.assertEqual(len(bundles), 1)
+        self.assertIn('[--config] [{"version":"0.1.3-nightly.20260913"}]', bundles[0])
         for environment in ({"BLUEY_BUILD_VERSION": "1.2.3"}, {"BLUEY_BUILD_VERSION": "0.1.3-nightly.20260913; touch pwned"},
                             {"BLUEY_BUILD_VERSION": '0.1.3-nightly.20260913","bundle":{"active":false'},
                             {"BLUEY_BUILD_VERSION": "0.1.3-nightly.20260913", "PUBLISH_RELEASE": "true", **self.credentials()}):

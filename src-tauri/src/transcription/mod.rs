@@ -28,6 +28,7 @@ pub mod batch;
 pub mod cloud_realtime;
 pub mod gemini_live;
 pub mod mock;
+pub(crate) mod reconnect;
 
 /// Default Gemini Live transcription model (Live API only).
 pub const GEMINI_LIVE_MODEL: &str = "gemini-3.5-transcribe-live";
@@ -67,6 +68,14 @@ pub enum TranscriptionEvent {
         text: String,
         language: Option<String>,
     },
+    /// The connection for this source was lost and reconnecting failed at
+    /// least once; the provider keeps retrying (sent once per outage).
+    Degraded {
+        source: AudioSource,
+        error: BlueyError,
+    },
+    /// The provider reconnected after [`TranscriptionEvent::Degraded`].
+    Recovered { source: AudioSource },
     /// The provider gave up on this source after its own retries.
     Failed {
         source: AudioSource,

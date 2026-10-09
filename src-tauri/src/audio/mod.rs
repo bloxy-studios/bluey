@@ -11,20 +11,22 @@
 //! A cloud provider without a usable key falls back to Apple with a non-fatal
 //! `audio.error{code: stt_fallback}` so listening never silently fails.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bluey_core::events::BlueyEvent;
 use bluey_core::presets;
 use bluey_core::types::{
-    AiProviderKind, AppEvent, AudioDevice, AudioLevels, AudioSessionConfig,
+    AiProviderKind, AppEvent, AppState, AudioDevice, AudioLevels, AudioSessionConfig,
     AudioSessionConfigPatch, AudioSessionState, AudioSource, AudioSourcePreference, AudioStatus,
     TranscriptSegment, TranscriptionProviderKind,
 };
-use bluey_core::{new_id, now_iso, BlueyError, BlueyResult};
-use bluey_protocols::helper::{DevicesResult, HelperEvent, TranscriptAssembler, WireTranscript};
+use bluey_core::{new_id, now_iso, BlueyError, BlueyErrorKind, BlueyResult};
+use bluey_protocols::helper::{
+    DevicesResult, HelperEvent, TranscriptAssembler, WireSpeechRoute, WireTranscript,
+};
 use bluey_protocols::voice_live::{self, TranscriptionTransport};
 use bluey_storage::TranscriptRepository;
 use serde::Serialize;
@@ -44,6 +46,11 @@ use crate::transcription::mock::MockTranscriptionProvider;
 use crate::transcription::{
     self, PcmChunk, SessionOptions, TranscriptionEvent, TranscriptionProvider, TranscriptionSession,
 };
+
+mod ring;
+mod stt_health;
+
+use ring::{RingScope, TranscriptRing};
 
 /// Helper capture sample rate (mono PCM16).
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -69,15 +76,25 @@ pub enum TranscriptionRoute {
     Pcm,
 }
 
-/// Decide how a configured provider is served. `cloud_ready` says whether a
-/// provider session can actually be opened (key + model present); when it
-/// cannot, the route falls back to Apple with a human-readable reason.
+/// Why a cloud provider is not used while Privacy → Cloud AI is off.
+pub const CLOUD_AI_OFF_REASON: &str = "Cloud AI is turned off in Settings → Privacy";
+
+/// Decide how a configured provider is served. `cloud_allowed` is the Privacy
+/// → Cloud AI switch; `cloud_ready` says whether a provider session can
+/// actually be opened (key + model present). When a cloud provider may not or
+/// cannot run, the route falls back to Apple with a human-readable reason.
 pub fn route_for(
     provider: TranscriptionProviderKind,
+    cloud_allowed: bool,
     cloud_ready: bool,
 ) -> (TranscriptionRoute, Option<&'static str>) {
     match provider {
         TranscriptionProviderKind::Apple => (TranscriptionRoute::Apple, None),
+        TranscriptionProviderKind::GeminiLive | TranscriptionProviderKind::CloudRealtime
+            if !cloud_allowed =>
+        {
+            (TranscriptionRoute::Apple, Some(CLOUD_AI_OFF_REASON))
+        }
         _ if cloud_ready => (TranscriptionRoute::Pcm, None),
         TranscriptionProviderKind::GeminiLive => (
             TranscriptionRoute::Apple,
@@ -102,7 +119,7 @@ struct ActiveStt {
     /// Sources whose provider session is being opened (chunks meanwhile are dropped).
     opening: HashSet<AudioSource>,
     sessions: HashMap<AudioSource, Box<dyn TranscriptionSession>>,
-    failed: HashSet<AudioSource>,
+    health: stt_health::SttHealth,
     sink: transcription::EventSink,
     pump: tauri::async_runtime::JoinHandle<()>,
 }
@@ -113,10 +130,126 @@ struct ChunkTiming {
     utterance_start_ms: Option<u64>,
     last_start_ms: u64,
     last_end_ms: u64,
+    /// The cloud utterance its interims and final belong to (UX-010).
+    open_utterance: Option<u64>,
+    utterances: u64,
 }
 
-/// Build the helper `audio.start` params from a session config.
-pub fn helper_start_params(config: &AudioSessionConfig, route: TranscriptionRoute) -> Value {
+impl ChunkTiming {
+    /// Stamp a cloud transcript with its span and utterance id. A provider
+    /// streams one utterance at a time per source, so the first event opens
+    /// an utterance and its final closes it; the id never depends on timing
+    /// (an interim can arrive before the speech chunk that starts the span).
+    fn stamp_cloud(&mut self, finalized: bool) -> (u64, u64, String) {
+        let start = self.utterance_start_ms.unwrap_or(self.last_start_ms);
+        let end = self.last_end_ms.max(start);
+        let seq = match self.open_utterance {
+            Some(seq) => seq,
+            None => {
+                self.utterances += 1;
+                self.open_utterance = Some(self.utterances);
+                self.utterances
+            }
+        };
+        if finalized {
+            self.utterance_start_ms = None;
+            self.open_utterance = None;
+        }
+        (start, end, format!("cloud-{seq}"))
+    }
+}
+
+/// The Apple route promises on-device transcription; when the recognizer has
+/// no on-device model for the locale the helper falls back to Apple's servers,
+/// which the user is told (MAC-007) instead of it happening silently.
+fn server_speech_notice(route: &WireSpeechRoute) -> Option<BlueyError> {
+    (!route.on_device).then(|| {
+        BlueyError::audio(
+            "speech_server",
+            format!(
+                "Apple Speech has no on-device model for {}, so it transcribes on Apple's servers",
+                route.locale
+            ),
+        )
+    })
+}
+
+/// Claim the start slot under the status lock. Only the claimant goes on to
+/// start the helper; a start racing it (native shortcut + HUD, double click)
+/// gets the current status back instead.
+fn claim_start(status: &parking_lot::Mutex<AudioStatus>) -> Result<(), Box<AudioStatus>> {
+    let mut status = status.lock();
+    if matches!(
+        status.state,
+        AudioSessionState::Starting | AudioSessionState::Running | AudioSessionState::Paused
+    ) {
+        return Err(Box::new(status.clone()));
+    }
+    status.state = AudioSessionState::Starting;
+    status.error = None;
+    Ok(())
+}
+
+/// What a failed helper `audio.start` needs before it is reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartRecovery {
+    /// The helper still runs a session Rust lost track of: stop it and start
+    /// once more.
+    StopAndRetry,
+    /// The helper may still finish starting after the timeout and keep the
+    /// microphone open: stop it (best effort) and report the error.
+    StopHelper,
+    Report,
+}
+
+fn start_recovery(error: &BlueyError) -> StartRecovery {
+    match error.code.as_str() {
+        "audio.audio_already_running" => StartRecovery::StopAndRetry,
+        "sidecar.timeout" => StartRecovery::StopHelper,
+        _ => StartRecovery::Report,
+    }
+}
+
+/// What the helper exiting means for the listening run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HelperExitPlan {
+    /// The run was live: it stops (with an error) — no capture survives the
+    /// process.
+    stop_run: bool,
+    /// Re-issue the run with its config once the replacement helper is up.
+    resume: bool,
+    /// The helper is gone for good: the run's auto-started session ends.
+    end_auto_session: bool,
+}
+
+fn helper_exit_plan(state: AudioSessionState, restarting: bool) -> HelperExitPlan {
+    let live = matches!(
+        state,
+        AudioSessionState::Running | AudioSessionState::Paused
+    );
+    HelperExitPlan {
+        stop_run: live,
+        resume: live && restarting,
+        end_auto_session: !restarting,
+    }
+}
+
+/// Move a run-relative transcript onto the session's timeline.
+fn on_session_timeline(mut wire: WireTranscript, offset_ms: u64) -> WireTranscript {
+    wire.start_ms = wire.start_ms.saturating_add(offset_ms);
+    wire.end_ms = wire.end_ms.saturating_add(offset_ms);
+    wire
+}
+
+/// Build the helper `audio.start` params from a session config. With Privacy
+/// → Cloud AI off (`cloud_allowed == false`) Apple Speech must stay on the Mac:
+/// `requireOnDevice` makes the helper refuse its server fallback and report
+/// `speech_on_device_unavailable` instead.
+pub fn helper_start_params(
+    config: &AudioSessionConfig,
+    route: TranscriptionRoute,
+    cloud_allowed: bool,
+) -> Value {
     let mut sources = Vec::new();
     if config.microphone.enabled {
         sources.push("microphone");
@@ -127,6 +260,7 @@ pub fn helper_start_params(config: &AudioSessionConfig, route: TranscriptionRout
     let mut transcription = json!({
         "enabled": route == TranscriptionRoute::Apple,
         "onDevice": true,
+        "requireOnDevice": !cloud_allowed,
         "sources": sources,
     });
     if config.transcription.language != "auto" && !config.transcription.language.is_empty() {
@@ -157,11 +291,20 @@ pub struct AudioManager {
     chunk_times: parking_lot::Mutex<HashMap<AudioSource, ChunkTiming>>,
     status: parking_lot::Mutex<AudioStatus>,
     config: parking_lot::Mutex<Option<AudioSessionConfig>>,
-    ring: parking_lot::Mutex<VecDeque<TranscriptSegment>>,
+    ring: parking_lot::Mutex<TranscriptRing>,
+    /// The listening run the ring files new finals under (bumped by `start`).
+    run_id: AtomicU64,
     partials: parking_lot::Mutex<HashMap<AudioSource, TranscriptSegment>>,
     assembler: parking_lot::Mutex<TranscriptAssembler>,
-    /// The session was started by `audio_start` and ends with it.
-    auto_session: AtomicBool,
+    /// The session `start` created for this listening run (it ends with the
+    /// run, unless the user has switched to another session meanwhile).
+    auto_session: parking_lot::Mutex<Option<String>>,
+    /// Added to this run's segment times: a run attached to a session that
+    /// already has a transcript continues its timeline.
+    time_offset_ms: AtomicU64,
+    /// The config of a run the helper died under, re-issued once the
+    /// supervisor's replacement helper is up.
+    resume: parking_lot::Mutex<Option<AudioSessionConfig>>,
     listener_started: AtomicBool,
 }
 
@@ -190,10 +333,13 @@ impl AudioManager {
             chunk_times: parking_lot::Mutex::new(HashMap::new()),
             status: parking_lot::Mutex::new(AudioStatus::default()),
             config: parking_lot::Mutex::new(None),
-            ring: parking_lot::Mutex::new(VecDeque::with_capacity(RING_CAPACITY)),
+            ring: parking_lot::Mutex::new(TranscriptRing::new(RING_CAPACITY)),
+            run_id: AtomicU64::new(0),
             partials: parking_lot::Mutex::new(HashMap::new()),
             assembler: parking_lot::Mutex::new(TranscriptAssembler::new()),
-            auto_session: AtomicBool::new(false),
+            auto_session: parking_lot::Mutex::new(None),
+            time_offset_ms: AtomicU64::new(0),
+            resume: parking_lot::Mutex::new(None),
             listener_started: AtomicBool::new(false),
         }
     }
@@ -244,6 +390,10 @@ impl AudioManager {
         if self.is_running() {
             return Ok(self.status());
         }
+        // The sign-in gate is enforced here, not only in the UI: the shortcut,
+        // the tray and the command all start listening through this call.
+        // (Without a configured sign-in, boot never enters `AuthRequired`.)
+        ensure_signed_in(self.hub.state())?;
         let config = self.resolve_config(patch);
         if !config.microphone.enabled && !config.system_audio.enabled {
             return Err(BlueyError::audio(
@@ -251,20 +401,44 @@ impl AudioManager {
                 "enable the microphone or system audio first",
             ));
         }
-        let cloud = self.cloud_provider(&config).await;
-        let (route, fallback) = route_for(config.transcription.provider, cloud.is_some());
-        {
-            let mut status = self.status.lock();
-            status.state = AudioSessionState::Starting;
-            status.error = None;
+        // Claimed before the first await, so a duplicate toggle cannot start
+        // the helper twice (and then tear down the winner's transcription).
+        if let Err(current) = claim_start(&self.status) {
+            return Ok(*current);
         }
-        let params = helper_start_params(&config, route);
+        self.start_claimed(config).await
+    }
+
+    /// The body of [`Self::start`] once the start slot is claimed.
+    async fn start_claimed(
+        self: &Arc<Self>,
+        config: AudioSessionConfig,
+    ) -> BlueyResult<AudioStatus> {
+        let cloud = self.cloud_provider(&config).await;
+        let cloud_allowed = self.settings.get().privacy.cloud_ai_enabled;
+        let (route, fallback) = route_for(
+            config.transcription.provider,
+            cloud_allowed,
+            cloud.is_some(),
+        );
+        let params = helper_start_params(&config, route, cloud_allowed);
         // Reset per-session state and install the cloud transcription sink
         // *before* the helper starts capturing, so the first PCM chunks are not
         // dropped for lack of a session.
         self.assembler.lock().reset();
         self.partials.lock().clear();
         self.chunk_times.lock().clear();
+        // Finals of earlier runs stay in the ring (the transcript view may
+        // still list them) but are out of this run's context scope.
+        self.run_id.fetch_add(1, Ordering::SeqCst);
+        // This run supersedes one waiting for a helper restart.
+        self.resume.lock().take();
+        // Segment times restart at 0 with every helper `audio.start`.
+        let offset = match self.sessions.active_id() {
+            Some(id) => self.session_last_end_ms(&id).await,
+            None => 0,
+        };
+        self.time_offset_ms.store(offset, Ordering::SeqCst);
         *self.config.lock() = Some(config.clone());
         if route == TranscriptionRoute::Pcm {
             if let Some((provider, model)) = cloud {
@@ -284,13 +458,13 @@ impl AudioManager {
                     language,
                     opening: HashSet::new(),
                     sessions: HashMap::new(),
-                    failed: HashSet::new(),
+                    health: stt_health::SttHealth::default(),
                     sink: tx,
                     pump,
                 });
             }
         }
-        let value = match self.helper.call("audio.start", params).await {
+        let value = match self.start_helper_audio(params).await {
             Ok(value) => value,
             Err(error) => {
                 self.close_stt().await;
@@ -314,7 +488,7 @@ impl AudioManager {
 
         if self.sessions.active().is_none() {
             match self.sessions.start(None, None).await {
-                Ok(_) => self.auto_session.store(true, Ordering::SeqCst),
+                Ok(session) => *self.auto_session.lock() = Some(session.id),
                 Err(e) => tracing::warn!(error = %e, "could not start a session for listening"),
             }
         }
@@ -344,9 +518,102 @@ impl AudioManager {
         Ok(status)
     }
 
+    /// Move a live cloud session onto on-device Apple Speech (Privacy → Cloud
+    /// AI turned off, or the provider rejected its configuration): the helper
+    /// restarts capture with transcription on; the session and its timeline
+    /// continue. A no-op unless listening on a cloud route.
+    pub fn fall_back_to_apple(self: &Arc<Self>, reason: impl Into<String>) {
+        let reason = reason.into();
+        let this = self.clone();
+        // Spawned: this may be called from the transcription pump, which
+        // `close_stt` waits for.
+        tauri::async_runtime::spawn(async move { this.reroute_to_apple(reason).await });
+    }
+
+    async fn reroute_to_apple(self: &Arc<Self>, reason: String) {
+        let (config, was_paused) = {
+            let mut status = self.status.lock();
+            let on_cloud = matches!(
+                status.provider,
+                Some(
+                    TranscriptionProviderKind::GeminiLive
+                        | TranscriptionProviderKind::CloudRealtime
+                )
+            );
+            let live = matches!(
+                status.state,
+                AudioSessionState::Running | AudioSessionState::Paused
+            );
+            let Some(mut config) = self.config.lock().clone() else {
+                return;
+            };
+            if !live || !on_cloud {
+                return;
+            }
+            let was_paused = status.state == AudioSessionState::Paused;
+            // Owning the helper session now: its `audio.stopped{requested}`
+            // is not a user stop.
+            status.state = AudioSessionState::Starting;
+            config.transcription.provider = TranscriptionProviderKind::Apple;
+            (config, was_paused)
+        };
+        tracing::info!("moving live transcription to on-device Apple Speech");
+        self.stop_helper_audio().await;
+        self.close_stt().await;
+        match self.start_claimed(config).await {
+            Ok(_) => {
+                self.bus.publish(BlueyEvent::AudioError(BlueyError::audio(
+                    "stt_fallback",
+                    format!("{reason}; using on-device Apple Speech"),
+                )));
+                if was_paused {
+                    let _ = self.pause().await;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "could not restart listening on Apple Speech");
+                // Nothing is captured any more: leave Listening and close the
+                // session listening opened, as a failed helper-restart resume does.
+                self.mark_stopped(Some(error));
+                self.end_auto_session().await;
+            }
+        }
+    }
+
+    /// `audio.start` on the helper, reconciling a helper session Rust lost
+    /// track of (an earlier start that timed out here but finished there).
+    async fn start_helper_audio(self: &Arc<Self>, params: Value) -> BlueyResult<Value> {
+        let error = match self.helper.call("audio.start", params.clone()).await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        match start_recovery(&error) {
+            StartRecovery::StopAndRetry => {
+                tracing::info!("the helper was still capturing; restarting its audio session");
+                self.stop_helper_audio().await;
+                self.helper.call("audio.start", params).await
+            }
+            StartRecovery::StopHelper => {
+                self.stop_helper_audio().await;
+                Err(error)
+            }
+            StartRecovery::Report => Err(error),
+        }
+    }
+
+    /// Best-effort `audio.stop` (the helper may be gone).
+    async fn stop_helper_audio(&self) {
+        if self.helper.is_running() {
+            if let Err(e) = self.helper.request("audio.stop", json!({})).await {
+                tracing::debug!(error = %e, "audio.stop failed (helper may be gone)");
+            }
+        }
+    }
+
     /// Build the cloud transcription provider for the configured kind, or
-    /// `None` when it cannot run (no key / model / developer mode). Returns the
-    /// provider and the model id to open sessions with.
+    /// `None` when it cannot run (no key / model / developer mode, or Privacy
+    /// → Cloud AI off: no audio leaves the Mac then). Returns the provider and
+    /// the model id to open sessions with.
     async fn cloud_provider(
         &self,
         config: &AudioSessionConfig,
@@ -355,6 +622,11 @@ impl AudioManager {
         let assignment = settings.ai.models.transcription.clone();
         match config.transcription.provider {
             TranscriptionProviderKind::Apple => None,
+            TranscriptionProviderKind::GeminiLive | TranscriptionProviderKind::CloudRealtime
+                if !settings.privacy.cloud_ai_enabled =>
+            {
+                None
+            }
             TranscriptionProviderKind::Mock => {
                 let allowed = cfg!(feature = "dev-tools")
                     || cfg!(debug_assertions)
@@ -430,7 +702,7 @@ impl AudioManager {
 
     /// Forward one PCM chunk to the provider session for its source (opening
     /// the session on first use). Audio bytes are never retained.
-    async fn forward_pcm(&self, chunk: PcmChunk) {
+    async fn forward_pcm(self: &Arc<Self>, chunk: PcmChunk) {
         {
             let mut times = self.chunk_times.lock();
             let timing = times.entry(chunk.source).or_default();
@@ -446,7 +718,9 @@ impl AudioManager {
         let (provider, options, sink) = {
             let mut guard = self.stt.lock().await;
             let Some(stt) = guard.as_mut() else { return };
-            if stt.failed.contains(&source) || stt.opening.contains(&source) {
+            if stt.opening.contains(&source)
+                || !stt.health.may_forward(source, std::time::Instant::now())
+            {
                 return;
             }
             if let Some(session) = stt.sessions.get(&source) {
@@ -482,10 +756,7 @@ impl AudioManager {
                             }
                             stt.sessions.insert(source, session);
                         }
-                        Err(error) => {
-                            stt.failed.insert(source);
-                            self.bus.publish(BlueyEvent::AudioError(error));
-                        }
+                        Err(error) => self.on_stt_failed(stt, source, error),
                     }
                     None
                 }
@@ -499,24 +770,90 @@ impl AudioManager {
     }
 
     /// Provider events → transcript segments (same assembler as the Apple path).
-    async fn on_stt_event(&self, event: TranscriptionEvent) {
+    async fn on_stt_event(self: &Arc<Self>, event: TranscriptionEvent) {
         match event {
             TranscriptionEvent::Interim { source, text } => {
+                self.stt_healthy(source).await;
                 self.on_cloud_text(source, text, None, false).await
             }
             TranscriptionEvent::Final {
                 source,
                 text,
                 language,
-            } => self.on_cloud_text(source, text, language, true).await,
-            TranscriptionEvent::Failed { source, error } => {
-                tracing::warn!(?source, error = %error, "cloud transcription failed");
-                if let Some(stt) = self.stt.lock().await.as_mut() {
-                    stt.failed.insert(source);
-                    stt.sessions.remove(&source);
+            } => {
+                self.stt_healthy(source).await;
+                self.on_cloud_text(source, text, language, true).await
+            }
+            TranscriptionEvent::Degraded { source, error } => {
+                tracing::warn!(?source, error = %error, "cloud transcription lost its connection; reconnecting");
+                let announce = self
+                    .stt
+                    .lock()
+                    .await
+                    .as_mut()
+                    .is_some_and(|stt| stt.health.degraded(source));
+                if announce {
+                    self.announce_stt_degraded();
                 }
-                self.status.lock().error = Some(error.clone());
-                self.bus.publish(BlueyEvent::AudioError(error));
+            }
+            TranscriptionEvent::Recovered { source } => self.stt_healthy(source).await,
+            TranscriptionEvent::Failed { source, error } => {
+                if let Some(stt) = self.stt.lock().await.as_mut() {
+                    self.on_stt_failed(stt, source, error);
+                }
+            }
+        }
+    }
+
+    /// A provider session for `source` ended. Configuration the provider
+    /// cannot run with moves listening to Apple Speech (retrying a bad key
+    /// would only fail again); anything else is re-opened after a cool-down,
+    /// announced once per outage.
+    fn on_stt_failed(
+        self: &Arc<Self>,
+        stt: &mut ActiveStt,
+        source: AudioSource,
+        error: BlueyError,
+    ) {
+        tracing::warn!(?source, error = %error, "cloud transcription failed");
+        stt.sessions.remove(&source);
+        let announce = stt.health.failed(source, std::time::Instant::now());
+        if matches!(
+            error.kind,
+            BlueyErrorKind::Configuration | BlueyErrorKind::NotSupported
+        ) {
+            let reason = error.message.clone();
+            self.status.lock().error = Some(error.clone());
+            self.bus.publish(BlueyEvent::AudioError(error));
+            self.fall_back_to_apple(reason);
+        } else if announce {
+            self.announce_stt_degraded();
+        }
+    }
+
+    fn announce_stt_degraded(&self) {
+        let error = stt_health::degraded_error();
+        self.status.lock().error = Some(error.clone());
+        self.bus.publish(BlueyEvent::AudioError(error));
+    }
+
+    /// Transcripts flow for `source` again: clear the outage notice once no
+    /// source is degraded.
+    async fn stt_healthy(&self, source: AudioSource) {
+        let ended = self
+            .stt
+            .lock()
+            .await
+            .as_mut()
+            .is_some_and(|stt| stt.health.healthy(source));
+        if ended {
+            let mut status = self.status.lock();
+            if status
+                .error
+                .as_ref()
+                .is_some_and(|e| e.code == stt_health::DEGRADED_CODE)
+            {
+                status.error = None;
             }
         }
     }
@@ -528,16 +865,12 @@ impl AudioManager {
         language: Option<String>,
         finalized: bool,
     ) {
-        let (start_ms, end_ms) = {
-            let mut times = self.chunk_times.lock();
-            let timing = times.entry(source).or_default();
-            let start = timing.utterance_start_ms.unwrap_or(timing.last_start_ms);
-            let end = timing.last_end_ms.max(start);
-            if finalized {
-                timing.utterance_start_ms = None;
-            }
-            (start, end)
-        };
+        let (start_ms, end_ms, utterance_id) = self
+            .chunk_times
+            .lock()
+            .entry(source)
+            .or_default()
+            .stamp_cloud(finalized);
         let wire = WireTranscript {
             source,
             text,
@@ -545,6 +878,7 @@ impl AudioManager {
             end_ms,
             confidence: None,
             locale: language,
+            utterance_id: Some(utterance_id),
         };
         self.on_transcript(wire, finalized).await;
     }
@@ -574,19 +908,46 @@ impl AudioManager {
 
     /// Stop listening (and end the auto-started session).
     pub async fn stop(&self) -> BlueyResult<AudioStatus> {
-        if self.helper.is_running() {
-            if let Err(e) = self.helper.request("audio.stop", json!({})).await {
-                tracing::debug!(error = %e, "audio.stop failed (helper may be gone)");
-            }
-        }
+        self.resume.lock().take();
+        self.stop_helper_audio().await;
         self.close_stt().await;
         let status = self.mark_stopped(None);
-        if self.auto_session.swap(false, Ordering::SeqCst) {
-            if let Err(e) = self.sessions.end().await {
-                tracing::debug!(error = %e, "could not end the auto-started session");
-            }
-        }
+        self.end_auto_session().await;
         Ok(status)
+    }
+
+    /// End the session `start` created for the run that just ended — not a
+    /// session the user switched to meanwhile.
+    async fn end_auto_session(&self) {
+        let Some(id) = self.auto_session.lock().take() else {
+            return;
+        };
+        if self.sessions.active_id().as_deref() != Some(id.as_str()) {
+            return;
+        }
+        if let Err(e) = self.sessions.end().await {
+            tracing::debug!(error = %e, "could not end the auto-started session");
+        }
+    }
+
+    /// Where a session's transcript ends (stored segments, or the ring when
+    /// transcripts are not persisted).
+    async fn session_last_end_ms(&self, session_id: &str) -> u64 {
+        let id = session_id.to_string();
+        let stored = self
+            .storage
+            .run(move |db| TranscriptRepository::last_end_ms(db, &id))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "could not read the session's transcript end");
+                0
+            });
+        let in_memory = self
+            .ring
+            .lock()
+            .last_end_of_session(session_id)
+            .unwrap_or(0);
+        stored.max(in_memory)
     }
 
     fn mark_stopped(&self, error: Option<BlueyError>) -> AudioStatus {
@@ -609,6 +970,8 @@ impl AudioManager {
             status.system_audio_active = false;
             status.levels = None;
             status.started_at = None;
+            status.speech_locale = None;
+            status.speech_on_device = None;
             status.error = error;
             status.clone()
         };
@@ -667,18 +1030,15 @@ impl AudioManager {
 
     // ── Transcript access ──────────────────────────────────────────────────
 
-    /// Finals from the last `window_seconds` (relative to the newest segment),
-    /// oldest first — the context snapshot's transcript.
+    /// Finals from the last `window_seconds`, oldest first — the context
+    /// snapshot's transcript (scoped by [`context_scope`]).
     pub fn recent(&self, window_seconds: u32) -> Vec<TranscriptSegment> {
-        let ring = self.ring.lock();
-        let Some(last_end) = ring.back().map(|s| s.end_time) else {
-            return Vec::new();
-        };
-        let cutoff = last_end.saturating_sub(u64::from(window_seconds) * 1_000);
-        ring.iter()
-            .filter(|s| s.end_time >= cutoff)
-            .cloned()
-            .collect()
+        let scope = context_scope(
+            self.sessions.active_id(),
+            self.is_running(),
+            self.run_id.load(Ordering::SeqCst),
+        );
+        self.ring.lock().recent(&scope, window_seconds)
     }
 
     /// Stored segments (or the in-memory ring when transcripts are not persisted).
@@ -696,24 +1056,10 @@ impl AudioManager {
                 })
                 .await;
         }
-        let ring = self.ring.lock();
-        let mut segments: Vec<TranscriptSegment> = ring
-            .iter()
-            .filter(|s| {
-                session_id
-                    .as_deref()
-                    .is_none_or(|id| s.session_id.as_deref() == Some(id))
-            })
-            .filter(|s| since_ms.is_none_or(|since| s.start_time >= since))
-            .cloned()
-            .collect();
-        if let Some(limit) = limit {
-            let keep = limit as usize;
-            if segments.len() > keep {
-                segments.drain(..segments.len() - keep);
-            }
-        }
-        Ok(segments)
+        Ok(self
+            .ring
+            .lock()
+            .list(session_id.as_deref(), since_ms, limit))
     }
 
     /// Delete stored segments (one session or everything) and clear the ring.
@@ -721,12 +1067,17 @@ impl AudioManager {
         let target = session_id.clone();
         let removed = self
             .storage
-            .run(move |db| TranscriptRepository::clear(db, target.as_deref()))
+            .run(move |db| {
+                let removed = TranscriptRepository::clear(db, target.as_deref())?;
+                // Nothing of it may linger in the WAL or a pre-migration backup.
+                db.finish_deletion()?;
+                Ok(removed)
+            })
             .await?;
         {
             let mut ring = self.ring.lock();
             match &session_id {
-                Some(id) => ring.retain(|s| s.session_id.as_deref() != Some(id.as_str())),
+                Some(id) => ring.forget_session(id),
                 None => ring.clear(),
             }
         }
@@ -734,6 +1085,30 @@ impl AudioManager {
         self.bus
             .publish(BlueyEvent::TranscriptCleared { session_id });
         Ok(removed)
+    }
+
+    /// A session was deleted: its finals leave the in-memory ring too (the
+    /// database rows went with the session).
+    pub fn forget_session(&self, session_id: &str) {
+        {
+            // Stopping must not try to end the deleted session (DATA-006).
+            let mut auto = self.auto_session.lock();
+            if auto.as_deref() == Some(session_id) {
+                *auto = None;
+            }
+        }
+        self.ring.lock().forget_session(session_id);
+        self.bus.publish(BlueyEvent::TranscriptCleared {
+            session_id: Some(session_id.to_string()),
+        });
+    }
+
+    /// Every session was deleted.
+    pub fn forget_all_sessions(&self) {
+        *self.auto_session.lock() = None;
+        self.ring.lock().forget_all_sessions();
+        self.bus
+            .publish(BlueyEvent::TranscriptCleared { session_id: None });
     }
 
     /// Developer mode: inject a finalized segment as if it had been heard.
@@ -746,8 +1121,8 @@ impl AudioManager {
         let start = self
             .ring
             .lock()
-            .back()
-            .map(|s| s.end_time + 800)
+            .last_end_of_run(self.run_id.load(Ordering::SeqCst))
+            .map(|end| end + 800)
             .unwrap_or(0);
         let segment = TranscriptSegment {
             id: new_id("seg"),
@@ -791,22 +1166,89 @@ impl AudioManager {
         });
     }
 
-    async fn handle_helper_event(&self, event: HelperEvent) {
+    /// The helper died. A live run cannot capture any more, so the status
+    /// stops claiming it; when a replacement is on its way the run is resumed
+    /// with the same config (and session) once it is up.
+    async fn on_helper_exited(&self, restarting: bool) {
+        let plan = helper_exit_plan(self.status().state, restarting);
+        if plan.stop_run {
+            let config = self.config.lock().clone();
+            self.close_stt().await;
+            if plan.resume {
+                *self.resume.lock() = config;
+            }
+            self.mark_stopped(Some(BlueyError::sidecar(
+                "helper_exited",
+                "the native helper stopped while listening",
+            )));
+        }
+        if plan.end_auto_session {
+            self.resume.lock().take();
+            self.end_auto_session().await;
+        }
+    }
+
+    /// The replacement helper is up: resume the run it lost (once).
+    fn on_helper_restarted(self: &Arc<Self>) {
+        let Some(config) = self.resume.lock().take() else {
+            return;
+        };
+        // The user started listening again meanwhile.
+        if claim_start(&self.status).is_err() {
+            return;
+        }
+        tracing::info!("resuming listening after a helper restart");
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = this.start_claimed(config).await {
+                tracing::warn!(error = %error, "could not resume listening after a helper restart");
+                this.end_auto_session().await;
+            }
+        });
+    }
+
+    async fn handle_helper_event(self: &Arc<Self>, event: HelperEvent) {
         match event {
             HelperEvent::AudioStarted {
                 microphone,
                 system_audio,
                 device,
+                speech,
             } => {
+                // Also re-sent mid-run when the microphone drops out or comes
+                // back (MAC-005); those updates carry no speech route.
                 let mut status = self.status.lock();
+                // A late event of a start that was already given up on.
+                if !matches!(
+                    status.state,
+                    AudioSessionState::Starting
+                        | AudioSessionState::Running
+                        | AudioSessionState::Paused
+                ) {
+                    return;
+                }
                 status.microphone_active = microphone;
                 status.system_audio_active = system_audio;
                 if device.is_some() {
                     status.current_input_device = device;
                 }
+                if let Some(route) = speech {
+                    let notice = server_speech_notice(&route);
+                    status.speech_locale = Some(route.locale);
+                    status.speech_on_device = Some(route.on_device);
+                    drop(status);
+                    if let Some(notice) = notice {
+                        self.bus.publish(BlueyEvent::AudioError(notice));
+                    }
+                }
             }
             HelperEvent::AudioStopped { reason } => {
-                if !self.is_running() {
+                // While `Starting`, a (re)start owns the helper session and
+                // its own `audio.stop` is expected.
+                if !matches!(
+                    self.status().state,
+                    AudioSessionState::Running | AudioSessionState::Paused
+                ) {
                     return;
                 }
                 let error = match reason.as_str() {
@@ -825,6 +1267,9 @@ impl AudioManager {
                 }
                 self.close_stt().await;
                 self.mark_stopped(error);
+                // Capture ended in the helper (device lost, stream error): the
+                // listening run is over, and so is the session it started.
+                self.end_auto_session().await;
             }
             HelperEvent::AudioLevel { microphone, system } => {
                 if let Some(levels) = self.status.lock().levels.as_mut() {
@@ -872,6 +1317,8 @@ impl AudioManager {
             }
             HelperEvent::TranscriptPartial(wire) => self.on_transcript(wire, false).await,
             HelperEvent::TranscriptFinal(wire) => self.on_transcript(wire, true).await,
+            HelperEvent::Exited { restarting } => self.on_helper_exited(restarting).await,
+            HelperEvent::Restarted => self.on_helper_restarted(),
             HelperEvent::Ready { .. }
             | HelperEvent::ScreenChanged { .. }
             | HelperEvent::Unknown { .. } => {}
@@ -882,6 +1329,7 @@ impl AudioManager {
         if wire.text.trim().is_empty() {
             return;
         }
+        let wire = on_session_timeline(wire, self.time_offset_ms.load(Ordering::SeqCst));
         let speaker_identification = self
             .config
             .lock()
@@ -909,13 +1357,9 @@ impl AudioManager {
     }
 
     async fn commit_final(&self, segment: TranscriptSegment) {
-        {
-            let mut ring = self.ring.lock();
-            if ring.len() >= RING_CAPACITY {
-                ring.pop_front();
-            }
-            ring.push_back(segment.clone());
-        }
+        self.ring
+            .lock()
+            .push(self.run_id.load(Ordering::SeqCst), segment.clone());
         if self.settings.get().privacy.store_transcripts && segment.session_id.is_some() {
             let stored = segment.clone();
             let result = self
@@ -930,17 +1374,86 @@ impl AudioManager {
     }
 }
 
+/// Listening needs a signed-in user wherever sign-in is required.
+fn ensure_signed_in(state: AppState) -> BlueyResult<()> {
+    if state == AppState::AuthRequired {
+        return Err(BlueyError::authentication(
+            "sign_in_required",
+            "sign in to Bluey before listening",
+        ));
+    }
+    Ok(())
+}
+
+/// Which finals the context snapshot sees: the active session's (its runs
+/// share one timeline through `time_offset_ms`, so a reroute to Apple, a helper
+/// restart or a stop/start keeps what was said before); without a session, the
+/// current listening run's; otherwise none.
+fn context_scope(active_session: Option<String>, running: bool, run_id: u64) -> RingScope {
+    match active_session {
+        Some(id) => RingScope::Session(id),
+        None if running => RingScope::Run(run_id),
+        None => RingScope::Nothing,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bluey_core::types::VadSensitivity;
 
     #[test]
+    fn a_session_keeps_what_was_said_before_the_run_changed() {
+        // A reroute to Apple or a helper restart starts run 2 in the same
+        // session; the question heard in run 1 must stay in the next answer.
+        let segment = |text: &str, start: u64| TranscriptSegment {
+            id: format!("seg_{text}"),
+            session_id: Some("ses_1".into()),
+            speaker: None,
+            speaker_confidence: None,
+            source: bluey_core::types::AudioSource::System,
+            text: text.into(),
+            start_time: start,
+            end_time: start + 1_000,
+            confidence: None,
+            finalized: true,
+            language: None,
+            created_at: "t".into(),
+        };
+        let mut ring = TranscriptRing::new(8);
+        ring.push(1, segment("what is your notice period", 0));
+        ring.push(2, segment("and your salary range", 4_000));
+
+        let scope = context_scope(Some("ses_1".into()), true, 2);
+        let texts: Vec<String> = ring
+            .recent(&scope, 120)
+            .into_iter()
+            .map(|s| s.text)
+            .collect();
+        assert_eq!(
+            texts,
+            ["what is your notice period", "and your salary range"]
+        );
+
+        assert_eq!(context_scope(None, true, 2), RingScope::Run(2));
+        assert_eq!(context_scope(None, false, 2), RingScope::Nothing);
+    }
+
+    #[test]
+    fn listening_is_refused_while_signed_out() {
+        let error = ensure_signed_in(AppState::AuthRequired).unwrap_err();
+        assert_eq!(error.code, "auth.sign_in_required");
+        // Signed in, or no sign-in configured (boot goes straight to Ready).
+        assert!(ensure_signed_in(AppState::Ready).is_ok());
+        assert!(ensure_signed_in(AppState::Listening).is_ok());
+    }
+
+    #[test]
     fn apple_route_asks_the_helper_to_transcribe_on_device() {
         let mut config = AudioSessionConfig::default();
         config.transcription.language = "auto".into();
         config.vad.sensitivity = VadSensitivity::High;
-        let params = helper_start_params(&config, TranscriptionRoute::Apple);
+        let params = helper_start_params(&config, TranscriptionRoute::Apple, true);
         assert_eq!(params["sampleRate"], 16_000);
         assert_eq!(params["emitPcm"], false);
         assert_eq!(params["chunkMs"], 200);
@@ -956,6 +1469,16 @@ mod tests {
         );
         assert_eq!(params["vad"]["sensitivity"], "high");
         assert_eq!(params["levels"]["enabled"], true);
+        // Cloud AI on: the helper may fall back to Apple's servers (and says so).
+        assert_eq!(params["transcription"]["requireOnDevice"], false);
+    }
+
+    #[test]
+    fn with_cloud_ai_off_apple_speech_may_not_use_apples_servers() {
+        let config = AudioSessionConfig::default();
+        let params = helper_start_params(&config, TranscriptionRoute::Apple, false);
+        assert_eq!(params["transcription"]["onDevice"], true);
+        assert_eq!(params["transcription"]["requireOnDevice"], true);
     }
 
     #[test]
@@ -964,7 +1487,7 @@ mod tests {
         config.system_audio.enabled = false;
         config.transcription.language = "en-US".into();
         config.microphone.device_id = Some("mic-1".into());
-        let params = helper_start_params(&config, TranscriptionRoute::Pcm);
+        let params = helper_start_params(&config, TranscriptionRoute::Pcm, true);
         assert_eq!(params["emitPcm"], true);
         assert_eq!(params["transcription"]["enabled"], false);
         assert_eq!(params["transcription"]["locale"], "en-US");
@@ -975,27 +1498,173 @@ mod tests {
     #[test]
     fn cloud_providers_route_to_pcm_when_ready_and_fall_back_to_apple_otherwise() {
         assert_eq!(
-            route_for(TranscriptionProviderKind::Apple, true),
+            route_for(TranscriptionProviderKind::Apple, true, true),
             (TranscriptionRoute::Apple, None)
         );
         assert_eq!(
-            route_for(TranscriptionProviderKind::GeminiLive, true),
+            route_for(TranscriptionProviderKind::GeminiLive, true, true),
             (TranscriptionRoute::Pcm, None)
         );
         assert_eq!(
-            route_for(TranscriptionProviderKind::CloudRealtime, true),
+            route_for(TranscriptionProviderKind::CloudRealtime, true, true),
             (TranscriptionRoute::Pcm, None)
         );
-        let (route, reason) = route_for(TranscriptionProviderKind::GeminiLive, false);
+        let (route, reason) = route_for(TranscriptionProviderKind::GeminiLive, true, false);
         assert_eq!(route, TranscriptionRoute::Apple);
         assert!(reason.unwrap().contains("Google AI Studio key"));
-        let (route, reason) = route_for(TranscriptionProviderKind::CloudRealtime, false);
+        let (route, reason) = route_for(TranscriptionProviderKind::CloudRealtime, true, false);
         assert_eq!(route, TranscriptionRoute::Apple);
         assert!(reason.is_some());
         assert_eq!(
-            route_for(TranscriptionProviderKind::Mock, false).0,
+            route_for(TranscriptionProviderKind::Mock, true, false).0,
             TranscriptionRoute::Apple
         );
+    }
+
+    #[test]
+    fn cloud_ai_off_keeps_live_audio_on_the_mac() {
+        for provider in [
+            TranscriptionProviderKind::GeminiLive,
+            TranscriptionProviderKind::CloudRealtime,
+        ] {
+            // Even with a stored key the audio never takes the cloud route.
+            assert_eq!(
+                route_for(provider, false, true),
+                (TranscriptionRoute::Apple, Some(CLOUD_AI_OFF_REASON))
+            );
+        }
+        // Local routes are unaffected by the switch.
+        assert_eq!(
+            route_for(TranscriptionProviderKind::Apple, false, false),
+            (TranscriptionRoute::Apple, None)
+        );
+        assert_eq!(
+            route_for(TranscriptionProviderKind::Mock, false, true),
+            (TranscriptionRoute::Pcm, None)
+        );
+    }
+
+    #[test]
+    fn only_one_concurrent_start_claims_the_slot() {
+        let status = Arc::new(parking_lot::Mutex::new(AudioStatus::default()));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let claims: Vec<_> = (0..8)
+            .map(|_| {
+                let status = status.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claim_start(&status).is_ok()
+                })
+            })
+            .collect();
+        let won = claims
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(won, 1, "exactly one start reaches the helper");
+        assert_eq!(status.lock().state, AudioSessionState::Starting);
+        // A duplicate toggle while running gets the running status back.
+        status.lock().state = AudioSessionState::Running;
+        assert_eq!(
+            claim_start(&status).unwrap_err().state,
+            AudioSessionState::Running
+        );
+        // A stopped or failed session can be started again.
+        for state in [AudioSessionState::Stopped, AudioSessionState::Error] {
+            status.lock().state = state;
+            assert!(claim_start(&status).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_failed_helper_start_is_reconciled_with_the_helper() {
+        let timeout = BlueyError::sidecar("timeout", "helper call `audio.start` timed out");
+        assert_eq!(start_recovery(&timeout), StartRecovery::StopHelper);
+        let already = jsonl_audio_error("audio_already_running");
+        assert_eq!(start_recovery(&already), StartRecovery::StopAndRetry);
+        let denied = BlueyError::audio("engine_start_failed", "no");
+        assert_eq!(start_recovery(&denied), StartRecovery::Report);
+    }
+
+    /// An `audio.*` error as the helper reports it on the wire.
+    fn jsonl_audio_error(code: &str) -> BlueyError {
+        bluey_protocols::jsonl::WireError {
+            code: code.into(),
+            message: "m".into(),
+            kind: Some("audio".into()),
+            details: None,
+        }
+        .into_bluey()
+    }
+
+    /// MAC-007: server recognition behind an on-device promise is surfaced.
+    #[test]
+    fn apple_speech_on_the_server_is_announced() {
+        let route = |on_device| WireSpeechRoute {
+            locale: "de-DE".into(),
+            on_device,
+        };
+        assert!(server_speech_notice(&route(true)).is_none());
+        let notice = server_speech_notice(&route(false)).expect("announced");
+        assert_eq!(notice.code, "audio.speech_server");
+        assert!(notice.message.contains("de-DE"));
+    }
+
+    /// UX-010: the first interim after a final arrives before the speech
+    /// chunk that starts its span; it must still share the final's id.
+    #[test]
+    fn cloud_interims_and_their_final_share_one_utterance_id() {
+        let mut timing = ChunkTiming {
+            last_start_ms: 5_000,
+            last_end_ms: 5_100,
+            ..ChunkTiming::default()
+        };
+        let (interim_start, _, interim) = timing.stamp_cloud(false);
+        timing.utterance_start_ms = Some(5_200);
+        let (final_start, _, final_) = timing.stamp_cloud(true);
+        assert_ne!(interim_start, final_start, "the span moved…");
+        assert_eq!(interim, final_, "…but the utterance did not");
+
+        let (_, _, next) = timing.stamp_cloud(false);
+        assert_ne!(next, final_, "a final closes its utterance");
+    }
+
+    #[test]
+    fn a_second_run_in_a_session_continues_its_timeline() {
+        // Run 1 ended at 42 s; run 2's clock restarts at 0.
+        let run_two = WireTranscript {
+            source: AudioSource::Microphone,
+            text: "later".into(),
+            start_ms: 1_000,
+            end_ms: 2_500,
+            confidence: None,
+            locale: None,
+            utterance_id: None,
+        };
+        let placed = on_session_timeline(run_two, 42_000);
+        assert_eq!((placed.start_ms, placed.end_ms), (43_000, 44_500));
+        assert!(placed.start_ms > 42_000, "never interleaves with run 1");
+    }
+
+    #[test]
+    fn a_helper_exit_never_leaves_the_run_claiming_to_listen() {
+        use AudioSessionState::*;
+        // A replacement is on its way: the live run stops and resumes on it.
+        for state in [Running, Paused] {
+            let plan = helper_exit_plan(state, true);
+            assert!(plan.stop_run && plan.resume && !plan.end_auto_session);
+        }
+        // Gone for good (crash loop, restart failed, restarts disabled).
+        let plan = helper_exit_plan(Running, false);
+        assert!(plan.stop_run && !plan.resume && plan.end_auto_session);
+        // Not listening: nothing to stop or resume (a start in flight fails
+        // with its pending request).
+        for state in [Stopped, Error, Starting] {
+            let plan = helper_exit_plan(state, true);
+            assert!(!plan.stop_run && !plan.resume);
+        }
     }
 
     #[test]

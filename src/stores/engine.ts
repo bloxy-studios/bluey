@@ -50,6 +50,8 @@ function createUnavailableEngine(): ResponseEngine {
     },
     prepare: async () => null,
     takePrepared: () => null,
+    clearPrepared: () => {},
+    commitShown: async (response) => response,
     classify: async () => null,
     summarizeSession: async () => {
       throw UNAVAILABLE_ERROR;

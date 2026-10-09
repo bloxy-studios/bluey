@@ -28,14 +28,13 @@ pub use documents::index::{
 pub use documents::parse::{detect_format, parse_document, ParsedDocument, MAX_DOCUMENT_BYTES};
 pub use documents::retrieve::{cosine, retrieve};
 pub use repositories::{
-    AiCacheRepository, AiRequestRecord, AiRequestRepository, DocumentRepository, EmbeddedChunk,
-    ModeRepository, ModelConfigRepository, ResponseRepository, SessionEventRepository,
-    SessionNoteRepository, SessionRepository, SettingsRepository, ShortcutRepository,
-    SnapshotRepository, SummaryRepository, TranscriptRepository, UserRepository,
+    AiRequestRecord, AiRequestRepository, DocumentRepository, EmbeddedChunk, ModeRepository,
+    ModelConfigRepository, ResponseRepository, SessionEventRepository, SessionNoteRepository,
+    SessionRepository, SettingsRepository, ShortcutRepository, SnapshotRepository,
+    SummaryRepository, TranscriptRepository, UserRepository,
 };
 pub use retention::{
-    apply_retention, clear_ai_cache, clear_transcripts, delete_all_sessions, delete_screenshots,
-    delete_session, prune_finished_sessions_without_history, reset_all, usage_stats,
-    RetentionReport, UsageStats,
+    apply_retention, clear_transcripts, delete_all_sessions, delete_screenshots, delete_session,
+    prune_finished_sessions_without_history, reset_all, usage_stats, RetentionReport, UsageStats,
 };
 pub use search::search_sessions;

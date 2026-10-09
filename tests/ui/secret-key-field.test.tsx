@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -71,5 +71,42 @@ describe("SecretKeyField", () => {
     gate.resolve();
     await screen.findByText("Key saved ••••");
     expect(writes).toBe(1);
+  });
+
+  it("shows a key macOS holds back as saved and locked, with Allow access", async () => {
+    const user = userEvent.setup();
+    const { transport } = await setupInterceptedApp();
+    await bluey.secrets.set({ key: KEY, value: "sk-ant-existing" });
+    let allowed = 0;
+    transport.intercept("secrets_state", () => Promise.resolve("locked" as const));
+    transport.intercept("secrets_allow_access", (_args, next) => {
+      allowed += 1;
+      return next();
+    });
+    render(<SecretKeyField secretKey={KEY} aria-label="Anthropic API key" />);
+
+    // Locked is never "no key": no empty field invites a re-entry.
+    await screen.findByText("Key saved · locked");
+    expect(screen.queryByLabelText("Anthropic API key")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Allow access" }));
+    await screen.findByText("Key saved ••••");
+    expect(allowed).toBe(1);
+  });
+
+  it("Remove key asks first, then deletes the key", async () => {
+    const user = userEvent.setup();
+    await bluey.secrets.set({ key: KEY, value: "sk-ant-existing" });
+    render(<SecretKeyField secretKey={KEY} aria-label="Anthropic API key" />);
+    await screen.findByText("Key saved ••••");
+
+    await user.click(screen.getByRole("button", { name: "Remove key" }));
+    expect(await bluey.secrets.has({ key: KEY })).toBe(true);
+    const confirm = await screen.findByRole("dialog");
+    await user.click(within(confirm).getByRole("button", { name: "Remove key" }));
+
+    await screen.findByLabelText("Anthropic API key");
+    expect(await bluey.secrets.has({ key: KEY })).toBe(false);
+    expect(useToastStore.getState().toasts.map((t) => t.message)).toContain("Key removed");
   });
 });

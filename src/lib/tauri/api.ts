@@ -118,6 +118,8 @@ export const bluey = {
     reportTrace: call("ai_report_trace"),
     embed: call("ai_embed"),
     testConnection: call("ai_test_connection"),
+    /** Whether an answer routes right now (router against the real provider state; no network). */
+    readiness: callNoArgs("ai_readiness"),
     listModels: call("ai_list_models"),
     applyProviderPresets: call("ai_apply_provider_presets"),
     transcribeFile: call("ai_transcribe_file"),
@@ -189,6 +191,9 @@ export const bluey = {
     set: call("secrets_set"),
     has: call("secrets_has"),
     delete: call("secrets_delete"),
+    state: call("secrets_state"),
+    health: callNoArgs("secrets_health"),
+    allowAccess: call("secrets_allow_access"),
   },
   shortcuts: {
     list: callNoArgs("shortcuts_list"),
@@ -220,7 +225,6 @@ export const bluey = {
     usageStats: callNoArgs("data_usage_stats"),
     deleteScreenshots: callNoArgs("data_delete_screenshots"),
     clearTranscripts: callNoArgs("data_clear_transcripts"),
-    clearAiCache: callNoArgs("data_clear_ai_cache"),
     resetAll: callNoArgs("data_reset_all"),
     exportSession: call("data_export_session"),
   },

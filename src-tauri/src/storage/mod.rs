@@ -2,7 +2,7 @@
 //! runs every blocking SQLite call on the tokio blocking pool so the async
 //! runtime and the UI never block.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bluey_core::{BlueyError, BlueyResult};
@@ -18,8 +18,12 @@ pub struct AppPaths {
     pub data_dir: PathBuf,
     /// `<data_dir>/bluey.db`
     pub db_path: PathBuf,
-    /// `~/Library/Caches/com.codewithabdul.bluey/frames`
+    /// `~/Library/Caches/com.codewithabdul.bluey/frames` — the helper's temp
+    /// frames, deleted once used and swept by the helper.
     pub frames_dir: PathBuf,
+    /// `<data_dir>/screenshots` — copies the user chose to keep
+    /// (`privacy.storeScreenshots`), referenced by `screen_snapshots.image_path`.
+    pub screenshots_dir: PathBuf,
     /// `~/Library/Logs/Bluey`
     pub logs_dir: PathBuf,
 }
@@ -45,7 +49,8 @@ impl AppPaths {
         } else {
             data_dir.join("logs")
         };
-        for dir in [&data_dir, &frames_dir, &logs_dir] {
+        let screenshots_dir = data_dir.join("screenshots");
+        for dir in [&data_dir, &frames_dir, &screenshots_dir, &logs_dir] {
             std::fs::create_dir_all(dir).map_err(|e| {
                 BlueyError::storage("io", format!("cannot create {}: {e}", dir.display()))
             })?;
@@ -54,6 +59,7 @@ impl AppPaths {
             db_path: data_dir.join("bluey.db"),
             data_dir,
             frames_dir,
+            screenshots_dir,
             logs_dir,
         })
     }
@@ -69,11 +75,32 @@ pub struct Storage {
 impl Storage {
     /// Open the database at the resolved path (migrations run automatically).
     pub fn open(paths: Arc<AppPaths>) -> BlueyResult<Self> {
-        let db = Database::open(&paths.db_path)?;
+        // A failed or bad migration after an update can be rolled back by hand (CRIT-003).
+        let version = env!("CARGO_PKG_VERSION");
+        let db = Database::open_with_backup(&paths.db_path, version)?;
+        // This version migrated fine, so older versions' copies have served
+        // their purpose; keep at most this upgrade's (a deletion drops it too).
+        bluey_storage::db::remove_backups(&paths.db_path, Some(version));
         Ok(Self {
             db: Arc::new(db),
             paths,
         })
+    }
+
+    /// A migrated in-memory database (unit tests of the managers above it).
+    #[cfg(test)]
+    pub fn in_memory() -> Self {
+        let dir = std::env::temp_dir().join("bluey-test-storage");
+        Self {
+            db: Arc::new(Database::in_memory().expect("in-memory database")),
+            paths: Arc::new(AppPaths {
+                db_path: dir.join("bluey.db"),
+                frames_dir: dir.join("frames"),
+                screenshots_dir: dir.join("screenshots"),
+                logs_dir: dir.join("logs"),
+                data_dir: dir,
+            }),
+        }
     }
 
     /// Run a blocking storage closure on the blocking pool.
@@ -94,6 +121,28 @@ impl Storage {
         f(&self.db)
     }
 
+    /// Best-effort deletion of every file directly inside `dir` (the helper's
+    /// temp frames, orphaned screenshot copies). Returns how many went.
+    pub fn clear_dir(dir: &Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .collect();
+        Self::remove_files(&files);
+        files.iter().filter(|path| !path.exists()).count()
+    }
+
+    /// Delete the `<db>.bak-<version>` copies taken before migrations
+    /// (CRIT-003): they hold everything the database held, so Reset must not
+    /// leave them behind. Returns how many were removed.
+    pub fn remove_db_backups(db_path: &Path) -> usize {
+        bluey_storage::db::remove_backups(db_path, None)
+    }
+
     /// Best-effort file deletion for image paths returned by retention calls.
     pub fn remove_files(paths: &[PathBuf]) {
         for path in paths {
@@ -103,5 +152,44 @@ impl Storage {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_dir_deletes_the_files_and_keeps_subdirectories() {
+        let dir = std::env::temp_dir().join(format!("bluey-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        for name in ["f-1.jpg", "f-2.png"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        assert_eq!(Storage::clear_dir(&dir), 2);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(Storage::clear_dir(&dir.join("missing")), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_removes_the_pre_migration_database_backups_only() {
+        let dir = std::env::temp_dir().join(format!("bluey-bak-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "bluey.db",
+            "bluey.db.bak-0.1.1",
+            "bluey.db.bak-0.1.2",
+            "other.db.bak-1",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        assert_eq!(Storage::remove_db_backups(&dir.join("bluey.db")), 2);
+        assert!(dir.join("bluey.db").exists());
+        assert!(dir.join("other.db.bak-1").exists());
+        assert!(!dir.join("bluey.db.bak-0.1.1").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

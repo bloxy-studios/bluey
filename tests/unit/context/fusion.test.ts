@@ -71,7 +71,8 @@ describe("fuseContext", () => {
     ).find((i) => i.source === "ocr");
     const irrelevant = fuseContext(
       makeSnapshot({ ocr: { blocks: [], text: ocrText, level: "fast", languages: ["en"], durationMs: 5 } }),
-      { instruction: "summarize quarterly marketing revenue" },
+      // Points at the screen, so the relevance floor keeps the (unrelated) OCR.
+      { instruction: "summarize the quarterly marketing revenue on this page" },
     ).find((i) => i.source === "ocr");
 
     expect(relevant).toBeDefined();

@@ -128,8 +128,10 @@ describe("capture → context → request → response", () => {
       ocrLevel: "accurate",
     });
 
-    // Coding mode declares no document needs — retrieval must be skipped.
-    expect(fake.callsFor("documents_retrieve")).toHaveLength(0);
+    // Coding mode declares no document needs — only the personal-instructions
+    // pass and the small relevance-floored library pass run.
+    const retrieveQueries = fake.callsFor("documents_retrieve").map((call) => call.query);
+    expect(retrieveQueries.every((q) => q.strategy === "leading" || (q.kinds === undefined && (q.limit ?? 0) <= 3))).toBe(true);
 
     // The AI request carries task, schema, budgeted context and prompt sections.
     const streamCalls = fake.callsFor("ai_stream");
@@ -153,9 +155,9 @@ describe("capture → context → request → response", () => {
 
     const userPart = request.messages[1]?.content[0];
     const userText = userPart && "text" in userPart ? userPart.text : "";
-    expect(userText).toContain("### On screen (OCR)");
+    expect(userText).toContain('<context source="On screen (OCR)"');
     expect(userText).toContain("Two Sum");
-    expect(userText).toContain("### Recent conversation (You / Speaker)");
+    expect(userText).toContain('<context source="Recent conversation (You / Speaker)"');
     expect(userText).toContain("Task: Solve or answer what is on the screen");
     expect(userText).toContain("Shape: code");
 

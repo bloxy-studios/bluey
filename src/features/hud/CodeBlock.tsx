@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils/cn";
 import { copyText } from "@/lib/utils/clipboard";
 import { highlightCode } from "./highlighter";
+import { useDocumentTheme } from "./useDocumentTheme";
 
 const COLLAPSE_LINE_COUNT = 16;
 
@@ -26,16 +27,17 @@ export function CodeBlock({ code, language, className }: CodeBlockProps) {
   const [expanded, setExpanded] = useState(!collapsible);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const theme = useDocumentTheme();
+
   useEffect(() => {
     let alive = true;
-    const theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
     void highlightCode(code, language, theme).then((result) => {
       if (alive) setHtml(result);
     });
     return () => {
       alive = false;
     };
-  }, [code, language]);
+  }, [code, language, theme]);
 
   useEffect(() => () => {
     if (copyTimer.current) clearTimeout(copyTimer.current);
@@ -50,15 +52,15 @@ export function CodeBlock({ code, language, className }: CodeBlockProps) {
   };
 
   return (
-    <div className={cn("code-block group my-3 overflow-hidden rounded-[10px] border border-hud-border bg-[#0d0d0d]", className)}>
-      <div className="flex h-8 items-center justify-between border-b border-hud-border bg-white/4 pl-3 pr-1.5">
+    <div className={cn("code-block group my-3 overflow-hidden rounded-[10px] border border-hud-border bg-code-bg", className)}>
+      <div className="flex h-8 items-center justify-between border-b border-hud-border bg-fg/4 pl-3 pr-1.5">
         <span className="font-mono text-[11px] uppercase tracking-wide text-fg-subtle">{language || "code"}</span>
         <div className="flex items-center gap-0.5">
           {collapsible ? (
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
-              className="flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11.5px] text-fg-muted transition-colors hover:bg-white/8 hover:text-fg"
+              className="flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11.5px] text-fg-muted transition-colors hover:bg-fg/8 hover:text-fg"
             >
               {expanded ? <ChevronsDownUp className="size-3.5" aria-hidden /> : <ChevronsUpDown className="size-3.5" aria-hidden />}
               {expanded ? "Collapse" : "Expand"}
@@ -68,7 +70,7 @@ export function CodeBlock({ code, language, className }: CodeBlockProps) {
             type="button"
             onClick={() => void onCopy()}
             aria-label="Copy code"
-            className="flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11.5px] text-fg-muted transition-colors hover:bg-white/8 hover:text-fg"
+            className="flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11.5px] text-fg-muted transition-colors hover:bg-fg/8 hover:text-fg"
           >
             {copied ? <Check className="size-3.5 text-success" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
             {copied ? "Copied" : "Copy"}
@@ -85,14 +87,14 @@ export function CodeBlock({ code, language, className }: CodeBlockProps) {
           </pre>
         )}
         {!expanded ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[#0d0d0d] to-transparent" />
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-code-bg to-transparent" />
         ) : null}
       </div>
       {!expanded ? (
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="block w-full border-t border-hud-border py-1.5 text-center text-[12px] font-medium text-fg-muted transition-colors hover:bg-white/4 hover:text-fg"
+          className="block w-full border-t border-hud-border py-1.5 text-center text-[12px] font-medium text-fg-muted transition-colors hover:bg-fg/4 hover:text-fg"
         >
           Expand solution ({lineCount} lines)
         </button>

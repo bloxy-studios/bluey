@@ -22,10 +22,14 @@ export interface BudgetPolicy {
 export const DEFAULT_BUDGET_POLICY: BudgetPolicy = {
   priorities: {
     user_instruction: 0,
+    detected_question: 0,
+    conversation: 1,
+    active_app: 1,
     personal_instructions: 1,
     transcript: 1,
     ocr: 1,
     accessibility: 1,
+    window_text: 1,
     screen: 2,
     job_description: 2,
     resume: 2,
@@ -88,13 +92,44 @@ export function compressKeepHead(content: string, maxTokens: number): string {
   return `${kept.join("\n")}\n${TRUNCATION_MARKER}`;
 }
 
+/** Longest prefix (or suffix) of `text` whose estimate stays within `maxTokens`. */
+function sliceWithin(text: string, maxTokens: number, from: "head" | "tail"): string {
+  const take = (n: number) => (from === "head" ? text.slice(0, n) : text.slice(text.length - n));
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (estimateTokens(take(mid)) <= maxTokens) lo = mid;
+    else hi = mid - 1;
+  }
+  return take(lo);
+}
+
+/**
+ * Keep the head and the tail of a text within a token budget, with a marker
+ * in between (used for the question: a long paste usually ends in the ask).
+ */
+export function compressHeadTail(content: string, maxTokens: number, headShare = 0.6): string {
+  if (estimateTokens(content) <= maxTokens) return content;
+  const room = Math.max(0, maxTokens - estimateTokens(TRUNCATION_MARKER) - 2);
+  const head = sliceWithin(content, Math.floor(room * headShare), "head");
+  const tail = sliceWithin(content, room - estimateTokens(head), "tail");
+  return `${head.trimEnd()}\n${TRUNCATION_MARKER}\n${tail.trimStart()}`;
+}
+
 function withContent(item: ContextItem, content: string): ContextItem {
   return { ...item, content, tokens: estimateTokens(content) };
 }
 
+/** The question being answered (typed or heard): never dropped. */
+function isQuestion(item: ContextItem): boolean {
+  return item.source === "user_instruction" || item.source === "detected_question";
+}
+
 /**
- * Fit items into `budgetTokens`. The user instruction is always included
- * (compressed only if it alone exceeds the budget, keeping its head).
+ * Fit items into `budgetTokens`. The question (typed or heard) is always
+ * included (compressed only if it alone exceeds the budget, keeping its head
+ * and tail so a question after a long paste survives).
  */
 export function allocateBudget(
   items: ContextItem[],
@@ -106,9 +141,9 @@ export function allocateBudget(
   const compressed: string[] = [];
   let remaining = Math.max(0, Math.floor(budgetTokens));
 
-  const instructions = items.filter((i) => i.source === "user_instruction");
+  const instructions = items.filter(isQuestion);
   const rest = items
-    .filter((i) => i.source !== "user_instruction")
+    .filter((i) => !isQuestion(i))
     .slice()
     .sort((a, b) => {
       const pa = policy.priorities[a.source];
@@ -122,7 +157,7 @@ export function allocateBudget(
       included.push(item);
       remaining -= item.tokens;
     } else {
-      const squeezed = withContent(item, compressKeepHead(item.content, Math.max(remaining, policy.minCompressedTokens)));
+      const squeezed = withContent(item, compressHeadTail(item.content, Math.max(remaining, policy.minCompressedTokens)));
       included.push(squeezed);
       compressed.push(item.ref ?? item.source);
       remaining = Math.max(0, remaining - squeezed.tokens);

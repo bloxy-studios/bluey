@@ -3,7 +3,9 @@
 //! Used verbatim by the `openai_compatible` provider and (with a different URL
 //! scheme + auth header) by the Azure Foundry v1 provider.
 
-use bluey_core::types::{AiContentPart, AiMessage, AiRole, FinishReason, JsonSchemaSpec};
+use bluey_core::types::{
+    AiContentPart, AiMessage, AiRole, FinishReason, JsonSchemaSpec, LatencyBudget, ReasoningLevel,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -19,8 +21,14 @@ pub struct ChatBodyOptions<'a> {
     /// Sent as `max_completion_tokens`.
     pub max_output_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// `reasoning_effort` for reasoning-model families (see
+    /// [`reasoning_effort_for`]); when set, `temperature` is not sent.
+    pub reasoning_effort: Option<&'a str>,
     /// Structured output via `response_format: { type: "json_schema", ... }`.
     pub output_schema: Option<&'a JsonSchemaSpec>,
+    /// When the endpoint rejected `response_format` (HTTP 400), the schema is
+    /// instructed in a leading system message instead.
+    pub schema_as_prompt_fallback: bool,
 }
 
 /// Chat-completions URL for a generic OpenAI-compatible base URL:
@@ -49,9 +57,71 @@ fn versioned_url(base_url: &str, path: &str) -> String {
     }
 }
 
+/// OpenAI's reasoning families — GPT-5 and later, the o-series — reject
+/// `temperature` (and `top_p`, the penalties) and take `reasoning_effort`
+/// instead. Decided by the model family, whichever endpoint serves it
+/// (Foundry, OpenAI, a gateway's `openai/gpt-5`); `*-chat` variants are chat
+/// models and keep sampling.
+pub fn is_reasoning_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    if name.contains("-chat") {
+        return false;
+    }
+    let gpt_major = name
+        .strip_prefix("gpt-")
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|major| major.parse::<u32>().ok());
+    let o_series = ["o1", "o3", "o4"]
+        .iter()
+        .any(|series| name == *series || name.starts_with(&format!("{series}-")));
+    gpt_major.is_some_and(|major| major >= 5) || o_series
+}
+
+/// `reasoning_effort` for a request to `model` — Bluey's reasoning level and
+/// latency budget through the Codex policy (`low`/`medium`/`high`) — or `None`
+/// when the model is not a reasoning model.
+pub fn reasoning_effort_for(
+    model: &str,
+    level: ReasoningLevel,
+    latency: LatencyBudget,
+) -> Option<String> {
+    is_reasoning_model(model).then(|| crate::codex::reasoning_effort(level, latency, &[], None))
+}
+
+/// Whether an HTTP-400 error body says the endpoint does not take native
+/// structured output (→ resend with the schema in the prompt instead). An
+/// endpoint that takes it but rejects Bluey's schema ("Invalid schema for
+/// response_format …", `invalid_json_schema`) is an error to surface, not a
+/// reason to drop native structured output for that endpoint.
+pub fn is_response_format_rejection(status: u16, body: &str) -> bool {
+    if status != 400 || !(body.contains("response_format") || body.contains("json_schema")) {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    if lower.contains("invalid_json_schema") || lower.contains("invalid schema") {
+        return false;
+    }
+    const UNSUPPORTED: [&str; 5] = [
+        "unsupported",
+        "not supported",
+        "unrecognized",
+        "unknown",
+        "not permitted",
+    ];
+    UNSUPPORTED.iter().any(|phrase| lower.contains(phrase))
+}
+
 /// Build the JSON body for a chat-completions request.
 pub fn build_chat_body(opts: &ChatBodyOptions<'_>) -> Value {
-    let messages: Vec<Value> = opts.messages.iter().map(message_to_json).collect();
+    let mut messages: Vec<Value> = opts.messages.iter().map(message_to_json).collect();
+    let schema_in_prompt = opts
+        .output_schema
+        .filter(|_| opts.schema_as_prompt_fallback);
+    if let Some(spec) = schema_in_prompt {
+        let instruction = crate::anthropic::schema_prompt(spec);
+        messages.insert(0, json!({ "role": "system", "content": instruction }));
+    }
     let mut body = json!({
         "model": opts.model,
         "messages": messages,
@@ -66,10 +136,18 @@ pub fn build_chat_body(opts: &ChatBodyOptions<'_>) -> Value {
     if let Some(max) = opts.max_output_tokens {
         obj.insert("max_completion_tokens".into(), json!(max));
     }
-    if let Some(t) = opts.temperature {
-        obj.insert("temperature".into(), json!(t));
+    match opts.reasoning_effort {
+        // Reasoning models reject sampling knobs (HTTP 400 "Unsupported parameter").
+        Some(effort) => {
+            obj.insert("reasoning_effort".into(), json!(effort));
+        }
+        None => {
+            if let Some(t) = opts.temperature {
+                obj.insert("temperature".into(), json!(t));
+            }
+        }
     }
-    if let Some(spec) = opts.output_schema {
+    if let Some(spec) = opts.output_schema.filter(|_| schema_in_prompt.is_none()) {
         // Strict structured outputs reject a schema whose objects leave a property out of
         // `required` or lack `additionalProperties: false` (HTTP 400) — zod's output does
         // both, so send the strict-mode variant (see `crate::json_schema`).
@@ -289,6 +367,8 @@ mod tests {
             include_usage: true,
             max_output_tokens: Some(256),
             temperature: Some(0.2),
+            reasoning_effort: None,
+            schema_as_prompt_fallback: false,
             output_schema: Some(&spec),
         });
         assert_eq!(body["model"], "gpt-test");
@@ -312,6 +392,94 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_families_get_an_effort_and_never_a_temperature() {
+        for model in [
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "GPT-5",
+            "openai/gpt-5.5",
+            "o3",
+            "o4-mini",
+        ] {
+            assert!(is_reasoning_model(model), "{model}");
+        }
+        for model in [
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-5-chat-latest",
+            "gpt-oss-120b",
+            "llama-3",
+        ] {
+            assert!(!is_reasoning_model(model), "{model}");
+        }
+        let effort =
+            reasoning_effort_for("gpt-6-astra", ReasoningLevel::Deep, LatencyBudget::Balanced);
+        assert_eq!(effort.as_deref(), Some("high"));
+        assert_eq!(
+            reasoning_effort_for("gpt-4.1", ReasoningLevel::Deep, LatencyBudget::Balanced),
+            None
+        );
+
+        let messages = vec![text_message(AiRole::User, "hi")];
+        let body = build_chat_body(&ChatBodyOptions {
+            model: "gpt-5.6-terra",
+            messages: &messages,
+            stream: true,
+            include_usage: false,
+            max_output_tokens: None,
+            temperature: Some(0.6),
+            reasoning_effort: effort.as_deref(),
+            schema_as_prompt_fallback: false,
+            output_schema: None,
+        });
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(body.get("temperature").is_none(), "{body}");
+    }
+
+    #[test]
+    fn the_schema_moves_into_the_prompt_when_response_format_was_rejected() {
+        let spec = JsonSchemaSpec {
+            name: "answer".into(),
+            schema: json!({ "type": "object" }),
+            strict: None,
+        };
+        let messages = vec![text_message(AiRole::User, "hi")];
+        let body = build_chat_body(&ChatBodyOptions {
+            model: "llama-3",
+            messages: &messages,
+            stream: true,
+            include_usage: false,
+            max_output_tokens: None,
+            temperature: None,
+            reasoning_effort: None,
+            output_schema: Some(&spec),
+            schema_as_prompt_fallback: true,
+        });
+        assert!(body.get("response_format").is_none(), "{body}");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("JSON Schema"));
+        assert_eq!(body["messages"][1]["content"], "hi");
+
+        let rejected = r#"{"error":{"message":"Invalid parameter: 'response_format' of type 'json_schema' is not supported with this model."}}"#;
+        assert!(is_response_format_rejection(400, rejected));
+        assert!(!is_response_format_rejection(
+            400,
+            r#"{"error":{"message":"bad temperature"}}"#
+        ));
+        assert!(!is_response_format_rejection(500, rejected));
+        assert!(is_response_format_rejection(
+            400,
+            r#"{"error":{"message":"Unrecognized request argument supplied: response_format"}}"#
+        ));
+        // The endpoint takes structured output; Bluey's schema is what is wrong.
+        let bad_schema = r#"{"error":{"message":"Invalid schema for response_format 'answer': 'additionalProperties' is required to be supplied and to be false.","type":"invalid_request_error","param":"response_format","code":"invalid_json_schema"}}"#;
+        assert!(!is_response_format_rejection(400, bad_schema));
+    }
+
+    #[test]
     fn images_become_data_url_parts() {
         let message = AiMessage {
             role: AiRole::User,
@@ -332,6 +500,8 @@ mod tests {
             include_usage: false,
             max_output_tokens: None,
             temperature: None,
+            reasoning_effort: None,
+            schema_as_prompt_fallback: false,
             output_schema: None,
         });
         let parts = body["messages"][0]["content"].as_array().unwrap();

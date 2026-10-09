@@ -80,9 +80,11 @@ Rust (Tauri v2) ── spawn per job, env-injected keys ──▶ bluey-agent (t
   with JSON bodies, `AIza…`/`sk-ant-…` keys and `key=`/`token=` values stripped.
 - **Citations can't be invented.** Every exa/firecrawl result observed during
   the run is recorded; the final citation list contains only URLs the tools
-  actually returned. Model-chosen citations are kept (first, with their titles
-  and snippets) when they match an observed URL, then the remaining observed
-  sources are appended, all deduped by normalised URL.
+  actually returned. Model-chosen citations are kept (with their titles and
+  snippets) when they match an observed URL, known sources linked from the
+  report body are added, and only when nothing was cited do the pages read in
+  full stand in — uncited search hits are not appended. Report links to URLs
+  no tool returned are de-linked.
 - **The query/goal are public by design** — the system prompt forbids
   requesting, inferring, or including private user data.
 
@@ -167,7 +169,9 @@ Behaviour notes:
 - Failure codes: `cancelled`, `missing_api_key`, `invalid_api_key` (Gemini: key
   rejected, HTTP 400/401/403), `invalid_configuration` (Foundry without an
   endpoint; a lite build asked for Claude without `BLUEY_CLAUDE_CLI`),
-  `max_turns_exceeded`, `rate_limited` (Gemini HTTP 429), `blocked` (Gemini
+  `max_turns_exceeded` / `deadline_exceeded` (out of turns or time with no
+  sources to report — otherwise the job completes with what it gathered),
+  `rate_limited` (Gemini HTTP 429), `blocked` (Gemini
   refused the prompt or answer), `gemini_empty_turn` (Gemini returned a model
   turn without parts — usually mismatched function-call ids/names; the job
   stops instead of resending the empty turn into a 400), `budget_exceeded`,

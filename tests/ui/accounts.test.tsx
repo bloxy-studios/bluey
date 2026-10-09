@@ -40,7 +40,10 @@ describe("Settings → AI → Accounts (MockTransport)", () => {
       expect(within(card(id)).getByText("Not connected")).toBeInTheDocument();
     }
     expect(within(card("chatgpt")).getByText(/Fingerprint codex\/0\.154\.0 · captured 2026-09-11/)).toBeInTheDocument();
-    expect(within(card("claude")).getByRole("button", { name: "Import Claude Code sign-in" })).toBeInTheDocument();
+    const importButton = within(card("claude")).getByRole("button", { name: "Import Claude Code sign-in" });
+    // Bluey never refreshes a rotating import, so the two sides cannot sign each other out.
+    expect(importButton).toHaveAttribute("title", expect.stringContaining("never refreshes"));
+    expect(importButton.getAttribute("title")).not.toMatch(/sign each other out/);
     // The API-key providers are untouched.
     expect(screen.getAllByRole("switch", { name: /^Enable / })).toHaveLength(3);
     expect(screen.getByTestId("accounts-list").compareDocumentPosition(screen.getByText("Providers"))).toBe(
@@ -204,6 +207,23 @@ describe("Settings → AI → Accounts (MockTransport)", () => {
     expect(useSettingsStore.getState().settings!.ai.models.transcription?.providerId).toBe("gemini");
     expect(await bluey.ai.listModels({ providerId: "chatgpt", role: "default" })).toContain("gpt-6-astra");
     expect(await bluey.ai.listModels({ providerId: "chatgpt", role: "embedding" })).toEqual([]);
+  });
+
+  it("labels a rate-limited account as rate limited in the role pickers, not as not connected", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByTestId("accounts-list");
+    await acceptConsents("chatgpt");
+
+    mock.nextAccountOutcome = "rate_limited";
+    await user.click(within(card("chatgpt")).getByRole("button", { name: "Connect ChatGPT" }));
+    await waitFor(() => expect(within(card("chatgpt")).getByText(/5h limit · resets/)).toBeInTheDocument());
+
+    // It is still signed in: "not connected" or "no key" would point at the wrong fix.
+    for (const label of ["Default provider", "Default AI provider"]) {
+      const picker = screen.getByLabelText(label);
+      expect(within(picker).getByRole("option", { name: "ChatGPT (rate limited)" })).toBeInTheDocument();
+    }
   });
 
   it("the switch hides the cards and blocks new sign-ins without a rebuild", async () => {

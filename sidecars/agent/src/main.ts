@@ -11,7 +11,7 @@
 import { createInterface } from "node:readline";
 
 import { startResearchJob, type AgentRunDeps, type ResearchJobHandle } from "./agent";
-import { loadConfig, type BuildVariant } from "./config";
+import { agentInfo, loadConfig, type BuildVariant } from "./config";
 import { createMockExaClient, createMockFirecrawlClient } from "./mock";
 import {
   deepResearchRequestSchema,
@@ -76,7 +76,11 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
       if (job) {
         writer.error(
           id,
-          wireError("job_already_running", "this sidecar already ran a research job (one job per process)", "sidecar"),
+          wireError(
+            "job_already_running",
+            "this sidecar already ran a research job (one job per process)",
+            "sidecar",
+          ),
         );
         return;
       }
@@ -103,7 +107,10 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
         return;
       }
       if (!job || job.jobId !== parsed.data.jobId) {
-        writer.error(id, wireError("unknown_job", `no running job with id "${parsed.data.jobId}"`, "sidecar"));
+        writer.error(
+          id,
+          wireError("unknown_job", `no running job with id "${parsed.data.jobId}"`, "sidecar"),
+        );
         return;
       }
       writer.result(id, { cancelled: true });
@@ -138,6 +145,16 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
           break;
         case "research.cancel":
           handleCancel(id, params);
+          break;
+        case "agent.info":
+          // Credential-free capability probe the host caches (lite builds cannot run Claude).
+          writer.result(
+            id,
+            agentInfo(config, {
+              variant: baseDeps.buildVariant,
+              embeddedClaudePath: baseDeps.embeddedClaudePath,
+            }),
+          );
           break;
         case "document.response":
           handleDocumentResponse(id, params);
@@ -174,18 +191,47 @@ export function startSidecar(options: StartSidecarOptions = {}): Promise<number>
   });
 }
 
-/** Flush stdout before exiting so the last protocol frames are never lost. */
-async function flushStdout(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    if (process.stdout.write("")) resolve();
-    else process.stdout.once("drain", () => resolve());
-  });
+/** Upper bound on waiting for the last frames to drain before exiting. */
+const FLUSH_TIMEOUT_MS = 10_000;
+
+/**
+ * A line sink that remembers when its latest frame has left the process.
+ * `write()` returning true only means the chunk was queued — on a pipe the
+ * final `research.completed` frame can still be in flight, and exiting then
+ * cuts it off (AI-014). Only a frame's own write callback proves it left: Bun
+ * calls an empty write's callback at once, before earlier chunks reach the pipe.
+ */
+export class FlushingSink implements LineSink {
+  private latest: Promise<void> = Promise.resolve();
+
+  constructor(private readonly stream: Pick<NodeJS.WritableStream, "write">) {}
+
+  write(chunk: string): boolean {
+    let queued = false;
+    this.latest = new Promise<void>((resolve) => {
+      queued = this.stream.write(chunk, () => resolve());
+    });
+    return queued;
+  }
+
+  /** Resolves once the latest frame was handed to the OS (or after a timeout). */
+  flushed(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
+      (timer as { unref?: () => void }).unref?.();
+      void this.latest.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
 }
 
 /** Process entrypoint used by main.ts (dev) and the compiled per-target entries. */
 export async function runSidecarProcess(options: StartSidecarOptions = {}): Promise<never> {
-  const code = await startSidecar(options);
-  await flushStdout();
+  const output = new FlushingSink(process.stdout);
+  const code = await startSidecar({ output, ...options });
+  await output.flushed();
   process.exit(code);
 }
 

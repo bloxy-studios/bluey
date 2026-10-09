@@ -1,0 +1,7 @@
+# `tauri dev` runs the app with `cargo run`, which honours this runner; cargo
+# test harnesses pass through it too. The script only acts on the `bluey`
+# binary and only with BLUEY_DEV_SIGNING_IDENTITY set (docs/DEVELOPMENT.md,
+# ADR 0011); otherwise it execs the program unchanged. The path is relative to
+# src-tauri/ (the parent of this .cargo directory).
+[target.'cfg(target_os = "macos")']
+runner = "../scripts/dev-sign-runner.sh"

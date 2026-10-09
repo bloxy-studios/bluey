@@ -35,7 +35,12 @@ impl SettingsManager {
         let mut settings = storage.run_sync(SettingsRepository::get)?;
         let mut providers = storage.run_sync(ModelConfigRepository::list)?;
         for provider in &mut providers {
-            provider.has_api_key = secrets.has_sync(&provider_key(&provider.id));
+            // Boot, before the runtime serves requests: memory (the presence
+            // enumeration), else an attribute-only lookup that never prompts.
+            let key = provider_key(&provider.id);
+            provider.has_api_key = secrets
+                .known_presence(&key)
+                .unwrap_or_else(|| secrets.has_sync(&key).unwrap_or(false));
         }
         settings.ai.providers = providers;
         settings.shortcuts = storage.run_sync(ShortcutRepository::list)?;
@@ -145,11 +150,29 @@ impl SettingsManager {
             .await
     }
 
+    /// `has_api_key` of `provider` as the secrets cache knows it — seeded at
+    /// boot by one attribute-only enumeration and kept current by every set /
+    /// delete — so no settings path touches the Keychain, blocks a runtime
+    /// worker or holds the settings lock across a Keychain call. A key whose
+    /// state is unknown (after a failed write) keeps the flag it had.
+    fn key_flag(&self, provider_id: &str, current: &Settings) -> bool {
+        self.secrets
+            .known_presence(&provider_key(provider_id))
+            .unwrap_or_else(|| {
+                current
+                    .ai
+                    .providers
+                    .iter()
+                    .any(|p| p.id == provider_id && p.has_api_key)
+            })
+    }
+
     /// Swap the in-memory settings and publish `settings.changed`. `has_api_key`
-    /// flags are refreshed from the keychain first.
+    /// flags come from the secrets cache ([`Self::key_flag`]).
     fn replace(&self, mut settings: Settings) {
+        let current = self.get();
         for provider in &mut settings.ai.providers {
-            provider.has_api_key = self.secrets.has_sync(&provider_key(&provider.id));
+            provider.has_api_key = self.key_flag(&provider.id, &current);
         }
         *self.current.write() = settings.clone();
         self.bus.publish(BlueyEvent::SettingsChanged(settings));
@@ -161,8 +184,9 @@ impl SettingsManager {
         let mut changed = false;
         let snapshot = {
             let mut settings = self.current.write();
+            let current = settings.clone();
             for provider in &mut settings.ai.providers {
-                let has = self.secrets.has_sync(&provider_key(&provider.id));
+                let has = self.key_flag(&provider.id, &current);
                 if has != provider.has_api_key {
                     provider.has_api_key = has;
                     changed = true;
@@ -204,5 +228,108 @@ fn validate(settings: &Settings) -> BlueyResult<()> {
             "ai.embeddingDimensions must be 768, 1536 or 3072",
         ));
     }
+    if !OBSERVATION_INTERVAL_MS.contains(&settings.screen.observation_interval_ms) {
+        return Err(bluey_core::BlueyError::invalid_params(
+            "screen.observationIntervalMs must be between 1000 and 60000",
+        ));
+    }
     Ok(())
+}
+
+/// Screen sampling interval bounds (UX-031).
+const OBSERVATION_INTERVAL_MS: std::ops::RangeInclusive<u32> = 1_000..=60_000;
+
+#[cfg(test)]
+mod tests {
+    use bluey_core::types::{AiProviderConfig, AiProviderKind};
+
+    use super::*;
+    use crate::secrets::backend::fake::{CountingFake, Op};
+
+    fn provider(id: &str) -> AiProviderConfig {
+        AiProviderConfig {
+            id: id.into(),
+            kind: AiProviderKind::GoogleGemini,
+            name: id.into(),
+            base_url: "https://example.invalid".into(),
+            api_version: None,
+            deployments: None,
+            enabled: true,
+            has_api_key: false,
+            auth_method: Default::default(),
+        }
+    }
+
+    fn manager(fake: &Arc<CountingFake>) -> (Arc<SecretsStore>, SettingsManager) {
+        let storage = Arc::new(Storage::in_memory());
+        storage
+            .run_sync(|db| {
+                ModelConfigRepository::upsert(db, &provider("gemini"))?;
+                ModelConfigRepository::upsert(db, &provider("openai"))
+            })
+            .unwrap();
+        let secrets = Arc::new(SecretsStore::with_backend(fake.clone()));
+        secrets.preload_presence().unwrap();
+        let bus = Arc::new(EventBus::new());
+        let settings = SettingsManager::load(storage, secrets.clone(), bus).unwrap();
+        (secrets, settings)
+    }
+
+    fn flag(settings: &SettingsManager, id: &str) -> bool {
+        let current = settings.get();
+        current
+            .ai
+            .providers
+            .iter()
+            .any(|p| p.id == id && p.has_api_key)
+    }
+
+    #[tokio::test]
+    async fn loading_and_saving_settings_never_decrypts_a_key() {
+        let fake = Arc::new(CountingFake::with_items(&[(
+            "provider:gemini:api_key",
+            "g",
+        )]));
+        let (_, settings) = manager(&fake);
+        assert!(flag(&settings, "gemini"));
+        assert!(!flag(&settings, "openai"));
+        settings
+            .update(serde_json::json!({ "general": { "launchAtLogin": true } }))
+            .await
+            .unwrap();
+        assert!(flag(&settings, "gemini"));
+        assert_eq!(fake.reads(), 0);
+        assert_eq!(fake.count(Op::Exists), 0, "presence comes from memory");
+        assert_eq!(fake.count(Op::List), 1, "one enumeration at boot");
+    }
+
+    #[tokio::test]
+    async fn key_flags_follow_set_and_delete_from_memory() {
+        let fake = Arc::new(CountingFake::default());
+        let (secrets, settings) = manager(&fake);
+        secrets
+            .set("provider:openai:api_key", "o".into())
+            .await
+            .unwrap();
+        settings.refresh_provider_keys();
+        assert!(flag(&settings, "openai"));
+        secrets.delete("provider:openai:api_key").await.unwrap();
+        settings.refresh_provider_keys();
+        assert!(!flag(&settings, "openai"));
+        assert_eq!(fake.reads(), 0);
+    }
+
+    #[test]
+    fn the_observation_interval_is_bounded() {
+        let with = |ms: u32| {
+            let mut s = Settings::default();
+            s.screen.observation_interval_ms = ms;
+            validate(&s)
+        };
+        assert!(with(Settings::default().screen.observation_interval_ms).is_ok());
+        assert!(with(1_000).is_ok());
+        assert!(with(60_000).is_ok());
+        assert!(with(0).is_err(), "UX-031");
+        assert!(with(1_000_000_000).is_err(), "UX-031");
+    }
 }

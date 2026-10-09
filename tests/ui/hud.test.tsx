@@ -10,6 +10,7 @@ import type { AppStatus } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
 import { setEngine } from "@/stores/engine";
 import { useChatStore } from "@/stores/chatStore";
+import { useHudUiStore } from "@/stores/hudUiStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { FakeEngine, ProactiveFakeEngine, makeResponse, makeSegment, setupMockApp } from "./helpers";
@@ -104,6 +105,20 @@ describe("HudPanel", () => {
     expect(screen.getByText("Assist")).toBeInTheDocument();
   });
 
+  it("⌘↵ with screen context toggled off asks without the screen", async () => {
+    const user = userEvent.setup();
+    renderHud();
+    try {
+      await user.click(screen.getByRole("button", { name: "Screen context", pressed: true }));
+      await user.keyboard("{Meta>}{Enter}{/Meta}");
+      expect(engine.asks).toHaveLength(1);
+      expect(engine.asks[0]?.trigger).toBe("shortcut_capture");
+      expect(engine.asks[0]?.screenAllowed).toBe(false);
+    } finally {
+      useHudUiStore.getState().setScreenEnabled(true);
+    }
+  });
+
   it("shows a prepared-response hint and takes it with ⌘⇧↵", async () => {
     const mock = await setupMockApp();
     setEngine(engine);
@@ -160,7 +175,8 @@ describe("HudPanel", () => {
     await waitFor(() => expect(screen.getByText("Interviewer asked")).toBeInTheDocument());
     expect(screen.getByText("“Why do you want to work here?”")).toBeInTheDocument();
     expect(screen.getByText("Suggested")).toBeInTheDocument();
-    expect(screen.getByText("Prepared for")).toBeInTheDocument(); // first streamed draft
+    // The first streamed draft (drafts land once per frame, PERF-003).
+    expect(await screen.findByText("Prepared for")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Ask follow-up")).toBeInTheDocument(); // expanded layout
     expect(screen.queryByText(/Bluey has a suggestion/)).not.toBeInTheDocument();
     expect(screen.getByText("Thinking")).toBeInTheDocument(); // the pill reports the work, not a hint

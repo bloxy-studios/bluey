@@ -10,10 +10,13 @@
 import type {
   AIChunk,
   AIProviderConfig,
+  AiReadiness,
   AIRequest,
   AppStatus,
   AudioStatus,
   AuthStatus,
+  CredentialCategory,
+  CredentialHealth,
   AuthUser,
   BlueyDocument,
   BlueyError,
@@ -24,6 +27,8 @@ import type {
   DetectedEvent,
   DevSimulation,
   LatencyMetrics,
+  ModelRole,
+  PermissionKind,
   PermissionState,
   ScreenFrame,
   Session,
@@ -41,10 +46,11 @@ import type {
   ConnectFlowKind,
   ProviderAccount,
   ProviderModelCatalog,
+  SecretState,
 } from "../../types";
 import { applyPresets, MODEL_ROLES, presetForKind } from "../../ai/provider-presets";
 import { createId } from "../../utils/id";
-import type { CommandArgs, CommandName, CommandResult } from "../commands";
+import { SECRET_KEYS, type CommandArgs, type CommandName, type CommandResult } from "../commands";
 import type { EventName, EventPayload } from "../events";
 import type { StreamChannel, Transport, Unlisten } from "../transport";
 import {
@@ -63,8 +69,20 @@ import {
   createMockAccounts,
   FIXTURE_ACCOUNT_IDENTITIES,
 } from "./fixtures";
+import { detectConflict, normalizeAccelerator } from "./accelerators";
+import { applyModePatch, createCustomMode, invalidParams } from "./modes";
 
 const now = () => new Date().toISOString();
+
+/** `capture::protection_status` as it reports on macOS 15+ (SEC-004). */
+const mockProtection = (enabled: boolean): CaptureProtection => ({
+  supported: true,
+  enabled,
+  partial: enabled,
+  note: enabled
+    ? "Bluey is hidden from apps that honour macOS window protection (legacy capture). Modern ScreenCaptureKit screen sharing and recording on macOS 15 and later may still show Bluey, and its menus are never hidden."
+    : "Bluey windows are visible in screen shares and recordings.",
+});
 
 /** The identity the simulated browser sign-in returns. */
 const MOCK_AUTH_USER: AuthUser = {
@@ -121,16 +139,126 @@ type Handlers = {
   [K in CommandName]: (args: CommandArgs<K>) => CommandResult<K> | Promise<CommandResult<K>>;
 };
 
+/** An `ai_stream` in flight (Rust `ActiveRequest`). */
+interface MockActiveAi {
+  sessionId?: string;
+  scope?: string;
+  generation: number;
+  drivesState: boolean;
+}
+
+/** Rust `is_primary`: the tasks that answer the user. */
+const PRIMARY_AI_TASKS: ReadonlySet<AIRequest["task"]> = new Set([
+  "answer",
+  "coding",
+  "system_design",
+  "deep_reasoning",
+]);
+
+/** Rust `drives_state`: only answers the user asked for move the app state (Thinking, Error). */
+function drivesState(request: AIRequest): boolean {
+  return PRIMARY_AI_TASKS.has(request.task) && request.background !== true;
+}
+
+/** Rust `ActiveRequest::superseded_by`: a newer generation of the same session and scope. */
+function supersededBy(entry: MockActiveAi, request: AIRequest): boolean {
+  return (
+    request.sessionId !== undefined &&
+    entry.sessionId === request.sessionId &&
+    entry.scope === request.scope &&
+    entry.generation < request.generation
+  );
+}
+
+/** Rust `ensure_cloud_ai`: Privacy → Cloud AI off refuses every model call (SEC-003). */
+function cloudAiDisabled(): BlueyError {
+  return blueyError({
+    kind: "configuration",
+    code: "privacy.cloud_ai_disabled",
+    message: "Cloud AI is turned off in Privacy settings, so Bluey cannot ask a model right now.",
+    recoverable: true,
+    recovery: { type: "open_settings", tab: "privacy" },
+  });
+}
+
+/** Rust `router::select`'s error when no role in the chain routes (`Blocked::into_error`). */
+function unroutable(blocked: AIProviderConfig | { id: string } | null, role: ModelRole): BlueyError {
+  const recovery = { type: "open_settings", tab: "ai" } as const;
+  if (!blocked) {
+    return blueyError({
+      kind: "configuration",
+      code: "config.no_model",
+      message: `no usable model for role ${role}; add a provider and assign models in Settings → AI`,
+      recoverable: true,
+      recovery,
+    });
+  }
+  const provider = "kind" in blocked ? blocked : null;
+  const cause = !provider
+    ? "not_configured"
+    : provider.authMethod === "oauth_subscription"
+      ? "account_unavailable"
+      : !provider.enabled
+        ? "disabled"
+        : "missing_key";
+  const name = provider?.name ?? blocked.id;
+  return blueyError({
+    kind: "configuration",
+    code: "config.provider_unusable",
+    message: `role ${role} is assigned to ${name}, which cannot serve requests (${cause})`,
+    details: { providerId: blocked.id, providerName: name, cause, role },
+    recoverable: true,
+    recovery,
+  });
+}
+
 import type { BenchOptions, BenchReport, LatencyTrace } from "@/lib/types/latency";
 import type { UpdateStatus } from "@/lib/types/updates";
 
 /** What the mock's in-app updater believes it runs; the update it "finds" is one minor ahead. */
 const MOCK_APP_VERSION = "0.1.0-dev";
 
+/**
+ * Rust `validate_webview_key`: the WebView manages API keys only — sign-in
+ * and account tokens are rejected before the store is touched.
+ */
+function assertWebviewSecretKey(key: string): void {
+  const apiKeys: string[] = [SECRET_KEYS.exaApiKey, SECRET_KEYS.firecrawlApiKey, SECRET_KEYS.anthropicAgentApiKey];
+  if (apiKeys.includes(key) || /^provider:.+:api_key$/.test(key)) return;
+  throw blueyError({
+    kind: "internal",
+    code: "internal.invalid_params",
+    message: "this secret is not managed from the settings UI",
+  });
+}
+
+/**
+ * Rust `secrets::health::may_allow_access`: *Allow access* also takes the
+ * Rust-only sign-in and account token keys the Saved credentials list shows.
+ */
+function assertAllowAccessKey(key: string): void {
+  if (key === "auth:clerk:oauth_tokens" || /^account:.+:oauth_tokens$/.test(key)) return;
+  assertWebviewSecretKey(key);
+}
+
+/** Rust `secrets::key_category`, for the keys the mock can hold. */
+function secretCategory(key: string): CredentialCategory {
+  if (key.startsWith("provider:")) return "provider_key";
+  if (key.startsWith("research:")) return "research_key";
+  return "agent_key";
+}
+
 /** The mock's monotonic clock (ms since the transport module loaded) — stands in for Rust's. */
 const MONO_ORIGIN = Date.now();
 function monoMs(): number {
   return Date.now() - MONO_ORIGIN;
+}
+
+/** Whether `query` and `text` share a word of three letters or more (a keyword match). */
+function sharesWord(query: string, text: string): boolean {
+  const words = (value: string) => value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2);
+  const inText = new Set(words(text));
+  return words(query).some((word) => inText.has(word));
 }
 
 /** A deterministic fast-path trace for one mock answer (numbers from the docs' baseline sketch). */
@@ -190,7 +318,13 @@ function mockBenchReport(options: BenchOptions): BenchReport {
     discarded: 3,
     failures: 0,
     fixture: Boolean(options.fixture),
-    rows: rows.map(([stage, label, p50, p95]) => ({ stage, label, samples: counted, p50Ms: p50, p95Ms: p95 })),
+    rows: rows.map(([stage, label, p50, p95]) => ({
+      stage,
+      label,
+      samples: counted,
+      p50Ms: p50,
+      p95Ms: p95,
+    })),
     imageBytesP50: 148_000,
     promptTokensP50: 2130,
     localTotalP50Ms: 642,
@@ -199,6 +333,9 @@ function mockBenchReport(options: BenchOptions): BenchReport {
     ranAt: new Date().toISOString(),
   };
 }
+
+/** `sessions_search` page size when the query sets no `limit` (Rust: `DEFAULT_LIST_LIMIT`). */
+const SESSION_PAGE_DEFAULT = 50;
 
 export class MockTransport implements Transport {
   readonly kind = "mock" as const;
@@ -233,6 +370,8 @@ export class MockTransport implements Transport {
   private readonly secrets = new Map<string, string>();
   private frames = new Map<string, string>();
   private cancelled = new Set<string>();
+  /** Streams in flight, mirroring `AiManager`'s supersede and app-state bookkeeping. */
+  private activeAi = new Map<string, MockActiveAi>();
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private nextAiFailure: string | null = null;
   /** Simulate a configured Clerk OAuth app (browser sign-in); off by default so tests run as the dev user. */
@@ -267,13 +406,11 @@ export class MockTransport implements Transport {
     notifications: "not_determined",
     speechRecognition: "granted",
     checkedAt: now(),
+    lostAfterUpdate: [],
   };
 
-  private protection: CaptureProtection = {
-    supported: true,
-    enabled: true,
-    note: "Bluey excludes its windows from screen recordings and screenshots on macOS 12.3+. Hardware capture cards and cameras pointed at the display can still see it.",
-  };
+  // Like Rust (capture/mod.rs): protection starts from the saved display mode.
+  private protection: CaptureProtection = mockProtection(this.settings.privacy.displayMode === "privacy");
 
   private status: AppStatus = {
     state: "ready",
@@ -350,6 +487,13 @@ export class MockTransport implements Transport {
     return new MockStreamChannel<T>();
   }
 
+  /** Tests: this launch follows an update that cost these grants (MAC-001). */
+  simulateLostAfterUpdate(kinds: PermissionKind[]): void {
+    const denied = Object.fromEntries(kinds.map((kind) => [kind, "denied"]));
+    this.permissions = { ...this.permissions, ...denied, lostAfterUpdate: [...kinds], checkedAt: now() };
+    this.emit("permissions.changed", this.permissions);
+  }
+
   currentWindowLabel(): string {
     if (typeof window !== "undefined") {
       const label = new URLSearchParams(window.location.search).get("window");
@@ -397,7 +541,8 @@ export class MockTransport implements Transport {
   }
 
   private async mockUpdateCheck(): Promise<UpdateStatus> {
-    if (this.updateState.phase === "checking" || this.updateState.phase === "downloading") return this.updateStatus();
+    if (this.updateState.phase === "checking" || this.updateState.phase === "downloading")
+      return this.updateStatus();
     this.setUpdateState({ phase: "checking", error: undefined, progress: undefined });
     await this.pause(300);
     const channel = this.settings.updates.channel;
@@ -421,7 +566,10 @@ export class MockTransport implements Transport {
     }
     const total = 38_000_000;
     for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
-      this.setUpdateState({ phase: "downloading", progress: { downloaded: Math.round(total * fraction), total } });
+      this.setUpdateState({
+        phase: "downloading",
+        progress: { downloaded: Math.round(total * fraction), total },
+      });
       await this.pause(120);
     }
     return this.setUpdateState({ phase: "ready", progress: undefined });
@@ -436,7 +584,12 @@ export class MockTransport implements Transport {
         message: "no installed update is waiting for a relaunch",
       });
     }
-    this.setUpdateState({ phase: "idle", currentVersion: installed, available: undefined, progress: undefined });
+    this.setUpdateState({
+      phase: "idle",
+      currentVersion: installed,
+      available: undefined,
+      progress: undefined,
+    });
   }
 
   private authStatus(): AuthStatus {
@@ -453,7 +606,11 @@ export class MockTransport implements Transport {
   private account(accountId: string): ProviderAccount {
     const account = this.accounts.find((a) => a.accountId === accountId);
     if (!account) {
-      throw blueyError({ kind: "authentication", code: "account.not_found", message: `no account \`${accountId}\`` });
+      throw blueyError({
+        kind: "authentication",
+        code: "account.not_found",
+        message: `no account \`${accountId}\``,
+      });
     }
     return account;
   }
@@ -539,7 +696,11 @@ export class MockTransport implements Transport {
         return;
       case "rate_limited":
         this.setAccount(accountId, {
-          status: { state: "rate_limited", until: new Date(Date.now() + 2 * 3_600_000).toISOString(), window: "5h" },
+          status: {
+            state: "rate_limited",
+            until: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+            window: "5h",
+          },
           identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
           connectedAt: at,
         });
@@ -555,7 +716,10 @@ export class MockTransport implements Transport {
         });
         return;
       case "needs_reauth":
-        this.setAccount(accountId, { status: { state: "needs_reauth" }, identity: FIXTURE_ACCOUNT_IDENTITIES[accountId] });
+        this.setAccount(accountId, {
+          status: { state: "needs_reauth" },
+          identity: FIXTURE_ACCOUNT_IDENTITIES[accountId],
+        });
         return;
       case "hang":
         return;
@@ -599,6 +763,13 @@ export class MockTransport implements Transport {
     return this.status;
   }
 
+  /** Rust's settings side effect: the display mode drives content protection (settings/side_effects.rs). */
+  private applyDisplayMode(): void {
+    const enabled = this.settings.privacy.displayMode === "privacy";
+    // Rust recomputes the whole status (note, partial) for the new state.
+    if (this.protection.enabled !== enabled) this.protection = mockProtection(enabled);
+  }
+
   private emitSettings(): Settings {
     this.emit("settings.changed", this.settings);
     return this.settings;
@@ -606,6 +777,14 @@ export class MockTransport implements Transport {
 
   private log(level: string, target: string, message: string): void {
     this.emit("dev.log", { level, target, message, at: now() });
+  }
+
+  /** `ModeManager::set_active`: switch, update the status, emit `mode.changed`. */
+  private activateMode(id: string): AppStatus {
+    const mode = this.mode(id);
+    const status = this.setAppState({ modeId: mode.id });
+    this.emit("mode.changed", { mode, sessionId: this.status.sessionId });
+    return status;
   }
 
   private mode(id: string): BlueyMode {
@@ -645,6 +824,71 @@ export class MockTransport implements Transport {
     }
     if (provider.kind === "mock") return "mock-default";
     return presetForKind(provider.kind)?.models.default ?? null;
+  }
+
+  /**
+   * Mirror of Rust `readiness_of`: an Answer request (fast latency → role fast, falling back to
+   * default) and one with images, through the router's chain, behind the Cloud AI switch. The
+   * router's API-key stand-in for a stopped account is not mirrored, so the mock is never more
+   * ready than Rust.
+   */
+  private readiness(): AiReadiness {
+    if (!this.settings.privacy.cloudAiEnabled) {
+      return { ok: false, vision: false, error: cloudAiDisabled() };
+    }
+    type Routed = { provider: AIProviderConfig; model: string } | { error: BlueyError };
+    const route = (role: ModelRole): Routed => {
+      let blocked: AIProviderConfig | { id: string } | null = null;
+      for (const candidate of [role, "default"] as const) {
+        const assignment = this.settings.ai.models[candidate];
+        if (!assignment) continue;
+        const provider = this.settings.ai.providers.find((p) => p.id === assignment.providerId);
+        const usable = provider?.enabled && (provider.hasApiKey || provider.kind === "mock");
+        if (provider && usable) return { provider, model: assignment.model };
+        blocked ??= provider ?? { id: assignment.providerId };
+      }
+      return { error: unroutable(blocked, role) };
+    };
+    const vision = "provider" in route("vision");
+    const answer = route("fast");
+    if ("error" in answer) return { ok: false, vision, error: answer.error };
+    return { ok: true, providerId: answer.provider.id, model: answer.model, vision };
+  }
+
+  /** Rust `refresh_provider_keys`: a provider key's save/delete flips `hasApiKey`. */
+  private setProviderKeyFlag(key: string, hasApiKey: boolean): void {
+    const match = /^provider:(.+):api_key$/.exec(key);
+    if (!match) return;
+    this.settings = {
+      ...this.settings,
+      ai: {
+        ...this.settings.ai,
+        providers: this.settings.ai.providers.map((p) => (p.id === match[1] ? { ...p, hasApiKey } : p)),
+      },
+    };
+    this.emitSettings();
+  }
+
+  /** Rust `side_effects::apply`: a removed provider takes its API key with it. */
+  private dropRemovedProviderKeys(before: Settings): void {
+    for (const provider of before.ai.providers) {
+      if (!this.settings.ai.providers.some((p) => p.id === provider.id)) {
+        this.secrets.delete(`provider:${provider.id}:api_key`);
+      }
+    }
+  }
+
+  private secretLabel(key: string): string {
+    const provider = /^provider:(.+):api_key$/.exec(key)?.[1];
+    if (provider) {
+      return this.settings.ai.providers.find((p) => p.id === provider)?.name ?? `${provider} (removed provider)`;
+    }
+    const labels: Record<string, string> = {
+      [SECRET_KEYS.exaApiKey]: "Exa",
+      [SECRET_KEYS.firecrawlApiKey]: "Firecrawl",
+      [SECRET_KEYS.anthropicAgentApiKey]: "Anthropic (agent)",
+    };
+    return labels[key] ?? key;
   }
 
   /**
@@ -706,7 +950,18 @@ export class MockTransport implements Transport {
       },
       timings: { capture: 84, ocr: 128, accessibility: 22, assembly: 41 },
     };
-    if (opts.includeScreen) {
+    // Like Rust: a failed capture keeps the rest of the snapshot and says why.
+    const screenDenied = opts.includeScreen && this.permissions.screenRecording === "denied";
+    if (screenDenied) {
+      snapshot.warnings = [
+        {
+          kind: "screen_unavailable",
+          code: "permission.screen_recording",
+          message: "Screen Recording permission is not granted.",
+          recovery: { type: "open_system_settings", pane: "screenRecording" },
+        },
+      ];
+    } else if (opts.includeScreen) {
       snapshot.screen = {
         image: opts.inlineImage ? FIXTURE_PNG_BASE64 : undefined,
         mimeType: "image/png",
@@ -716,7 +971,7 @@ export class MockTransport implements Transport {
         frameId: createId("frame"),
       };
     }
-    if (opts.includeOcr) {
+    if (opts.includeOcr && !screenDenied) {
       snapshot.ocr = {
         blocks: [
           {
@@ -759,6 +1014,56 @@ export class MockTransport implements Transport {
       sessionId: request.sessionId,
     });
 
+    // Rust `ensure_cloud_ai`: Privacy → Cloud AI off refuses before any provider call.
+    if (!this.settings.privacy.cloudAiEnabled) {
+      const error = cloudAiDisabled();
+      this.failAi(request, error);
+      throw error;
+    }
+    this.startAi(request);
+    try {
+      await this.runAiStream(request, channel, startedAt);
+    } finally {
+      this.activeAi.delete(request.requestId);
+    }
+  }
+
+  /** Rust `AiManager::start`: supersede older generations of the same scope, register, Thinking. */
+  private startAi(request: AIRequest): void {
+    for (const [id, entry] of this.activeAi) {
+      if (supersededBy(entry, request)) this.cancelled.add(id);
+    }
+    const drives = drivesState(request);
+    this.activeAi.set(request.requestId, {
+      sessionId: request.sessionId,
+      scope: request.scope,
+      generation: request.generation,
+      drivesState: drives,
+    });
+    // ThinkingStarted also leaves Error, clearing it (the machine is recoverable).
+    if (drives) this.setAppState({ state: "thinking", error: undefined, resumeState: undefined });
+  }
+
+  /** Rust `publish_failed`: `ai.failed` always; the Error state only for the user's own answers. */
+  private failAi(request: AIRequest, error: BlueyError): void {
+    this.emit("ai.failed", { requestId: request.requestId, error });
+    if (!drivesState(request)) return;
+    const idle = this.status.audioActive ? "listening" : "ready";
+    this.setAppState({ state: "error", error, resumeState: idle });
+  }
+
+  /** Rust `leave_thinking_after_cancel`: back to idle unless another answer still runs. */
+  private leaveThinkingAfterCancel(requestId: string): void {
+    const othersRunning = [...this.activeAi].some(([id, entry]) => id !== requestId && entry.drivesState);
+    if (othersRunning || this.status.state !== "thinking") return;
+    this.setAppState({ state: this.status.audioActive ? "listening" : "ready" });
+  }
+
+  private async runAiStream(
+    request: AIRequest,
+    channel: MockStreamChannel<AIChunk>,
+    startedAt: number,
+  ): Promise<void> {
     if (this.nextAiFailure) {
       const code = this.nextAiFailure;
       this.nextAiFailure = null;
@@ -770,7 +1075,7 @@ export class MockTransport implements Transport {
         recovery: { type: "retry" },
       });
       channel.push({ type: "failed", requestId: request.requestId, error });
-      this.emit("ai.failed", { requestId: request.requestId, error });
+      this.failAi(request, error);
       return;
     }
 
@@ -782,7 +1087,6 @@ export class MockTransport implements Transport {
       reason: "mock router",
     };
 
-    this.setAppState({ state: "thinking" });
     await this.delay(this.streamDelayMs * 6);
     channel.push({ type: "started", requestId: request.requestId, selection });
     this.emit("ai.started", {
@@ -807,7 +1111,7 @@ export class MockTransport implements Transport {
           timeToFirstTokenMs: firstToken,
         });
         this.emit("ai.cancelled", { requestId: request.requestId });
-        this.setAppState({ state: this.status.audioActive ? "listening" : "ready" });
+        if (drivesState(request)) this.leaveThinkingAfterCancel(request.requestId);
         return;
       }
       if (firstToken === undefined) firstToken = Date.now() - startedAt;
@@ -840,7 +1144,7 @@ export class MockTransport implements Transport {
       updatedAt: now(),
     };
     this.emit("dev.metrics", this.metrics);
-    this.setAppState({ state: "response_ready" });
+    if (drivesState(request)) this.setAppState({ state: "response_ready" });
   }
 
   private simulate(simulation: DevSimulation): void {
@@ -1078,7 +1382,9 @@ export class MockTransport implements Transport {
       this.nextAccountOutcome = "success";
       const existing = this.accountTimers.get(account.accountId);
       if (existing) clearTimeout(existing);
-      const connecting = this.setAccount(account.accountId, { status: this.connectFlow(flow, account.providerId) });
+      const connecting = this.setAccount(account.accountId, {
+        status: this.connectFlow(flow, account.providerId),
+      });
       if (flow === "manual_code") {
         // Completes when the user pastes the code (`accounts_submit_code`).
         this.pendingManualCodes.add(account.accountId);
@@ -1087,7 +1393,10 @@ export class MockTransport implements Transport {
       if (outcome !== "hang") {
         this.accountTimers.set(
           account.accountId,
-          setTimeout(() => this.finishAccountConnect(account.accountId, outcome), Math.max(this.streamDelayMs * 4, 10)),
+          setTimeout(
+            () => this.finishAccountConnect(account.accountId, outcome),
+            Math.max(this.streamDelayMs * 4, 10),
+          ),
         );
       }
       return connecting;
@@ -1208,7 +1517,12 @@ export class MockTransport implements Transport {
     // Permissions
     permissions_get: () => this.permissions,
     permissions_request: (args) => {
-      this.permissions = { ...this.permissions, [args.kind]: "granted", checkedAt: now() };
+      this.permissions = {
+        ...this.permissions,
+        [args.kind]: "granted",
+        checkedAt: now(),
+        lostAfterUpdate: this.permissions.lostAfterUpdate.filter((kind) => kind !== args.kind),
+      };
       this.emit("permissions.changed", this.permissions);
       return this.permissions;
     },
@@ -1255,7 +1569,7 @@ export class MockTransport implements Transport {
     },
     capture_get_protection: () => this.protection,
     capture_set_protection: (args) => {
-      this.protection = { ...this.protection, enabled: args.enabled };
+      this.protection = mockProtection(args.enabled);
       return this.protection;
     },
 
@@ -1379,7 +1693,9 @@ export class MockTransport implements Transport {
 
     // Context
     context_build_snapshot: async (args) => {
-      this.setAppState({ state: "capturing" });
+      // Rust `build_snapshot_with`: a background build leaves the state machine alone.
+      const drivesState = args.options.background !== true;
+      if (drivesState) this.setAppState({ state: "capturing" });
       await this.delay(this.streamDelayMs * 4);
       const snapshot = this.buildSnapshot(args);
       const replyMs = monoMs();
@@ -1390,7 +1706,7 @@ export class MockTransport implements Transport {
         imageBytes: snapshot.screen?.image ? 148_000 : undefined,
         imagePx: snapshot.screen ? 1512 : undefined,
       };
-      this.setAppState({ state: "analyzing" });
+      if (drivesState) this.setAppState({ state: "analyzing" });
       this.emit("context.updated", { snapshot, reason: "manual" });
       return snapshot;
     },
@@ -1398,16 +1714,24 @@ export class MockTransport implements Transport {
     // AI
     ai_stream: (args) => this.streamAi(args),
     ai_report_trace: () => null,
+    // Rust `AiManager::cancel` / `cancel_all`: only streams still in flight can be cancelled.
     ai_cancel: (args) => {
+      if (!this.activeAi.has(args.requestId)) return false;
       this.cancelled.add(args.requestId);
       return true;
     },
     ai_cancel_all: () => {
-      const count = this.cancelled.size;
-      return count;
+      for (const id of this.activeAi.keys()) this.cancelled.add(id);
+      return this.activeAi.size;
     },
-    ai_embed: (args) =>
-      args.texts.map((text) => Array.from({ length: 8 }, (_, i) => ((text.length * (i + 3)) % 97) / 97)),
+    ai_embed: (args) => {
+      if (args.texts.length === 0) return [];
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
+      return args.texts.map((text) =>
+        Array.from({ length: 8 }, (_, i) => ((text.length * (i + 3)) % 97) / 97),
+      );
+    },
+    ai_readiness: async () => this.readiness(),
     // Same contract as `AiCore::test_connection`: unknown provider / no model THROW; a provider
     // without a key answers `ok: false` with `config.missing_key`.
     ai_test_connection: async (args) => {
@@ -1466,6 +1790,7 @@ export class MockTransport implements Transport {
       return { ok: true, providerId: provider.id, model, latencyMs: 132 };
     },
     ai_transcribe_file: async (args) => {
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
       await this.delay(this.streamDelayMs * 4);
       const fileName = args.path.split("/").pop() || "recording";
       let session = args.sessionId ? this.sessions.find((s) => s.id === args.sessionId) : undefined;
@@ -1539,7 +1864,9 @@ export class MockTransport implements Transport {
             code: "account.not_connected",
             message: "connect the account and refresh its models first",
           });
-        return args.role === "embedding" || args.role === "transcription" ? [] : catalog.models.map((m) => m.id);
+        return args.role === "embedding" || args.role === "transcription"
+          ? []
+          : catalog.models.map((m) => m.id);
       }
       const provider = this.settings.ai.providers.find((p) => p.id === args.providerId);
       const models = FIXTURE_MODELS_BY_KIND[provider?.kind ?? "mock"] ?? [];
@@ -1592,30 +1919,37 @@ export class MockTransport implements Transport {
       return this.settings;
     },
 
-    // Research
-    research_search: (args) => [
-      {
-        id: "sr-1",
-        title: `Result for "${args.query}"`,
-        url: "https://example.com/1",
-        snippet: "Fixture search result.",
+    // Research: Rust checks Privacy → Cloud AI before any provider call.
+    research_search: (args) => {
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
+      return [
+        {
+          id: "sr-1",
+          title: `Result for "${args.query}"`,
+          url: "https://example.com/1",
+          snippet: "Fixture search result.",
+          source: "mock" as const,
+        },
+        {
+          id: "sr-2",
+          title: "Second fixture result",
+          url: "https://example.com/2",
+          snippet: "More fixture context.",
+          source: "mock" as const,
+        },
+      ];
+    },
+    research_scrape: (args) => {
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
+      return {
+        url: args.url,
+        title: "Fixture page",
+        markdown: "# Fixture page\n\nScraped content (mock).",
         source: "mock" as const,
-      },
-      {
-        id: "sr-2",
-        title: "Second fixture result",
-        url: "https://example.com/2",
-        snippet: "More fixture context.",
-        source: "mock" as const,
-      },
-    ],
-    research_scrape: (args) => ({
-      url: args.url,
-      title: "Fixture page",
-      markdown: "# Fixture page\n\nScraped content (mock).",
-      source: "mock" as const,
-    }),
+      };
+    },
     research_deep_start: async (args) => {
+      if (!this.settings.privacy.cloudAiEnabled) throw cloudAiDisabled();
       const jobId = args.request.jobId;
       this.emit("research.event", { type: "started", jobId });
       await this.delay(this.streamDelayMs * 10);
@@ -1631,62 +1965,62 @@ export class MockTransport implements Transport {
       });
     },
     research_deep_cancel: () => true,
-    research_available: () => ({ search: true, scrape: true, deepAgent: false }),
+    research_available: () => ({
+      search: true,
+      scrape: true,
+      deepAgent: false,
+      agentBackends: ["gemini", "claude"],
+    }),
 
     // Modes
     modes_list: () => this.modes,
     modes_get: (args) => this.mode(args.id),
     modes_create: (args) => {
-      const created: BlueyMode = {
-        id: createId("mode"),
-        name: args.draft.name || "Untitled Mode",
-        description: args.draft.description ?? "",
-        icon: args.draft.icon ?? "sparkles",
-        systemInstructions: args.draft.systemInstructions ?? "",
-        responseSchema: args.draft.responseSchema ?? "answer",
-        preferredLatency: args.draft.preferredLatency ?? "fast",
-        contextRequirements: args.draft.contextRequirements ?? ["screen", "transcript"],
-        builtIn: false,
-        group: args.draft.group,
-        responseStyle: args.draft.responseStyle,
-        preferredModelRole: args.draft.preferredModelRole,
-        attachedDocumentIds: [],
-        createdAt: now(),
-        updatedAt: now(),
-      };
+      const created = createCustomMode(args.draft, now());
       this.modes = [...this.modes, created];
       this.emit("modes.changed", this.modes);
       return created;
     },
     modes_update: (args) => {
-      const current = this.mode(args.id);
-      const updated: BlueyMode = { ...current, ...args.patch, updatedAt: now() } as BlueyMode;
+      const updated = applyModePatch(this.mode(args.id), args.patch, now());
       this.modes = this.modes.map((m) => (m.id === args.id ? updated : m));
       this.emit("modes.changed", this.modes);
       return updated;
     },
     modes_delete: (args) => {
       const mode = this.mode(args.id);
-      if (mode.builtIn)
-        throw blueyError({
-          kind: "configuration",
-          code: "modes.built_in",
-          message: "Built-in modes cannot be deleted.",
-        });
+      if (mode.builtIn) throw invalidParams("built-in modes cannot be deleted");
+      // The default falls back to `general`; the active mode to the default.
+      if (this.settings.general.defaultModeId === args.id) {
+        this.settings = { ...this.settings, general: { ...this.settings.general, defaultModeId: "general" } };
+        this.emitSettings();
+      }
+      if (this.status.modeId === args.id) {
+        const fallback = this.settings.general.defaultModeId;
+        this.activateMode(this.modes.some((m) => m.id === fallback) ? fallback : "general");
+      }
+      // Its files go with it.
+      this.documents = this.documents.filter((d) => !(d.scope === "mode" && d.scopeId === args.id));
       this.modes = this.modes.filter((m) => m.id !== args.id);
-      if (this.status.modeId === args.id) this.setAppState({ modeId: this.settings.general.defaultModeId });
       this.emit("modes.changed", this.modes);
     },
     modes_duplicate: (args) => {
       const source = this.mode(args.id);
+      const at = now();
+      const id = createId("mode");
+      const files = this.documents
+        .filter((d) => d.scope === "mode" && d.scopeId === source.id)
+        .map((d) => ({ ...d, id: createId("doc"), scopeId: id, createdAt: at, updatedAt: at }));
       const copy: BlueyMode = {
         ...source,
-        id: createId("mode"),
-        name: `${source.name} copy`,
+        id,
+        name: `${source.name} (Copy)`,
         builtIn: false,
-        createdAt: now(),
-        updatedAt: now(),
+        attachedDocumentIds: files.map((d) => d.id),
+        createdAt: at,
+        updatedAt: at,
       };
+      this.documents = [...this.documents, ...files];
       this.modes = [...this.modes, copy];
       this.emit("modes.changed", this.modes);
       return copy;
@@ -1694,23 +2028,23 @@ export class MockTransport implements Transport {
     modes_set_default: (args) => {
       this.mode(args.id);
       this.settings = { ...this.settings, general: { ...this.settings.general, defaultModeId: args.id } };
-      return this.emitSettings();
+      const settings = this.emitSettings();
+      // With no session running the new default applies right away.
+      if (!this.status.sessionId && this.status.modeId !== args.id) this.activateMode(args.id);
+      return settings;
     },
-    modes_set_active: (args) => {
-      const mode = this.mode(args.id);
-      const status = this.setAppState({ modeId: mode.id });
-      this.emit("mode.changed", { mode, sessionId: this.status.sessionId });
-      return status;
-    },
+    modes_set_active: (args) => this.activateMode(args.id),
     modes_reset_built_in: (args) => {
+      const current = this.mode(args.id);
       const original = createBuiltInModes().find((m) => m.id === args.id);
-      if (!original)
-        throw blueyError({
-          kind: "configuration",
-          code: "modes.not_built_in",
-          message: "Not a built-in mode.",
-        });
-      const reset: BlueyMode = { ...original, updatedAt: now() };
+      if (!original || !current.builtIn) throw invalidParams(`mode '${args.id}' is not built-in`);
+      // Files and the creation time are kept.
+      const reset: BlueyMode = {
+        ...original,
+        attachedDocumentIds: current.attachedDocumentIds,
+        createdAt: current.createdAt,
+        updatedAt: now(),
+      };
       this.modes = this.modes.map((m) => (m.id === args.id ? reset : m));
       this.emit("modes.changed", this.modes);
       return reset;
@@ -1793,24 +2127,32 @@ export class MockTransport implements Transport {
           );
           return inTitle || inEvents;
         })
+        // Newest first and paged like Rust (50 per page unless `limit` says otherwise).
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .slice(args.query.offset ?? 0, (args.query.offset ?? 0) + (args.query.limit ?? SESSION_PAGE_DEFAULT))
         .map((s) => this.sessionListItem(s, text ? `…${text}…` : undefined));
     },
     sessions_delete: (args) => {
+      const live = this.sessions.find((s) => s.id === args.id && s.id === this.status.sessionId);
       this.sessions = this.sessions.filter((s) => s.id !== args.id);
       this.events = this.events.filter((e) => e.sessionId !== args.id);
       this.notes = this.notes.filter((n) => n.sessionId !== args.id);
       this.summaries = this.summaries.filter((s) => s.sessionId !== args.id);
       this.responses = this.responses.filter((r) => r.sessionId !== args.id);
       this.segments = this.segments.filter((s) => s.sessionId !== args.id);
+      if (live) this.endDeletedLiveSession(live);
     },
     sessions_delete_all: () => {
       const count = this.sessions.length;
+      const live = this.sessions.find((s) => s.id === this.status.sessionId);
       this.sessions = [];
       this.events = [];
       this.notes = [];
       this.summaries = [];
-      this.responses = this.responses.filter((r) => !r.sessionId);
+      // Answers asked outside a session go too (Rust `SessionRepository::delete_all`).
+      this.responses = [];
       this.segments = this.segments.filter((s) => !s.sessionId);
+      if (live) this.endDeletedLiveSession(live);
       return count;
     },
     sessions_rename: (args) => {
@@ -1864,6 +2206,10 @@ export class MockTransport implements Transport {
 
     // Responses
     responses_save: (args) => {
+      // Rust keeps an answer asked outside a session only while history is on.
+      if (!args.response.sessionId && !this.settings.privacy.storeSessionHistory) {
+        return args.response;
+      }
       this.responses = [...this.responses.filter((r) => r.id !== args.response.id), args.response];
       return args.response;
     },
@@ -1973,8 +2319,21 @@ export class MockTransport implements Transport {
       this.documents = args.scope ? this.documents.filter((d) => d.scope !== args.scope) : [];
       return before - this.documents.length;
     },
-    documents_retrieve: (args) =>
-      this.documents.slice(0, args.query.limit ?? 4).map((doc, index) => ({
+    // Filters like Rust: requested scopes (+ scope id) and kinds; `leading`
+    // lists documents whatever the query, any other strategy returns only a
+    // document that shares a word with the query (its title or kind stands in
+    // for the text the mock does not keep).
+    documents_retrieve: ({ query }) =>
+      this.documents
+        .filter(
+          (doc) =>
+            query.scopes.length === 0 ||
+            query.scopes.some((s) => s.scope === doc.scope && (s.scopeId === undefined || s.scopeId === doc.scopeId)),
+        )
+        .filter((doc) => !query.kinds?.length || query.kinds.includes(doc.kind))
+        .filter((doc) => query.strategy === "leading" || sharesWord(query.query, `${doc.title} ${doc.kind}`))
+        .slice(0, query.limit ?? 4)
+        .map((doc, index) => ({
         chunkId: `${doc.id}-chunk-${index}`,
         documentId: doc.id,
         documentTitle: doc.title,
@@ -1992,41 +2351,78 @@ export class MockTransport implements Transport {
     // Settings & secrets
     settings_get: () => this.settings,
     settings_update: (args) => {
-      this.settings = this.withKeyFlags(mergeSettings(this.settings, args.patch));
+      const before = this.settings;
+      const merged = mergeSettings(this.settings, args.patch);
+      // Mirrors Rust `validate` (UX-031).
+      const intervalMs = merged.screen.observationIntervalMs;
+      if (!(intervalMs >= 1000 && intervalMs <= 60000)) {
+        throw invalidParams("screen.observationIntervalMs must be between 1000 and 60000");
+      }
+      this.settings = this.withKeyFlags(merged);
+      this.dropRemovedProviderKeys(before);
+      this.applyDisplayMode();
       return this.emitSettings();
     },
     settings_reset: () => {
-      this.settings = createDefaultSettings();
+      const before = this.settings;
+      this.settings = this.withKeyFlags(createDefaultSettings());
+      this.dropRemovedProviderKeys(before);
+      this.applyDisplayMode();
       return this.emitSettings();
     },
     secrets_set: (args) => {
+      assertWebviewSecretKey(args.key);
       this.secrets.set(args.key, args.value);
-      const match = /^provider:(.+):api_key$/.exec(args.key);
-      if (match) {
-        this.settings = {
-          ...this.settings,
-          ai: {
-            ...this.settings.ai,
-            providers: this.settings.ai.providers.map((p) =>
-              p.id === match[1] ? { ...p, hasApiKey: true } : p,
-            ),
-          },
-        };
-        this.emitSettings();
-      }
+      this.setProviderKeyFlag(args.key, true);
     },
-    secrets_has: (args) => this.secrets.has(args.key),
+    secrets_has: (args) => {
+      assertWebviewSecretKey(args.key);
+      return this.secrets.has(args.key);
+    },
     secrets_delete: (args) => {
+      assertWebviewSecretKey(args.key);
       this.secrets.delete(args.key);
+      this.setProviderKeyFlag(args.key, false);
+    },
+    secrets_state: (args): SecretState => {
+      assertWebviewSecretKey(args.key);
+      return this.secrets.has(args.key) ? "present" : "absent";
+    },
+    // The mock keeps only WebView-set API keys, all readable (no Keychain).
+    secrets_health: (): CredentialHealth[] =>
+      [...this.secrets.keys()].sort().map((key) => ({
+        key,
+        category: secretCategory(key),
+        label: this.secretLabel(key),
+        state: "present",
+        removable: true,
+      })),
+    secrets_allow_access: (args): SecretState => {
+      assertAllowAccessKey(args.key);
+      return this.secrets.has(args.key) ? "present" : "absent";
     },
 
     // Shortcuts
     shortcuts_list: () => this.settings.shortcuts,
     shortcuts_update: (args) => {
+      // Mirrors ShortcutManager::update: normalise, reject clashes with other Bluey
+      // bindings (a macOS-shortcut clash is only logged there).
+      const accelerator = normalizeAccelerator(args.accelerator);
+      if (!accelerator) {
+        throw blueyError({
+          kind: "internal",
+          code: "internal.invalid_params",
+          message: `\`${args.accelerator}\` is not a valid shortcut`,
+        });
+      }
+      const conflict = detectConflict(accelerator, this.settings.shortcuts, args.id);
+      if (conflict?.conflictsWith === "bluey") {
+        throw blueyError({ kind: "internal", code: "internal.invalid_params", message: conflict.detail });
+      }
       this.settings = {
         ...this.settings,
         shortcuts: this.settings.shortcuts.map((s) =>
-          s.id === args.id ? { ...s, accelerator: args.accelerator, enabled: args.enabled ?? s.enabled } : s,
+          s.id === args.id ? { ...s, accelerator, enabled: args.enabled ?? s.enabled } : s,
         ),
       };
       this.emitSettings();
@@ -2037,23 +2433,8 @@ export class MockTransport implements Transport {
       this.emitSettings();
       return this.settings.shortcuts;
     },
-    shortcuts_check_conflict: (args): ShortcutConflict | null => {
-      const system = ["CmdOrCtrl+Q", "CmdOrCtrl+W", "CmdOrCtrl+Space", "CmdOrCtrl+Tab"];
-      if (system.includes(args.accelerator)) {
-        return { accelerator: args.accelerator, conflictsWith: "system", detail: "Reserved by macOS." };
-      }
-      const clash = this.settings.shortcuts.find(
-        (s) => s.accelerator === args.accelerator && s.id !== args.ignoreId,
-      );
-      if (clash) {
-        return {
-          accelerator: args.accelerator,
-          conflictsWith: "bluey",
-          detail: `Already used by “${clash.label}”.`,
-        };
-      }
-      return null;
-    },
+    shortcuts_check_conflict: (args): ShortcutConflict | null =>
+      detectConflict(args.accelerator, this.settings.shortcuts, args.ignoreId),
 
     // Panel / windows
     panel_show: () => this.setPanel({ visible: true }),
@@ -2128,7 +2509,6 @@ export class MockTransport implements Transport {
       this.emit("transcript.cleared", {});
       return count;
     },
-    data_clear_ai_cache: () => 12,
     data_reset_all: () => {
       this.settings = createDefaultSettings();
       this.modes = createBuiltInModes();
@@ -2195,6 +2575,12 @@ export class MockTransport implements Transport {
     return session;
   }
 
+  /** Rust `SessionManager::announce_deleted_active`: the deleted live session ended. */
+  private endDeletedLiveSession(session: Session): void {
+    this.setAppState({ sessionId: undefined });
+    this.emit("session.ended", { ...session, status: "completed", endedAt: now() });
+  }
+
   private replaceSession(session: Session): void {
     this.sessions = this.sessions.map((s) => (s.id === session.id ? session : s));
   }
@@ -2219,7 +2605,9 @@ function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
     if (Array.isArray(value) || typeof value !== "object" || value === null) {
       next[key] = value;
     } else {
-      next[key] = { ...(base[key] as object), ...value };
+      // Like Rust, an explicit null clears an optional field (it is then absent).
+      const merged = Object.entries({ ...(base[key] as object), ...value }).filter(([, v]) => v !== null);
+      next[key] = Object.fromEntries(merged);
     }
   }
   return next as unknown as Settings;

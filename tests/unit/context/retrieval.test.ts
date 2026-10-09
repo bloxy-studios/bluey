@@ -25,7 +25,7 @@ const interviewMode = makeMode({
 });
 
 describe("retrieveRelevantContext", () => {
-  it("skips retrieval when the mode declares no document needs", async () => {
+  it("runs only the personal-instructions and relevance-floored passes when the mode declares no document needs", async () => {
     const { api, queries } = fakeApi();
     const chunks = await retrieveRelevantContext({
       instruction: "why us?",
@@ -34,7 +34,10 @@ describe("retrieveRelevantContext", () => {
       api,
     });
     expect(chunks).toEqual([]);
-    expect(queries).toHaveLength(0);
+    expect(queries.map((q) => [q.strategy, q.kinds, q.limit])).toEqual([
+      ["leading", ["personal_instructions"], 6],
+      ["keyword", undefined, 3],
+    ]);
   });
 
   it("queries scopes in session → mode → global priority order", async () => {
@@ -46,12 +49,14 @@ describe("retrieveRelevantContext", () => {
       settings: makeSettings(),
       api,
     });
-    expect(queries).toHaveLength(1);
-    expect(queries[0]?.scopes).toEqual([
+    const personal = queries.find((q) => q.kinds?.includes("personal_instructions"));
+    expect(personal?.scopes).toEqual([
       { scope: "session", scopeId: "ses_42" },
       { scope: "mode", scopeId: "interview" },
       { scope: "global" },
     ]);
+    const declared = queries.find((q) => q.kinds?.includes("job_description"));
+    expect(declared?.scopes).toEqual([{ scope: "session", scopeId: "ses_42" }, { scope: "global" }]);
   });
 
   it("omits the session scope when no session is active", async () => {
@@ -88,8 +93,8 @@ describe("retrieveRelevantContext", () => {
     };
     await retrieveRelevantContext(base);
     await retrieveRelevantContext({ ...base, settings: makeSettings({ ai: { embeddingsEnabled: true } }) });
-    expect(queries[0]?.strategy).toBe("keyword");
-    expect(queries[1]?.strategy).toBe("auto");
+    const declared = queries.filter((q) => q.kinds?.includes("job_description"));
+    expect(declared.map((q) => q.strategy)).toEqual(["keyword", "auto"]);
   });
 
   it("builds the query from instruction + last question heard + OCR headline", () => {
@@ -138,5 +143,89 @@ describe("retrieveRelevantContext", () => {
       api,
     });
     expect(chunks.map((c) => c.chunkId)).toEqual(["hi", "lo"]);
+  });
+});
+
+function chunk(id: string, kind: RetrievedChunk["documentKind"], score: number, scope: RetrievedChunk["scope"] = "global"): RetrievedChunk {
+  return { chunkId: id, documentId: `d_${id}`, documentTitle: id, documentKind: kind, content: `${id} text`, score, scope };
+}
+
+/** A backend that answers each query from its own table (by strategy/kinds/scope). */
+function routedApi(route: (query: RetrievalQuery) => RetrievedChunk[]) {
+  const queries: RetrievalQuery[] = [];
+  const api = {
+    documents: {
+      retrieve: async ({ query }: { query: RetrievalQuery }) => {
+        queries.push(query);
+        return route(query);
+      },
+    },
+  };
+  return { api, queries };
+}
+
+const generalMode = makeMode({ id: "general", contextRequirements: ["screen", "transcript"] });
+
+describe("retrieval beyond the declared kinds (CTX-002/003/008)", () => {
+  it("searches a mode's own files with no kind filter when files are attached", async () => {
+    const notes = chunk("mode_notes", "notes", 0.7, "mode");
+    const { api, queries } = routedApi((q) => (q.scopes.length === 1 && q.scopes[0]?.scope === "mode" ? [notes] : []));
+    const mode = makeMode({ id: "coding", contextRequirements: ["screen"], attachedDocumentIds: ["d_mode_notes"] });
+    const chunks = await retrieveRelevantContext({ instruction: "use my notes on graphs", mode, settings: makeSettings(), api });
+    expect(chunks.map((c) => c.chunkId)).toEqual(["mode_notes"]);
+    expect(queries.find((q) => q.scopes.length === 1)?.kinds).toBeUndefined();
+  });
+
+  it("keeps library chunks above the relevance floor in a mode with no document needs", async () => {
+    const { api } = routedApi((q) =>
+      q.strategy === "keyword" && !q.kinds ? [chunk("strong", "resume", 0.8), chunk("weak", "resume", 0.36, "session")] : [],
+    );
+    const chunks = await retrieveRelevantContext({ instruction: "my Kafka project", mode: generalMode, settings: makeSettings(), api });
+    expect(chunks.map((c) => c.chunkId)).toEqual(["strong"]);
+  });
+
+  it("loads personal instructions in every mode, after the matched chunks, in document order", async () => {
+    const { api } = routedApi((q) =>
+      q.strategy === "leading" && q.kinds?.includes("personal_instructions")
+        ? [chunk("pi_1", "personal_instructions", 1), chunk("pi_2", "personal_instructions", 1, "mode")]
+        : [],
+    );
+    const chunks = await retrieveRelevantContext({ instruction: "", mode: generalMode, settings: makeSettings(), api });
+    expect(chunks.map((c) => c.chunkId)).toEqual(["pi_1", "pi_2"]);
+  });
+
+  it("pins the résumé's leading chunks for an intro question that matched none of it", async () => {
+    const { api, queries } = routedApi((q) =>
+      q.strategy === "leading" && q.kinds?.includes("resume") ? [chunk("res_0", "resume", 1), chunk("res_1", "resume", 1)] : [],
+    );
+    const chunks = await retrieveRelevantContext({
+      instruction: "Tell me about yourself",
+      mode: interviewMode,
+      settings: makeSettings(),
+      api,
+    });
+    expect(chunks.map((c) => c.chunkId)).toEqual(["res_0", "res_1"]);
+    expect(queries.find((q) => q.kinds?.includes("resume") && q.strategy === "leading")?.limit).toBe(2);
+  });
+
+  it("does not pin the résumé when a specific question already matched it", async () => {
+    const { api } = routedApi((q) => {
+      if (q.strategy === "leading" && q.kinds?.includes("resume")) return [chunk("res_0", "resume", 1)];
+      if (q.kinds?.includes("job_description")) return [chunk("res_kafka", "resume", 0.6)];
+      return [];
+    });
+    const chunks = await retrieveRelevantContext({
+      instruction: "How did you scale Kafka consumers?",
+      mode: interviewMode,
+      settings: makeSettings(),
+      api,
+    });
+    expect(chunks.map((c) => c.chunkId)).toEqual(["res_kafka"]);
+  });
+
+  it("never pins the résumé outside candidate modes", async () => {
+    const { queries, api } = routedApi(() => []);
+    await retrieveRelevantContext({ instruction: "Tell me about yourself", mode: generalMode, settings: makeSettings(), api });
+    expect(queries.some((q) => q.kinds?.includes("resume"))).toBe(false);
   });
 });

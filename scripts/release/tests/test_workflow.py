@@ -67,6 +67,18 @@ class WorkflowInputTests(unittest.TestCase):
 
 
 class WorkflowWiringTests(unittest.TestCase):
+    # SEC-008: the updater key is step-level env of the build step alone, never job-level env
+    # that every action and step of the job would see.
+    SIGNING_STEP_ENV = ("        env:\n"
+                        "          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}\n"
+                        "          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}\n"
+                        "        run: bash scripts/release.sh\n")
+
+    def assert_updater_key_scoped_to_signing_step(self, content):
+        self.assertIn(self.SIGNING_STEP_ENV, content)
+        self.assertEqual(content.count("TAURI_SIGNING_PRIVATE_KEY:"), 1)
+        self.assertEqual(content.count("TAURI_SIGNING_PRIVATE_KEY_PASSWORD:"), 1)
+
     def test_documented_install_copy_cannot_restore_unsafe_workflow(self):
         for name in ("release.yml", "nightly.yml"):
             with self.subTest(workflow=name):
@@ -91,6 +103,7 @@ class WorkflowWiringTests(unittest.TestCase):
         # Every build signs its updater bundle; developer artifacts carry the archive + signature too.
         self.assertIn("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}", content)
         self.assertIn("TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}", content)
+        self.assert_updater_key_scoped_to_signing_step(content)
         self.assertIn("release/bundle/macos/*.app.tar.gz\n", content)
         self.assertIn("release/bundle/macos/*.app.tar.gz.sig\n", content)
 
@@ -109,6 +122,9 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn('PUBLISH_RELEASE: "false"', content)
         self.assertIn("BLUEY_BUILD_VERSION: ${{ needs.plan.outputs.version }}", content)
         self.assertIn("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}", content)
+        self.assert_updater_key_scoped_to_signing_step(content)
+        # TEST-006: the plan reads the commit's CI run, so it needs actions:read.
+        self.assertIn("    permissions:\n      contents: read\n      actions: read\n", content)
         self.assertNotIn("APPLE_", content)
         self.assertIn("scripts/release/nightly.py plan", content)
         self.assertIn("scripts/release/nightly.py publish", content)

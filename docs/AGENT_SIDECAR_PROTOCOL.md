@@ -17,8 +17,10 @@ the Research Router.
   `CLAUDE_CODE_USE_FOUNDRY=1` + `ANTHROPIC_FOUNDRY_RESOURCE` + `ANTHROPIC_FOUNDRY_API_KEY` +
   pinned `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` deployment names — plus
   `EXA_API_KEY` / `FIRECRAWL_API_KEY` for the tools. The WebView never sees them. The sidecar
-  rebuilds the Claude Code subprocess environment from that configuration only and strips the
-  Gemini keys from it (`sidecars/agent/README.md`).
+  rebuilds the Claude Code subprocess environment from that configuration only, strips the
+  Gemini and Exa/Firecrawl keys from it (the tools run in the sidecar, not the CLI) and sets
+  `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+  (`sidecars/agent/README.md`).
 - The agent gets **only** the tools listed in the request: `exa_search`, `firecrawl_scrape`,
   `document_read` — as Gemini function declarations, or as custom in-process MCP tools for
   Claude, where built-in tools (Bash, Read, Write, Edit, WebFetch, WebSearch, …) are
@@ -37,11 +39,12 @@ when the job completes, fails, or is cancelled.
 
 ## Methods (Rust → agent)
 
-| method              | params                                                             | result                                                  |
-| ------------------- | ------------------------------------------------------------------ | ------------------------------------------------------- |
-| `research.run`      | `DeepResearchRequest` (see below)                                  | `{ "accepted": true }` immediately; progress via events |
-| `research.cancel`   | `{ "jobId" }`                                                      | `{ "cancelled": true }`                                 |
-| `document.response` | `{ "requestId", "documentId", "text"?: string, "error"?: string }` | – (answers a `document.request` event)                  |
+| method              | params                                                             | result                                                                        |
+| ------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `research.run`      | `DeepResearchRequest` (see below)                                  | `{ "accepted": true }` immediately; progress via events                       |
+| `research.cancel`   | `{ "jobId" }`                                                      | `{ "cancelled": true }`, then `research.failed{cancelled}` at once            |
+| `agent.info`        | `{}` (no credentials needed)                                       | `{ "variant": "lite" \| "full" \| "dev", "backends": ["gemini", "claude"?] }` |
+| `document.response` | `{ "requestId", "documentId", "text"?: string, "error"?: string }` | – (answers a `document.request` event)                                        |
 
 ```jsonc
 // DeepResearchRequest (mirrors src/lib/types/ai.ts)
@@ -53,6 +56,7 @@ when the job completes, fails, or is cancelled.
   "tools": ["exa_search", "firecrawl_scrape", "document_read"],
   "allowedDocumentIds": ["doc-1"],
   "model": "gemini-3.8-flash", // Claude backend: a Claude id / Foundry deployment name
+  "deadlineMs": 75000, // optional: past it no new tool turn starts and the report is written
 }
 ```
 
@@ -75,16 +79,33 @@ Rust maps these onto `DeepResearchEvent` and emits `research.event` to the front
 - `document.response` is fire-and-forget: no response frame on success; an error frame is only
   sent for malformed params.
 - Closing stdin does **not** cancel a running job (shell pipes close immediately); cancel with
-  `research.cancel` or SIGTERM/SIGINT.
+  `research.cancel` or SIGTERM/SIGINT. `research.cancel` emits the terminal
+  `research.failed{cancelled}` immediately and aborts the model call and in-flight tool
+  requests; if the job is still running 2 s later Rust kills the process and publishes the
+  cancellation itself.
+- `agent.info` is how Rust learns what the installed build can run: the lite build reports
+  only `gemini` unless `BLUEY_CLAUDE_CLI` is set. Rust probes it once per app run and hides the
+  Claude backend when it is missing.
+- Running out of turns or time is not a failure when there is evidence: Gemini writes its
+  structured report from the tool results so far (the instruction joins the pending tool
+  results), a Claude `error_max_turns` or the `deadlineMs` hard stop (Gemini gets 10 s of grace
+  for its report turn) completes with a "Research stopped early" report listing the gathered
+  sources. Only a job with no sources fails (`max_turns_exceeded` / `deadline_exceeded`).
+- The process waits for the last frame to be written (write callback) before exiting, so a
+  large `research.completed` frame is never cut off.
 - `research.failed.error.kind` is one of `research`, `cancelled`, `configuration` (missing
   or rejected keys — the message names the env var, never its value). Codes: `cancelled`,
   `missing_api_key`, `invalid_api_key`, `invalid_configuration`, `max_turns_exceeded`,
+  `deadline_exceeded`,
   `rate_limited` (Gemini HTTP 429), `blocked` (Gemini refusal), `gemini_empty_turn` (the
   model returned no parts — a function-call id/name mismatch), `budget_exceeded`,
   `structured_output_failed`, `agent_execution_failed` (message sanitized and truncated),
   `agent_empty_report`, `agent_no_result`.
 - Citations returned by the model are validated against URLs actually observed through the
-  tools; invented URLs are dropped and remaining observed sources are appended (deduped).
+  tools; invented URLs are dropped. Known sources linked from the report body are added, and
+  when nothing was cited the pages read in full are the fallback — search hits the model never
+  used are not appended. Links in the report to URLs the tools never returned are de-linked
+  (a Markdown link keeps its text; a bare URL becomes its host).
 - Environment: `RESEARCH_BACKEND` (`gemini` default \| `claude`), `GEMINI_API_KEY` (alias
   `GOOGLE_API_KEY`), `ANTHROPIC_API_KEY`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`,
   `BLUEY_RESEARCH_MODEL` (default `gemini-3.8-flash` / `claude-sonnet-5`),

@@ -3,6 +3,8 @@ import {
   parseJsonLoose,
   parseStructuredOutput,
   repairTrailingCommas,
+  SECTION_TITLES,
+  SPOKEN_SCHEMAS,
   stripWrappingFence,
 } from "@/modes/schemas";
 import type { ResponseSchemaId } from "@/lib/types";
@@ -33,13 +35,30 @@ describe("outputSchemaFor", () => {
     }
   });
 
-  it("includes code for coding and diagram for system-design", () => {
+  it("includes a diagram for system-design and asks no schema for a separate `code` copy", () => {
+    // AI-001: the optimizer derives `code` from the first fence in `content`;
+    // asking for it too made the model write the solution twice, code first.
     const coding = outputSchemaFor("coding").schema.properties as Record<string, unknown>;
-    expect(coding.code).toBeDefined();
+    expect(coding.code).toBeUndefined();
     const design = outputSchemaFor("system-design").schema.properties as Record<string, unknown>;
     expect(design.diagram).toBeDefined();
     const answer = outputSchemaFor("answer").schema.properties as Record<string, unknown>;
     expect(answer.code).toBeUndefined();
+  });
+
+  it("puts nothing but tiny fields before `content` in sorted key order (strict providers stream sorted keys)", () => {
+    for (const schemaId of ALL_SCHEMAS) {
+      const keys = Object.keys(outputSchemaFor(schemaId).schema.properties as object).sort();
+      const before = keys.slice(0, keys.indexOf("content"));
+      expect(before.every((key) => key === "citations" || key === "confidence")).toBe(true);
+    }
+  });
+
+  it("carries no numeric or length constraints (Anthropic structured outputs reject them)", () => {
+    for (const schemaId of ALL_SCHEMAS) {
+      const json = JSON.stringify(outputSchemaFor(schemaId).schema);
+      expect(json).not.toMatch(/"(minimum|maximum|exclusiveMinimum|exclusiveMaximum|multipleOf|minLength|maxLength)"/);
+    }
   });
 });
 
@@ -230,5 +249,25 @@ describe("parseStructuredOutput never yields raw JSON", () => {
     expect(parseStructuredOutput("answer", "{not our envelope} but an answer")?.content).toBe(
       "{not our envelope} but an answer",
     );
+  });
+});
+
+describe("spoken answers only ever come from content (AI-012)", () => {
+  it.each(["suggested-response", "behavioral", "sales", "recruiting"] as const)(
+    "never speaks the %s rationale sections when content is empty",
+    (schemaId) => {
+      const raw = JSON.stringify({
+        responseType: "suggestion",
+        content: "",
+        sections: [{ title: "Why it works", content: "It mirrors the buyer's words." }],
+      });
+      expect(parseStructuredOutput(schemaId, raw)).toBeNull();
+    },
+  );
+
+  it("offers no section a spoken answer could hide in", () => {
+    for (const schemaId of SPOKEN_SCHEMAS) {
+      for (const title of SECTION_TITLES[schemaId] ?? []) expect(title).not.toMatch(/^Suggested/);
+    }
   });
 });

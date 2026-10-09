@@ -15,6 +15,10 @@ const RELEASE_NOTES = [
   "Modes can attach files so answers stay grounded in your documents.",
 ];
 
+/** Help and support live with the source (UX-043): the README and the issue tracker. */
+const HELP_URL = "https://github.com/bloxy-studios/bluey#readme";
+const SUPPORT_URL = "https://github.com/bloxy-studios/bluey/issues";
+
 export default function AboutTab() {
   const [info, setInfo] = useState<DevInfo | null>(null);
 
@@ -57,15 +61,15 @@ export default function AboutTab() {
         </div>
       </Card>
 
-      <SettingRow icon={LifeBuoy} title="Help Center" description="Find answers and setup help.">
-        <Button variant="secondary" size="sm" onClick={() => void openExternal("https://bluey.app/help")}>
+      <SettingRow icon={LifeBuoy} title="Help Center" description="Setup and usage guide in the README.">
+        <Button variant="secondary" size="sm" onClick={() => void openExternal(HELP_URL)}>
           Open <ExternalLink className="size-3.5" aria-hidden />
         </Button>
       </SettingRow>
 
-      <SettingRow icon={Mail} title="Contact Support" description="Reach the Bluey team directly.">
-        <Button variant="secondary" size="sm" onClick={() => void openExternal("mailto:support@bluey.app")}>
-          Email <ExternalLink className="size-3.5" aria-hidden />
+      <SettingRow icon={Mail} title="Contact Support" description="Report a problem or ask the team on GitHub.">
+        <Button variant="secondary" size="sm" onClick={() => void openExternal(SUPPORT_URL)}>
+          Open issue <ExternalLink className="size-3.5" aria-hidden />
         </Button>
       </SettingRow>
 

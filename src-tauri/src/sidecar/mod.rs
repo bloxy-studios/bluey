@@ -247,6 +247,7 @@ impl HelperClient {
             self.desired.load(Ordering::SeqCst) && self.restart_on_crash.load(Ordering::SeqCst);
         if !should_restart {
             self.publish_status(false, None, None, false);
+            self.announce(HelperEvent::Exited { restarting: false });
             return;
         }
         if started.elapsed() >= HEALTHY_AFTER {
@@ -261,9 +262,11 @@ impl HelperClient {
             self.publish_status(false, None, Some(error.clone()), false);
             self.bus.publish(BlueyEvent::AppError(error));
             self.desired.store(false, Ordering::SeqCst);
+            self.announce(HelperEvent::Exited { restarting: false });
             return;
         }
         self.publish_status(false, None, None, true);
+        self.announce(HelperEvent::Exited { restarting: true });
         let delay = Duration::from_millis(500u64.saturating_mul(1 << (attempts - 1).min(6)));
         tracing::info!(attempt = attempts, ?delay, "restarting helper");
         let this = self.clone();
@@ -274,14 +277,24 @@ impl HelperClient {
             }
             let _guard = this.spawn_lock.lock().await;
             if this.is_running() {
+                // Something else already spawned a replacement.
+                this.announce(HelperEvent::Restarted);
                 return;
             }
             if let Err(e) = this.spawn_once().await {
                 tracing::warn!(error = %e, "helper restart failed");
+                this.announce(HelperEvent::Exited { restarting: false });
             } else {
                 this.publish_status(true, this.version().map(|v| v.version), None, true);
+                this.announce(HelperEvent::Restarted);
             }
         });
+    }
+
+    /// Supervisor events for the managers whose helper-side state died with
+    /// the process (audio capture, observation).
+    fn announce(&self, event: HelperEvent) {
+        let _ = self.events.send(event);
     }
 
     fn fail_pending(&self, error: BlueyError) {
@@ -374,13 +387,28 @@ impl HelperClient {
 
     /// Kill + respawn (used by `dev_restart_helper`).
     pub async fn restart(self: &Arc<Self>) -> BlueyResult<()> {
-        {
+        let was_running = {
             let _guard = self.spawn_lock.lock().await;
             self.desired.store(true, Ordering::SeqCst);
             self.restart_attempts.store(0, Ordering::SeqCst);
+            let was_running = self.is_running();
             self.kill();
+            was_running
+        };
+        if !was_running {
+            return self.ensure_running().await;
         }
-        self.ensure_running().await
+        self.publish_status(false, None, None, true);
+        self.announce(HelperEvent::Exited { restarting: true });
+        let result = self.ensure_running().await;
+        match &result {
+            Ok(()) => {
+                self.publish_status(true, self.version().map(|v| v.version), None, true);
+                self.announce(HelperEvent::Restarted);
+            }
+            Err(_) => self.announce(HelperEvent::Exited { restarting: false }),
+        }
+        result
     }
 
     fn kill(&self) {
@@ -402,6 +430,9 @@ fn timeout_for(method: &str) -> Duration {
         m if m.starts_with("capture.") => Duration::from_secs(3),
         "ocr.recognize" => Duration::from_secs(5),
         "accessibility.snapshot" => Duration::from_secs(1),
+        // The handshake: a timeout kills and respawns the helper, so a slow
+        // cold boot must not trip it.
+        "helper.version" => Duration::from_secs(5),
         "audio.start" => Duration::from_secs(5),
         "audio.testMicrophone" => Duration::from_secs(8),
         "permissions.request" => Duration::from_secs(120),
@@ -427,4 +458,17 @@ pub fn child_base_env() -> Vec<(String, String)> {
                 .map(|value| (name.to_string(), value))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MAC-011: a handshake timeout kills the helper, so `helper.version` must
+    /// outlast a cold boot rather than share the 2 s default.
+    #[test]
+    fn the_handshake_outlasts_a_slow_cold_boot() {
+        assert!(timeout_for("helper.version") >= Duration::from_secs(5));
+        assert_eq!(timeout_for("helper.ping"), Duration::from_secs(2));
+    }
 }

@@ -8,6 +8,8 @@ import Speech
 /// SFSpeech buffer requests are limited to ~1 minute, so the request is
 /// restarted every ~55 s of appended audio and after every final result;
 /// `epochMs` bookkeeping keeps startMs/endMs relative to `audio.start`.
+/// Utterance boundaries and ids come from `UtteranceTracker`, which also
+/// keeps a retired request's callbacks from rotating the live one.
 /// https://developer.apple.com/documentation/speech/sfspeechaudiobufferrecognitionrequest
 ///
 /// NOTE (macOS 26+): the newer SpeechAnalyzer API removes the 1-minute limit;
@@ -23,6 +25,16 @@ public final class SpeechTranscriber {
         public let endMs: Int
         public let confidence: Double?
         public let locale: String
+        /// `<request generation>-<counter>`, shared by an utterance's
+        /// partials and its final.
+        public let utteranceId: String
+    }
+
+    /// What `start()` settled on (reported in `audio.started`): the
+    /// recognizer's locale and whether audio stays on the Mac.
+    public struct Route: Encodable, Equatable {
+        public let locale: String
+        public let onDevice: Bool
     }
 
     struct SpeechErrorEvent: Encodable {
@@ -34,9 +46,51 @@ public final class SpeechTranscriber {
     /// Restart the request after this much appended audio (SFSpeech ~1 min cap).
     private static let maxRequestSeconds: Double = 55
 
+    static let fallbackLocale = "en-US"
+
+    /// `requiresOnDeviceRecognition` for a request, or `nil` when it may not
+    /// run at all: on-device is required (Cloud AI is off) and the locale has
+    /// no on-device model, so the only way left is Apple's servers.
+    static func onDeviceRecognition(
+        onDevice: Bool, requireOnDevice: Bool, supportsOnDevice: Bool
+    ) -> Bool? {
+        if requireOnDevice && !supportsOnDevice { return nil }
+        return (onDevice || requireOnDevice) && supportsOnDevice
+    }
+
+    /// The locale for `language: auto`: the user's own when Apple Speech
+    /// supports it (on the Mac when `onDevice` is asked for, so `auto` never
+    /// moves audio to Apple's servers), else en-US.
+    static func defaultLocale(
+        onDevice: Bool = true,
+        current: Locale = .current,
+        supported: Set<Locale> = SFSpeechRecognizer.supportedLocales(),
+        recognizesOnDevice: (Locale) -> Bool = {
+            SFSpeechRecognizer(locale: $0)?.supportsOnDeviceRecognition ?? false
+        }
+    ) -> Locale {
+        let wanted = speechIdentifier(current)
+        guard let own = supported.first(where: { speechIdentifier($0) == wanted }),
+            !onDevice || recognizesOnDevice(own)
+        else { return Locale(identifier: fallbackLocale) }
+        return own
+    }
+
+    /// "en-GB" for en_GB, en-GB@rg=… and en-GB alike.
+    private static func speechIdentifier(_ locale: Locale) -> String {
+        let language = locale.language.languageCode?.identifier ?? ""
+        // The dialect's region (en_US@rg=gbzzzz speaks en-US), else the locale's.
+        guard let region = (locale.language.region ?? locale.region)?.identifier else {
+            return language
+        }
+        return "\(language)-\(region)"
+    }
+
     private let source: String
     private let localeId: String
     private let onDevice: Bool
+    /// Privacy → Cloud AI is off: never fall back to Apple's servers.
+    private let requireOnDevice: Bool
     private let sampleRate: Double
     private let emit: Emit
     private let queue: DispatchQueue
@@ -51,14 +105,23 @@ public final class SpeechTranscriber {
     private var epochFrames: Int64 = 0
     private var stopped = false
     private var unavailableReported = false
+    private var utterances = UtteranceTracker()
+    /// Set by `start()`; read after it returns.
+    public private(set) var route: Route?
+    /// Non-routine task errors in a row (reset by any transcript); past
+    /// `maxConsecutiveErrors` the recognizer is reported unavailable instead
+    /// of being restarted in a hot loop.
+    private var consecutiveErrors = 0
+    private static let maxConsecutiveErrors = 5
 
     public init(
-        source: String, locale: String, onDevice: Bool, sampleRate: Double = 16000,
-        emit: @escaping Emit
+        source: String, locale: String, onDevice: Bool, requireOnDevice: Bool = false,
+        sampleRate: Double = 16000, emit: @escaping Emit
     ) {
         self.source = source
         self.localeId = locale
         self.onDevice = onDevice
+        self.requireOnDevice = requireOnDevice
         self.sampleRate = sampleRate
         self.emit = emit
         self.queue = DispatchQueue(label: "com.codewithabdul.bluey.helper.speech.\(source)")
@@ -81,12 +144,28 @@ public final class SpeechTranscriber {
                 reportUnavailable("speech recognizer unavailable for locale \(localeId)")
                 return
             }
+            guard
+                Self.onDeviceRecognition(
+                    onDevice: onDevice, requireOnDevice: requireOnDevice,
+                    supportsOnDevice: recognizer.supportsOnDeviceRecognition) != nil
+            else {
+                reportUnavailable(
+                    "no on-device speech model for \(localeId), and Cloud AI is off",
+                    code: "speech_on_device_unavailable")
+                return
+            }
             self.recognizer = recognizer
             self.bufferFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1,
                 interleaved: false)
             self.stopped = false
             self.startRequestLocked()
+            if let request = self.request {
+                // Without on-device assets for the locale, SFSpeech uses
+                // Apple's servers: say so rather than claim on-device.
+                self.route = Route(
+                    locale: localeId, onDevice: request.requiresOnDeviceRecognition)
+            }
             ok = self.request != nil
         }
         return ok
@@ -129,7 +208,7 @@ public final class SpeechTranscriber {
             // Rotate the request before hitting the ~1 min SFSpeech ceiling.
             let requestSeconds = Double(self.totalFrames - self.epochFrames) / self.sampleRate
             if requestSeconds >= Self.maxRequestSeconds {
-                self.rotateRequestLocked()
+                self.rotateRequestLocked("cap")
             }
         }
     }
@@ -141,84 +220,104 @@ public final class SpeechTranscriber {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         // https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/requiresondevicerecognition
-        request.requiresOnDeviceRecognition = onDevice && recognizer.supportsOnDeviceRecognition
+        request.requiresOnDeviceRecognition =
+            Self.onDeviceRecognition(
+                onDevice: onDevice, requireOnDevice: requireOnDevice,
+                supportsOnDevice: recognizer.supportsOnDeviceRecognition) ?? true
+        // Question detection keys off "?" (macOS 13+; off by default).
+        // https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/addspunctuation
+        request.addsPunctuation = true
         self.request = request
         self.epochFrames = totalFrames
         let epochMs = Double(epochFrames) * 1000.0 / sampleRate
+        let generation = utterances.beginRequest()
 
         // https://developer.apple.com/documentation/speech/sfspeechrecognizer/recognitiontask(with:resulthandler:)
         self.task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
             self.queue.async {
-                self.handleLocked(result: result, error: error, epochMs: epochMs)
+                self.handleLocked(
+                    result: result, error: error, epochMs: epochMs, generation: generation)
             }
         }
     }
 
-    private func rotateRequestLocked() {
+    private func rotateRequestLocked(_ reason: String) {
+        Log.shared.debug("speech(\(source)) rotating request \(utterances.generation): \(reason)")
         request?.endAudio()
         request = nil
         startRequestLocked()
     }
 
-    private func handleLocked(result: SFSpeechRecognitionResult?, error: Error?, epochMs: Double) {
+    private func handleLocked(
+        result: SFSpeechRecognitionResult?, error: Error?, epochMs: Double, generation: Int
+    ) {
         if let result {
-            let transcription = result.bestTranscription
-            let text = transcription.formattedString
-            if !text.isEmpty {
-                let segments = transcription.segments
-                var startMs = epochMs
-                var endMs = Double(totalFrames) * 1000.0 / sampleRate
-                if let first = segments.first, let last = segments.last {
-                    // SFTranscriptionSegment.timestamp/.duration are seconds
-                    // within the current request's audio stream:
-                    // https://developer.apple.com/documentation/speech/sftranscriptionsegment
-                    startMs = epochMs + first.timestamp * 1000.0
-                    endMs = epochMs + (last.timestamp + last.duration) * 1000.0
-                }
-                var confidence: Double?
-                if result.isFinal, !segments.isEmpty {
-                    let sum = segments.reduce(0.0) { $0 + Double($1.confidence) }
-                    confidence = sum / Double(segments.count)
-                }
-                self.emit(
-                    result.isFinal ? "transcript.final" : "transcript.partial",
+            for event in utterances.observe(observation(result, epochMs, generation)) {
+                consecutiveErrors = 0
+                emit(
+                    event.isFinal ? "transcript.final" : "transcript.partial",
                     AnyEncodable(
                         TranscriptEvent(
-                            source: source, text: text,
-                            startMs: Int(startMs.rounded()), endMs: Int(endMs.rounded()),
-                            confidence: confidence, locale: localeId)))
-            }
-            if result.isFinal, !stopped {
-                rotateRequestLocked()
-                return
+                            source: source, text: event.text, startMs: event.startMs,
+                            endMs: event.endMs, confidence: event.confidence, locale: localeId,
+                            utteranceId: event.utteranceId)))
             }
         }
-
-        if let error, !stopped {
-            let ns = error as NSError
-            // kAFAssistantErrorDomain 1110 ("no speech detected") and 216/301
-            // (request cancelled/retired) are routine — restart quietly.
-            let routine =
-                ns.domain == "kAFAssistantErrorDomain"
-                && [1110, 1101, 216, 203, 301].contains(ns.code)
-            if routine {
-                rotateRequestLocked()
-            } else if recognizer?.isAvailable == false {
-                reportUnavailable("speech recognizer became unavailable")
-            } else {
-                Log.shared.warn("speech(\(source)) task error: \(ns.domain) \(ns.code)")
-                rotateRequestLocked()
+        // Only the live request may rotate or restart: a retired task's final
+        // or error arrives after its successor started (MAC-003).
+        guard !stopped, utterances.isCurrent(generation) else { return }
+        if let result, result.isFinal {
+            rotateRequestLocked("final")
+            return
+        }
+        guard let error else { return }
+        let ns = error as NSError
+        // kAFAssistantErrorDomain 1110 ("no speech detected") and 216/301
+        // (request cancelled/retired) are routine — restart quietly.
+        let routine =
+            ["kAFAssistantErrorDomain", "kLSRErrorDomain"].contains(ns.domain)
+            && [1110, 1101, 216, 203, 301].contains(ns.code)
+        if routine {
+            rotateRequestLocked("routine \(ns.code)")
+        } else if recognizer?.isAvailable == false {
+            reportUnavailable("speech recognizer became unavailable")
+        } else {
+            consecutiveErrors += 1
+            Log.shared.warn("speech(\(source)) task error: \(ns.domain) \(ns.code)")
+            guard consecutiveErrors < Self.maxConsecutiveErrors else {
+                reportUnavailable("speech recognition keeps failing (\(ns.domain) \(ns.code))")
+                return
             }
+            rotateRequestLocked("error")
         }
     }
 
-    private func reportUnavailable(_ message: String) {
+    /// One callback, with times relative to `audio.start`.
+    private func observation(
+        _ result: SFSpeechRecognitionResult, _ epochMs: Double, _ generation: Int
+    ) -> UtteranceTracker.Result {
+        let transcription = result.bestTranscription
+        let segments = transcription.segments
+        let (startMs, endMs) = UtteranceTracker.times(
+            segments: segments.map { (timestamp: $0.timestamp, duration: $0.duration) },
+            epochMs: epochMs, nowMs: Double(totalFrames) * 1000.0 / sampleRate)
+        var confidence: Double?
+        if result.isFinal, !segments.isEmpty {
+            confidence = segments.reduce(0.0) { $0 + Double($1.confidence) } / Double(segments.count)
+        }
+        return UtteranceTracker.Result(
+            generation: generation, text: transcription.formattedString, isFinal: result.isFinal,
+            // Set when the recognizer closes a stretch of speech (a pause).
+            hasMetadata: result.speechRecognitionMetadata != nil,
+            startMs: startMs, endMs: endMs, confidence: confidence)
+    }
+
+    private func reportUnavailable(_ message: String, code: String = "speech_unavailable") {
         guard !unavailableReported else { return }
         unavailableReported = true
         emit(
             "audio.error",
-            AnyEncodable(
-                SpeechErrorEvent(code: "speech_unavailable", message: message, kind: "audio")))
+            AnyEncodable(SpeechErrorEvent(code: code, message: message, kind: "audio")))
     }
 }

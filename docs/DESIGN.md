@@ -80,8 +80,9 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   bottom bar with hairline and right-aligned primary button "Set Active" / disabled "Active".
   Between context and files: "Response style" (length / tone / latency / preferred model
   selects, available on built-in modes too) and "Context sources" — a row of 32px pill
-  toggles (Screen, Accessibility tree, Transcript, Résumé / CV, Job description, Documents,
-  Session memory; on = `accent-soft` fill with accent text). Custom modes additionally get
+  toggles (Screen, Transcript, Résumé / CV, Job description, Documents; on = `accent-soft`
+  fill with accent text). Screen includes the accessibility tree, and session memory applies
+  in every mode, so neither has a toggle of its own. Custom modes additionally get
   Description, Sidebar group and Response format above the meeting context.
 * **Keybinds tab**: header "Keyboard shortcuts" + description "Bluey works with these easy to
   remember commands. Click any of the keybinds to edit." Groups General / Window / Scroll
@@ -162,7 +163,8 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   ("Update Available" in the reference; Bluey shows the current **mode name** pill or the
   state pill `● Listening`); center — icon buttons 32×32 radius 8, 18px icons: *Screen*
   (image icon, tooltip "Uses Screen" / "Screen off"), *Visibility* (eye / eye-off, tooltip
-  "Detectable" / "Content-protected"), *Mode* (grid 2×2, tooltip = mode name, opens the mode
+  "Detectable" / "Content-protected", or "Privacy mode: hidden from legacy capture only" when
+  the platform reports `partial`), *Mode* (grid 2×2, tooltip = mode name, opens the mode
   menu), thin vertical divider, *Audio* (waveform, tooltip "Start Audio Session" /
   "Stop Audio Session", pulsing green dot when listening), *Session* (timer icon, blue dot
   while a session runs, grey when paused; opens the session menu: title · duration, Pause /
@@ -210,7 +212,8 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   body shows "Researching · Searching the web… (2 lookups)" with an accent "Skip research"
   link that cancels the job and lets the answer continue without it),
   Preparing `◌ Preparing a suggestion` (proactive loop running) and Prepared (blue)
-  `Bluey has a suggestion · ⌘⇧↵` — both only when *Show suggestions* is **On request**, or
+  `Bluey has a suggestion · ⌘⇧↵` (a button that shows the prepared answer; the keys are the
+  saved Generate binding, omitted when it is disabled) — both only when *Show suggestions* is **On request**, or
   when a live suggestion had to stay silent because another answer was streaming; with the
   default **Live** a detected question opens a suggestion turn at once and the pill simply
   reads `◌ Thinking` while it streams, then returns to `● Listening` — Update (blue, only while otherwise idle — never over
@@ -225,7 +228,10 @@ Light theme mirrors the same scale on `#f5f5f7` / `#ffffff` with `#1d1d1f` text.
   repeated errors of the same code replace each other. Plain confirmations stay pills.
 * **Actions on a response**: Copy answer, Copy code, 👍 / 👎 (with "Why wasn't this
   useful?" chips: Wrong, Too long, Not relevant, Missed context, Wrong tone), Regenerate,
-  Expand/Collapse solution. "Copied" confirmation for ~1s.
+  Expand/Collapse solution. "Copied" confirmation for ~1s. Under them a muted 11px provenance
+  line: provider · model · latency, plus "via API key" when a subscription account was skipped
+  (or "fallback model" for another router fallback; the router's reason on hover). A failed web
+  research adds a subtle note under the answer ("Web research failed — answered without it.").
 * Respect `prefers-reduced-motion` and the user's reducedMotion setting: disable the height
   animation, pulse and fades.
 

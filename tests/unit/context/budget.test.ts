@@ -1,5 +1,6 @@
 import {
   allocateBudget,
+  compressHeadTail,
   compressKeepHead,
   compressKeepTail,
   defaultContextBudget,
@@ -121,5 +122,28 @@ describe("defaultContextBudget", () => {
   it("never goes below a sane floor", () => {
     const settings = makeSettings({ ai: { contextTokenBudget: 600 } });
     expect(defaultContextBudget(settings)).toBe(512);
+  });
+});
+
+describe("oversized question (CTX-017)", () => {
+  const paste = Array.from({ length: 1500 }, (_, i) => `log line ${i}: GET /api/items 200 in ${i}ms`).join("\n");
+  const ask = "Why does the request at the end of this log take so long?";
+
+  it("keeps the head and the question at the tail of a long paste", () => {
+    const instruction = `Here is my log:\n${paste}\n${ask}`;
+    const result = allocateBudget([item("user_instruction", instruction, 1, "instruction")], 400);
+    const kept = result.included[0]?.content ?? "";
+    expect(kept.startsWith("Here is my log:")).toBe(true);
+    expect(kept.endsWith(ask)).toBe(true);
+    expect(kept).toContain(TRUNCATION_MARKER);
+    expect(estimateTokens(kept)).toBeLessThanOrEqual(400);
+    expect(result.compressed).toContain("instruction");
+  });
+
+  it("splits the room roughly 60/40 between head and tail", () => {
+    const kept = compressHeadTail(paste, 300);
+    const [head = "", tail = ""] = kept.split(TRUNCATION_MARKER);
+    expect(estimateTokens(head)).toBeGreaterThan(estimateTokens(tail));
+    expect(estimateTokens(tail)).toBeGreaterThan(80);
   });
 });

@@ -7,7 +7,7 @@
  */
 
 import { bluey } from "@/lib/tauri/api";
-import type { BlueyError } from "@/lib/types";
+import { toBlueyError, type BlueyError } from "@/lib/types";
 
 export interface PresentedError {
   title: string;
@@ -80,6 +80,11 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "Provider not found",
     message: "This role points at a provider that no longer exists. Pick another provider in Settings → AI.",
   },
+  "config.autostart_failed": {
+    title: "Launch at login didn't change",
+    message:
+      "macOS didn't accept the login item change. Try the toggle again, or manage Bluey in System Settings → General → Login Items.",
+  },
   "config.no_preset": {
     title: "No recommended models",
     message: "Bluey has no recommended models for this provider kind. Assign models per role in Settings → AI → Models.",
@@ -104,10 +109,35 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     message:
       "Only Google Gemini can transcribe recordings. Point Settings → AI → Models → Transcription at Google Gemini and import again.",
   },
+  "not_supported.link_scheme": {
+    title: "Can't open this link",
+    message: "Bluey only opens web (http/https) and email links.",
+  },
+  "internal.open_link": {
+    title: "Couldn't open the link",
+    message: "Your default browser didn't open it. Copy the link and open it yourself.",
+  },
   // Informational: cloud speech-to-text fell back to on-device Apple Speech.
   "audio.stt_fallback": {
     title: "Using Apple Speech",
     message: "Cloud transcription isn't available right now, so Bluey is transcribing on-device.",
+  },
+  // The Apple route promises on-device; the locale has no on-device model.
+  "audio.speech_server": {
+    title: "Transcribing on Apple's servers",
+    message:
+      "This Mac has no on-device speech model for your language, so Apple Speech sends audio to Apple to transcribe it.",
+  },
+  // Privacy → Cloud AI is off and the locale has no on-device model: nothing is transcribed.
+  "audio.speech_on_device_unavailable": {
+    title: "No on-device speech model",
+    message:
+      "Cloud AI is off and this Mac has no on-device speech model for your language, so Bluey isn't transcribing. Turn Cloud AI on in Settings → Privacy, or pick a language with an on-device model.",
+  },
+  // Cloud speech-to-text lost its connection; it reconnects on its own.
+  "audio.stt_degraded": {
+    title: "Reconnecting transcription",
+    message: "Bluey lost its connection to cloud transcription and is reconnecting. Speech in the meantime isn't transcribed.",
   },
   "config.http_401": { title: "Credentials rejected", message: "The provider rejected the API key (HTTP 401)." },
   "config.http_403": {
@@ -157,20 +187,20 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
   // Subscription accounts (ADR 0009) — every stop signal names what Bluey did instead.
   "account.needs_reauth": {
     title: "Subscription sign-in expired",
-    message: "Reconnect the account to keep using your plan. Bluey uses your API key meanwhile.",
+    message: "Reconnect the account to keep using your plan.",
   },
   "account.fingerprint_drift": {
     title: "Provider stopped recognising Bluey",
     message:
-      "The provider changed how its own app talks to it, so Bluey paused this account rather than bill your extra usage. Your API key is used meanwhile; a fingerprint re-capture fixes it.",
+      "The provider changed how its own app talks to it, so Bluey paused this account rather than bill your extra usage. A fingerprint re-capture fixes it.",
   },
   "account.extra_usage_blocked": {
     title: "Paused to avoid extra-usage charges",
-    message: "The provider started billing requests outside your plan. Bluey stopped and fell back to your API key.",
+    message: "The provider started billing requests outside your plan, so Bluey stopped using this account.",
   },
   "account.policy_blocked": {
     title: "Account blocked by the provider",
-    message: "The provider refused this account. Bluey stopped using it; your API key is used instead.",
+    message: "The provider refused this account. Bluey stopped using it.",
   },
   "account.catalog_unavailable": {
     title: "Couldn't load the plan's models",
@@ -184,6 +214,10 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
     title: "Sign-in not completed",
     message: "The provider did not finish the sign-in. Try again from the account card.",
   },
+  "auth.sign_in_required": {
+    title: "Sign in first",
+    message: "Sign in to Bluey before you start listening.",
+  },
   "account.not_connected": {
     title: "Account not connected",
     message: "Connect the account in Settings → AI → Accounts first.",
@@ -191,6 +225,22 @@ const CODE_COPY: Record<string, { title: string; message: string }> = {
   "account.import_not_found": {
     title: "No existing sign-in found",
     message: "Bluey found no sign-in of the official app on this Mac. Connect in the browser instead.",
+  },
+  // Keychain (ADR 0011): a saved credential exists but macOS wants the user's approval — after an
+  // update or a rebuild Bluey is a new app to the Keychain until it is allowed again.
+  "storage.keychain_access_denied": {
+    title: "macOS blocked a saved credential",
+    message:
+      "Bluey changed since this credential was saved, so macOS asks again. Retry and choose Always Allow — or re-enter the key in Settings.",
+  },
+  "storage.keychain_interaction_not_allowed": {
+    title: "Credential needs your approval",
+    message:
+      "macOS wants your approval before Bluey uses a saved credential. Open Settings → Privacy → Saved credentials and choose Allow access.",
+  },
+  "storage.keychain_unavailable": {
+    title: "Keychain unavailable",
+    message: "Bluey can't reach your login keychain. Unlock your Mac's login keychain, then try again.",
   },
   "account.browser_open_failed": {
     title: "Couldn't open the browser",
@@ -214,7 +264,7 @@ function formatRetry(ms: unknown): string {
 }
 
 /** Title + message for an error, from the most specific source available. */
-export function describeError(error: BlueyError): { title: string; message: string } {
+function describeCopy(error: BlueyError): { title: string; message: string } {
   const details = error.details ?? {};
   if (error.code === "network.http_429") {
     if (details.dailyQuota === true) {
@@ -253,12 +303,31 @@ export function describeError(error: BlueyError): { title: string; message: stri
       : "";
     return {
       title: "Plan limit reached",
-      message: `Your subscription's${window} window is used up.${resets} Bluey uses your API key meanwhile.`,
+      message: `Your subscription's${window} window is used up.${resets}`,
     };
   }
   if (error.code === "account.provider_pending") {
     // Rust names the provider and the PR that lands it.
     return { title: "Not available yet", message: error.message };
+  }
+  if (error.code === "account.needs_reauth" && details.imported === true) {
+    // Claude Code / Codex rotate refresh tokens: Bluey never refreshes an imported session.
+    return {
+      title: "Imported sign-in expired",
+      message:
+        "Import the sign-in again from the official app (macOS asks once to share it), or reconnect in the browser.",
+    };
+  }
+  if (error.code === "account.import_denied") {
+    // Rust names the app whose sign-in macOS refused to share ("… reading Claude Code's sign-in …").
+    return { title: "macOS blocked the import", message: error.message };
+  }
+  if (error.code === "config.model_not_found" && typeof details.model === "string") {
+    // Azure / OpenAI-compatible / Anthropic name the model or deployment they could not find.
+    return {
+      title: "Model not available",
+      message: `"${details.model}" isn't available on this provider. Check the model or deployment name in Settings → AI.`,
+    };
   }
   if (error.code === "ai.invalid_request") {
     // Rust names the provider and quotes its reason ("ChatGPT rejected the request: Invalid
@@ -275,6 +344,101 @@ export function describeError(error: BlueyError): { title: string; message: stri
     title: KIND_TITLES[error.kind] ?? "Something went wrong",
     message: KIND_MESSAGES[error.kind] ?? error.message,
   };
+}
+
+type RecoveryFailureReporter = (error: BlueyError) => void;
+
+let reportRecoveryFailure: RecoveryFailureReporter = (error) =>
+  console.warn("[recovery] the recovery action failed", error.code);
+
+/** The toast host registers how a failed recovery is shown (it cannot be imported here without a cycle). */
+export function setRecoveryFailureReporter(reporter: RecoveryFailureReporter): void {
+  reportRecoveryFailure = reporter;
+}
+
+/**
+ * The one runner for recovery buttons (toasts, banners, the HUD pill and notice):
+ * a recovery that fails itself — Reconnect, Restart helper, Open Settings — is
+ * shown, never swallowed as an unhandled rejection (UX-036). Resolves `false` then.
+ */
+export async function runRecovery(action: () => void | Promise<void>): Promise<boolean> {
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    reportRecoveryFailure(toBlueyError(error));
+    return false;
+  }
+}
+
+/** Account stop signals: what Bluey does instead depends on whether an API-key provider stands in. */
+const ACCOUNT_STOP_CODES = new Set([
+  "account.needs_reauth",
+  "account.rate_limited",
+  "account.fingerprint_drift",
+  "account.extra_usage_blocked",
+  "account.policy_blocked",
+]);
+
+/** `config.provider_unusable`: a role IS assigned, but Rust names why its provider can't serve it. */
+function describeUnusableProvider(details: Record<string, unknown>): { title: string; message: string } {
+  const name = typeof details.providerName === "string" ? details.providerName : "This provider";
+  const role = typeof details.role === "string" ? `the ${details.role} role` : "this role";
+  const cause = typeof details.cause === "string" ? details.cause : "";
+  const noStandIn = "and no API-key provider can stand in";
+  if (cause === "missing_key") {
+    return {
+      title: "API key missing",
+      message: `${name} has no API key yet, so ${role} can't answer. Add the key in Settings → AI, or assign the role to another provider.`,
+    };
+  }
+  if (cause === "disabled") {
+    return {
+      title: "Provider turned off",
+      message: `${name} is turned off, but ${role} still uses it. Turn it back on or pick another provider in Settings → AI.`,
+    };
+  }
+  if (cause === "not_configured") {
+    return {
+      title: "Provider not found",
+      message: `${role.charAt(0).toUpperCase()}${role.slice(1)} points at a provider that no longer exists. Pick another provider in Settings → AI.`,
+    };
+  }
+  if (cause === "account_needs_reauth") {
+    return {
+      title: "Subscription sign-in expired",
+      message: `${name} needs you to sign in again, ${noStandIn}. Reconnect it or add an API key in Settings → AI.`,
+    };
+  }
+  if (cause === "account_rate_limited") {
+    return {
+      title: "Plan limit reached",
+      message: `${name}'s plan window is used up, ${noStandIn}. Add an API key in Settings → AI, or wait for the reset.`,
+    };
+  }
+  if (cause.startsWith("account_")) {
+    return {
+      title: "Subscription account unavailable",
+      message: `${name} can't answer right now, ${noStandIn}. Reconnect it or add an API key in Settings → AI.`,
+    };
+  }
+  return {
+    title: "Provider can't be used",
+    message: `${name} can't serve this request. Pick another provider for ${role} in Settings → AI.`,
+  };
+}
+
+export function describeError(error: BlueyError): { title: string; message: string } {
+  const details = error.details ?? {};
+  if (error.code === "config.provider_unusable") return describeUnusableProvider(details);
+  const copy = describeCopy(error);
+  if (!ACCOUNT_STOP_CODES.has(error.code)) return copy;
+  // Promise the API key only when Rust found one that now answers instead (PROV-001).
+  const fallback =
+    typeof details.fallbackProviderId === "string"
+      ? " Bluey uses your API key meanwhile."
+      : " Add an API key in Settings → AI so Bluey can keep answering meanwhile.";
+  return { title: copy.title, message: `${copy.message}${fallback}` };
 }
 
 /** Turns a BlueyError into a friendly title/message + recovery action. */

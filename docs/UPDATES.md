@@ -18,9 +18,10 @@ Both feeds are static `latest.json` files in Tauri's updater format —
 (`docs/RELEASING.md › Updater artifacts`). GitHub resolves `releases/latest/download/…` to the
 newest **non-prerelease** release, so the Latest channel never sees a nightly or an `-rc`.
 
-Nightly versions look like `0.1.2-nightly.20260913`: SemVer-greater than the current stable, smaller
-than the next stable. A user who switches from Nightly back to Latest is offered the next stable
-when it ships; a Latest user is never offered a nightly.
+Nightly versions are the next patch version plus the build date, `X.Y.(Z+1)-nightly.YYYYMMDD`
+(sources at `0.1.2` build `0.1.3-nightly.20260913`): SemVer-greater than the current stable,
+smaller than the next stable. A user who switches from Nightly back to Latest is offered the
+next stable when it ships; a Latest user is never offered a nightly.
 
 ## Signing
 
@@ -29,12 +30,28 @@ public key compiled into `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 independent of Apple code-signing and works for unsigned developer builds too.
 
 - The private key and its password are the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; `tauri build` signs `Bluey.app.tar.gz` with them when
-  `bundle.createUpdaterArtifacts` is on. The owner keeps a backup of both: **losing the key means
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; the bundling step signs `Bluey.app.tar.gz` with them when
+  `bundle.createUpdaterArtifacts` is on. `scripts/release.sh` compiles with
+  `tauri build --no-bundle` without the key and hands it to `tauri bundle` alone. The owner keeps a backup of both: **losing the key means
   installed apps can never update again** (they would need a fresh download).
 - Rotation: generate a new pair (`bun run tauri signer generate -w ~/.tauri/bluey-updater.key`),
   ship one release signed with the **old** key whose config carries the **new** public key, then
   switch CI to the new key.
+
+### Unsigned builds reset macOS permissions
+
+The minisign check says nothing about Apple code-signing. A build without a Developer ID is
+signed ad hoc, so its designated requirement is its own `cdhash`: every update is a new code
+identity to macOS. Screen Recording, Accessibility, Microphone and Speech Recognition grants and
+the Keychain approvals of saved API keys were given to the previous identity and stop applying.
+Signing every feed build with one stable identity (Developer ID) is the fix and an owner action.
+
+Until then the app detects the loss (MAC-001): `PermissionManager` persists the last-known
+granted set with the app version (`permission_snapshot` settings key). On the first refresh of a
+run with a different version, identity-bound grants that are now denied or not requested fill
+`PermissionState.lostAfterUpdate`, boot opens *Settings → Permissions*, and one card names the
+lost permissions, explains why, and links each System Settings pane. A permission leaves the
+card as soon as it is granted again; the card is shown in that first run only.
 
 ## What the app does
 
@@ -59,6 +76,15 @@ independent of Apple code-signing and works for unsigned developer builds too.
   prepared suggestion (`derivePill`, `src/features/hud/state-pill.ts`).
 - The current version keeps running through every failure; errors are `update.check_failed`
   and `update.install_failed` (copy in `src/lib/errors/present.ts`), shown in the Settings row.
+- **Restart to update** stops audio, the agent sidecar and the helper, then asks the event loop to
+  restart (`request_restart`), so nothing is orphaned (MAC-014).
+- **First launch of the new version**: when the database has migrations pending, `bluey.db` is
+  first copied to `bluey.db.bak-<version>` next to it (`VACUUM INTO`). If startup still fails
+  (database, migration, settings), a dialog shows the error and the log folder and offers
+  *Reveal Data Folder* or *Quit* instead of the app vanishing (CRIT-003). The backup holds
+  everything the database held, so it does not outlive a deletion: every delete listed in
+  SECURITY.md "Data deletion" (and *Reset all data*) removes the `.bak-*` copies, and once a
+  version has migrated successfully, backups taken by older versions are removed at startup.
 - **Debug builds** (`tauri dev`) report `supported: false`: a manual check answers, nothing is
   installed and no background check runs. The browser mock simulates the whole cycle (it always
   "finds" `0.2.0`, or `0.2.0-nightly.…` on the Nightly channel).

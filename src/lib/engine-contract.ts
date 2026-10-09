@@ -36,6 +36,8 @@ export interface AskInput {
   /** Pre-built native snapshot. When absent and `captureScreen` is true the engine builds one. */
   snapshot?: ContextSnapshot;
   captureScreen: boolean;
+  /** `false` when the HUD screen toggle is off: no capture, OCR or accessibility tree at all. */
+  screenAllowed?: boolean;
   mode: BlueyMode;
   session?: Session | null;
   settings: Settings;
@@ -54,6 +56,12 @@ export interface AskInput {
   triggeredAtMs?: number;
 }
 
+/**
+ * How long a prepared answer stays usable: after that the question is long gone, so the
+ * engine cache, the chat store's `prepared` (and its hint) and a deferred question expire.
+ */
+export const PREPARED_TTL_MS = 3 * 60 * 1000;
+
 export type EnginePhase = "capturing" | "analyzing" | "thinking" | "streaming" | "done" | "error" | "cancelled";
 
 export interface EngineCallbacks {
@@ -62,6 +70,18 @@ export interface EngineCallbacks {
   onDraft?(response: BlueyResponse): void;
   onComplete?(response: BlueyResponse): void;
   onError?(error: BlueyError, requestId: string): void;
+  /**
+   * The request's cancellation handle, as soon as the request exists. `prepare()` has no
+   * return handle (it resolves with the answer), so a live suggestion is stopped through
+   * this — Esc, Stop and a manual ask must be able to end it like any answer.
+   */
+  onHandle?(handle: CancelHandle): void;
+}
+
+/** Cancels one request: its stream ends, and nothing it produced is persisted or shown. */
+export interface CancelHandle {
+  requestId: string;
+  cancel(): Promise<void>;
 }
 
 export interface EngineHandle {
@@ -88,6 +108,8 @@ export interface ClassifyInput {
   recent: TranscriptSegment[];
   mode: BlueyMode;
   settings: Settings;
+  /** Finals coalesced into `segment` (a question split by a pause); defaults to `[segment.id]`. */
+  segmentIds?: string[];
 }
 
 export interface ResponseEngine {
@@ -104,6 +126,14 @@ export interface ResponseEngine {
   prepare(input: AskInput, callbacks?: EngineCallbacks): Promise<BlueyResponse | null>;
   /** Pop a prepared response (optionally for a specific detected event id). */
   takePrepared(eventId?: string): BlueyResponse | null;
+  /** Drop every prepared answer (the mode changed: they were written for the old one). */
+  clearPrepared(): void;
+  /**
+   * A prepared (or cached) answer was shown: persist it like any shown answer — saved with
+   * `prepared` cleared and a `response_generated` session event. Best-effort; resolves with
+   * the committed response.
+   */
+  commitShown(response: BlueyResponse, session?: Session | null): Promise<BlueyResponse>;
   /** Lightweight transcript classification (heuristics first, fast model when configured). */
   classify(input: ClassifyInput): Promise<DetectedEvent | null>;
   /** Post-session summary structured by mode. */

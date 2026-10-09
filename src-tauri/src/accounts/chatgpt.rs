@@ -514,8 +514,8 @@ impl ProviderProfile for ChatgptProfile {
             expires_at,
             id_token: imported.id_token,
         };
-        // Copy only. Refreshing here would rotate the CLI's refresh token and sign it out;
-        // Bluey refreshes when its own access token expires.
+        // Copy only, and never refreshed: that would rotate the CLI's refresh token and
+        // sign it out. When the access token expires the account moves to NeedsReauth.
         tracing::info!("imported the Codex CLI sign-in (read-only)");
         Ok(connected_from(tokens))
     }

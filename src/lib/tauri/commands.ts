@@ -14,6 +14,7 @@
 
 import type {
   AccountConnectOptions,
+  AiReadiness,
   AIRequest,
   AudioDevice,
   AudioSessionConfig,
@@ -27,7 +28,9 @@ import type {
   CaptureProtection,
   ConnectionTestResult,
   ContextSnapshot,
+  CredentialHealth,
   DeepResearchRequest,
+  ResearchBackend,
   DevInfo,
   DevSimulation,
   DisplayInfo,
@@ -65,6 +68,7 @@ import type {
   SessionSummary,
   EmbedPurpose,
   ModelRole,
+  SecretState,
   Settings,
   SettingsPatch,
   SetupCheck,
@@ -143,7 +147,10 @@ export interface CommandMap {
   // ── Provider accounts (subscription sign-in, ADR 0009): Rust owns the tokens; the WebView sees status only ─
   accounts_list: { args: void; result: ProviderAccount[] };
   /** Start a sign-in with `chatgpt` | `claude` | `antigravity`; completion arrives as `accounts.changed`. */
-  accounts_connect: { args: { providerId: string; options?: AccountConnectOptions }; result: ProviderAccount };
+  accounts_connect: {
+    args: { providerId: string; options?: AccountConnectOptions };
+    result: ProviderAccount;
+  };
   /** Import the official client's local sign-in on this Mac (read-only). */
   accounts_import: { args: { providerId: string }; result: ProviderAccount };
   accounts_cancel_connect: { args: { accountId: string }; result: ProviderAccount };
@@ -217,6 +224,7 @@ export interface CommandMap {
   /** `purpose` defaults to `document`; queries get the retrieval prompt prefix on gemini-embedding-2. */
   ai_embed: { args: { texts: string[]; purpose?: EmbedPurpose }; result: number[][] };
   ai_test_connection: { args: { providerId: string; model?: string }; result: ConnectionTestResult };
+  ai_readiness: { args: void; result: AiReadiness };
   /** `role` narrows the catalogue to models fit for that role (embedding, transcription, text). */
   ai_list_models: { args: { providerId: string; role?: ModelRole }; result: string[] };
   /** Point roles at the provider's recommended models; `overwrite: false` fills only unassigned roles. */
@@ -227,7 +235,13 @@ export interface CommandMap {
    * timestamps limit the recording to 30 minutes; `language` is a BCP-47 tag (omit = auto).
    */
   ai_transcribe_file: {
-    args: { path: string; diarization: boolean; wordTimestamps: boolean; language?: string; sessionId?: string };
+    args: {
+      path: string;
+      diarization: boolean;
+      wordTimestamps: boolean;
+      language?: string;
+      sessionId?: string;
+    };
     result: TranscribeFileResult;
   };
 
@@ -236,7 +250,10 @@ export interface CommandMap {
   research_scrape: { args: { url: string }; result: ScrapeResult };
   research_deep_start: { args: { request: DeepResearchRequest }; result: void };
   research_deep_cancel: { args: { jobId: string }; result: boolean };
-  research_available: { args: void; result: { search: boolean; scrape: boolean; deepAgent: boolean } };
+  research_available: {
+    args: void;
+    result: { search: boolean; scrape: boolean; deepAgent: boolean; agentBackends: ResearchBackend[] };
+  };
 
   // ── Modes ──────────────────────────────────────────────────────────────
   modes_list: { args: void; result: BlueyMode[] };
@@ -309,6 +326,12 @@ export interface CommandMap {
   secrets_set: { args: { key: string; value: string }; result: void };
   secrets_has: { args: { key: string }; result: boolean };
   secrets_delete: { args: { key: string }; result: void };
+  /** API-key fields only; never prompts. */
+  secrets_state: { args: { key: string }; result: SecretState };
+  /** Every saved Bluey-owned credential — names and states, never values. */
+  secrets_health: { args: void; result: CredentialHealth[] };
+  /** The one read that may show macOS's Keychain prompt; returns the new state. */
+  secrets_allow_access: { args: { key: string }; result: SecretState };
 
   // ── Shortcuts ──────────────────────────────────────────────────────────
   shortcuts_list: { args: void; result: ShortcutBinding[] };
@@ -348,7 +371,6 @@ export interface CommandMap {
   data_usage_stats: { args: void; result: DataUsageStats };
   data_delete_screenshots: { args: void; result: number };
   data_clear_transcripts: { args: void; result: number };
-  data_clear_ai_cache: { args: void; result: number };
   data_reset_all: { args: void; result: void };
   data_export_session: { args: { sessionId: string; format: "markdown" | "json" }; result: string };
 
@@ -426,6 +448,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "ai_cancel_all",
   "ai_embed",
   "ai_test_connection",
+  "ai_readiness",
   "ai_list_models",
   "ai_apply_provider_presets",
   "ai_transcribe_file",
@@ -480,6 +503,9 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "secrets_set",
   "secrets_has",
   "secrets_delete",
+  "secrets_state",
+  "secrets_health",
+  "secrets_allow_access",
   "shortcuts_list",
   "shortcuts_update",
   "shortcuts_reset",
@@ -501,7 +527,6 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "data_usage_stats",
   "data_delete_screenshots",
   "data_clear_transcripts",
-  "data_clear_ai_cache",
   "data_reset_all",
   "data_export_session",
   "dev_simulate",

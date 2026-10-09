@@ -62,14 +62,10 @@ impl DocumentsManager {
             .run(move |db| bluey_storage::add_document(db, &stored_input, read_scoped))
             .await?;
 
-        if doc.scope == DocumentScope::Mode {
-            if let Some(mode_id) = doc.scope_id.clone() {
-                let doc_id = doc.id.clone();
-                self.storage
-                    .run(move |db| ModeRepository::attach_document(db, &mode_id, &doc_id))
-                    .await?;
-                self.publish_modes_changed().await;
-            }
+        // A mode's files are its mode-scoped documents; refresh the modes
+        // snapshot so `attachedDocumentIds` picks the new one up.
+        if doc.scope == DocumentScope::Mode && doc.scope_id.is_some() {
+            self.publish_modes_changed().await;
         }
 
         let mut doc = doc;
@@ -111,7 +107,12 @@ impl DocumentsManager {
         let doc = self.get(id.clone()).await?;
         let deleted = self
             .storage
-            .run(move |db| DocumentRepository::delete(db, &id))
+            .run(move |db| {
+                let deleted = DocumentRepository::delete(db, &id)?;
+                // Deleted text must not linger in the WAL (DATA-010) or a backup.
+                db.finish_deletion()?;
+                Ok(deleted)
+            })
             .await?;
         if !deleted {
             return Err(BlueyError::storage("not_found", "document was not found"));
@@ -126,7 +127,11 @@ impl DocumentsManager {
     pub async fn delete_all(&self, scope: Option<DocumentScope>) -> BlueyResult<u64> {
         let removed = self
             .storage
-            .run(move |db| DocumentRepository::delete_all(db, scope))
+            .run(move |db| {
+                let removed = DocumentRepository::delete_all(db, scope)?;
+                db.finish_deletion()?;
+                Ok(removed)
+            })
             .await?;
         if removed > 0 && scope.is_none_or(|s| s == DocumentScope::Mode) {
             self.publish_modes_changed().await;
@@ -135,9 +140,13 @@ impl DocumentsManager {
     }
 
     /// Retrieve relevant chunks; the query is embedded when semantic retrieval
-    /// is possible (embedding role usable and not keyword-only).
+    /// is possible (embedding role usable and the strategy matches by meaning).
+    /// Only vectors produced by the current embedding model are compared.
     pub async fn retrieve(&self, query: RetrievalQuery) -> BlueyResult<Vec<RetrievedChunk>> {
-        let wants_semantic = !matches!(query.strategy, Some(RetrievalStrategy::Keyword));
+        let wants_semantic = !matches!(
+            query.strategy,
+            Some(RetrievalStrategy::Keyword | RetrievalStrategy::Leading)
+        );
         let embedding = if wants_semantic && self.ai.embeddings_ready() {
             match self
                 .ai
@@ -157,8 +166,11 @@ impl DocumentsManager {
         } else {
             None
         };
+        let model_tag = embedding.as_ref().and_then(|_| self.embedding_tag());
         self.storage
-            .run(move |db| bluey_storage::retrieve(db, &query, embedding.as_deref()))
+            .run(move |db| {
+                bluey_storage::retrieve(db, &query, embedding.as_deref(), model_tag.as_deref())
+            })
             .await
     }
 

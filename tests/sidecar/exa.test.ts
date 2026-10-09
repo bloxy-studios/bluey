@@ -110,6 +110,20 @@ describe("createExaClient", () => {
     expect((err as ToolError).code).toBe("network_error");
   });
 
+  it("aborts an in-flight search when the job is cancelled (not reported as a timeout)", async () => {
+    const fetchImpl = (_url: string | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    const client = createExaClient({ apiKey: "k", fetchImpl, timeoutMs: 60_000 });
+    const job = new AbortController();
+    const pending = client.search({ query: "q", signal: job.signal }).catch((e: unknown) => e);
+    job.abort();
+    const err = await pending;
+    expect(err).not.toBeInstanceOf(ToolError);
+    expect((err as Error).name).toBe("AbortError");
+  });
+
   it("refuses to construct without an API key", () => {
     expect(() => createExaClient({ apiKey: "" })).toThrowError(/EXA_API_KEY/);
   });

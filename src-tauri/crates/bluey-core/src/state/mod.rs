@@ -12,11 +12,14 @@
 //!   (⌘↵ follow-up while a response is shown). `ResponseDismissed` additionally
 //!   cancels out of Capturing/Analyzing/Thinking (Escape while busy).
 //! * "idle" means Listening when `audio_active`, otherwise Ready.
-//! * `AudioStarted`/`AudioStopped` toggle `audio_active` and only move the
-//!   state between Ready and Listening; during a busy state they just flip the
-//!   flag, so the pipeline returns to the right idle state afterwards.
+//! * `AudioStarted`/`AudioStopped` toggle `audio_active` in every state but
+//!   Booting/AuthRequired and only move the state between Ready and Listening;
+//!   during a busy, errored or paused state they just flip the flag, so the
+//!   machine returns to the right idle state afterwards.
 //! * `Failed` → Error (remembering the idle state to resume to), `Recovered` →
-//!   back to idle. `Paused`/`Resumed` likewise. Pausing keeps `audio_active`
+//!   back to idle. New work (`CaptureStarted`/`ThinkingStarted`) also leaves
+//!   Error and clears it: the error belonged to the earlier request.
+//!   `Paused`/`Resumed` likewise. Pausing keeps `audio_active`
 //!   as-is: the app layer stops the audio engine itself without telling the
 //!   machine, so resuming can go straight back to Listening.
 //! * `SignedOut` clears the session and turns audio off.
@@ -140,6 +143,21 @@ impl AppStateMachine {
         }
     }
 
+    /// Leave the error region (a new request supersedes the failed one).
+    fn clear_error(&mut self) {
+        if self.status.state == AppState::Error {
+            self.status.error = None;
+            self.status.resume_state = None;
+        }
+    }
+
+    /// Keep the remembered idle state in step with the audio flag while errored or paused.
+    fn refresh_resume_state(&mut self) {
+        if self.status.resume_state.is_some() {
+            self.status.resume_state = Some(self.idle_state());
+        }
+    }
+
     /// Apply `event`. On success returns a clone of the updated status; on a
     /// rejected transition returns a [`TransitionError`] and leaves the status
     /// untouched.
@@ -190,6 +208,9 @@ impl AppStateMachine {
             }
 
             // ── Orthogonal audio region ─────────────────────────────────────
+            // The flag follows the hardware in every running state — errored
+            // and paused included — so the HUD never shows a live microphone
+            // as off (or the reverse). Only the idle states change `state`.
             AppEvent::AudioStarted => {
                 if !audio_toggle_allowed(from) {
                     return Err(reject());
@@ -198,6 +219,7 @@ impl AppStateMachine {
                 if from == S::Ready {
                     self.status.state = S::Listening;
                 }
+                self.refresh_resume_state();
             }
             AppEvent::AudioStopped => {
                 if !audio_toggle_allowed(from) {
@@ -207,15 +229,18 @@ impl AppStateMachine {
                 if from == S::Listening {
                     self.status.state = S::Ready;
                 }
+                self.refresh_resume_state();
             }
 
             // ── Capture → analyze → think pipeline ──────────────────────────
             AppEvent::CaptureStarted => {
                 // A new capture may start from idle or straight from a shown response
-                // (⌘↵ follow-up) without bouncing through idle first.
-                if !(from.is_idle() || from == S::ResponseReady) {
+                // (⌘↵ follow-up) without bouncing through idle first. New user work
+                // also clears an earlier failure: the error belongs to that request.
+                if !(from.is_idle() || from == S::ResponseReady || from == S::Error) {
                     return Err(reject());
                 }
+                self.clear_error();
                 self.status.state = S::Capturing;
             }
             AppEvent::CaptureFinished | AppEvent::AnalysisStarted => {
@@ -225,9 +250,14 @@ impl AppStateMachine {
                 self.status.state = S::Analyzing;
             }
             AppEvent::ThinkingStarted => {
-                if !(from.is_idle() || from == S::Analyzing || from == S::ResponseReady) {
+                if !(from.is_idle()
+                    || from == S::Analyzing
+                    || from == S::ResponseReady
+                    || from == S::Error)
+                {
                     return Err(reject());
                 }
+                self.clear_error();
                 self.status.state = S::Thinking;
             }
             AppEvent::ResponseReady => {
@@ -285,19 +315,10 @@ impl AppStateMachine {
     }
 }
 
-/// Audio start/stop is meaningful while the app runs normally; it is rejected
-/// during boot/auth and while paused or errored (the app layer manages audio
-/// hardware itself in those states).
+/// Audio start/stop is tracked in every state once the app runs: only boot
+/// and sign-in (no audio can run there) reject it.
 fn audio_toggle_allowed(state: AppState) -> bool {
-    matches!(
-        state,
-        AppState::Ready
-            | AppState::Listening
-            | AppState::Capturing
-            | AppState::Analyzing
-            | AppState::Thinking
-            | AppState::ResponseReady
-    )
+    !matches!(state, AppState::Booting | AppState::AuthRequired)
 }
 
 #[cfg(test)]

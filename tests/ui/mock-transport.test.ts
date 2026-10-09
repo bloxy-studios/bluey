@@ -4,6 +4,8 @@ import { COMMAND_NAMES } from "@/lib/tauri/commands";
 import { MockTransport } from "@/lib/tauri/mock";
 import type { AIChunk, AIRequest, DetectedEvent, TranscriptSegment } from "@/lib/types";
 
+import { rustBuiltInMode } from "../fixtures/helpers/fixtures";
+
 function makeRequest(): AIRequest {
   return {
     requestId: "req-test",
@@ -93,14 +95,66 @@ describe("MockTransport", () => {
     expect(appAfterStop.state).toBe("ready");
   });
 
+  it("a background context_build_snapshot leaves the app state alone, like Rust", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    await mock.invoke("audio_start", {});
+    const options = { includeScreen: false, includeOcr: false, includeAccessibility: false, includeTranscript: true };
+
+    await mock.invoke("context_build_snapshot", { options: { ...options, background: true } });
+    expect((await mock.invoke("app_get_status", undefined)).state).toBe("listening");
+
+    await mock.invoke("context_build_snapshot", { options });
+    expect((await mock.invoke("app_get_status", undefined)).state).toBe("analyzing");
+  });
+
+  it("refuses web research with Cloud AI off, like Rust", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    await mock.invoke("settings_update", { patch: { privacy: { cloudAiEnabled: false } } });
+
+    await expect(mock.invoke("research_search", { query: "acme" })).rejects.toMatchObject({
+      code: "privacy.cloud_ai_disabled",
+    });
+    await expect(mock.invoke("research_scrape", { url: "https://example.com" })).rejects.toMatchObject({
+      code: "privacy.cloud_ai_disabled",
+    });
+  });
+
   it("seeds the ten built-in modes with instructions and groups", async () => {
     const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
     const modes = await mock.invoke("modes_list", undefined);
     expect(modes).toHaveLength(10);
     expect(modes.map((m) => m.id)).toContain("coding-interview");
     const interview = modes.find((m) => m.id === "interview");
-    expect(interview?.group).toBe("Looking for work");
-    expect(interview?.systemInstructions).toContain("candidate in a job interview");
+    // The mock serves the Rust definitions (tests/fixtures/rust/built-in-modes.json).
+    expect(interview?.group).toBe(rustBuiltInMode("interview").group);
+    expect(interview?.systemInstructions).toBe(rustBuiltInMode("interview").systemInstructions);
+    expect(interview?.systemInstructions).toContain("candidate");
+  });
+
+  it("drops a removed provider's API key, as Rust's settings side effects do", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    const settings = await mock.invoke("settings_get", undefined);
+    const [gemini] = settings.ai.providers;
+    if (!gemini) throw new Error("the mock seeds Gemini");
+    const custom = { ...gemini, id: "custom-1", name: "Custom" };
+    await mock.invoke("settings_update", { patch: { ai: { providers: [...settings.ai.providers, custom] } } });
+    await mock.invoke("secrets_set", { key: "provider:custom-1:api_key", value: "k" });
+
+    await mock.invoke("settings_reset", undefined);
+
+    expect(await mock.invoke("secrets_has", { key: "provider:custom-1:api_key" })).toBe(false);
+  });
+
+  it("allows access only to the credentials Rust's Saved credentials list shows", async () => {
+    const mock = new MockTransport({ streamDelayMs: 0, levelTicks: false });
+    for (const key of ["auth:clerk:oauth_tokens", "account:claude:oauth_tokens", "research:exa:api_key"]) {
+      expect(await mock.invoke("secrets_allow_access", { key })).toMatch(/^(present|absent)$/);
+    }
+    for (const key of ["auth:clerk:client_token", "account::oauth_tokens", "settings:theme"]) {
+      await expect(mock.invoke("secrets_allow_access", { key })).rejects.toMatchObject({
+        code: "internal.invalid_params",
+      });
+    }
   });
 
   it("seeds Gemini as the first provider and applies its presets per role", async () => {
@@ -224,10 +278,13 @@ describe("MockTransport", () => {
     const system = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+Q" });
     expect(system?.conflictsWith).toBe("system");
     const bluey = await mock.invoke("shortcuts_check_conflict", {
-      accelerator: "CmdOrCtrl+R",
+      accelerator: "CmdOrCtrl+Enter",
       ignoreId: "toggle_panel",
     });
     expect(bluey?.conflictsWith).toBe("bluey");
+    // New Chat is HUD-local by default, so ⌘R only clashes with the frontmost app (UX-001).
+    const reload = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+R" });
+    expect(reload).toMatchObject({ conflictsWith: "system", accelerator: "CmdOrCtrl+KeyR" });
     const ok = await mock.invoke("shortcuts_check_conflict", { accelerator: "CmdOrCtrl+Alt+P" });
     expect(ok).toBeNull();
   });

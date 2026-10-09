@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
+use super::reconnect::{is_fatal, reopen, Command, Outage, Reopened, Watchdog, SEND_TIMEOUT};
 use super::{
     session_closed, EventSink, FinalDedupe, PcmChunk, SessionOptions, TranscriptionEvent,
     TranscriptionProvider, TranscriptionSession, DEDUPE_WINDOW,
@@ -49,12 +50,9 @@ pub const SERVER_SILENCE_MS: u32 = 600;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONNECT_ATTEMPTS: u32 = 3;
-const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 /// Server-caused reconnects (errors, closes) tolerated without any transcript
 /// progress in between.
 const MAX_RECONNECTS_WITHOUT_PROGRESS: u32 = 5;
-const RECONNECT_BACKOFF_BASE: Duration = Duration::from_millis(500);
-const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(8);
 const COMMAND_BUFFER: usize = 256;
 
 pub struct GeminiLiveProvider {
@@ -97,11 +95,6 @@ impl TranscriptionProvider for GeminiLiveProvider {
             task: parking_lot::Mutex::new(Some(task)),
         }))
     }
-}
-
-enum Command {
-    Audio(PcmChunk),
-    Close,
 }
 
 struct LiveSession {
@@ -148,14 +141,24 @@ struct Connection {
     /// `audioStreamEnd` was sent since the last speech chunk.
     stream_end_sent: bool,
     last_speech: Option<Instant>,
+    watchdog: Watchdog,
 }
 
 impl Connection {
+    /// A send that stalls (a half-open socket) fails like a closed one.
     async fn send(&mut self, value: serde_json::Value) -> BlueyResult<()> {
-        self.socket
-            .send(Message::Text(value.to_string().into()))
-            .await
-            .map_err(|_| BlueyError::network("stream", "the Gemini Live socket closed"))
+        let sent = self.socket.send(Message::Text(value.to_string().into()));
+        match tokio::time::timeout(SEND_TIMEOUT, sent).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(BlueyError::network(
+                "stream",
+                "the Gemini Live socket closed",
+            )),
+            Err(_) => Err(BlueyError::network(
+                "timeout",
+                "the Gemini Live socket stalled",
+            )),
+        }
     }
 }
 
@@ -168,6 +171,10 @@ enum Action {
     Rotate,
     /// The server errored or closed: reconnect with backoff.
     Reconnect,
+    /// Speech went unanswered (a half-open socket): reconnect at once. Not
+    /// counted against the no-progress budget, since a fresh `setupComplete`
+    /// proves the service itself is up.
+    Stalled,
     Fatal(BlueyError),
 }
 
@@ -220,18 +227,6 @@ pub fn map_live_http_status(status: u16) -> BlueyError {
     }
 }
 
-/// Configuration errors end the session; everything else is worth a reconnect.
-fn is_fatal(error: &BlueyError) -> bool {
-    error.kind == BlueyErrorKind::Configuration
-}
-
-fn reconnect_backoff(reconnects: u32) -> Duration {
-    RECONNECT_BACKOFF_BASE
-        .checked_mul(2u32.saturating_pow(reconnects.saturating_sub(1)))
-        .unwrap_or(RECONNECT_BACKOFF_CAP)
-        .min(RECONNECT_BACKOFF_CAP)
-}
-
 impl Worker {
     fn redacted_url(&self) -> String {
         proto::redact_live_url(&proto::live_url(&self.api_key))
@@ -252,6 +247,7 @@ impl Worker {
                         opened_at: Instant::now(),
                         stream_end_sent: true,
                         last_speech: None,
+                        watchdog: Watchdog::default(),
                     };
                     let setup = proto::live_setup_message(&proto::LiveSetupOptions {
                         model: &self.options.model,
@@ -332,6 +328,7 @@ impl Worker {
         if chunk.is_speech {
             conn.last_speech = Some(Instant::now());
             conn.stream_end_sent = false;
+            conn.watchdog.sent_speech();
         }
         Ok(())
     }
@@ -448,12 +445,12 @@ impl Worker {
     }
 
     async fn run(self, mut rx: mpsc::Receiver<Command>) {
-        let mut conn = match self.connect().await {
-            Ok(conn) => conn,
-            Err(error) => return self.fail(error).await,
+        let mut outage = Outage::new(self.options.source, self.sink.clone());
+        let mut conn = match reopen(&mut rx, &mut outage, 0, || self.connect()).await {
+            Reopened::Open(conn) => conn,
+            Reopened::Closed => return,
+            Reopened::Fatal(error) => return self.fail(error).await,
         };
-        // Consecutive connect failures while rotating.
-        let mut failures = 0u32;
         // Server-caused reconnects since the last transcript event.
         let mut reconnects = 0u32;
         loop {
@@ -475,15 +472,25 @@ impl Worker {
                         tracing::info!("gemini live socket closed by the server; reconnecting");
                         Action::Reconnect
                     }
-                    Some(Ok(message)) => match decode_frame(&message) {
-                        Some(event) => self.handle(event).await,
-                        None => Action::None,
-                    },
+                    Some(Ok(message)) => {
+                        conn.watchdog.heard();
+                        match decode_frame(&message) {
+                            Some(event) => self.handle(event).await,
+                            None => Action::None,
+                        }
+                    }
                     Some(Err(error)) => {
                         tracing::warn!(error = %error, "gemini live socket error");
                         Action::Reconnect
                     }
                 },
+                () = conn.watchdog.expired() => {
+                    tracing::warn!(
+                        source = ?self.options.source,
+                        "gemini live stopped answering; reconnecting"
+                    );
+                    Action::Stalled
+                }
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(rotate_at)) => {
                     tracing::info!(
                         source = ?self.options.source,
@@ -503,50 +510,50 @@ impl Worker {
                     Action::None
                 }
             };
-            let reconnecting = matches!(action, Action::Reconnect);
-            match action {
-                Action::None => {}
+            let attempt = match action {
+                Action::None => continue,
                 Action::Progress => {
-                    failures = 0;
                     reconnects = 0;
-                }
-                Action::Rotate | Action::Reconnect => {
-                    if reconnecting {
-                        reconnects += 1;
-                        if reconnects > MAX_RECONNECTS_WITHOUT_PROGRESS {
-                            return self
-                                .fail(BlueyError::network(
-                                    "stream",
-                                    "the Gemini Live session keeps failing; giving up",
-                                ))
-                                .await;
-                        }
-                        tokio::time::sleep(reconnect_backoff(reconnects)).await;
-                    }
-                    match self.rotate(conn).await {
-                        Ok(fresh) => {
-                            conn = fresh;
-                            failures = 0;
-                        }
-                        Err(error) => {
-                            failures += 1;
-                            if is_fatal(&error) || failures >= MAX_CONSECUTIVE_FAILURES {
-                                return self.fail(error).await;
-                            }
-                            // Keep trying with a fresh socket; audio in the meantime is lost.
-                            match self.connect().await {
-                                Ok(fresh) => conn = fresh,
-                                Err(error) => return self.fail(error).await,
-                            }
-                        }
-                    }
+                    continue;
                 }
                 Action::Fatal(error) => {
                     self.fail(error).await;
                     let _ = conn.socket.close(None).await;
                     return;
                 }
-            }
+                Action::Rotate => match self.rotate(conn).await {
+                    Ok(fresh) => {
+                        conn = fresh;
+                        continue;
+                    }
+                    Err(error) if is_fatal(&error) => return self.fail(error).await,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "gemini live rotation failed; reconnecting");
+                        1
+                    }
+                },
+                Action::Reconnect => {
+                    reconnects += 1;
+                    if reconnects > MAX_RECONNECTS_WITHOUT_PROGRESS {
+                        // The manager re-opens the source after a cool-down.
+                        return self
+                            .fail(BlueyError::network(
+                                "stream",
+                                "the Gemini Live session keeps failing; giving up",
+                            ))
+                            .await;
+                    }
+                    reconnects
+                }
+                Action::Stalled => 0,
+            };
+            // Until the service is back (or the session closes); audio in the
+            // meantime is lost.
+            conn = match reopen(&mut rx, &mut outage, attempt, || self.connect()).await {
+                Reopened::Open(fresh) => fresh,
+                Reopened::Closed => return,
+                Reopened::Fatal(error) => return self.fail(error).await,
+            };
         }
         // Closing: flush the current utterance and drain what is left.
         self.drain(conn, DRAIN_GRACE).await;
@@ -645,13 +652,5 @@ mod tests {
     fn rotation_happens_before_the_service_cap() {
         assert!(SOFT_SESSION_LIMIT < Duration::from_secs(10 * 60));
         assert!(SILENCE_STREAM_END < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn reconnect_backoff_grows_and_caps() {
-        assert_eq!(reconnect_backoff(1), Duration::from_millis(500));
-        assert_eq!(reconnect_backoff(2), Duration::from_secs(1));
-        assert_eq!(reconnect_backoff(4), Duration::from_secs(4));
-        assert_eq!(reconnect_backoff(10), RECONNECT_BACKOFF_CAP);
     }
 }

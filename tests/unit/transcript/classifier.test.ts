@@ -1,4 +1,4 @@
-import { classifySegment, isQuestionText } from "@/transcript/classifier";
+import { classifySegment, isOpenFragment, isQuestionText } from "@/transcript/classifier";
 import { makeMode, makeSegment } from "../../fixtures/helpers/builders";
 import { loadAllFixtures } from "../../fixtures/helpers/fixtures";
 
@@ -43,16 +43,35 @@ describe("classifySegment rules", () => {
     expect(event?.speaker).toBe("You");
   });
 
-  it("does not require responses in meeting mode even for others' questions", () => {
+  it("answers only direct questions in non-conversational modes (LIVE-009)", () => {
+    const meeting = makeMode({ id: "team-meeting", responseSchema: "meeting" });
+    const classify = (text: string) =>
+      classifySegment({ segment: makeSegment({ source: "system", text }), recent: [], mode: meeting, now: NOW, idGen });
+    const direct = classify("What is the rollout date for the billing migration?");
+    expect(direct?.type).toBe("question");
+    expect(direct?.requiresResponse).toBe(true);
+    // An implied question (no "?") is a weaker signal: noted, not answered.
+    const implied = classify("how we handle the rollout is still open");
+    expect(implied?.type).toBe("question");
+    expect(implied?.requiresResponse).toBe(false);
+  });
+
+  it("attributes a coalesced question to every final it was built from (LIVE-010)", () => {
     const event = classifySegment({
-      segment: makeSegment({ source: "system", text: "Who is taking notes today?" }),
+      segment: makeSegment({ id: "seg-b", text: "So tell me about your experience with Kafka?" }),
       recent: [],
-      mode: makeMode({ id: "team-meeting", responseSchema: "meeting" }),
+      mode: interviewMode,
+      segmentIds: ["seg-a", "seg-b"],
       now: NOW,
       idGen,
     });
-    expect(event?.type).toBe("question");
-    expect(event?.requiresResponse).toBe(false);
+    expect(event?.segmentIds).toEqual(["seg-a", "seg-b"]);
+  });
+
+  it("recognises questions opened by short fillers", () => {
+    expect(isQuestionText("so which option did you pick").question).toBe(true);
+    expect(isQuestionText("okay um how did you measure it").question).toBe(true);
+    expect(isQuestionText("so the plan is fine").question).toBe(false);
   });
 
   it("ignores unfinalized partials and empty text", () => {
@@ -155,5 +174,20 @@ describe("isQuestionText", () => {
     expect(withMark.confidence).toBeGreaterThan(rising.confidence);
     expect(rising.confidence).toBeGreaterThan(lead.confidence);
     expect(isQuestionText("This is a statement.").question).toBe(false);
+  });
+});
+
+describe("isOpenFragment (LIVE-010)", () => {
+  it("holds finals that read like the first half of a question", () => {
+    expect(isOpenFragment("So tell me about")).toBe(true);
+    expect(isOpenFragment("Walk me through.")).toBe(true);
+    expect(isOpenFragment("How would you")).toBe(true);
+  });
+
+  it("never holds complete questions or finished statements", () => {
+    expect(isOpenFragment("What is your notice period?")).toBe(false);
+    expect(isOpenFragment("We shipped the new billing service last quarter.")).toBe(false);
+    expect(isOpenFragment("Thanks.")).toBe(false);
+    expect(isOpenFragment("   ")).toBe(false);
   });
 });

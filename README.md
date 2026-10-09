@@ -9,11 +9,13 @@ the mode you're in, and prepares concise, useful help before you even ask.
 > "Bluey already understands what's happening."
 
 ## What it does
-* **Screen understanding** — on-demand capture (⌘↵) of a display, window or region with
-  ScreenCaptureKit, Vision OCR and Accessibility semantics; optional low-frequency smart
+* **Screen understanding** — on-demand capture (⌘↵) of the display or the active window
+  with ScreenCaptureKit, Vision OCR and Accessibility semantics; optional low-frequency smart
   observation with change detection.
-* **Live transcription** — microphone and system audio (separate channels), on-device Apple
-  Speech by default or a cloud realtime provider, speaker labels with honest confidence.
+* **Live transcription** — microphone and system audio (separate channels), speaker labels with
+  honest confidence. By default the audio streams to Gemini Live (Google, cloud) when a Google AI
+  Studio key is connected; without one, or with Privacy → Cloud AI off, Apple Speech transcribes
+  on the Mac (a language without an on-device model uses Apple's servers, and Bluey says so).
 * **Question & event detection** — questions, coding problems, objections, decisions, action
   items… detected live. The moment a question is heard, the answer to say streams into the
   HUD as a suggestion (or waits behind ⌘⇧↵ if you prefer a discreet hint).
@@ -26,10 +28,12 @@ the mode you're in, and prepares concise, useful help before you even ask.
   design sections with Mermaid diagrams, case frameworks, sales objection handling, meeting
   decisions & action items, lecture notes and study guides.
 * **Sessions** — timeline, history, search (FTS), notes, post-session summaries, export.
-* **Research** — Exa / Firecrawl for current information and a Claude Agent SDK sidecar for
-  deep, multi-step research with strictly scoped tools.
+* **Research** — Exa search and Firecrawl scrape for current information, and a research sidecar
+  (Gemini function calling by default, or the Claude Agent SDK) for deep, multi-step research
+  with strictly scoped tools.
 * **Privacy by design** — nothing captured silently; minimal retention defaults; raw audio never
-  stored; Privacy display mode (platform content protection); one-click disable; real deletion.
+  stored; Privacy display mode (platform content protection, partial on macOS 15+); one-click
+  disable; real deletion.
 * **Native macOS feel** — NSPanel HUD across Spaces and fullscreen apps, menu bar item,
   configurable global shortcuts, Retina/multi-display aware, dark/light, reduced motion.
 * **Self-updating** — signed in-app updates on a **Latest** (stable) or **Nightly** channel,
@@ -54,7 +58,7 @@ The macOS release pipeline specifically pins **Bun 1.4.2** and requires Python 3
 ## Quick start
 ```bash
 bun install
-cp .env.example .env          # or .env.local — VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the key is imported into the Keychain on first run)
+cp .env.example .env          # or .env.local — VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (imported at launch into the Keychain when it has no entry; debug builds use their own `.dev` service — docs/DEVELOPMENT.md)
 bun run build:helpers         # Swift helper + research agent sidecars
 bun run tauri:dev
 ```
@@ -69,8 +73,9 @@ Then press **⌘ \\** to toggle Bluey, **⌘ ↵** to ask about your screen, **�
 
 ## Default shortcuts
 ⌘ \\ toggle · ⌘ ↵ capture + analyze · ⌘ ⇧ ↵ generate response · ⌘ ⇧ L toggle listening ·
-⌘ R new chat · ⌘ , settings · ⌘ ↑↓←→ move panel · ⌘ ⇧ ↑↓ scroll response. All remappable, with
-conflict detection.
+⌃ ⌥ ⌘ ↑↓←→ move panel · ⌥ ⌘ ↑↓ scroll response. ⌘ R (new chat) and ⌘ , (settings) work while the
+HUD has focus; their global versions are off by default so they never take those chords from
+other apps. All remappable, with conflict detection (standard editing chords such as ⌘ ← warn).
 
 ## Documentation
 [Architecture](docs/ARCHITECTURE.md) · [Development](docs/DEVELOPMENT.md) ·
@@ -82,8 +87,10 @@ conflict detection.
 [Provider accounts](docs/PROVIDER_ACCOUNTS.md) · [Latency](docs/LATENCY.md) · [ADRs](docs/adr/)
 
 ## Platform limitations (honest list)
-* Content protection hides the panel from most capture APIs but macOS does not guarantee it for
-  every capture path; Bluey never attempts to defeat monitoring software.
+* Privacy mode hides Bluey only from apps that honour macOS window protection (legacy capture).
+  Modern ScreenCaptureKit screen sharing and recording on macOS 15+ may still show Bluey, and
+  its native menus are never hidden ([ADR 0006](docs/adr/0006-privacy-mode-and-content-protection.md)).
+  Bluey never attempts to defeat monitoring software.
 * System audio capture requires Screen Recording permission (ScreenCaptureKit).
 * Speaker identification is derived from audio channel (you vs. others) — not true diarization.
 * Sign-in runs in the system browser (Clerk as OAuth/OIDC provider, PKCE, `bluey://` deep link

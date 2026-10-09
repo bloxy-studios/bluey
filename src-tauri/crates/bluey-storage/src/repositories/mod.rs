@@ -2,16 +2,14 @@
 //! functions taking `&Database`; the public API speaks `bluey_core` types and
 //! SQL never leaves this module tree.
 
-mod cache;
 pub(crate) mod documents;
 mod modes;
-mod responses;
+pub(crate) mod responses;
 mod sessions;
 mod settings;
 mod snapshots;
 mod transcript;
 
-pub use cache::AiCacheRepository;
 pub use documents::{DocumentRepository, EmbeddedChunk};
 pub use modes::ModeRepository;
 pub use responses::{AiRequestRecord, AiRequestRepository, ResponseRepository};

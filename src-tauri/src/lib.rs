@@ -107,6 +107,7 @@ pub fn run() {
         commands::ai::ai_cancel_all,
         commands::ai::ai_embed,
         commands::ai::ai_test_connection,
+        commands::ai::ai_readiness,
         commands::ai::ai_list_models,
         commands::ai::ai_apply_provider_presets,
         commands::ai::ai_transcribe_file,
@@ -167,6 +168,9 @@ pub fn run() {
         commands::settings::secrets_set,
         commands::settings::secrets_has,
         commands::settings::secrets_delete,
+        commands::settings::secrets_state,
+        commands::settings::secrets_health,
+        commands::settings::secrets_allow_access,
         // Shortcuts
         commands::shortcuts::shortcuts_list,
         commands::shortcuts::shortcuts_update,
@@ -191,7 +195,6 @@ pub fn run() {
         commands::data::data_usage_stats,
         commands::data::data_delete_screenshots,
         commands::data::data_clear_transcripts,
-        commands::data::data_clear_ai_cache,
         commands::data::data_reset_all,
         commands::data::data_export_session,
         // Developer mode

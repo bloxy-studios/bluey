@@ -1,9 +1,10 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { bluey } from "@/lib/tauri/api";
 import { cn } from "@/lib/utils/cn";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { clearOnboardingStep, readOnboardingStep, saveOnboardingStep } from "./progress";
 import { NameStep, SignInStep, WelcomeStep } from "./steps/basics";
 import { ConnectAIStep } from "./steps/connect";
 import { PermissionsStep } from "./steps/permissions";
@@ -28,9 +29,18 @@ const STEPS = [
   { id: "ready", component: ReadyStep },
 ] as const;
 
-/** Onboarding window (760×560): centered steps with progress dots. */
+/** The saved step, if it still exists; otherwise Welcome. */
+function resumeIndex(): number {
+  const saved = readOnboardingStep();
+  return Math.max(
+    STEPS.findIndex((s) => s.id === saved),
+    0,
+  );
+}
+
+/** Onboarding window (760×560): centered steps with progress dots; resumes after a relaunch. */
 export function OnboardingFlow() {
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(resumeIndex);
   const [ready, setReady] = useState(true);
   const update = useSettingsStore((s) => s.update);
 
@@ -40,7 +50,10 @@ export function OnboardingFlow() {
 
   const next = useCallback(async () => {
     if (isLast) {
-      await update({ general: { onboardingCompleted: true } });
+      // Unsaved, the wizard would return at the next launch: stay here with the
+      // store's error toast so "Open Bluey" can retry (ONB-005).
+      if (!(await update({ general: { onboardingCompleted: true } }))) return;
+      clearOnboardingStep();
       await bluey.window.open({ label: "main" });
       await bluey.window.close({ label: "onboarding" });
       return;
@@ -56,6 +69,8 @@ export function OnboardingFlow() {
 
   const onReady = useCallback((value: boolean) => setReady(value), []);
   const stepKey = useMemo(() => step.id, [step.id]);
+
+  useEffect(() => saveOnboardingStep(step.id), [step.id]);
 
   return (
     <div className="flex h-screen min-w-0 flex-col overflow-hidden bg-bg text-fg">

@@ -22,6 +22,7 @@ import type {
   ProviderAccount,
   ProviderModelCatalog,
 } from "../../types";
+import RUST_BUILT_IN_MODES from "../../../../tests/fixtures/rust/built-in-modes.json";
 import { applyPresets, GEMINI_PRESET } from "../../ai/provider-presets";
 
 const NOW = () => new Date().toISOString();
@@ -134,180 +135,36 @@ const shortcut = (
   label: string,
   group: ShortcutBinding["group"],
   accelerator: string,
-): ShortcutBinding => ({ id, label, group, accelerator, defaultAccelerator: accelerator, enabled: true });
+  enabled = true,
+): ShortcutBinding => ({ id, label, group, accelerator, defaultAccelerator: accelerator, enabled });
 
+/** `bluey_core::shortcuts::default_bindings()` — same order, strings and flags. */
 export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
   shortcut("toggle_panel", "Toggle visibility of Bluey", "general", "CmdOrCtrl+Backslash"),
   shortcut("capture_analyze", "Ask Bluey about your screen or audio", "general", "CmdOrCtrl+Enter"),
   shortcut("generate_response", "Generate a suggested response", "general", "CmdOrCtrl+Shift+Enter"),
-  shortcut("new_chat", "Start a new chat", "general", "CmdOrCtrl+R"),
-  shortcut("open_settings", "Open Bluey settings", "general", "CmdOrCtrl+Comma"),
-  shortcut("toggle_listening", "Start or stop a Bluey session", "general", "CmdOrCtrl+Shift+Backslash"),
-  shortcut("move_up", "Move the window position up", "window", "CmdOrCtrl+Up"),
-  shortcut("move_down", "Move the window position down", "window", "CmdOrCtrl+Down"),
-  shortcut("move_left", "Move the window position left", "window", "CmdOrCtrl+Left"),
-  shortcut("move_right", "Move the window position right", "window", "CmdOrCtrl+Right"),
-  shortcut("scroll_up", "Scroll the response window up", "scroll", "CmdOrCtrl+Shift+Up"),
-  shortcut("scroll_down", "Scroll the response window down", "scroll", "CmdOrCtrl+Shift+Down"),
+  shortcut("toggle_listening", "Start or stop listening", "general", "CmdOrCtrl+Shift+KeyL"),
+  // HUD-local by default: ⌘R and ⌘, belong to the frontmost app (UX-001).
+  shortcut("new_chat", "Start a new chat", "general", "CmdOrCtrl+KeyR", false),
+  shortcut("open_settings", "Open Bluey settings", "general", "CmdOrCtrl+Comma", false),
+  shortcut("move_up", "Move the window position up", "window", "CmdOrCtrl+Ctrl+Alt+ArrowUp"),
+  shortcut("move_down", "Move the window position down", "window", "CmdOrCtrl+Ctrl+Alt+ArrowDown"),
+  shortcut("move_left", "Move the window position left", "window", "CmdOrCtrl+Ctrl+Alt+ArrowLeft"),
+  shortcut("move_right", "Move the window position right", "window", "CmdOrCtrl+Ctrl+Alt+ArrowRight"),
+  shortcut("scroll_up", "Scroll the response window up", "scroll", "CmdOrCtrl+Alt+ArrowUp"),
+  shortcut("scroll_down", "Scroll the response window down", "scroll", "CmdOrCtrl+Alt+ArrowDown"),
 ];
 
 /* ── Built-in modes ────────────────────────────────────────────────────── */
 
-interface ModeSeed {
-  id: string;
-  name: string;
-  description: string;
-  icon: string;
-  group?: string;
-  schema: BlueyMode["responseSchema"];
-  latency: BlueyMode["preferredLatency"];
-  context: BlueyMode["contextRequirements"];
-  instructions: string;
-}
-
-const MODE_SEEDS: ModeSeed[] = [
-  {
-    id: "general",
-    name: "General",
-    description:
-      "The default mode. No custom prompt, summary template, or attached files. Bluey uses its baseline behavior. Set this active to clear any mode you have selected.",
-    icon: "file-text",
-    schema: "answer",
-    latency: "fast",
-    context: ["screen", "transcript"],
-    instructions: "",
-  },
-  {
-    id: "interview",
-    name: "Interview",
-    description:
-      "General job-interview support across behavioral, technical, product and role-fit questions.",
-    icon: "graduation-cap",
-    group: "Looking for work",
-    schema: "suggested-response",
-    latency: "fast",
-    context: ["transcript", "resume", "job_description", "documents"],
-    instructions: `I am a candidate in a job interview. Help me perform well across behavioral, technical, product, role-fit, and follow-up questions.
-
-Use the job description, resume, notes, and any attached files as ground truth when available. Do not fabricate experience, credentials, companies, numbers, or project details. If context is missing, give me an answer structure that I can quickly fill in.
-
-For behavioral questions, answer with my strongest matching example shaped as situation, task, action, result. For technical or role-specific questions, give the answer first, then the trade-offs, at interview depth.`,
-  },
-  {
-    id: "behavioral-interview",
-    name: "Behavioral Interview",
-    description: "STAR-structured answers grounded in your real experience.",
-    icon: "message-square",
-    group: "Looking for work",
-    schema: "behavioral",
-    latency: "fast",
-    context: ["transcript", "resume", "documents"],
-    instructions: `I am in a behavioral interview. For every question, propose the strongest matching story from my resume and notes and shape it as Situation, Task, Action, Result — ending with what I learned.
-
-Keep answers speakable in under two minutes. Never invent employers, dates, metrics, or outcomes; if my materials lack a good example, say so and give me a structure to fill in live.`,
-  },
-  {
-    id: "coding-interview",
-    name: "Coding Interview",
-    description: "The working solution first, then the approach, complexity and edge cases.",
-    icon: "code",
-    group: "Looking for work",
-    schema: "coding",
-    latency: "balanced",
-    context: ["screen", "accessibility", "transcript"],
-    instructions: `I am in a coding interview. Give me the working solution first — in the language on my screen, matching any visible signature exactly — then the approach in a few lines, the time and space complexity, and the edge cases the code handles.
-
-If the problem is ambiguous, solve the most reasonable reading and state the assumption in one line. On follow-ups, change only what changes.`,
-  },
-  {
-    id: "system-design",
-    name: "System Design",
-    description: "Requirements, high-level architecture, deep dives and tradeoffs.",
-    icon: "box",
-    group: "Looking for work",
-    schema: "system-design",
-    latency: "deep",
-    context: ["screen", "transcript"],
-    instructions: `I am in a system design interview. Help me run a structured discussion: functional and non-functional requirements, capacity estimates, API sketch, high-level architecture, data model, then deep dives.
-
-Always name the tradeoffs (consistency vs availability, latency vs cost, build vs buy) and propose sensible defaults. Where a diagram helps, describe the components and their connections clearly.`,
-  },
-  {
-    id: "case-interview",
-    name: "Case Interview",
-    description: "Structured frameworks, market sizing and crisp synthesis.",
-    icon: "presentation",
-    group: "Looking for work",
-    schema: "case",
-    latency: "balanced",
-    context: ["transcript", "documents"],
-    instructions: `I am in a consulting case interview. Help me structure the problem with a MECE framework, do market-sizing math out loud with round numbers, and synthesize with a clear recommendation up front, supported by two or three drivers and the key risks.`,
-  },
-  {
-    id: "sales",
-    name: "Sales",
-    description: "Live objection handling, discovery questions and next steps.",
-    icon: "store",
-    group: "At work",
-    schema: "sales",
-    latency: "ultra-fast",
-    context: ["transcript", "documents", "session_memory"],
-    instructions: `I am on a sales call. Listen for objections, buying signals, pricing concerns, and competitor mentions. Suggest short, natural responses I can say directly — acknowledge, reframe, then advance.
-
-Ground claims in my attached product notes; never invent pricing, features, or customer names. Always keep an eye on securing the concrete next step.`,
-  },
-  {
-    id: "recruiting",
-    name: "Recruiting",
-    description: "Structured candidate screens with follow-up probes.",
-    icon: "briefcase",
-    group: "At work",
-    schema: "recruiting",
-    latency: "fast",
-    context: ["transcript", "job_description", "documents"],
-    instructions: `I am the recruiter interviewing a candidate. Help me probe the candidate's answers against the role requirements, suggest sharp follow-up questions, flag inconsistencies or gaps to explore, and capture structured notes on strengths, risks, and motivation.`,
-  },
-  {
-    id: "team-meeting",
-    name: "Team Meeting",
-    description: "Decisions, action items and open questions captured as you go.",
-    icon: "video",
-    group: "At work",
-    schema: "meeting",
-    latency: "fast",
-    context: ["transcript", "session_memory"],
-    instructions: `I am in a team meeting. Track decisions, owners, action items, and open questions as they happen. When I ask for help, answer with the shared context of the meeting so far, and keep suggestions short enough to say out loud.`,
-  },
-  {
-    id: "lecture",
-    name: "Lecture",
-    description: "Follow along, capture key concepts and build a study guide.",
-    icon: "book-open",
-    group: "At work",
-    schema: "lecture",
-    latency: "balanced",
-    context: ["transcript", "screen", "session_memory"],
-    instructions: `I am attending a lecture. Capture the key concepts, definitions, and examples as they come up. When I ask a question, explain at the level of the course, connect it to what was covered earlier, and note anything the lecturer flagged as exam-relevant.`,
-  },
-];
-
+/**
+ * The Rust built-in modes, re-stamped. The JSON is generated from
+ * `bluey_core::modes::built_in_modes()` by `bluey-core/tests/ts_fixtures.rs`
+ * (which fails when it drifts), so the mock never keeps its own copy.
+ */
 export function createBuiltInModes(): BlueyMode[] {
   const createdAt = daysAgo(30);
-  return MODE_SEEDS.map((seed) => ({
-    id: seed.id,
-    name: seed.name,
-    description: seed.description,
-    icon: seed.icon,
-    systemInstructions: seed.instructions,
-    responseSchema: seed.schema,
-    preferredLatency: seed.latency,
-    contextRequirements: seed.context,
-    builtIn: true,
-    group: seed.group,
-    attachedDocumentIds: [],
-    createdAt,
-    updatedAt: createdAt,
-  }));
+  return (RUST_BUILT_IN_MODES as BlueyMode[]).map((mode) => ({ ...mode, createdAt, updatedAt: createdAt }));
 }
 
 /* ── Settings ──────────────────────────────────────────────────────────── */
@@ -356,7 +213,7 @@ export function createDefaultSettings(): Settings {
     screen: {
       captureTarget: "display",
       observation: "manual",
-      observationIntervalMs: 5000,
+      observationIntervalMs: 1500,
       preferredDisplay: "active",
       ocrLevel: "accurate",
       ocrLanguages: ["en-US"],
@@ -412,7 +269,6 @@ export function createDefaultSettings(): Settings {
       storeTranscripts: true,
       storeRawAudio: "never",
       cloudAiEnabled: true,
-      debugLogTranscripts: false,
     },
     shortcuts: DEFAULT_SHORTCUTS.map((s) => ({ ...s })),
     advanced: {

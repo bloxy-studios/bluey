@@ -1,8 +1,9 @@
 import { act, createEvent, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { FollowUpHeader, HudIdleRow } from "@/features/hud/HudInputRow";
+import { HudComposer } from "@/features/hud/HudInputRow";
 import { useHudShortcuts, type HudShortcutHandlers } from "@/features/hud/useHudShortcuts";
+import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { setupMockApp } from "./helpers";
 
@@ -25,16 +26,14 @@ function InputHarness({
   shortcuts: HudShortcutHandlers;
 }) {
   useHudShortcuts(shortcuts);
-  return followUp ? (
-    <FollowUpHeader
-      streaming={false}
+  return (
+    <HudComposer
+      expanded={followUp}
       onSubmit={submit}
       onAssist={assist}
       onBack={shortcuts.onNewChat}
       onStop={shortcuts.onEscape}
     />
-  ) : (
-    <HudIdleRow onSubmit={submit} onAssist={assist} />
   );
 }
 
@@ -162,16 +161,33 @@ for (const followUp of [false, true]) {
       expect(assist).not.toHaveBeenCalled();
     });
 
-    it("keeps native text editing shortcuts unconsumed and leaves editable Command+R alone", () => {
+    it("keeps native text editing shortcuts unconsumed", () => {
       const { input, submit, assist, shortcuts } = setup();
       for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
-        for (const key of ["a", "c", "v", "x", "z", "Z", "y", "r"]) {
+        for (const key of ["a", "c", "v", "x", "z", "Z", "y"]) {
           expect(fireEvent.keyDown(input, { key, ...modifier, shiftKey: key === "Z" })).toBe(true);
         }
       }
       expect(submit).not.toHaveBeenCalled();
       expect(assist).not.toHaveBeenCalled();
       for (const handler of Object.values(shortcuts)) expect(handler).not.toHaveBeenCalled();
+    });
+
+    // The composer is focused whenever the HUD shows and ⌘R has no editing meaning
+    // there; with the global New Chat binding off by default it is the only way in (UX-001).
+    it("starts a new chat on Command+R in the focused composer, once, and leaves Shift/Option variants alone", () => {
+      const { input, shortcuts } = setup();
+      fireEvent.change(input, { target: { value: "draft" } });
+      expect(input).toHaveFocus();
+      for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+        expect(fireEvent.keyDown(input, { key: "r", ...modifier })).toBe(false);
+        expect(fireEvent.keyDown(input, { key: "r", ...modifier, repeat: true })).toBe(false);
+      }
+      expect(fireEvent.keyDown(input, { key: "R", metaKey: true, shiftKey: true })).toBe(true);
+      expect(fireEvent.keyDown(input, { key: "®", code: "KeyR", metaKey: true, altKey: true })).toBe(true);
+      expect(fireEvent.keyDown(input, { key: "r", metaKey: true, altKey: true })).toBe(true);
+      expect(shortcuts.onNewChat).toHaveBeenCalledTimes(2);
+      expect(shortcuts.onCaptureAnalyze).not.toHaveBeenCalled();
     });
 
     it("prevents repeated button activation without disabling a fresh click", () => {
@@ -183,6 +199,14 @@ for (const followUp of [false, true]) {
       expect(submit).not.toHaveBeenCalled();
       fireEvent.click(button);
       expect(submit).toHaveBeenCalledExactlyOnceWith("question");
+    });
+
+    it("focuses the input when a second toggle-panel press hands the HUD the keyboard (UX-015)", () => {
+      const { input } = setup();
+      input.blur();
+      expect(input).not.toHaveFocus();
+      act(() => eventBus.emit("panel.focusInput", {}));
+      expect(input).toHaveFocus();
     });
   });
 }
@@ -279,7 +303,30 @@ describe("HUD shortcut scope", () => {
     });
     expect(shortcuts.onCaptureAnalyze).toHaveBeenCalledOnce();
     expect(shortcuts.onGenerate).toHaveBeenCalledOnce();
-    expect(shortcuts.onNewChat).toHaveBeenCalledTimes(2);
+    // Rust sends ⌘R as both `shortcut.triggered` and `panel.newChat`: one new chat, not two.
+    expect(shortcuts.onNewChat).toHaveBeenCalledOnce();
+  });
+
+  it("opens Settings on a HUD-local ⌘, now that the global binding is off by default (UX-001)", () => {
+    const open = vi.spyOn(bluey.window, "open");
+    renderHook(() => useHudShortcuts(handlers()));
+    expect(fireEvent.keyDown(document.body, { key: ",", metaKey: true })).toBe(false);
+    fireEvent.keyDown(document.body, { key: ",", metaKey: true, repeat: true });
+    expect(open).toHaveBeenCalledExactlyOnceWith({ label: "settings" });
+  });
+
+  it("leaves toggle_listening to Rust: the HUD starts or stops no audio itself (LIVE-007)", async () => {
+    const start = vi.spyOn(bluey.audio, "start");
+    const stop = vi.spyOn(bluey.audio, "stop");
+    renderHook(() => useHudShortcuts(handlers()));
+    act(() => {
+      eventBus.emit("shortcut.triggered", { id: "toggle_listening", at: new Date().toISOString() });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(start).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
   });
 
   it("releases a composition gate when focus moves inside the HUD without a compositionend", () => {

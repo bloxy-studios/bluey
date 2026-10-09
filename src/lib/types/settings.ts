@@ -12,7 +12,8 @@ export type PanelPositionPreference = "remember" | "center" | "top" | "bottom" |
 export type DisplayMode = "standard" | "privacy";
 export type RawAudioRetention = "never" | "until_session_end" | "custom";
 export type ObservationMode = "manual" | "smart";
-export type CaptureTargetPreference = "display" | "active_window" | "region";
+/** Rust reads a legacy stored `"region"` as `"active_window"` (FEATURE-006). */
+export type CaptureTargetPreference = "display" | "active_window";
 export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 
 export interface GeneralSettings {
@@ -90,7 +91,7 @@ export interface AISettings {
    * Provider whose presets were last applied to the roles — by the `.env` import
    * (`BLUEY_AI_PROVIDER`), onboarding (Connect Gemini) or Settings → AI → Default provider.
    */
-  bootstrapProvider?: string;
+  bootstrapProvider?: string | null;
   /** MRL-truncated embedding size for gemini-embedding-2 (768 · 1536 · 3072). */
   embeddingDimensions: number;
   researchBackend: ResearchBackend;
@@ -104,8 +105,6 @@ export interface PrivacySettings {
   storeRawAudio: RawAudioRetention;
   rawAudioRetentionMinutes?: number;
   cloudAiEnabled: boolean;
-  /** Debug-only switches, default false. */
-  debugLogTranscripts: boolean;
 }
 
 export interface ShortcutBinding {
@@ -116,6 +115,8 @@ export interface ShortcutBinding {
   accelerator: string;
   defaultAccelerator: string;
   enabled: boolean;
+  /** Why macOS did not register it the last time it was applied (UX-039). */
+  registrationError?: string;
 }
 
 export type ShortcutId =
@@ -168,9 +169,12 @@ export interface Settings {
   updates: UpdatesSettings;
 }
 
+/** An optional field patched to `null` is cleared (Rust maps it to `None`). */
+type SectionPatch<T> = { [P in keyof T]?: undefined extends T[P] ? T[P] | null : T[P] };
+
 /** Deep partial patch applied by `settings_update`. */
 export type SettingsPatch = {
-  [K in keyof Settings]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K];
+  [K in keyof Settings]?: Settings[K] extends object ? SectionPatch<Settings[K]> : Settings[K];
 };
 
 /** Logical native frame, including shadow insets; not the appearance surface. */

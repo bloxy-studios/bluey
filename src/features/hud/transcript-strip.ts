@@ -25,11 +25,12 @@ function fallbackSpeaker(segment: TranscriptSegment): { speaker: string; confide
 
 /**
  * Pure: newest `limit` finalized segments (oldest first) followed by the
- * in-flight partial, with speaker labels resolved through the mode heuristics.
+ * in-flight partials (one per source), with speaker labels resolved through
+ * the mode heuristics.
  */
 export function buildTranscriptLines(
   segments: TranscriptSegment[],
-  partial: TranscriptSegment | null,
+  partials: readonly TranscriptSegment[],
   questions: DetectedEvent[],
   mode: BlueyMode | undefined,
   limit: number,
@@ -48,10 +49,13 @@ export function buildTranscriptLines(
   };
 
   const finals = segments.filter((s) => s.text.trim().length > 0);
-  const partialLine = partial && partial.text.trim().length > 0 ? toLine(partial, true) : null;
-  const finalLimit = Math.max(0, limit - (partialLine ? 1 : 0));
-  // `slice(-0)` would return everything — guard the "partial only" case explicitly.
+  const partialLines = partials
+    .filter((p) => p.text.trim().length > 0)
+    .sort((a, b) => a.startTime - b.startTime)
+    .slice(-limit)
+    .map((p) => toLine(p, true));
+  const finalLimit = Math.max(0, limit - partialLines.length);
+  // `slice(-0)` would return everything — guard the "partials only" case explicitly.
   const lines = finalLimit > 0 ? finals.slice(-finalLimit).map((s) => toLine(s, false)) : [];
-  if (partialLine) lines.push(partialLine);
-  return lines;
+  return [...lines, ...partialLines];
 }

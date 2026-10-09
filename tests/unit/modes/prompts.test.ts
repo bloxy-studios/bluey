@@ -29,6 +29,13 @@ describe("mode prompt fragments", () => {
     }
   });
 
+  it("asks for the coding solution once, first, in `content` — never a separate `code` copy", () => {
+    const fragment = MODE_PROMPTS.coding.fragment;
+    expect(fragment).not.toMatch(/`code`|same full solution/);
+    // Solution first (the contract's "first line of the solution"), approach after it.
+    expect(fragment.indexOf("fenced block")).toBeLessThan(fragment.indexOf("approach"));
+  });
+
   it("keeps the STAR guidance for behavioral answers unlabelled", () => {
     expect(MODE_PROMPTS.behavioral.fragment).toContain("never label the STAR parts out loud");
   });

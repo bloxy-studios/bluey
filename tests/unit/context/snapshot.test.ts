@@ -1,5 +1,5 @@
-import { enrichSnapshot, snapshotOptionsFor } from "@/context/snapshot";
-import type { RetrievedChunk } from "@/lib/types";
+import { enrichSnapshot, PERSONAL_INSTRUCTIONS_CHARS, snapshotOptionsFor } from "@/context/snapshot";
+import type { DetectedEvent, RetrievedChunk } from "@/lib/types";
 import { makeMode, makeResponse, makeSession, makeSettings, makeSnapshot } from "../../fixtures/helpers/builders";
 
 describe("snapshotOptionsFor", () => {
@@ -32,6 +32,20 @@ describe("snapshotOptionsFor", () => {
     expect(snapshotOptionsFor({ mode: transcriptMode, settings, trigger: "typed" }).includeTranscript).toBe(true);
     expect(snapshotOptionsFor({ mode: silentMode, settings, trigger: "typed" }).includeTranscript).toBe(false);
     expect(snapshotOptionsFor({ mode: silentMode, settings, trigger: "shortcut_generate" }).includeTranscript).toBe(true);
+    // Regenerating a heard question answers it again: the conversation around it is still needed.
+    const heard: DetectedEvent = {
+      id: "e1",
+      type: "question",
+      confidence: 0.9,
+      requiresResponse: true,
+      text: "Why Go?",
+      segmentIds: [],
+      detectedAt: "2026-09-07T09:00:00.000Z",
+    };
+    const regenerate = (detectedEvent?: DetectedEvent) =>
+      snapshotOptionsFor({ mode: silentMode, settings, trigger: "regenerate", detectedEvent }).includeTranscript;
+    expect(regenerate(heard)).toBe(true);
+    expect(regenerate()).toBe(false);
     expect(
       snapshotOptionsFor({ mode: transcriptMode, settings, trigger: "typed", transcriptWindowSeconds: 60 })
         .transcriptWindowSeconds,
@@ -70,6 +84,21 @@ describe("enrichSnapshot", () => {
     const enriched = enrichSnapshot(makeSnapshot(), { mode, settings, retrieved });
     expect(enriched.userContext?.personalInstructions).toBe("Always answer briefly.");
     expect(enriched.userContext?.chunks.map((c) => c.chunkId)).toEqual(["c1"]);
+  });
+
+  it("joins every personal-instruction chunk (global, mode, session) and caps the text", () => {
+    const pi = (id: string, content: string, scope: RetrievedChunk["scope"]): RetrievedChunk => ({
+      chunkId: id, documentId: `d_${id}`, documentTitle: "Prefs", documentKind: "personal_instructions", content, score: 1, scope,
+    });
+    const enriched = enrichSnapshot(makeSnapshot(), {
+      mode,
+      settings,
+      retrieved: [pi("g", "Answer briefly.", "global"), pi("m", "Use STAR for behavioral questions.", "mode")],
+    });
+    expect(enriched.userContext?.personalInstructions).toBe("Answer briefly.\n\nUse STAR for behavioral questions.");
+
+    const long = enrichSnapshot(makeSnapshot(), { mode, settings, retrieved: [pi("g", "x".repeat(4000), "global")] });
+    expect(long.userContext?.personalInstructions?.length).toBeLessThanOrEqual(PERSONAL_INSTRUCTIONS_CHARS + 1);
   });
 
   it("sets the trimmed user instruction and does not mutate the input", () => {

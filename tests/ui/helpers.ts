@@ -166,6 +166,22 @@ export class FakeEngine implements ResponseEngine {
     return this.preparedQueue.shift() ?? null;
   }
 
+  clearPreparedCalls = 0;
+
+  clearPrepared(): void {
+    this.clearPreparedCalls += 1;
+    this.preparedQueue = [];
+  }
+
+  /** Answers persisted because they were shown (prepared/cached ones). */
+  committed: BlueyResponse[] = [];
+
+  async commitShown(response: BlueyResponse): Promise<BlueyResponse> {
+    const { prepared: _prepared, ...shown } = response;
+    this.committed.push(shown);
+    return shown;
+  }
+
   async classify(_input: ClassifyInput): Promise<DetectedEvent | null> {
     return null;
   }
@@ -189,6 +205,8 @@ export class FakeEngine implements ResponseEngine {
 export class ProactiveFakeEngine extends FakeEngine {
   classified: ClassifyInput[] = [];
   prepared: AskInput[] = [];
+  /** Request ids of live preparations cancelled through their handle. */
+  cancelledPrepares: string[] = [];
   hold = false;
   private pending: Array<() => void> = [];
 
@@ -201,7 +219,7 @@ export class ProactiveFakeEngine extends FakeEngine {
       confidence: 0.9,
       requiresResponse: true,
       text: input.segment.text,
-      segmentIds: [input.segment.id],
+      segmentIds: input.segmentIds ?? [input.segment.id],
       speaker: input.segment.speaker,
       detectedAt: new Date().toISOString(),
     };
@@ -218,14 +236,32 @@ export class ProactiveFakeEngine extends FakeEngine {
       prepared: true,
     });
     const live = callbacks.onComplete !== undefined;
+    // Like the real engine: a live preparation can be cancelled through its handle, and a
+    // cancelled one is neither completed nor announced.
+    let cancelled = false;
+    let wake: (() => void) | undefined;
+    const requestId = `req-prepare-${this.prepared.length}`;
+    callbacks.onHandle?.({
+      requestId,
+      cancel: async () => {
+        cancelled = true;
+        this.cancelledPrepares.push(requestId);
+        wake?.();
+      },
+    });
     if (live) {
-      callbacks.onPhase?.("streaming", "req-prepare");
+      callbacks.onPhase?.("streaming", requestId);
       callbacks.onDraft?.({ ...response, content: "Prepared for" });
     }
     if (this.hold) {
       await new Promise<void>((resolve) => {
+        wake = resolve;
         this.pending.push(resolve);
       });
+    }
+    if (cancelled) {
+      callbacks.onPhase?.("cancelled", requestId);
+      return null;
     }
     if (live) {
       // A live suggestion is handed to the caller and never announced.

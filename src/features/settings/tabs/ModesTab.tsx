@@ -2,12 +2,15 @@ import { Check, FileText, Plus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { LucideIcon } from "@/components/ui/LucideIcon";
+import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
-import type { BlueyMode } from "@/lib/types";
+import { toBlueyError, type BlueyMode, type ContextRequirement } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { useAppStore } from "@/stores/appStore";
 import { useModesStore } from "@/stores/modesStore";
 import { ModeEditor } from "../ModeEditor";
+
+const NEW_MODE_CONTEXT: ContextRequirement[] = ["screen", "transcript"];
 
 function ModeRow({ mode, selected, active, onSelect }: { mode: BlueyMode; selected: boolean; active: boolean; onSelect: () => void }) {
   return (
@@ -76,10 +79,12 @@ export default function ModesTab() {
 
   const createMode = async () => {
     try {
-      const created = await bluey.modes.create({ draft: { name: "Untitled Mode" } });
+      // A new mode starts with the everyday context sources (Rust defaults to none).
+      const draft = { name: "Untitled Mode", contextRequirements: NEW_MODE_CONTEXT };
+      const created = await bluey.modes.create({ draft });
       setSelectedId(created.id);
     } catch (error) {
-      console.warn("[modes] create failed", error);
+      showErrorToast(toBlueyError(error, "storage"));
     }
   };
 

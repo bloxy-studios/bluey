@@ -165,9 +165,10 @@ describe("Gemini backend (injected generateContentStream)", () => {
     expect(data["report"]).toBe(report);
     expect(data["turns"]).toBe(3);
     expect(data["usage"]).toEqual({ inputTokens: 900, outputTokens: 235 });
-    // Model citations validated against tool-observed URLs; the invented one is dropped.
+    // Model citations validated against tool-observed URLs; the invented one
+    // is dropped and the uncited search hit is not padded in.
     const citations = data["citations"] as Array<{ url: string }>;
-    expect(citations.map((c) => c.url)).toEqual(["https://example.org/a", "https://example.org/b"]);
+    expect(citations.map((c) => c.url)).toEqual(["https://example.org/a"]);
 
     // Request shapes: tool turns carry declarations + low thinking; the report turn has no tools.
     expect(seen).toHaveLength(3);
@@ -234,22 +235,73 @@ describe("Gemini backend (injected generateContentStream)", () => {
     expect(await harness.done).toBe(0);
   });
 
-  it("stops with max_turns_exceeded when the model keeps calling tools", async () => {
+  /** Calls exa_search on every tool turn; answers the tool-less report turn with `reportJson`. */
+  function toolHungryModel(seen: GenerateParams[]): GenerateFn {
     let n = 0;
-    const alwaysCalling: GenerateFn = async () => {
+    return async (params) => {
+      seen.push({ ...params, contents: [...params.contents] });
+      if (!params.config?.tools) return chunks(textChunk(reportJson, "STOP"));
       n += 1;
       return chunks(callChunk(`call-${n}`, "exa_search", { query: `q${n}` }));
     };
+  }
+
+  it("writes the report from the evidence when the model keeps calling tools (AI-008)", async () => {
+    const seen: GenerateParams[] = [];
     const harness = makeHarness({
       env: { GEMINI_API_KEY: "k" },
-      deps: { generateFn: alwaysCalling, exaClient },
+      deps: { generateFn: toolHungryModel(seen), exaClient },
     });
     harness.send({ id: 1, method: "research.run", params: { ...runParams, maxTurns: 3 } });
-    const failed = await harness.waitFor(isEvent("research.failed"), "failed");
-    const error = (failed["data"] as Frame)["error"] as Frame;
-    expect(error["code"]).toBe("max_turns_exceeded");
-    expect(error["kind"]).toBe("research");
+    const completed = await harness.waitFor(isEvent("research.completed"), "completed");
+    expect((completed["data"] as Frame)["report"]).toBe(report);
     expect(harness.eventsNamed("research.toolCall")).toHaveLength(2);
+    expect(harness.eventsNamed("research.failed")).toHaveLength(0);
+    // The pending tool results and the report instruction share one user turn.
+    const lastTurn = seen[seen.length - 1]!.contents.at(-1)!;
+    expect(lastTurn.role).toBe("user");
+    expect(lastTurn.parts?.some((p) => p.functionResponse)).toBe(true);
+    expect(lastTurn.parts?.at(-1)?.text).toMatch(/Write the final research report now/);
+    expect(await harness.done).toBe(0);
+  });
+
+  it("stops calling tools at deadlineMs and reports what it found", async () => {
+    const slowExa = {
+      async search() {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return [{ title: "Exa 1", url: "https://example.org/a", snippet: "s" }];
+      },
+    };
+    const harness = makeHarness({
+      env: { GEMINI_API_KEY: "k" },
+      deps: { generateFn: toolHungryModel([]), exaClient: slowExa },
+    });
+    harness.send({ id: 1, method: "research.run", params: { ...runParams, maxTurns: 30, deadlineMs: 40 } });
+    const completed = await harness.waitFor(isEvent("research.completed"), "completed");
+    expect((completed["data"] as Frame)["report"]).toBe(report);
+    expect(harness.eventsNamed("research.toolCall").length).toBeLessThanOrEqual(2);
+    expect(await harness.done).toBe(0);
+  });
+
+  it("counts the turns and tokens already spent when the deadline's hard stop fires", async () => {
+    // Turn 1 calls a tool; the report turn never answers, so the hard stop
+    // writes the evidence report.
+    const stuckReport: GenerateFn = async (params) => {
+      if (params.config?.tools) return chunks(callChunk("call-1", "exa_search", { query: "q" }));
+      return new Promise<never>((_resolve, reject) => {
+        params.config?.abortSignal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    };
+    const harness = makeHarness({
+      env: { GEMINI_API_KEY: "k" },
+      deps: { generateFn: stuckReport, exaClient, deadlineGraceMs: 0 },
+    });
+    harness.send({ id: 1, method: "research.run", params: { ...runParams, maxTurns: 2, deadlineMs: 300 } });
+    const completed = await harness.waitFor(isEvent("research.completed"), "completed");
+    const data = completed["data"] as Frame;
+    expect(data["report"]).toMatch(/^## Research stopped early/);
+    expect(data["turns"]).toBe(1);
+    expect(data["usage"]).toEqual({ inputTokens: 100, outputTokens: 15 });
     expect(await harness.done).toBe(0);
   });
 

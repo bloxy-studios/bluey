@@ -226,6 +226,38 @@ impl SessionRepository {
         row.map(SessionRow::into_session).transpose()
     }
 
+    /// End every session a crash, force-quit or update relaunch left active or
+    /// paused, so later listening never merges into it. `ended_at` is its last
+    /// recorded activity (timeline event, transcript segment or answer),
+    /// falling back to its start. Returns the ended sessions.
+    pub fn end_interrupted(db: &Database) -> Result<Vec<Session>, BlueyError> {
+        let ids = db.transaction(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id FROM sessions WHERE status IN ('active','paused')")
+                .sql()?;
+            let ids = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .sql()?
+                .collect::<Result<Vec<_>, _>>()
+                .sql()?;
+            conn.execute(
+                "UPDATE sessions SET status = 'completed', ended_at = coalesce(
+                   (SELECT max(t) FROM (
+                      SELECT max(created_at) AS t FROM session_events WHERE session_id = sessions.id
+                      UNION ALL
+                      SELECT max(created_at) FROM transcript_segments WHERE session_id = sessions.id
+                      UNION ALL
+                      SELECT max(created_at) FROM ai_responses WHERE session_id = sessions.id)),
+                   started_at)
+                 WHERE status IN ('active','paused')",
+                [],
+            )
+            .sql()?;
+            Ok(ids)
+        })?;
+        ids.iter().map(|id| Self::get(db, id)).collect()
+    }
+
     /// Update the lifecycle status (and optionally `ended_at`), returning the updated session.
     pub fn set_status(
         db: &Database,
@@ -359,7 +391,9 @@ impl SessionRepository {
         })
     }
 
-    /// Delete every session. Returns `(deleted_sessions, screenshot_image_paths)`.
+    /// Delete every session, plus the answers and request records asked
+    /// outside any session (they never cascade from a session). Returns
+    /// `(deleted_sessions, screenshot_image_paths)`.
     pub fn delete_all(db: &Database) -> Result<(u64, Vec<PathBuf>), BlueyError> {
         db.transaction(|conn| {
             let mut stmt = conn
@@ -374,6 +408,7 @@ impl SessionRepository {
                 .collect::<Result<Vec<_>, _>>()
                 .sql()?;
             let deleted = conn.execute("DELETE FROM sessions", []).sql()?;
+            super::responses::delete_sessionless_rows(conn)?;
             Ok((
                 deleted as u64,
                 paths.into_iter().map(PathBuf::from).collect(),
@@ -413,15 +448,41 @@ impl SessionEventRepository {
 
     /// All events of a session in chronological order.
     pub fn list(db: &Database, session_id: &str) -> Result<Vec<SessionEvent>, BlueyError> {
+        Self::query(
+            db,
+            "SELECT id, session_id, type, title, detail, refs, confidence, created_at
+               FROM session_events WHERE session_id = ?1 ORDER BY created_at, id",
+            params![session_id],
+        )
+    }
+
+    /// The newest `limit` events of a session, still in chronological order —
+    /// the snapshot needs the tail, not the whole timeline.
+    pub fn list_recent(
+        db: &Database,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionEvent>, BlueyError> {
+        Self::query(
+            db,
+            "SELECT * FROM (
+                 SELECT id, session_id, type, title, detail, refs, confidence, created_at
+                   FROM session_events WHERE session_id = ?1
+                  ORDER BY created_at DESC, id DESC LIMIT ?2
+             ) ORDER BY created_at, id",
+            params![session_id, limit as i64],
+        )
+    }
+
+    fn query(
+        db: &Database,
+        sql: &str,
+        args: impl rusqlite::Params,
+    ) -> Result<Vec<SessionEvent>, BlueyError> {
         let raw = db.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, session_id, type, title, detail, refs, confidence, created_at
-                       FROM session_events WHERE session_id = ?1 ORDER BY created_at, id",
-                )
-                .sql()?;
+            let mut stmt = conn.prepare(sql).sql()?;
             let rows = stmt
-                .query_map([session_id], |r| {
+                .query_map(args, |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -657,6 +718,38 @@ mod tests {
     }
 
     #[test]
+    fn end_interrupted_completes_live_sessions_at_their_last_activity() {
+        let db = testutil::db();
+        let done = SessionRepository::create(&db, "general", None).unwrap();
+        let done_ended_at =
+            SessionRepository::set_status(&db, &done.id, SessionStatus::Completed, Some(now_iso()))
+                .unwrap()
+                .ended_at;
+        let quiet = SessionRepository::create(&db, "general", None).unwrap();
+        SessionRepository::set_status(&db, &quiet.id, SessionStatus::Paused, None).unwrap();
+        let busy = SessionRepository::create(&db, "general", None).unwrap();
+        let last = "2999-01-01T00:00:00.000Z";
+        SessionEventRepository::add(
+            &db,
+            &SessionEvent {
+                created_at: last.into(),
+                ..testutil::event(&busy.id, "q")
+            },
+        )
+        .unwrap();
+
+        let ended = SessionRepository::end_interrupted(&db).unwrap();
+        assert_eq!(ended.len(), 2, "the completed session is left alone");
+        assert!(SessionRepository::get_active(&db).unwrap().is_none());
+        let get = |id: &str| SessionRepository::get(&db, id).unwrap();
+        assert_eq!(get(&busy.id).status, SessionStatus::Completed);
+        assert_eq!(get(&busy.id).ended_at.as_deref(), Some(last));
+        assert_eq!(get(&quiet.id).ended_at, Some(quiet.started_at.clone()));
+        assert_eq!(get(&done.id).ended_at, done_ended_at);
+        assert!(SessionRepository::end_interrupted(&db).unwrap().is_empty());
+    }
+
+    #[test]
     fn list_filters_and_counts() {
         let db = testutil::db();
         testutil::seed_mode(&db, "interview", "Interview");
@@ -704,6 +797,23 @@ mod tests {
         assert_eq!(ordered.len(), 2);
         assert_eq!(ordered[0].session.id, a.id);
         assert_eq!(ordered[1].session.id, b.id);
+    }
+
+    #[test]
+    fn recent_events_are_the_newest_tail_in_chronological_order() {
+        let db = testutil::db();
+        let s = SessionRepository::create(&db, "general", None).unwrap();
+        let events: Vec<_> = (0..5)
+            .map(|i| {
+                let mut ev = testutil::event(&s.id, &format!("Question {i}"));
+                ev.created_at = format!("2026-09-28T10:00:0{i}.000Z");
+                SessionEventRepository::add(&db, &ev).unwrap()
+            })
+            .collect();
+        let recent = SessionEventRepository::list_recent(&db, &s.id, 2).unwrap();
+        assert_eq!(recent, events[3..].to_vec());
+        let all = SessionEventRepository::list_recent(&db, &s.id, 50).unwrap();
+        assert_eq!(all, events);
     }
 
     #[test]

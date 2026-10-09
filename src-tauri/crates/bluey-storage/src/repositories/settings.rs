@@ -15,6 +15,8 @@ use crate::db::Database;
 use crate::error::SqlExt;
 
 const SETTINGS_KEY: &str = "settings";
+/// The last stored settings text that did not fully decode (`{ savedAt, raw }`).
+const SETTINGS_BACKUP_KEY: &str = "settings.backup";
 const PANEL_STATE_KEY: &str = "panel_state";
 const ACTIVE_MODE_KEY: &str = "active_mode_id";
 
@@ -24,9 +26,24 @@ pub struct SettingsRepository;
 impl SettingsRepository {
     /// Load the [`Settings`] blob. Missing or partially incompatible JSON never
     /// fails: the stored value is merged **over** `Settings::default()` so new
-    /// fields pick up defaults; irrecoverable JSON falls back to the defaults.
+    /// fields pick up defaults, and a section that no longer decodes (an enum
+    /// value from a newer build, a hand edit) falls back **alone** — one bad
+    /// field never resets providers, roles and privacy with it. Whenever
+    /// anything fell back, the stored text is copied to `settings.backup`
+    /// first, since the next save overwrites it.
     pub fn get(db: &Database) -> Result<Settings, BlueyError> {
-        Self::get_merged_or_default::<Settings>(db, SETTINGS_KEY)
+        let Some(raw) = Self::get_raw(db, SETTINGS_KEY)? else {
+            return Ok(Settings::default());
+        };
+        let stored = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+        let (settings, fell_back) = decode_settings(&stored);
+        if !fell_back.is_empty() {
+            // Section names only: the values can hold personal text.
+            tracing::warn!(sections = ?fell_back, "stored settings partly incompatible; sections reset, backup kept");
+            let backup = serde_json::json!({ "savedAt": now_iso(), "raw": raw });
+            Self::set_json(db, SETTINGS_BACKUP_KEY, &backup)?;
+        }
+        Ok(settings)
     }
 
     /// Persist the whole [`Settings`] blob.
@@ -63,14 +80,19 @@ impl SettingsRepository {
 
     /// Raw JSON accessor for any settings key.
     pub fn get_json(db: &Database, key: &str) -> Result<Option<serde_json::Value>, BlueyError> {
-        let raw: Option<String> = db.with_conn(|conn| {
+        let raw = Self::get_raw(db, key)?;
+        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    /// The stored text of a settings key, parsed or not.
+    fn get_raw(db: &Database, key: &str) -> Result<Option<String>, BlueyError> {
+        db.with_conn(|conn| {
             conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
                 r.get(0)
             })
             .optional()
             .sql()
-        })?;
-        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+        })
     }
 
     /// Raw JSON upsert for any settings key.
@@ -107,6 +129,87 @@ impl SettingsRepository {
             }
         }
     }
+}
+
+/// Stored settings JSON → [`Settings`], and the paths (`appearance.theme`,
+/// `ai.providers`…) that had to fall back to their defaults. The stored value
+/// is laid over the defaults one top-level section at a time, and a section
+/// that does not decode one field at a time, so a bad field resets only
+/// itself; a provider entry that does not decode (a kind from a newer build)
+/// is dropped before the `ai` section is tried.
+fn decode_settings(stored: &serde_json::Value) -> (Settings, Vec<String>) {
+    let default = Settings::default();
+    let (Ok(mut accepted), serde_json::Value::Object(stored_sections)) =
+        (serde_json::to_value(&default), stored)
+    else {
+        return (default, vec!["*".to_string()]);
+    };
+    let mut merged = accepted.clone();
+    merge_json(&mut merged, stored);
+    if let Ok(settings) = serde_json::from_value(merged.clone()) {
+        return (settings, Vec::new());
+    }
+    let mut fell_back = Vec::new();
+    for key in stored_sections.keys() {
+        let Some(mut section) = merged.get(key).cloned() else {
+            continue;
+        };
+        if key == "ai" && drop_undecodable_providers(&mut section) {
+            fell_back.push("ai.providers".to_string());
+        }
+        if try_accept(&mut accepted, &[key], section.clone()) {
+            continue;
+        }
+        let serde_json::Value::Object(fields) = section else {
+            fell_back.push(key.clone());
+            continue;
+        };
+        for (field, value) in fields {
+            if !try_accept(&mut accepted, &[key, &field], value) {
+                fell_back.push(format!("{key}.{field}"));
+            }
+        }
+    }
+    let settings = serde_json::from_value(accepted).unwrap_or(default);
+    (settings, fell_back)
+}
+
+/// Set `path` in `accepted` to `value` when the result still decodes.
+fn try_accept(
+    accepted: &mut serde_json::Value,
+    path: &[&String],
+    value: serde_json::Value,
+) -> bool {
+    let mut candidate = accepted.clone();
+    let Some((last, parents)) = path.split_last() else {
+        return false;
+    };
+    let mut slot = &mut candidate;
+    for parent in parents {
+        let Some(next) = slot.get_mut(parent.as_str()) else {
+            return false;
+        };
+        slot = next;
+    }
+    let Some(object) = slot.as_object_mut() else {
+        return false;
+    };
+    object.insert((*last).clone(), value);
+    if serde_json::from_value::<Settings>(candidate.clone()).is_err() {
+        return false;
+    }
+    *accepted = candidate;
+    true
+}
+
+/// Remove `providers` entries that do not decode on their own; true when any went.
+fn drop_undecodable_providers(ai: &mut serde_json::Value) -> bool {
+    let Some(providers) = ai.get_mut("providers").and_then(|p| p.as_array_mut()) else {
+        return false;
+    };
+    let before = providers.len();
+    providers.retain(|p| serde_json::from_value::<AiProviderConfig>(p.clone()).is_ok());
+    providers.len() != before
 }
 
 /// Persisted shortcut overrides (`shortcuts` table), merged over the defaults
@@ -327,6 +430,7 @@ mod tests {
     use super::*;
     use crate::testutil;
     use bluey_core::types::ai::AiProviderKind;
+    use bluey_core::types::settings::ShortcutId;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -369,6 +473,87 @@ mod tests {
         assert_eq!(SettingsRepository::get(&db).unwrap(), Settings::default());
     }
 
+    /// The stored blob with `edit` applied over the serialized defaults.
+    fn stored_with(edit: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
+        let mut stored = serde_json::to_value(Settings::default()).unwrap();
+        stored["privacy"]["storeScreenshots"] = serde_json::json!(true);
+        stored["ai"]["contextTokenBudget"] = serde_json::json!(9000);
+        stored["appearance"]["width"] = serde_json::json!(720);
+        edit(&mut stored);
+        stored
+    }
+
+    #[test]
+    fn one_undecodable_field_resets_only_itself() {
+        let db = testutil::db();
+        let stored = stored_with(|s| s["appearance"]["theme"] = serde_json::json!("neon"));
+        SettingsRepository::set_json(&db, "settings", &stored).unwrap();
+
+        let s = SettingsRepository::get(&db).unwrap();
+        assert_eq!(s.appearance.theme, Settings::default().appearance.theme);
+        assert_eq!(s.appearance.width, 720, "the rest of the section survives");
+        assert!(s.privacy.store_screenshots);
+        assert_eq!(s.ai.context_token_budget, 9000);
+        assert_eq!(s.ai.providers, Settings::default().ai.providers);
+
+        let backup = SettingsRepository::get_json(&db, "settings.backup")
+            .unwrap()
+            .unwrap();
+        let raw: serde_json::Value = serde_json::from_str(backup["raw"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            (
+                &raw["appearance"]["theme"],
+                &raw["ai"]["contextTokenBudget"]
+            ),
+            (&serde_json::json!("neon"), &serde_json::json!(9000)),
+            "the undecodable text is kept before the next save"
+        );
+    }
+
+    #[test]
+    fn a_provider_of_an_unknown_kind_is_dropped_alone() {
+        let db = testutil::db();
+        let stored = stored_with(|s| {
+            let mut future = s["ai"]["providers"][0].clone();
+            future["id"] = serde_json::json!("future");
+            future["kind"] = serde_json::json!("future_kind");
+            s["ai"]["providers"].as_array_mut().unwrap().push(future);
+        });
+        SettingsRepository::set_json(&db, "settings", &stored).unwrap();
+
+        let s = SettingsRepository::get(&db).unwrap();
+        assert_eq!(s.ai.providers, Settings::default().ai.providers);
+        assert_eq!(s.ai.context_token_budget, 9000, "the ai section is kept");
+        assert!(s.privacy.store_screenshots);
+    }
+
+    #[test]
+    fn a_removed_field_from_an_older_build_still_loads_cleanly() {
+        let db = testutil::db();
+        let stored = stored_with(|s| s["privacy"]["debugLogTranscripts"] = serde_json::json!(true));
+        SettingsRepository::set_json(&db, "settings", &stored).unwrap();
+
+        let s = SettingsRepository::get(&db).unwrap();
+        assert!(s.privacy.store_screenshots, "the privacy section is kept");
+        assert_eq!(s.ai.context_token_budget, 9000);
+        assert_eq!(
+            SettingsRepository::get_json(&db, "settings.backup").unwrap(),
+            None,
+            "an unknown field is not a decode failure (DOC-008)"
+        );
+    }
+
+    #[test]
+    fn settings_that_decode_leave_no_backup() {
+        let db = testutil::db();
+        SettingsRepository::set_json(&db, "settings", &stored_with(|_| {})).unwrap();
+        assert_eq!(SettingsRepository::get(&db).unwrap().appearance.width, 720);
+        assert_eq!(
+            SettingsRepository::get_json(&db, "settings.backup").unwrap(),
+            None
+        );
+    }
+
     #[test]
     fn panel_state_active_mode_and_raw_json() {
         let db = testutil::db();
@@ -401,6 +586,41 @@ mod tests {
             Some(serde_json::json!({"a": 1}))
         );
         assert_eq!(SettingsRepository::get_json(&db, "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn shortcut_migration_moves_only_untouched_old_defaults() {
+        // UX-001: rows saved with the first defaults (⌘ arrows, ⌘R, ⌘,) move to
+        // the new defaults; a customised row is left alone.
+        let db = testutil::db();
+        db.with_conn(|c| {
+            c.execute_batch(
+                "INSERT INTO shortcuts (id, accelerator, enabled, updated_at) VALUES
+                   ('move_up', 'CmdOrCtrl+ArrowUp', 1, 'x'),
+                   ('move_left', 'Cmd+Alt+KeyJ', 1, 'x'),
+                   ('scroll_down', 'CmdOrCtrl+Shift+ArrowDown', 1, 'x'),
+                   ('new_chat', 'CmdOrCtrl+KeyR', 1, 'x'),
+                   ('open_settings', 'Cmd+Alt+KeyS', 1, 'x');
+                 DELETE FROM schema_migrations WHERE name = '0006_shortcut_defaults';",
+            )
+            .sql()
+        })
+        .unwrap();
+        assert_eq!(db.run_migrations().unwrap(), 1);
+
+        let listed = ShortcutRepository::list(&db).unwrap();
+        let get = |id: ShortcutId| listed.iter().find(|b| b.id == id).unwrap();
+        assert_eq!(
+            get(ShortcutId::MoveUp).accelerator,
+            "CmdOrCtrl+Ctrl+Alt+ArrowUp"
+        );
+        assert_eq!(get(ShortcutId::MoveLeft).accelerator, "Cmd+Alt+KeyJ");
+        assert_eq!(
+            get(ShortcutId::ScrollDown).accelerator,
+            "CmdOrCtrl+Alt+ArrowDown"
+        );
+        assert!(!get(ShortcutId::NewChat).enabled);
+        assert!(get(ShortcutId::OpenSettings).enabled, "customised row kept");
     }
 
     #[test]

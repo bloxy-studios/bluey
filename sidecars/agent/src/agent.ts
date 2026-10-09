@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { createSdkMcpServer, query, tool, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
-import { CitationStore } from "./citations";
+import { CitationStore, evidenceReport } from "./citations";
 import { resolveClaudeCliPath } from "./cli-path";
 import {
   checkClaudeCliAvailable,
@@ -87,6 +87,28 @@ export interface AgentRunDeps {
   buildVariant?: BuildVariant;
   /** Base environment (defaults to process.env). */
   env?: Record<string, string | undefined>;
+  /** Test injection: Gemini's grace for its report turn past `deadlineMs`. */
+  deadlineGraceMs?: number;
+}
+
+type TokenUsage = { inputTokens: number; outputTokens: number };
+
+/**
+ * The turns and tokens of a Claude run so far, from the latest usage of each
+ * model turn: one API turn can arrive as several assistant messages sharing
+ * its message id.
+ */
+export function claudeSpent(turns: ReadonlyMap<string, TokenUsage>): {
+  turns: number;
+  usage: TokenUsage;
+} {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const usage of turns.values()) {
+    inputTokens += usage.inputTokens;
+    outputTokens += usage.outputTokens;
+  }
+  return { turns: turns.size, usage: { inputTokens, outputTokens } };
 }
 
 export interface ResearchJobHandle {
@@ -170,6 +192,10 @@ const structuredOutputSchema = z.object({
 type StructuredReport = z.infer<typeof structuredOutputSchema>;
 
 const DOCUMENT_TEXT_MAX_CHARS = 40_000;
+/** Sources listed in a report written from gathered evidence (out of turns/time). */
+const EVIDENCE_REPORT_MAX_SOURCES = 10;
+/** How long past `deadlineMs` Gemini's forced report turn may take before the hard stop. */
+const DEADLINE_REPORT_GRACE_MS = 10_000;
 
 // ── Structural narrowing helpers (SDK messages are handled as `unknown`) ────
 
@@ -306,7 +332,17 @@ const PROVIDER_ENV_VARS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
+  // Tool keys: the MCP tools run in this process, the CLI never needs them.
+  "EXA_API_KEY",
+  "FIRECRAWL_API_KEY",
 ] as const;
+
+/** Claude Code's own opt-outs: no telemetry, error reports or update checks (SEC-017). */
+const CLI_PRIVACY_ENV = {
+  DISABLE_TELEMETRY: "1",
+  DISABLE_ERROR_REPORTING: "1",
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+} as const;
 
 /**
  * Build the environment handed to the Claude Code subprocess. The SDK's `env`
@@ -322,6 +358,7 @@ export function buildSubprocessEnv(
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...baseEnv,
+    ...CLI_PRIVACY_ENV,
     CLAUDE_AGENT_SDK_CLIENT_APP: "bluey-agent/0.1.0",
   };
   for (const name of PROVIDER_ENV_VARS) delete env[name];
@@ -360,7 +397,16 @@ export function startResearchJob(
   const store = new CitationStore();
   const startedAt = Date.now();
 
+  const deadlineAt = request.deadlineMs !== undefined ? startedAt + request.deadlineMs : undefined;
+
   let cancelRequested = false;
+  /** Set when the deadline's hard stop aborted the run (not a user cancel). */
+  let outOfTime = false;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Turns and tokens spent so far, for a report written at the hard stop. */
+  let spent = { turns: 0, usage: { inputTokens: 0, outputTokens: 0 } };
+  /** Claude: the latest usage of each model turn (one API message id each). */
+  const claudeTurns = new Map<string, TokenUsage>();
   let finished = false;
   let tmpDir: string | undefined;
 
@@ -374,18 +420,23 @@ export function startResearchJob(
     writer.event("research.failed", { jobId, error: { code, message, kind } });
   };
 
+  /**
+   * Links the tools never returned are de-linked in the report, and the
+   * citation list holds only validated sources the model used (AI-009).
+   */
   const emitCompleted = (data: {
     report: string;
-    citations: WireCitation[];
+    modelCitations?: WireCitation[];
     turns: number;
     usage: { inputTokens: number; outputTokens: number };
   }): void => {
     if (finished) return;
     finished = true;
+    const report = store.sanitizeReport(data.report);
     writer.event("research.completed", {
       jobId,
-      report: data.report,
-      citations: data.citations,
+      report,
+      citations: store.finalize(data.modelCitations, report),
       turns: data.turns,
       totalMs: Date.now() - startedAt,
       usage: data.usage,
@@ -394,6 +445,27 @@ export function startResearchJob(
 
   const emitCancelled = (): void => {
     emitFailed("cancelled", "research job was cancelled", "cancelled");
+  };
+
+  /** Out of turns or time: the gathered sources become the report (AI-008). */
+  const emitEvidenceReport = (
+    reason: "turns" | "time",
+    turns: number,
+    usage: { inputTokens: number; outputTokens: number },
+  ): void => {
+    const sources = store.list().slice(0, EVIDENCE_REPORT_MAX_SOURCES);
+    if (sources.length === 0) {
+      const code = reason === "turns" ? "max_turns_exceeded" : "deadline_exceeded";
+      emitFailed(code, `research ran out of ${reason} before finding any sources`, "research");
+      return;
+    }
+    emitCompleted({ report: evidenceReport(reason, sources), turns, usage });
+  };
+
+  /** The run was aborted: by the user (cancelled) or by the deadline's hard stop. */
+  const emitAborted = (): void => {
+    if (outOfTime && !cancelRequested) emitEvidenceReport("time", spent.turns, spent.usage);
+    else emitCancelled();
   };
 
   // ── Tool handlers (shared by both backends and the mocks) ─────────────────
@@ -415,7 +487,12 @@ export function startResearchJob(
         if (!parsed.ok) return parsed.failure;
         const { query: queryText, numResults, startPublishedDate } = parsed.data;
         try {
-          const results = await exa.search({ query: queryText, numResults, startPublishedDate });
+          const results = await exa.search({
+            query: queryText,
+            numResults,
+            startPublishedDate,
+            signal: abortController.signal,
+          });
           for (const r of results) store.add({ title: r.title, url: r.url, snippet: r.snippet });
           progress(`exa_search: ${results.length} result(s) for "${queryText}"`);
           return toolText(
@@ -459,8 +536,11 @@ export function startResearchJob(
           return toolFailure(new ToolError("invalid_arguments", urlProblem), "firecrawl_scrape");
         }
         try {
-          const page = await firecrawl.scrape(url);
-          store.add({ title: page.title, url: page.url, snippet: page.markdown.slice(0, 300) });
+          const page = await firecrawl.scrape(url, { signal: abortController.signal });
+          store.add(
+            { title: page.title, url: page.url, snippet: page.markdown.slice(0, 300) },
+            { fetched: true },
+          );
           progress(`firecrawl_scrape: fetched ${page.url}${page.truncated ? " (truncated)" : ""}`);
           const header = `# ${page.title ?? page.url}\nSource: ${page.url}\n\n`;
           return toolText(header + page.markdown);
@@ -503,6 +583,11 @@ export function startResearchJob(
   function handleAssistantMessage(m: Record<string, unknown>): void {
     if (m["parent_tool_use_id"] != null) return; // subagent traffic (never expected here)
     const message = rec(m["message"]);
+    const messageId = message ? str(message["id"]) : undefined;
+    if (message && messageId) {
+      claudeTurns.set(messageId, usageFrom(message));
+      spent = claudeSpent(claudeTurns);
+    }
     const content = Array.isArray(message?.["content"]) ? (message?.["content"] as unknown[]) : [];
     for (const rawBlock of content) {
       const block = rec(rawBlock);
@@ -557,7 +642,7 @@ export function startResearchJob(
         emitFailed("agent_empty_report", "the agent finished without producing a report", "research");
         return;
       }
-      emitCompleted({ report, citations: store.finalize(modelCitations), turns, usage });
+      emitCompleted({ report, modelCitations, turns, usage });
       return;
     }
 
@@ -569,7 +654,7 @@ export function startResearchJob(
     const detail = firstError ? `: ${sanitizeErrorMessage(firstError)}` : "";
     switch (subtype) {
       case "error_max_turns":
-        emitFailed("max_turns_exceeded", `research stopped after ${turns} turns${detail}`, "research");
+        emitEvidenceReport("turns", turns, usage);
         return;
       case "error_max_budget_usd":
         emitFailed("budget_exceeded", `research stopped: budget exceeded${detail}`, "research");
@@ -599,6 +684,9 @@ export function startResearchJob(
       goal: request.goal,
       toolNames: activeToolNames,
       hasDocuments: Boolean(handlers.document_read && (request.allowedDocumentIds?.length ?? 0) > 0),
+      maxTurns,
+      // en-CA formats as YYYY-MM-DD in the user's local time zone.
+      today: new Date(startedAt).toLocaleDateString("en-CA"),
     });
   }
 
@@ -689,7 +777,7 @@ export function startResearchJob(
     }
 
     if (!finished) {
-      if (cancelRequested) emitCancelled();
+      if (cancelRequested || outOfTime) emitAborted();
       else if (!sawResult)
         emitFailed("agent_no_result", "the agent stream ended without a result message", "research");
     }
@@ -713,6 +801,7 @@ export function startResearchJob(
       outcome = await runGemini({
         model,
         maxTurns,
+        deadlineAt,
         systemPrompt: systemPrompt(handlers, activeToolNames),
         prompt,
         handlers,
@@ -722,10 +811,13 @@ export function startResearchJob(
         onTextDelta: (text) => writer.event("research.textDelta", { jobId, text }),
         onToolCall: (toolName, input) => writer.event("research.toolCall", { jobId, tool: toolName, input }),
         onProgress: progress,
+        onTurn: (turns, usage) => {
+          spent = { turns, usage };
+        },
       });
     } catch (err) {
-      if (cancelRequested || (err instanceof Error && err.name === "AbortError")) {
-        emitCancelled();
+      if (cancelRequested || outOfTime || (err instanceof Error && err.name === "AbortError")) {
+        emitAborted();
         return;
       }
       const mapped = mapGeminiError(err);
@@ -748,7 +840,7 @@ export function startResearchJob(
     }
     emitCompleted({
       report,
-      citations: store.finalize(structured?.citations),
+      modelCitations: structured?.citations,
       turns: outcome.turns,
       usage: outcome.usage,
     });
@@ -758,6 +850,19 @@ export function startResearchJob(
 
   async function run(): Promise<void> {
     writer.event("research.started", { jobId, model });
+    if (deadlineAt !== undefined) {
+      // Hard stop: Gemini gets a grace period for its report turn; Claude
+      // cannot be asked for one mid-run, so its gathered sources are reported.
+      const grace = config.backend === "gemini" ? (deps.deadlineGraceMs ?? DEADLINE_REPORT_GRACE_MS) : 0;
+      deadlineTimer = setTimeout(
+        () => {
+          if (finished) return;
+          outOfTime = true;
+          abortController.abort();
+        },
+        Math.max(0, deadlineAt + grace - Date.now()),
+      );
+    }
 
     const usingInjectedModel =
       config.mockMode || Boolean(config.backend === "gemini" ? deps.generateFn : deps.queryFn);
@@ -795,8 +900,8 @@ export function startResearchJob(
 
   const done = run()
     .catch((err: unknown) => {
-      if (cancelRequested || (err instanceof Error && err.name === "AbortError")) {
-        emitCancelled();
+      if (cancelRequested || outOfTime || (err instanceof Error && err.name === "AbortError")) {
+        emitAborted();
         return;
       }
       if (err instanceof GeminiRunError) {
@@ -809,6 +914,7 @@ export function startResearchJob(
       emitFailed("agent_execution_failed", sanitizeErrorMessage(message), "research");
     })
     .finally(() => {
+      clearTimeout(deadlineTimer);
       broker.close();
       if (tmpDir) {
         try {
@@ -825,6 +931,9 @@ export function startResearchJob(
     cancel(reason = "cancel requested"): void {
       if (finished) return;
       cancelRequested = true;
+      // The terminal event goes out now, not when an in-flight tool call or
+      // model stream eventually unwinds (LIVE-005).
+      emitCancelled();
       broker.close(reason);
       abortController.abort();
     },

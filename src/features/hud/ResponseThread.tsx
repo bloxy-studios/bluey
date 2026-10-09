@@ -1,7 +1,8 @@
 import { ArrowDown } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { Pill } from "@/components/ui/Pill";
 import { Spinner } from "@/components/ui/Spinner";
 import { truncatedAnswerError } from "@/lib/errors/answers";
@@ -10,6 +11,7 @@ import { useChatStore, type ChatTurn, type SuggestionMeta } from "@/stores/chatS
 import { useResearchStore } from "@/stores/researchStore";
 import { ResponseActions } from "./ResponseActions";
 import { ResponseView } from "./ResponseView";
+import { followScrollTop, offsetInScroller } from "./thread-scroll";
 
 /** Streaming placeholder: what the pipeline is doing right now, incl. deep research. */
 function StreamingStatus() {
@@ -20,7 +22,7 @@ function StreamingStatus() {
   if (research) {
     return (
       <div className="flex items-center gap-2 py-1 text-[13px] text-fg-muted motion-safe:animate-fade-in">
-        <Spinner size={12} />
+        <Spinner size={12} decorative />
         <span className="min-w-0 flex-1 truncate">
           Researching · {research.message}
           {research.toolCalls > 0
@@ -40,7 +42,7 @@ function StreamingStatus() {
   }
   return (
     <div className="flex items-center gap-2 py-1 text-[13px] text-fg-muted motion-safe:animate-fade-in">
-      <Spinner size={12} />
+      <Spinner size={12} decorative />
       {phase === "capturing" || phase === "analyzing" ? "Reading screen…" : "Thinking…"}
     </div>
   );
@@ -76,22 +78,41 @@ function SuggestionHeader({ suggestion }: { suggestion: SuggestionMeta }) {
   );
 }
 
-function Turn({ turn, isLast, onRegenerate }: { turn: ChatTurn; isLast: boolean; onRegenerate: () => void }) {
+interface TurnProps {
+  turn: ChatTurn;
+  isLast: boolean;
+  onRetry: (turnId: string) => void;
+  onRegenerate: (turnId: string) => void;
+}
+
+/** Finished turns keep their identity in the store, so only the streaming turn re-renders (PERF-003). */
+const Turn = memo(function Turn({ turn, isLast, onRetry, onRegenerate }: TurnProps) {
   const streaming = turn.status === "streaming";
+  // Each turn re-sends its own request, not whatever the last turn asked (UX-011).
+  const retry = () => onRetry(turn.id);
+  const regenerate = () => onRegenerate(turn.id);
 
   return (
     <div className="flex flex-col gap-3">
-      {turn.suggestion ? <SuggestionHeader suggestion={turn.suggestion} /> : <PromptPill label={turn.promptLabel} />}
+      {turn.suggestion ? (
+        <SuggestionHeader suggestion={turn.suggestion} />
+      ) : (
+        <PromptPill label={turn.promptLabel} />
+      )}
       {turn.error ? (
-        <ErrorBanner error={turn.error} onRetry={onRegenerate} compact />
+        <ErrorBanner error={turn.error} onRetry={retry} compact />
       ) : turn.response ? (
         <>
           <ResponseView response={turn.response} streaming={streaming} />
           {turn.response.truncated && turn.status === "done" ? (
-            <ErrorBanner error={truncatedAnswerError()} onRetry={onRegenerate} compact />
+            <ErrorBanner error={truncatedAnswerError()} onRetry={regenerate} compact />
+          ) : null}
+          {turn.response.researchNote && turn.status === "done" ? (
+            // The answer went without the web it was meant to use (UX-035).
+            <p className="m-0 text-[12px] text-fg-subtle">{turn.response.researchNote}</p>
           ) : null}
           {turn.status === "done" && isLast ? (
-            <ResponseActions response={turn.response} onRegenerate={onRegenerate} />
+            <ResponseActions response={turn.response} onRegenerate={regenerate} />
           ) : null}
         </>
       ) : streaming ? (
@@ -101,16 +122,23 @@ function Turn({ turn, isLast, onRegenerate }: { turn: ChatTurn; isLast: boolean;
       ) : null}
     </div>
   );
-}
+});
+
+const TURN_FALLBACK = <div className="text-[13px] text-fg-subtle">This answer couldn’t be displayed.</div>;
 
 export interface ResponseThreadProps {
-  onRegenerate: () => void;
+  /** Re-send a failed turn's original request. */
+  onRetry: (turnId: string) => void;
+  /** Ask a finished turn's question again (same request and heard question; the screen is read again). */
+  onRegenerate: (turnId: string) => void;
 }
 
 /** Scrollable response body with auto-follow and a floating ↓ button. */
-export function ResponseThread({ onRegenerate }: ResponseThreadProps) {
+export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
   const turns = useChatStore((s) => s.turns);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const followedTurnRef = useRef<string | undefined>(undefined);
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
 
@@ -128,13 +156,31 @@ export function ResponseThread({ onRegenerate }: ResponseThreadProps) {
     setAtBottom(nearBottom);
   }, []);
 
-  // Follow the stream while the user is at the bottom.
+  // A new turn scrolls its top into view; the stream is followed while the
+  // user is at the bottom, but never past the turn's first line (UX-027). One
+  // layout read per frame, not one per streamed draft (PERF-003).
+  const lastTurnId = turns[turns.length - 1]?.id;
   const lastContent = turns[turns.length - 1]?.response?.content;
   useEffect(() => {
-    if (atBottomRef.current) scrollToBottom(false);
-  }, [lastContent, turns.length, scrollToBottom]);
+    const isNewTurn = followedTurnRef.current !== lastTurnId;
+    if (!isNewTurn && !atBottomRef.current) return;
+    followedTurnRef.current = lastTurnId;
+    const frame = requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      const turnEl = contentRef.current?.lastElementChild;
+      if (!el || !(turnEl instanceof HTMLElement)) return;
+      const view = {
+        scrollTop: isNewTurn ? 0 : el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      };
+      el.scrollTo({ top: followScrollTop(view, offsetInScroller(el, turnEl)), behavior: "auto" });
+      handleScroll();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [lastTurnId, lastContent, handleScroll]);
 
-  // Global scroll shortcuts (⇧⌘↑ / ⇧⌘↓ forwarded by the backend).
+  // Global scroll shortcuts (⌥⌘↑ / ⌥⌘↓ by default, forwarded by the backend).
   useEffect(() => {
     return eventBus.on("panel.scroll", ({ direction }) => {
       const el = scrollRef.current;
@@ -155,9 +201,17 @@ export function ResponseThread({ onRegenerate }: ResponseThreadProps) {
         tabIndex={0}
         className="min-h-0 overflow-y-auto overscroll-contain"
       >
-        <div className="flex min-h-[120px] flex-col gap-5 px-5 py-4">
+        <div ref={contentRef} className="flex min-h-[120px] flex-col gap-5 px-5 py-4">
           {turns.map((turn, index) => (
-            <Turn key={turn.id} turn={turn} isLast={index === turns.length - 1} onRegenerate={onRegenerate} />
+            // One turn that fails to render must not blank the HUD (UX-038).
+            <ErrorBoundary key={turn.id} resetKey={turn.response} fallback={TURN_FALLBACK}>
+              <Turn
+                turn={turn}
+                isLast={index === turns.length - 1}
+                onRetry={onRetry}
+                onRegenerate={onRegenerate}
+              />
+            </ErrorBoundary>
           ))}
         </div>
       </div>
@@ -166,7 +220,7 @@ export function ResponseThread({ onRegenerate }: ResponseThreadProps) {
           type="button"
           aria-label="Scroll to bottom"
           onClick={() => scrollToBottom()}
-          className="absolute bottom-3 right-4 flex size-9 items-center justify-center rounded-full bg-hud-chip text-fg shadow-lg shadow-black/25 backdrop-blur transition-colors hover:bg-white/20 motion-safe:animate-fade-in"
+          className="absolute bottom-3 right-4 flex size-9 items-center justify-center rounded-full bg-hud-chip text-fg shadow-lg shadow-black/25 backdrop-blur transition-colors hover:bg-fg/20 motion-safe:animate-fade-in"
         >
           <ArrowDown className="size-4" aria-hidden />
         </button>

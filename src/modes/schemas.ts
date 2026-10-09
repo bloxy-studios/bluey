@@ -37,12 +37,6 @@ function sectionSchema(titles?: readonly string[]) {
   });
 }
 
-const codeBlockSchema = z.object({
-  language: z.string(),
-  code: z.string(),
-  filename: z.string().optional(),
-});
-
 const citationSchema = z.object({
   title: z.string(),
   url: z.string(),
@@ -52,28 +46,44 @@ const citationSchema = z.object({
 interface SchemaShapeOptions {
   responseType: ResponseType;
   sectionTitles?: readonly string[];
-  includeCode?: boolean;
   includeDiagram?: boolean;
 }
 
+/**
+ * No `code` field: the solution lives once, fenced, in `content` and the
+ * optimizer derives `code` from its first fence — asking for a copy made the
+ * model write it twice, and strict providers stream keys sorted, so `code`
+ * came before `content` (AI-001). No numeric bounds on `confidence` either:
+ * Anthropic structured outputs reject them and the parser clamps (PROV-003).
+ */
 function structuredSchema(opts: SchemaShapeOptions) {
   return z.object({
     responseType: z.literal(opts.responseType),
     title: z.string().optional(),
     content: z.string(),
     sections: z.array(sectionSchema(opts.sectionTitles)).optional(),
-    ...(opts.includeCode ? { code: codeBlockSchema.optional() } : {}),
     ...(opts.includeDiagram ? { diagram: z.string().optional() } : {}),
-    confidence: z.number().min(0).max(1).optional(),
+    confidence: z.number().optional(),
     citations: z.array(citationSchema).optional(),
   });
 }
 
 // ── Per-schema definitions ──────────────────────────────────────────────────
 
+/**
+ * Schemas whose `content` is the words I say: the spoken line lives only in
+ * `content`, never in a section, and is never rebuilt from sections (AI-012).
+ */
+export const SPOKEN_SCHEMAS: ReadonlySet<ResponseSchemaId> = new Set<ResponseSchemaId>([
+  "suggested-response",
+  "behavioral",
+  "sales",
+  "recruiting",
+]);
+
 export const SECTION_TITLES: Partial<Record<ResponseSchemaId, readonly string[]>> = {
   "suggested-response": ["Why it works", "Key point"],
-  behavioral: ["Suggested answer", "Story used", "Key point"],
+  behavioral: ["Story used", "Key point"],
   coding: ["Approach", "Solution", "Complexity", "Edge cases"],
   "system-design": [
     "Requirements",
@@ -84,8 +94,8 @@ export const SECTION_TITLES: Partial<Record<ResponseSchemaId, readonly string[]>
     "Trade-offs",
   ],
   case: ["Clarify", "Framework", "Analyze", "Calculate", "Synthesize", "Recommend"],
-  sales: ["Suggested response", "Why it works", "Optional follow-up"],
-  recruiting: ["Suggested response", "Screening notes", "Next step"],
+  sales: ["Why it works", "Optional follow-up"],
+  recruiting: ["Screening notes", "Next step"],
   meeting: [
     "Important",
     "Decision detected",
@@ -122,7 +132,6 @@ const ZOD_SCHEMAS: Record<ResponseSchemaId, z.ZodType> = {
   coding: structuredSchema({
     responseType: "code",
     sectionTitles: SECTION_TITLES.coding,
-    includeCode: true,
   }),
   "system-design": structuredSchema({
     responseType: "system-design",
@@ -292,6 +301,8 @@ function fromEnvelope(schemaId: ResponseSchemaId, json: object): StructuredModel
     ? (data.responseType as ResponseType)
     : RESPONSE_TYPE_FOR_SCHEMA[schemaId];
   const sections = coerceSections(data.sections);
+  // Sections hold rationale; a spoken answer is never rebuilt from them.
+  if (!data.content && SPOKEN_SCHEMAS.has(schemaId)) return null;
   let content =
     data.content && data.content.length > 0
       ? data.content

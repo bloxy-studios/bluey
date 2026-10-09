@@ -1,12 +1,13 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { Toasts } from "@/components/ui/Toast";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { ResponseActions } from "@/features/hud/ResponseActions";
 import { ResponseView } from "@/features/hud/ResponseView";
 import { splitStreamingMarkdown } from "@/features/hud/markdown";
-import { makeResponse, setupMockApp } from "./helpers";
+import { makeResponse, setupInterceptedApp, setupMockApp } from "./helpers";
 
 describe("ResponseView", () => {
   beforeEach(async () => {
@@ -27,18 +28,28 @@ describe("ResponseView", () => {
   });
 
   it("renders a fenced code block with language header and copy", async () => {
-    const user = userEvent.setup();
-    const clipboardSpy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
-    render(
-      <ResponseView response={makeResponse({ content: "Before\n\n```python\nprint('hi')\n```\n\nAfter" })} />,
-    );
-    expect(screen.getByText("python")).toBeInTheDocument();
-    expect(screen.getByText("print('hi')")).toBeInTheDocument();
+    // Fake timers: the "Copied" label lasts 1 s, which a slow run could miss.
+    userEvent.setup(); // installs the clipboard stub
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const clipboardSpy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+      render(
+        <ResponseView response={makeResponse({ content: "Before\n\n```python\nprint('hi')\n```\n\nAfter" })} />,
+      );
+      expect(screen.getByText("python")).toBeInTheDocument();
+      expect(screen.getByText("print('hi')")).toBeInTheDocument();
 
-    await user.click(screen.getByLabelText("Copy code"));
-    await waitFor(() => expect(screen.getByText("Copied")).toBeInTheDocument());
-    expect(clipboardSpy).toHaveBeenCalledWith("print('hi')");
-    clipboardSpy.mockRestore();
+      fireEvent.click(screen.getByLabelText("Copy code"));
+      await act(async () => {});
+      expect(screen.getByText("Copied")).toBeInTheDocument();
+      expect(clipboardSpy).toHaveBeenCalledWith("print('hi')");
+
+      act(() => vi.advanceTimersByTime(1000));
+      expect(screen.getByText("Copy")).toBeInTheDocument();
+      clipboardSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("buffers an unclosed code fence while streaming", () => {
@@ -148,5 +159,46 @@ describe("ResponseView never renders JSON", () => {
       />,
     );
     expect(screen.getByRole("button", { name: /Complexity/ })).toBeInTheDocument();
+  });
+});
+
+describe("ResponseActions copy and feedback (UX-028)", () => {
+  it("copies the title and sections as plain text", async () => {
+    await setupMockApp();
+    const user = userEvent.setup();
+    const clipboardSpy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    const response = makeResponse({
+      title: "Behavioral",
+      content: "Lead with **ownership**.",
+      sections: [{ id: "s1", title: "Story used", content: "The **Acme** migration" }],
+    });
+    render(
+      <TooltipProvider>
+        <ResponseActions response={response} onRegenerate={() => {}} />
+      </TooltipProvider>,
+    );
+
+    await user.click(screen.getByLabelText("Copy answer"));
+    expect(clipboardSpy).toHaveBeenCalledWith("Behavioral\n\nLead with ownership.\n\nStory used\nThe Acme migration");
+    clipboardSpy.mockRestore();
+  });
+
+  it("rolls the rating back and says so when the feedback cannot be saved", async () => {
+    const { transport } = await setupInterceptedApp();
+    transport.intercept("responses_feedback", () => {
+      throw { kind: "storage", code: "storage.write", message: "The feedback could not be saved.", recoverable: true };
+    });
+    const user = userEvent.setup();
+    render(
+      <TooltipProvider>
+        <ResponseActions response={makeResponse({ content: "The answer" })} onRegenerate={() => {}} />
+        <Toasts />
+      </TooltipProvider>,
+    );
+
+    await user.click(screen.getByLabelText("Helpful"));
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Helpful")).toHaveAttribute("aria-pressed", "false"));
   });
 });

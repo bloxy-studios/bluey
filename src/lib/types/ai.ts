@@ -38,8 +38,15 @@ export type AnswerShape =
   | "spoken" // exactly what to say, first person
   | "written" // the text to send or submit
   | "code" // the working solution
+  | "debug" // the exact fix, the cause, only the changed lines
   | "design" // a system design with its trade-offs
   | "summary"; // the points themselves
+
+/**
+ * Whose words the answer is: what I say aloud, what I submit or send, or an
+ * explanation addressed to me. Rendered as the `Voice:` line under `Task:`.
+ */
+export type AnswerVoice = "speak-as-user" | "write-as-user" | "explain-to-user";
 
 export type LatencyBudget = "ultra-fast" | "fast" | "balanced" | "deep";
 export type ReasoningLevel = "none" | "light" | "deep";
@@ -121,6 +128,16 @@ export interface AIRequest {
   modelOverride?: ModelAssignment;
   /** The WebView's half of the fast-path trace (ADR 0010 §2), when the engine measured it. */
   trace?: TraceStamps;
+  /**
+   * Supersede group (the engine's generation scope, e.g. `ask` / `prepare`). Rust cancels
+   * an older active request only when session *and* scope match — each scope counts its
+   * own generations.
+   */
+  scope?: string;
+  /** Work the user did not start (proactive/live suggestions): never drives the app state machine. */
+  background?: boolean;
+  /** The request's mode's preferred model role — routed by it, not by the mode active when it lands. */
+  preferredModelRole?: ModelRole;
   createdAt: string;
 }
 
@@ -166,6 +183,22 @@ export interface ConnectionTestResult {
   error?: BlueyError;
 }
 
+/**
+ * Whether an answer can be routed right now — the Rust router run against the real provider
+ * state (keys, enabled flags, account states, Cloud AI). No network.
+ */
+export interface AiReadiness {
+  /** An answer request routes to a provider. */
+  ok: boolean;
+  /** Where it routes (`ok`): what a connection test should try. */
+  providerId?: string;
+  model?: string;
+  /** A question about the screen (images) routes too. */
+  vision: boolean;
+  /** Why an answer cannot be routed (`!ok`), e.g. `config.provider_unusable` with its cause. */
+  error?: BlueyError;
+}
+
 /** Research */
 export type ResearchDepth = "none" | "search" | "search_scrape" | "deep_agent";
 
@@ -195,6 +228,8 @@ export interface DeepResearchRequest {
   tools: Array<"exa_search" | "firecrawl_scrape" | "document_read">;
   /** Document ids the agent may read via the document_read tool (local, private). */
   allowedDocumentIds?: string[];
+  /** Wall-clock budget from job start: past it the agent stops calling tools and reports. */
+  deadlineMs?: number;
 }
 
 export type DeepResearchEvent =

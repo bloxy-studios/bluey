@@ -1,10 +1,7 @@
 import { useEffect, useRef } from "react";
 
-import { showErrorToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
-import { toBlueyError } from "@/lib/types";
-import { useAppStore } from "@/stores/appStore";
 import { hasActiveHudOverlay, isComposingKey } from "./hud-keyboard";
 
 export interface HudShortcutHandlers {
@@ -22,9 +19,14 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+/** The HUD composer (HudInputRow): focused whenever the HUD shows, and ⌘R has no editing meaning there. */
+function isHudComposer(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.dataset.hudComposer !== undefined;
+}
+
 /**
  * Wires global shortcut events (`shortcut.triggered` from the backend),
- * panel events, and local key handling (Esc, ⌘↵, ⌘⇧↵, ⌘R when the HUD
+ * panel events, and local key handling (Esc, ⌘↵, ⌘⇧↵, ⌘R, ⌘, when the HUD
  * window itself has focus).
  */
 export function useHudShortcuts(handlers: HudShortcutHandlers): void {
@@ -46,20 +48,10 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
       if (hasActiveHudOverlay()) overlayKeys.add(event);
     };
 
-    const toggleListening = async () => {
-      const audioActive = useAppStore.getState().status?.audioActive ?? false;
-      try {
-        if (audioActive) await bluey.audio.stop();
-        else await bluey.audio.start();
-      } catch (error) {
-        showErrorToast(toBlueyError(error, "audio"));
-      }
-    };
-
     const offShortcut = eventBus.on("shortcut.triggered", ({ id, monoMs }) => {
       // Keep backend bindings/dispatch intact; only protect local IME work from
       // ask/new-chat notifications received while the HUD is composing.
-      if (composing && (id === "capture_analyze" || id === "generate_response" || id === "new_chat")) return;
+      if (composing && (id === "capture_analyze" || id === "generate_response")) return;
       const triggeredAtMs = typeof monoMs === "number" ? monoMs : undefined;
       switch (id) {
         case "capture_analyze":
@@ -68,12 +60,8 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
         case "generate_response":
           handlersRef.current.onGenerate(triggeredAtMs);
           break;
-        case "new_chat":
-          handlersRef.current.onNewChat();
-          break;
-        case "toggle_listening":
-          void toggleListening();
-          break;
+        // `new_chat` arrives as `panel.newChat` (below) and `toggle_listening` is handled
+        // natively in Rust: acting here too would run them twice (LIVE-007).
         default:
           break;
       }
@@ -107,9 +95,21 @@ export function useHudShortcuts(handlers: HudShortcutHandlers): void {
         else handlersRef.current.onCaptureAnalyze();
         return;
       }
-      if ((event.key === "r" || event.key === "R") && !isEditableTarget(event.target)) {
+      // New Chat is HUD-local by default (UX-001), so plain ⌘R must work from the
+      // focused composer too; other inputs keep ⌘R, and ⌘⇧R/⌘⌥R stay the composer's.
+      const plain = !event.shiftKey && !event.altKey;
+      if (
+        (event.key === "r" || event.key === "R") &&
+        (!isEditableTarget(event.target) || (plain && isHudComposer(event.target)))
+      ) {
         event.preventDefault();
         if (!event.repeat) handlersRef.current.onNewChat();
+        return;
+      }
+      // ⌘, is HUD-local by default: the global binding is off so the frontmost app keeps it (UX-001).
+      if (event.key === "," && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        if (!event.repeat) void bluey.window.open({ label: "settings" }).catch(() => undefined);
       }
     };
 

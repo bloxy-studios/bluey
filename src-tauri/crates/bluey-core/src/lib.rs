@@ -7,10 +7,10 @@
 //! * [`state`]  — the explicit application state machine.
 //! * [`events`] — the central event enum + names used on the bus.
 //! * [`router`] — task/latency/vision aware model routing policy.
-//! * [`budget`] — context token budgeting & trimming.
 //! * [`shortcuts`] — default bindings, accelerator parsing, conflict detection.
 //! * [`modes`]  — built-in mode definitions as data.
 //! * [`presets`] — provider presets (reserved ids, recommended models) + `.env` import planning.
+//! * [`panic`]  — containment for third-party parser panics (all others abort).
 //! * [`session`] — session lifecycle rules.
 //! * [`context`] — native context snapshot assembly helpers (size limits, adapters).
 //! * [`text`]   — token estimation, chunking, dedupe utilities.
@@ -21,11 +21,11 @@ pub mod error;
 pub mod types;
 
 pub mod accounts;
-pub mod budget;
 pub mod context;
 pub mod events;
 pub mod latency;
 pub mod modes;
+pub mod panic;
 pub mod presets;
 pub mod router;
 pub mod session;

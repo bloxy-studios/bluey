@@ -2,11 +2,13 @@ import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Select } from "@/components/ui/Select";
 import { Slider } from "@/components/ui/Slider";
 import { Switch } from "@/components/ui/Switch";
 import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { useAiReadiness } from "@/hooks/useAiReadiness";
 import { presetForKind } from "@/lib/ai/provider-presets";
 import { bluey } from "@/lib/tauri/api";
 import { SECRET_KEYS } from "@/lib/tauri/commands";
@@ -18,7 +20,6 @@ import {
   type AIProviderConfig,
   type ModelRole,
   type ModelRoleAssignments,
-  type ResearchBackend,
   type ResponseLength,
   type ResponseTone,
   type SuggestionDisplay,
@@ -28,6 +29,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { PROVIDER_COPY } from "../accounts/account-copy";
 import { AccountsSection } from "../accounts/AccountsSection";
 import { ProviderCard, ProviderDialog } from "../ProviderCard";
+import { ResearchBackendSelect } from "../ResearchBackendSelect";
 import {
   draftToDeployments,
   isPresetProviderId,
@@ -43,7 +45,9 @@ const ROLES: Array<{ role: ModelRole; label: string; hint: string }> = [
   { role: "fast", label: "Fast", hint: "Classification, quick replies" },
   { role: "reasoning", label: "Reasoning", hint: "Hard problems" },
   { role: "vision", label: "Vision", hint: "Screenshots" },
-  { role: "research", label: "Research", hint: "Deep research agent" },
+  // Inline research answers on any provider; the deep research agent only
+  // follows it on its backend's provider (PROV-011).
+  { role: "research", label: "Research", hint: "Answers that need research. Deep research: see below" },
   { role: "transcription", label: "Transcription", hint: "Batch / live speech-to-text" },
   { role: "embedding", label: "Embedding", hint: "Document retrieval" },
 ];
@@ -63,7 +67,7 @@ function ModelRoleRow({
   role: ModelRole;
   label: string;
   hint: string;
-  providers: AIProviderConfig[];
+  providers: RoutableProvider[];
 }) {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
@@ -133,7 +137,7 @@ function ModelRoleRow({
           ...(providerId ? [] : [{ value: "", label: "Choose provider" }]),
           ...providers.map((p) => ({
             value: p.id,
-            label: p.enabled ? p.name : `${p.name} (disabled)`,
+            label: providerOptionLabel(p),
             disabled: !p.enabled,
           })),
         ]}
@@ -171,6 +175,18 @@ function ModelRoleRow({
   );
 }
 
+/** A provider the roles can use: settings providers, plus connected accounts and their limit. */
+type RoutableProvider = AIProviderConfig & { rateLimited?: boolean };
+
+/** A role's provider option says why it can't answer yet (UX-008). */
+function providerOptionLabel(p: RoutableProvider): string {
+  if (!p.enabled) return `${p.name} (disabled)`;
+  // Still signed in: waiting for the plan window, not a sign-in or a key.
+  if (p.rateLimited) return `${p.name} (rate limited)`;
+  if (p.hasApiKey) return p.name;
+  return p.authMethod === "oauth_subscription" ? `${p.name} (not connected)` : `${p.name} (no key)`;
+}
+
 export default function AITab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
@@ -181,13 +197,14 @@ export default function AITab() {
   );
   const [budget, setBudget] = useState<number | null>(null);
   const [switching, setSwitching] = useState(false);
+  const { readiness } = useAiReadiness();
 
   if (!settings) return null;
   const { ai } = settings;
   const providers = sortProviders(ai.providers);
   // Connected subscription accounts are providers to the router too (ADR 0009 §3.6): they
   // appear in the role and default-provider selects, never in the API-key provider list.
-  const accountProviders: AIProviderConfig[] = settings.experimental.subscriptionAccounts
+  const accountProviders: RoutableProvider[] = settings.experimental.subscriptionAccounts
     ? accounts
         .filter((a) => a.status.state === "connected" || a.status.state === "rate_limited")
         .map((a) => ({
@@ -198,9 +215,10 @@ export default function AITab() {
           enabled: true,
           hasApiKey: a.status.state === "connected",
           authMethod: "oauth_subscription",
+          rateLimited: a.status.state === "rate_limited",
         }))
     : [];
-  const routable = [...providers, ...accountProviders];
+  const routable: RoutableProvider[] = [...providers, ...accountProviders];
   const enabledProviders = routable.filter((p) => p.enabled);
   const defaultProviderId =
     ai.bootstrapProvider && routable.some((p) => p.id === ai.bootstrapProvider)
@@ -232,6 +250,24 @@ export default function AITab() {
     setDialog(null);
   };
 
+  /**
+   * One patch drops the provider and unassigns the roles it served (UX-008); Rust's settings side
+   * effects delete its Keychain key with it. Nothing reroutes silently: the roles show as unassigned.
+   */
+  const removeProvider = async (provider: AIProviderConfig) => {
+    const models = Object.fromEntries(
+      ROLES.filter(({ role }) => ai.models[role]?.providerId === provider.id).map(({ role }) => [role, null]),
+    );
+    const saved = await update({
+      ai: {
+        providers: ai.providers.filter((p) => p.id !== provider.id),
+        models: { ...ai.models, ...models },
+        ...(ai.bootstrapProvider === provider.id ? { bootstrapProvider: null } : {}),
+      },
+    });
+    if (saved) showToast(`${provider.name} removed`, 2000);
+  };
+
   const switchDefaultProvider = async (providerId: string) => {
     if (!providerId || providerId === defaultProviderId) return;
     const provider = routable.find((p) => p.id === providerId);
@@ -252,6 +288,10 @@ export default function AITab() {
 
   return (
     <>
+      {readiness && !readiness.ok && readiness.error ? (
+        // The router's own verdict (ONB-001): why an answer can't be routed with these settings.
+        <ErrorBanner error={readiness.error} compact className="mb-4" />
+      ) : null}
       <SectionHeader
         title="Default provider"
         description="One switch for every role — the provider's recommended models are assigned to chat, vision, transcription, research and embeddings. Roles it doesn't serve keep their current model."
@@ -269,7 +309,7 @@ export default function AITab() {
               .filter((p) => p.enabled || p.id === defaultProviderId)
               .map((p) => ({
                 value: p.id,
-                label: p.hasApiKey ? p.name : `${p.name} (no key)`,
+                label: p.rateLimited ? providerOptionLabel(p) : p.hasApiKey ? p.name : `${p.name} (no key)`,
                 disabled: !p.hasApiKey || !p.enabled,
               })),
           ]}
@@ -305,6 +345,8 @@ export default function AITab() {
                 ai: { providers: ai.providers.map((p) => (p.id === provider.id ? { ...p, enabled } : p)) },
               })
             }
+            usedBy={ROLES.filter(({ role }) => ai.models[role]?.providerId === provider.id).map((r) => r.label)}
+            onRemove={() => removeProvider(provider)}
           />
         ))}
       </div>
@@ -361,7 +403,10 @@ export default function AITab() {
         />
       </div>
 
-      <SectionHeader title="Live suggestions" description="Answers to the questions Bluey hears while listening" />
+      <SectionHeader
+        title="Live suggestions"
+        description="Answers to the questions Bluey hears while listening"
+      />
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between py-1">
           <div>
@@ -417,7 +462,8 @@ export default function AITab() {
           <div>
             <div className="text-[14px] font-medium text-fg">Deep research agent</div>
             <div className="text-[13px] text-fg-muted">
-              Multi-step research in a sandboxed sidecar (public queries only).
+              Multi-step research in a sandboxed sidecar (public queries only). Needs an Exa key; Firecrawl
+              lets it read whole pages.
             </div>
           </div>
           <Switch
@@ -431,18 +477,13 @@ export default function AITab() {
             <div className="text-[14px] font-medium text-fg">Research backend</div>
             <div className="text-[13px] text-fg-muted">
               {ai.researchBackend === "gemini"
-                ? "Gemini function calling with your Google AI Studio key — nothing else to configure."
-                : "Claude Agent SDK — needs an Anthropic key (or Claude in Foundry) and the full sidecar build."}
+                ? "Gemini function calling with your Google AI Studio key — nothing else to configure. Uses the Research model when it comes from a Gemini provider."
+                : "Claude Agent SDK — needs an Anthropic key (or Claude in Foundry) and the full sidecar build. Uses the Research model when it comes from an Anthropic provider."}
             </div>
           </div>
-          <Select
-            aria-label="Research backend"
+          <ResearchBackendSelect
             value={ai.researchBackend}
-            onChange={(e) => void update({ ai: { researchBackend: e.target.value as ResearchBackend } })}
-            options={[
-              { value: "gemini", label: "Gemini" },
-              { value: "claude", label: "Claude" },
-            ]}
+            onChange={(backend) => void update({ ai: { researchBackend: backend } })}
           />
         </div>
         <div className="flex flex-col gap-2.5 rounded-card border border-border bg-bg-elevated p-4">

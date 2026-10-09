@@ -8,6 +8,7 @@ import type {
   BlueyMode,
   ContextRequirement,
   ModeDraft,
+  ModelRole,
   PreferredLatency,
   ResponseSchemaId,
   ResponseStyle,
@@ -93,45 +94,62 @@ const VALID_REQUIREMENTS: readonly ContextRequirement[] = [
 const VALID_LENGTHS = new Set(["concise", "balanced", "detailed"]);
 const VALID_TONES = new Set(["natural", "professional", "technical", "conversational", "direct"]);
 
+/** Model roles a mode may prefer (the Rust backend enforces the same set). */
+const VALID_MODEL_ROLES: readonly ModelRole[] = ["default", "fast", "reasoning", "vision", "research"];
+
 export interface ModeDraftValidation {
   ok: boolean;
   errors: string[];
+  /** The first error per field, for inline messages in the mode editor. */
+  fieldErrors: Partial<Record<keyof ModeDraft, string>>;
 }
 
-/** Validate a custom mode draft before sending it to `modes_create`. */
+/**
+ * Validate a custom mode draft before sending it to `modes_create` /
+ * `modes_update` (the Rust `ModeRepository` enforces the same limits).
+ */
 export function validateModeDraft(draft: ModeDraft): ModeDraftValidation {
   const errors: string[] = [];
+  const fieldErrors: ModeDraftValidation["fieldErrors"] = {};
+  const fail = (field: keyof ModeDraft, message: string) => {
+    errors.push(message);
+    fieldErrors[field] ??= message;
+  };
 
   const name = draft.name?.trim() ?? "";
-  if (name.length === 0) errors.push("Name is required.");
-  if (name.length > 60) errors.push("Name must be 60 characters or fewer.");
+  if (name.length === 0) fail("name", "Name is required.");
+  if (name.length > 60) fail("name", "Name must be 60 characters or fewer.");
 
   if (draft.description !== undefined && draft.description.length > 300) {
-    errors.push("Description must be 300 characters or fewer.");
+    fail("description", "Description must be 300 characters or fewer.");
   }
   if (draft.icon !== undefined && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(draft.icon)) {
-    errors.push('Icon must be a lucide icon name in kebab-case (e.g. "graduation-cap").');
+    fail("icon", 'Icon must be a lucide icon name in kebab-case (e.g. "graduation-cap").');
   }
   if (draft.systemInstructions !== undefined && draft.systemInstructions.length > 4000) {
-    errors.push("System instructions must be 4000 characters or fewer.");
+    fail("systemInstructions", "System instructions must be 4000 characters or fewer.");
   }
   if (draft.responseSchema !== undefined && !VALID_SCHEMAS.includes(draft.responseSchema)) {
-    errors.push(`Unknown response schema "${String(draft.responseSchema)}".`);
+    fail("responseSchema", `Unknown response schema "${String(draft.responseSchema)}".`);
   }
   if (draft.preferredLatency !== undefined && !VALID_LATENCIES.includes(draft.preferredLatency)) {
-    errors.push(`Unknown latency preference "${String(draft.preferredLatency)}".`);
+    fail("preferredLatency", `Unknown latency preference "${String(draft.preferredLatency)}".`);
   }
   for (const requirement of draft.contextRequirements ?? []) {
     if (!VALID_REQUIREMENTS.includes(requirement)) {
-      errors.push(`Unknown context requirement "${String(requirement)}".`);
+      fail("contextRequirements", `Unknown context requirement "${String(requirement)}".`);
     }
   }
   if (draft.responseStyle?.length !== undefined && !VALID_LENGTHS.has(draft.responseStyle.length)) {
-    errors.push(`Unknown response length "${String(draft.responseStyle.length)}".`);
+    fail("responseStyle", `Unknown response length "${String(draft.responseStyle.length)}".`);
   }
   if (draft.responseStyle?.tone !== undefined && !VALID_TONES.has(draft.responseStyle.tone)) {
-    errors.push(`Unknown response tone "${String(draft.responseStyle.tone)}".`);
+    fail("responseStyle", `Unknown response tone "${String(draft.responseStyle.tone)}".`);
   }
 
-  return { ok: errors.length === 0, errors };
+  if (draft.preferredModelRole != null && !VALID_MODEL_ROLES.includes(draft.preferredModelRole)) {
+    fail("preferredModelRole", `A mode cannot prefer the ${String(draft.preferredModelRole)} model.`);
+  }
+
+  return { ok: errors.length === 0, errors, fieldErrors };
 }

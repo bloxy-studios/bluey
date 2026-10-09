@@ -18,6 +18,7 @@
 use bluey_core::types::{FinishReason, ModelRole, CLAUDE_PROVIDER_ID};
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_protocols::anthropic as proto;
+use bluey_protocols::api_error;
 use bluey_protocols::claude_code;
 use bluey_protocols::request_shaper::{ProviderHttpRequest, RequestShaper, ShapeContext};
 use eventsource_stream::Eventsource;
@@ -26,8 +27,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::EmbedPurpose;
 use super::{
-    channel_stream, conversation_id, header_pairs, map_http_status, map_transport_error,
-    read_limited, AiProvider, ChunkStream, OAuthCredential, ProviderRequest, StreamItem,
+    api_error_from, channel_stream, conversation_id, header_pairs, map_http_status,
+    map_transport_error, read_limited, remember_schema_in_prompt, schema_in_prompt,
+    send_with_retry, AiProvider, ChunkStream, OAuthCredential, ProviderRequest, StreamItem,
 };
 
 enum Auth {
@@ -78,6 +80,7 @@ impl AnthropicProvider {
         &self,
         request: &ProviderRequest,
         schema_as_prompt: bool,
+        token: &CancellationToken,
     ) -> Result<reqwest::Response, BlueyError> {
         let mut body = proto::build_messages_body(&proto::MessagesBodyOptions {
             model: &request.model,
@@ -88,24 +91,34 @@ impl AnthropicProvider {
             output_schema: request.output_schema.as_ref(),
             schema_as_prompt_fallback: schema_as_prompt,
         });
+        // Adaptive thinking on both paths when Bluey asks for reasoning
+        // (model-gated: never Haiku); it also drops the sampling knobs.
+        claude_code::apply_thinking(
+            &mut body,
+            &request.model,
+            request.reasoning,
+            request.latency,
+        );
+        if !self.is_oauth() {
+            // Adaptive thinking and `output_config.effort` are GA on the public
+            // API; context editing is a beta that key requests do not opt into.
+            if let Some(map) = body.as_object_mut() {
+                map.remove("context_management");
+            }
+        }
         match &self.auth {
-            Auth::ApiKey(api_key) => self
-                .http
-                .post(proto::messages_url(&self.base_url))
-                .header("x-api-key", api_key)
-                .header("anthropic-version", proto::ANTHROPIC_VERSION)
-                .header("accept", "text/event-stream")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| map_transport_error(&e, "Anthropic")),
+            Auth::ApiKey(api_key) => {
+                let build = || {
+                    self.http
+                        .post(proto::messages_url(&self.base_url))
+                        .header("x-api-key", api_key)
+                        .header("anthropic-version", proto::ANTHROPIC_VERSION)
+                        .header("accept", "text/event-stream")
+                        .json(&body)
+                };
+                send_with_retry(build, token, "Anthropic").await
+            }
             Auth::Oauth(credential) => {
-                claude_code::apply_thinking(
-                    &mut body,
-                    &request.model,
-                    request.reasoning,
-                    request.latency,
-                );
                 claude_code::normalise_max_tokens(
                     &mut body,
                     &request.model,
@@ -153,12 +166,12 @@ impl AnthropicProvider {
         }
     }
 
-    /// Map a non-2xx response; the body is read only in OAuth mode (the Claude
-    /// mapper needs the provider's words) and never logged.
-    async fn error_from(&self, response: reqwest::Response) -> BlueyError {
+    /// Map a non-2xx response; the body is read capped for the provider's
+    /// code and words only, and never logged.
+    async fn error_from(&self, response: reqwest::Response, model: &str) -> BlueyError {
         let status = response.status().as_u16();
         match &self.auth {
-            Auth::ApiKey(_) => map_http_status(status, "Anthropic"),
+            Auth::ApiKey(_) => api_error_from(response, "Anthropic", model).await,
             Auth::Oauth(_) => {
                 let headers = header_pairs(response.headers());
                 let body = read_limited(response).await;
@@ -175,9 +188,13 @@ impl AiProvider for AnthropicProvider {
         request: &ProviderRequest,
         token: CancellationToken,
     ) -> BlueyResult<ChunkStream> {
-        let mut response = self.send_messages(request, false).await?;
+        let endpoint = format!("{}|{}", self.base_url, request.model);
+        let schema_as_prompt = request.output_schema.is_some() && schema_in_prompt(&endpoint);
+        let mut response = self
+            .send_messages(request, schema_as_prompt, &token)
+            .await?;
         let mut status = response.status().as_u16();
-        if status == 400 && request.output_schema.is_some() {
+        if status == 400 && request.output_schema.is_some() && !schema_as_prompt {
             // Read the body privately to detect an output_config rejection;
             // never logged (may quote the request).
             let headers = header_pairs(response.headers());
@@ -188,16 +205,24 @@ impl AiProvider for AnthropicProvider {
             }
             if proto::is_output_config_rejection(status, &body) {
                 tracing::info!("anthropic rejected output_config; retrying with schema-in-prompt");
-                response = self.send_messages(request, true).await?;
+                remember_schema_in_prompt(&endpoint);
+                response = self.send_messages(request, true, &token).await?;
                 status = response.status().as_u16();
             } else if self.is_oauth() {
                 return Err(claude_code::map_error(status, &headers, &body));
             } else {
-                return Err(map_http_status(status, "Anthropic"));
+                let parsed = api_error::parse_error_body(&body);
+                return Err(api_error::map_api_error(
+                    status,
+                    parsed.as_ref(),
+                    None,
+                    "Anthropic",
+                    &request.model,
+                ));
             }
         }
         if status >= 400 {
-            return Err(self.error_from(response).await);
+            return Err(self.error_from(response, &request.model).await);
         }
         Ok(spawn_anthropic_sse(response, token, self.is_oauth()))
     }
@@ -492,6 +517,45 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             .starts_with("{\"device_id\":\"aaaa"));
     }
 
+    fn sse_ok() -> String {
+        let sse = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}",
+            sse.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn an_api_key_request_thinks_when_bluey_asks_for_reasoning() {
+        let (base, seen) = stub(sse_ok()).await;
+        let provider =
+            AnthropicProvider::new(reqwest::Client::new(), base, "sk-ant-api03-x".into());
+        let request = ProviderRequest {
+            model: "claude-opus-5".into(),
+            reasoning: ReasoningLevel::Deep,
+            latency: LatencyBudget::Balanced,
+            ..request()
+        };
+        let stream = provider
+            .stream(&request, CancellationToken::new())
+            .await
+            .unwrap();
+        super::super::collect_text(stream).await.unwrap();
+
+        let (_head, body) = seen.await.unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive", "{body}");
+        assert!(body["output_config"]["effort"].is_string(), "{body}");
+        assert!(
+            body.get("temperature").is_none(),
+            "thinking drops sampling: {body}"
+        );
+        assert!(
+            body.get("context_management").is_none(),
+            "beta-only on the key path"
+        );
+    }
+
     #[tokio::test]
     async fn the_extra_usage_answer_stops_the_account() {
         let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going."}}"#;
@@ -510,5 +574,48 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             error.recovery,
             Some(bluey_core::error::RecoveryAction::UseApiKey)
         );
+    }
+
+    #[tokio::test]
+    async fn api_key_errors_keep_the_provider_reason_and_the_schema_fallback_sticks() {
+        use super::super::test_http::{response, stub_many};
+        let missing =
+            r#"{"type":"error","error":{"type":"not_found_error","message":"model: claude-nope"}}"#;
+        let (base, _) = stub_many(vec![response("404 Not Found", &[], missing)]).await;
+        let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k".into());
+        let error = provider
+            .stream(&request(), CancellationToken::new())
+            .await
+            .err()
+            .expect("404");
+        assert_eq!(error.code, "config.model_not_found");
+
+        let rejected = r#"{"type":"error","error":{"type":"invalid_request_error","message":"output_config.format: not supported"}}"#;
+        let (base, seen) = stub_many(vec![
+            response("400 Bad Request", &[], rejected),
+            sse_ok(),
+            sse_ok(),
+        ])
+        .await;
+        let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k".into());
+        let structured = ProviderRequest {
+            output_schema: Some(bluey_core::types::JsonSchemaSpec {
+                name: "answer".into(),
+                schema: serde_json::json!({ "type": "object" }),
+                strict: None,
+            }),
+            ..request()
+        };
+        for _ in 0..2 {
+            let stream = provider
+                .stream(&structured, CancellationToken::new())
+                .await
+                .unwrap();
+            super::super::collect_text(stream).await.unwrap();
+        }
+        let seen = seen.await.unwrap();
+        let last: serde_json::Value = serde_json::from_str(&seen[2].1).unwrap();
+        assert!(last.get("output_config").is_none(), "sticky: {last}");
+        assert!(last["system"].as_str().unwrap().contains("JSON Schema"));
     }
 }

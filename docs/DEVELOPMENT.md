@@ -25,9 +25,10 @@ bun run tauri:dev               # builds missing sidecars on first run, then Vit
 ### Where the environment comes from
 
 - At startup the Rust backend loads `.env.local` and then `.env` — an earlier file wins, the
-  process environment wins over both, empty assignments are ignored — from the repository root
-  and `src-tauri` (development builds), then the current directory and the directory of the
-  executable. This loader is the only way these files reach the backend: the Tauri CLI runs the
+  process environment wins over both, empty assignments are ignored — from an explicit
+  `BLUEY_ENV_FILE`, then (development builds only) the repository root, `src-tauri`, the current
+  directory and the directory of the executable. A release build reads only `BLUEY_ENV_FILE`.
+  This loader is the only way these files reach the backend: the Tauri CLI runs the
   app from `src-tauri`, `bun run` does not pass `.env` files to the scripts it starts, and Vite
   only exposes `VITE_*` to the WebView bundle. The log shows `loaded env file` with each path.
 - The public Clerk settings (`VITE_CLERK_PUBLISHABLE_KEY`, `VITE_CLERK_FRONTEND_API_URL`,
@@ -59,8 +60,9 @@ On boot the Rust backend imports provider settings from the environment (`app::e
 planned by `bluey_core::presets::plan_env_import`, ADR 0007):
 
 - Keys (`GEMINI_API_KEY` / `GOOGLE_API_KEY`, `AZURE_FOUNDRY_API_KEY`, `ANTHROPIC_API_KEY`,
-  `OPENAI_API_KEY`) are copied into the macOS Keychain **only when it has no entry for that
-  provider**; `BLUEY_ENV_OVERRIDES_KEYCHAIN=1` replaces existing entries. The log says
+  `OPENAI_API_KEY`, plus the research keys `EXA_API_KEY` / `FIRECRAWL_API_KEY`) are copied into
+  the macOS Keychain **only when it has no entry for that key** (an attribute-only check — the
+  import never shows a Keychain prompt); `BLUEY_ENV_OVERRIDES_KEYCHAIN=1` replaces existing entries. The log says
   `imported api key for provider gemini` and nothing else — delete the key from `.env` afterwards
   if you like.
 - `BLUEY_AI_PROVIDER` (`gemini` default | `azure-foundry` | `anthropic` | `openai`) nominates the
@@ -77,6 +79,32 @@ planned by `bluey_core::presets::plan_env_import`, ADR 0007):
   after that, Settings wins (the import never reverts your edits).
 - The research sidecar ships as the **lite** binary (Gemini) unless `RESEARCH_BACKEND=claude`
   (or `BLUEY_AGENT_VARIANT=full`) at build time, which embeds the Claude CLI.
+
+## Keychain and code signing in development (ADR 0011)
+
+- Debug builds keep their secrets under the Keychain service `com.codewithabdul.bluey.dev`, so
+  `tauri dev` never reads or rewrites the installed app's items; the `.env` import above seeds
+  the dev keys. Settings → Privacy → *Saved credentials* shows what the running build holds.
+- macOS trusts the code identity that created an item. An unsigned or ad-hoc binary has a new
+  identity after every `cargo build`, so a rebuild must be approved again (*Always Allow* lasts
+  until the next rebuild). To keep approvals across rebuilds, sign dev builds with a stable
+  identity: `BLUEY_DEV_SIGNING_IDENTITY=auto bun run tauri dev` (or the identity's name or
+  SHA-1). `tauri dev` starts the app with `cargo run` (tauri-cli 2.x), which honours the target
+  runner in `src-tauri/.cargo/config.toml`; `scripts/dev-sign-runner.sh` then runs
+  `codesign --force --sign <identity> --identifier com.codewithabdul.bluey.dev` on the `bluey`
+  binary only. Unset, and for every other binary (cargo test harnesses), it does nothing.
+- The identity must be an **Apple Development** (or Developer ID) certificate with a Team ID —
+  a free Apple ID in Xcode → Settings → Accounts can create one. A self-signed certificate does
+  not help: macOS pins such items to the binary's hash, exactly like ad-hoc. The first signing
+  may ask to let `codesign` use the certificate's private key (*Always Allow*).
+- `security find-identity -v -p codesigning` lists usable identities.
+- The database is not split this way. A debug build opens the installed app's
+  `~/Library/Application Support/com.codewithabdul.bluey/bluey.db` and applies any new
+  migrations to it (after writing `bluey.db.bak-<version>`), so an older installed build may then
+  run on a newer schema. To keep the installed app's data separate, set `BLUEY_DATA_DIR` to a
+  scratch directory, or to a copy made with `sqlite3 <db> ".backup '<dir>/bluey.db'"`. Logs
+  (`~/Library/Logs/Bluey`) and temp frames (`~/Library/Caches/com.codewithabdul.bluey/frames`)
+  are shared either way, and the dev helper sweeps stale frames there at startup.
 
 ## Subscription accounts (ADR 0009)
 
@@ -101,7 +129,7 @@ final bundle require macOS.
 
 ## Project conventions
 
-- **Contracts first.** `src/lib/types` ⇄ `crates/bluey-core/src/types` are mirrored;
+- **Contracts first.** `src/lib/types` ⇄ `src-tauri/crates/bluey-core/src/types` are mirrored;
   `src/lib/tauri/commands.ts` and `events.ts` are the command/event surface. Change both sides.
 - No `invoke()` outside `src/lib/tauri`; use `bluey.*`. No SQL outside `bluey-storage`.
   No provider HTTP outside `src-tauri/src/ai`. No prompts outside `src/ai/prompts`.
@@ -134,12 +162,15 @@ Settings → General → _Developer mode_ (or `?dev=1` in the browser) enables:
 
 `scripts/release.sh` retains local build-only `.app`/`.dmg` output and the lite Gemini/full
 Claude sidecar choice. Release builds require **Bun 1.4.2** and frozen root/sidecar installs.
-No-credential builds are developer-only and can never become publication-eligible artifacts.
+No-credential builds are developer-only and can never become publication-eligible artifacts;
+`BLUEY_LOCAL_SIGNING_IDENTITY` signs one with a stable Apple Development identity so it keeps its
+Keychain approvals across rebuilds (ADR 0011, [Releasing](RELEASING.md)).
 The existing helpers build both sidecar architectures; Tauri selects the requested target.
 
 Every build also writes the in-app updater bundle (`Bluey.app.tar.gz` + `.sig`, see
 [Updates](UPDATES.md)), so `scripts/release.sh` and `bun run tauri build` need
-`TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) in the environment — the
+`TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) in the environment (the
+script hands it only to `tauri bundle`, after a `tauri build --no-bundle` without it) — the
 owner's key from its backup, or a throwaway pair from `bun run tauri signer generate -w /tmp/dev.key`
 for builds that will never feed real installs. `bun run tauri dev` does not sign anything.
 
@@ -148,4 +179,6 @@ complete signing/notarization/native validation of both macOS DMGs. Manual dispa
 to **build-only**; publication must be explicitly requested with an existing tag. See
 [Releasing](RELEASING.md) for owner credentials, environment/tag protection, manual instructions,
 manifest schema, failure/re-run semantics and the native checks that Linux cannot perform.
-Workflow install copies in `docs/ci/workflows/` are kept in sync with the release workflow.
+The install copies in `docs/ci/workflows/` must match `.github/workflows/`; a portable test
+enforces it for `release.yml` and `nightly.yml`, so after changing `ci.yml` a maintainer re-runs
+`scripts/install-workflows.sh` ([CI / release workflows](ci/README.md)).

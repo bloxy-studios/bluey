@@ -11,7 +11,10 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:event:allow-emit",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
+    },
     "notification:default",
     "os:allow-platform",
     "os:allow-version"

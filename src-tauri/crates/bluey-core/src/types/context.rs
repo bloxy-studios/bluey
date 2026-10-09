@@ -305,6 +305,43 @@ pub struct ScreenSummary {
     pub frame_id: Option<String>,
 }
 
+/// Mirrors `SnapshotWarningKind` — a source the snapshot degraded around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotWarningKind {
+    /// The screen capture failed (permission, helper down); the ask continues
+    /// with accessibility, transcript and app identity.
+    ScreenUnavailable,
+    /// OCR missed its soft deadline and finishes in the background (it feeds
+    /// the next ask); the snapshot carries the image instead.
+    OcrPending,
+}
+
+/// Mirrors `SnapshotWarning`. `code`/`recovery` come from the underlying
+/// [`BlueyError`](crate::error::BlueyError) so the UI can offer the same fix
+/// (e.g. open the Screen Recording pane). Never carries screen content.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotWarning {
+    pub kind: SnapshotWarningKind,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<crate::error::RecoveryAction>,
+}
+
+impl SnapshotWarning {
+    /// A `screen_unavailable` warning carrying `error`'s code and recovery.
+    pub fn screen_unavailable(error: &crate::error::BlueyError) -> Self {
+        Self {
+            kind: SnapshotWarningKind::ScreenUnavailable,
+            code: error.code.clone(),
+            message: error.message.clone(),
+            recovery: error.recovery.clone(),
+        }
+    }
+}
+
 /// Mirrors `ContextSnapshot` — the primary input to the AI system.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -335,6 +372,9 @@ pub struct ContextSnapshot {
     /// What the native builder observed on the Rust clock (ADR 0010 §2); the WebView anchors on `reply_ms`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<super::SnapshotTrace>,
+    /// Sources that degraded (screen capture failed, OCR still running).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<SnapshotWarning>,
 }
 
 /// Mirrors `SnapshotOptions`.
@@ -353,6 +393,11 @@ pub struct SnapshotOptions {
     pub ocr_level: Option<OcrLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_image: Option<bool>,
+    /// Built for silent work (proactive preparation, live suggestions): the
+    /// builder leaves the app state machine alone, because a background
+    /// request never drives the state that would take it out of Analyzing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 impl Default for SnapshotOptions {
@@ -366,6 +411,7 @@ impl Default for SnapshotOptions {
             capture: None,
             ocr_level: None,
             inline_image: Some(true),
+            background: false,
         }
     }
 }
@@ -397,4 +443,28 @@ pub struct ContextItem {
     pub tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::BlueyError;
+    use crate::types::PermissionKind;
+
+    #[test]
+    fn screen_warnings_carry_the_error_code_and_recovery_on_the_wire() {
+        let error = BlueyError::permission(PermissionKind::ScreenRecording, "not granted");
+        let snapshot = ContextSnapshot {
+            warnings: vec![SnapshotWarning::screen_unavailable(&error)],
+            ..ContextSnapshot::default()
+        };
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        let warning = &wire["warnings"][0];
+        assert_eq!(warning["kind"], "screen_unavailable");
+        assert_eq!(warning["code"], "permission.screen_recording");
+        assert_eq!(warning["recovery"]["type"], "open_system_settings");
+        // An undegraded snapshot keeps the wire shape it always had.
+        let clean = serde_json::to_value(ContextSnapshot::default()).unwrap();
+        assert!(clean.get("warnings").is_none());
+    }
 }

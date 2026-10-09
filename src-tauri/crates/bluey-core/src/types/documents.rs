@@ -169,6 +169,11 @@ pub enum RetrievalStrategy {
     Auto,
     Keyword,
     Semantic,
+    /// The leading chunks (in document order) of every document in scope,
+    /// without matching the query: for documents that apply to every ask
+    /// (personal instructions) or that must be present whatever the wording
+    /// (a candidate's résumé for "Tell me about yourself").
+    Leading,
 }
 
 /// Mirrors `RetrievalQuery`.

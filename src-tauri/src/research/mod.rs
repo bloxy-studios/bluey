@@ -6,14 +6,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bluey_core::error::RecoveryAction;
-use bluey_core::types::{DeepResearchRequest, ScrapeResult, SearchResult};
+use bluey_core::types::{DeepResearchRequest, ResearchBackend, ScrapeResult, SearchResult};
 use bluey_core::{BlueyError, BlueyResult};
 use bluey_protocols::{exa, firecrawl};
 use serde::Serialize;
 
 use crate::agent::AgentManager;
+use crate::ai::ensure_cloud_ai;
 use crate::ai::providers::{map_http_status, map_transport_error};
 use crate::secrets::{SecretsStore, EXA_KEY, FIRECRAWL_KEY};
+use crate::settings::SettingsManager;
 
 const EXA_TIMEOUT: Duration = Duration::from_secs(20);
 const FIRECRAWL_TIMEOUT: Duration = Duration::from_secs(45);
@@ -21,17 +23,22 @@ const DEFAULT_NUM_RESULTS: u32 = 8;
 const MAX_NUM_RESULTS: u32 = 10;
 
 /// Mirrors the `research_available` result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchAvailability {
     pub search: bool,
     pub scrape: bool,
+    /// The agent can run a useful job: the sidecar and backend are usable
+    /// and there is at least an Exa key to search with.
     pub deep_agent: bool,
+    /// Backends the installed agent build can run (Settings hides the rest).
+    pub agent_backends: Vec<ResearchBackend>,
 }
 
 pub struct ResearchManager {
     http: reqwest::Client,
     secrets: Arc<SecretsStore>,
+    settings: Arc<SettingsManager>,
     agent: Arc<AgentManager>,
 }
 
@@ -39,11 +46,13 @@ impl ResearchManager {
     pub fn new(
         http: reqwest::Client,
         secrets: Arc<SecretsStore>,
+        settings: Arc<SettingsManager>,
         agent: Arc<AgentManager>,
     ) -> Self {
         Self {
             http,
             secrets,
+            settings,
             agent,
         }
     }
@@ -62,6 +71,7 @@ impl ResearchManager {
         query: &str,
         num_results: Option<u32>,
     ) -> BlueyResult<Vec<SearchResult>> {
+        ensure_cloud_ai(&self.settings.get())?;
         let key = self
             .secrets
             .get(EXA_KEY)
@@ -95,6 +105,7 @@ impl ResearchManager {
         if !url.starts_with("https://") && !url.starts_with("http://") {
             return Err(BlueyError::invalid_params("scrape URLs must be http(s)"));
         }
+        ensure_cloud_ai(&self.settings.get())?;
         let key = self
             .secrets
             .get(FIRECRAWL_KEY)
@@ -125,11 +136,14 @@ impl ResearchManager {
     pub async fn availability(&self) -> ResearchAvailability {
         let search = self.secrets.has(EXA_KEY).await.unwrap_or(false);
         let scrape = self.secrets.has(FIRECRAWL_KEY).await.unwrap_or(false);
-        let deep_agent = self.agent.available().await;
+        // Without Exa the agent has nothing to search with, and the sidecar
+        // refuses a job whose tools lack keys (PROV-013).
+        let deep_agent = search && self.agent.available().await;
         ResearchAvailability {
             search,
             scrape,
             deep_agent,
+            agent_backends: self.agent.supported_backends().await,
         }
     }
 

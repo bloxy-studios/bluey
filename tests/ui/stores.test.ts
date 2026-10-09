@@ -1,9 +1,9 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 
 import { useToastStore } from "@/components/ui/toast-store";
 import type { AppStatus } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
-import { useChatStore } from "@/stores/chatStore";
+import { UNDO_CLEAR_MS, useChatStore } from "@/stores/chatStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { makeResponse, setupInterceptedApp, setupMockApp } from "./helpers";
 
@@ -74,10 +74,12 @@ describe("chatStore stale-draft protection", () => {
 
     // Stale stream keeps writing — must be ignored.
     useChatStore.getState().applyDraft(gen1, makeResponse({ content: "STALE" }));
+    useChatStore.getState().flushDraft();
     let lastTurn = useChatStore.getState().turns.at(-1);
     expect(lastTurn?.response).toBeNull();
 
     useChatStore.getState().applyDraft(gen2, makeResponse({ content: "FRESH" }));
+    useChatStore.getState().flushDraft();
     lastTurn = useChatStore.getState().turns.at(-1);
     expect(lastTurn?.response?.content).toBe("FRESH");
 
@@ -91,6 +93,33 @@ describe("chatStore stale-draft protection", () => {
     expect(lastTurn?.response?.content).toBe("FRESH DONE");
   });
 
+  it("coalesces streamed drafts into one store write per frame and keeps the last text (PERF-003)", async () => {
+    const gen = useChatStore.getState().begin("q");
+    let writes = 0;
+    const unsubscribe = useChatStore.subscribe((state, previous) => {
+      if (state.turns !== previous.turns) writes += 1;
+    });
+    let text = "";
+    for (let i = 0; i < 100; i += 1) {
+      text += `w${i} `;
+      useChatStore.getState().applyDraft(gen, makeResponse({ content: text }));
+    }
+    expect(writes).toBe(0);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(writes).toBe(1);
+    expect(useChatStore.getState().turns.at(-1)?.response?.content).toBe(text);
+    unsubscribe();
+  });
+
+  it("keeps a queued draft when the stream is stopped or fails (PERF-003)", () => {
+    const gen = useChatStore.getState().begin("q");
+    useChatStore.getState().applyDraft(gen, makeResponse({ content: "partial" }));
+    useChatStore.getState().markCancelled(gen);
+    const turn = useChatStore.getState().turns.at(-1);
+    expect(turn?.status).toBe("cancelled");
+    expect(turn?.response?.content).toBe("partial");
+  });
+
   it("supersedes the previous streaming turn when a new ask begins", () => {
     const gen1 = useChatStore.getState().begin("q1");
     expect(gen1).toBeGreaterThan(0);
@@ -99,5 +128,50 @@ describe("chatStore stale-draft protection", () => {
     expect(turns).toHaveLength(2);
     expect(turns[0]?.status).toBe("cancelled");
     expect(turns[1]?.status).toBe("streaming");
+  });
+});
+
+describe("chatStore clear and undo (UX-012)", () => {
+  beforeEach(async () => {
+    await setupMockApp();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("restores the cleared turns, with a streaming turn stopped rather than spinning", () => {
+    const generation = useChatStore.getState().begin("first question");
+    useChatStore.getState().applyDraft(generation, makeResponse({ content: "partial" }));
+    useChatStore.getState().newChat();
+    expect(useChatStore.getState().turns).toHaveLength(0);
+
+    useChatStore.getState().undoNewChat();
+    const [turn] = useChatStore.getState().turns;
+    expect(turn?.status).toBe("cancelled");
+    expect(turn?.response?.content).toBe("partial");
+    expect(useChatStore.getState().cleared).toBeNull();
+  });
+
+  it("stops offering the undo after UNDO_CLEAR_MS", () => {
+    useChatStore.getState().showResponse(makeResponse());
+    useChatStore.getState().newChat();
+    vi.advanceTimersByTime(UNDO_CLEAR_MS);
+    expect(useChatStore.getState().cleared).toBeNull();
+    useChatStore.getState().undoNewChat();
+    expect(useChatStore.getState().turns).toHaveLength(0);
+  });
+
+  it("a new ask ends the offer, and clearing an empty HUD keeps it", () => {
+    useChatStore.getState().showResponse(makeResponse());
+    useChatStore.getState().newChat();
+    useChatStore.getState().newChat();
+    expect(useChatStore.getState().cleared).toHaveLength(1);
+
+    useChatStore.getState().begin("another question");
+    expect(useChatStore.getState().cleared).toBeNull();
+    useChatStore.getState().undoNewChat();
+    expect(useChatStore.getState().turns).toHaveLength(1);
   });
 });

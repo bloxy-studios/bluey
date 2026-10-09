@@ -50,7 +50,6 @@ export default function ScreenTab() {
           options={[
             { value: "display", label: "Full display" },
             { value: "active_window", label: "Active window" },
-            { value: "region", label: "Selected region" },
           ]}
         />
       </SettingRow>
@@ -60,7 +59,7 @@ export default function ScreenTab() {
         title="Observation"
         description={
           screen.observation === "smart"
-            ? "Smart observation samples your screen on an interval so Bluey can prepare answers proactively. It uses more energy and captures more of what you see."
+            ? "Smart observation is not available yet, so Bluey only looks at your screen when you ask (⌘↵)."
             : "Manual: Bluey only looks at your screen when you ask (⌘↵)."
         }
       >
@@ -70,7 +69,9 @@ export default function ScreenTab() {
           onChange={(e) => void update({ screen: { observation: e.target.value as typeof screen.observation } })}
           options={[
             { value: "manual", label: "Manual" },
-            { value: "smart", label: "Smart" },
+            // Nothing uses the sampled frames yet (FEATURE-002): a stored `smart`
+            // still shows, but it cannot be chosen and samples nothing.
+            { value: "smart", label: "Smart (not yet available)", disabled: true },
           ]}
         />
       </SettingRow>
@@ -82,6 +83,7 @@ export default function ScreenTab() {
             value={String(screen.observationIntervalMs)}
             onChange={(e) => void update({ screen: { observationIntervalMs: Number(e.target.value) } })}
             options={[
+              { value: "1500", label: "Every 1.5 seconds" },
               { value: "3000", label: "Every 3 seconds" },
               { value: "5000", label: "Every 5 seconds" },
               { value: "10000", label: "Every 10 seconds" },

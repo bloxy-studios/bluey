@@ -17,6 +17,8 @@ public struct AudioStartParams: Decodable {
         public var enabled: Bool?
         public var locale: String?
         public var onDevice: Bool?
+        /// Privacy → Cloud AI is off: no fallback to Apple's servers.
+        public var requireOnDevice: Bool?
         public var sources: [String]?
     }
     public struct Levels: Decodable {
@@ -55,6 +57,8 @@ struct AudioStartedEvent: Encodable {
     let microphone: Bool
     let systemAudio: Bool
     let device: AudioDeviceService.Device?
+    /// Apple Speech's locale and on-device status (nil when not transcribing).
+    let speech: SpeechTranscriber.Route?
 }
 
 struct AudioStoppedEvent: Encodable {
@@ -64,12 +68,6 @@ struct AudioStoppedEvent: Encodable {
 struct AudioDeviceChangedEvent: Encodable {
     let devices: [AudioDeviceService.Device]
     let currentInput: AudioDeviceService.Device?
-}
-
-struct AudioErrorEvent: Encodable {
-    let code: String
-    let message: String
-    let kind: String
 }
 
 /// Orchestrates microphone + system audio capture, VAD, chunking, level
@@ -89,6 +87,8 @@ public final class AudioSession {
     private var emitPcm = false
     private var mic: MicrophoneCapture?
     private var system: SystemAudioCapture?
+    /// System audio started with this run (for mid-run status updates).
+    private var systemActive = false
     private var chunkers: [String: PCMChunker] = [:]
     private var vads: [String: VoiceActivityDetector] = [:]
     private var transcribers: [String: SpeechTranscriber] = [:]
@@ -145,11 +145,19 @@ public final class AudioSession {
                 sources = sources.filter {
                     ($0 == "microphone" && wantMic) || ($0 == "system" && wantSystem)
                 }
+                let onDevice = params.transcription?.onDevice ?? true
+                // Cloud AI off: Apple's servers are not an option either.
+                let requireOnDevice = params.transcription?.requireOnDevice ?? false
                 for source in sources {
                     let transcriber = SpeechTranscriber(
                         source: source,
-                        locale: params.transcription?.locale ?? "en-US",
-                        onDevice: params.transcription?.onDevice ?? true,
+                        // `language: auto` sends no locale: the user's own.
+                        locale: params.transcription?.locale
+                            ?? SpeechTranscriber.defaultLocale(
+                                onDevice: onDevice || requireOnDevice
+                            ).identifier,
+                        onDevice: onDevice,
+                        requireOnDevice: requireOnDevice,
                         sampleRate: Double(self.sampleRate),
                         emit: self.emit)
                     if transcriber.start() {
@@ -185,6 +193,21 @@ public final class AudioSession {
             }
             mic.onError = { [weak self] error in
                 self?.emitError(error)
+            }
+            // A mid-run loss or recovery of the microphone re-sends
+            // `audio.started` so the host's status follows it (MAC-005).
+            mic.onLiveChange = { [weak self] live in
+                guard let self else { return }
+                self.queue.async {
+                    guard self.state != .idle else { return }
+                    self.emit(
+                        "audio.started",
+                        AnyEncodable(
+                            AudioStartedEvent(
+                                microphone: live, systemAudio: self.systemActive,
+                                device: live ? self.deviceService.defaultInputDevice() : nil,
+                                speech: nil)))
+                }
             }
             self.mic = mic
             group.enter()
@@ -228,12 +251,14 @@ public final class AudioSession {
                 // Partial start: report the failed source but keep running.
                 self.emitError(firstError)
             }
+            self.systemActive = systemOk
             self.emit(
                 "audio.started",
                 AnyEncodable(
                     AudioStartedEvent(
                         microphone: micOk, systemAudio: systemOk,
-                        device: micOk ? self.deviceService.defaultInputDevice() : nil)))
+                        device: micOk ? self.deviceService.defaultInputDevice() : nil,
+                        speech: self.transcribers.values.lazy.compactMap(\.route).first)))
             completion(
                 .success(
                     AudioStartResult(
@@ -388,13 +413,17 @@ public final class AudioSession {
                     // restart() is idempotent and cheap.
                     self.mic?.restart()
                 }
+            } else if self.state != .idle {
+                // An explicitly chosen device: re-open it when it is back, or
+                // retry a microphone a failed rebuild left down.
+                self.mic?.retryIfDegraded()
             }
         }
     }
 
+    /// The error as is: a permission error keeps its kind and the pane to
+    /// open (`details.permission`), so the host can offer the repair.
     private func emitError(_ error: HelperError) {
-        emit(
-            "audio.error",
-            AnyEncodable(AudioErrorEvent(code: error.code, message: error.message, kind: "audio")))
+        emit("audio.error", AnyEncodable(error))
     }
 }

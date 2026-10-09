@@ -43,6 +43,52 @@ tauri_nspanel::tauri_panel! {
 #[cfg(target_os = "macos")]
 type PanelRef = tauri_nspanel::PanelHandle<tauri::Wry>;
 
+/// Window level of the HUD: pinned panels float above everything (status
+/// level); otherwise the always-on-top preference picks floating or normal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HudLevel {
+    Status,
+    Floating,
+    Normal,
+}
+
+fn hud_level(pinned: bool, always_on_top: bool) -> HudLevel {
+    match (pinned, always_on_top) {
+        (true, _) => HudLevel::Status,
+        (false, true) => HudLevel::Floating,
+        (false, false) => HudLevel::Normal,
+    }
+}
+
+/// What a press of the toggle-panel shortcut does (UX-015).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShortcutToggle {
+    Show,
+    FocusInput,
+    Hide,
+}
+
+/// A hidden HUD is shown. A visible HUD that does not have the keyboard
+/// takes it, so typing lands in its input; only a HUD that already has the
+/// keyboard is hidden.
+fn shortcut_toggle(visible: bool, key: bool) -> ShortcutToggle {
+    match (visible, key) {
+        (false, _) => ShortcutToggle::Show,
+        (true, false) => ShortcutToggle::FocusInput,
+        (true, true) => ShortcutToggle::Hide,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn native_level(level: HudLevel) -> tauri_nspanel::PanelLevel {
+    use tauri_nspanel::PanelLevel;
+    match level {
+        HudLevel::Status => PanelLevel::Status,
+        HudLevel::Floating => PanelLevel::Floating,
+        HudLevel::Normal => PanelLevel::Normal,
+    }
+}
+
 pub struct PanelManager {
     app: AppHandle,
     storage: Arc<Storage>,
@@ -118,11 +164,12 @@ impl PanelManager {
         window.set_resizable(false).map_err(window_err)?;
         #[cfg(target_os = "macos")]
         {
-            use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
+            use tauri_nspanel::{CollectionBehavior, StyleMask, WebviewWindowExt};
             let panel = window
                 .to_panel::<BlueyHudPanel>()
                 .map_err(|e| BlueyError::internal(format!("cannot create the HUD panel: {e}")))?;
-            panel.set_level(PanelLevel::Floating.value());
+            // The persisted pinned / always-on-top choice, not always Floating (MAC-016).
+            panel.set_level(native_level(self.hud_level()).value());
             panel.set_style_mask(
                 StyleMask::empty()
                     .borderless()
@@ -246,6 +293,50 @@ impl PanelManager {
         self.state.lock().visible = visible;
         self.set_native_visible(visible);
         Ok(self.commit().await)
+    }
+
+    /// The toggle-panel shortcut: like `toggle`, except that a press while the
+    /// HUD is visible but another window has the keyboard gives the HUD the
+    /// keyboard and focuses its input instead of hiding it (UX-015). The panel
+    /// stays non-activating, so the other app remains the active app.
+    pub async fn toggle_from_shortcut(&self) -> BlueyResult<PanelState> {
+        let _mutation = self.mutation_lock.lock().await;
+        let visible = self.state().visible;
+        let key = visible && self.has_keyboard();
+        let action = shortcut_toggle(visible, key);
+        if action == ShortcutToggle::FocusInput {
+            self.make_key();
+            self.bus.publish(BlueyEvent::PanelFocusInput);
+            return Ok(self.state());
+        }
+        let visible = action == ShortcutToggle::Show;
+        self.state.lock().visible = visible;
+        self.set_native_visible(visible);
+        Ok(self.commit().await)
+    }
+
+    /// Whether the HUD is the key window (receives typing).
+    fn has_keyboard(&self) -> bool {
+        self.window()
+            .and_then(|window| window.is_focused().map_err(window_err))
+            .unwrap_or(false)
+    }
+
+    /// Make the (already visible) HUD the key window without activating Bluey.
+    /// `makeKeyWindow` keeps the webview as first responder.
+    fn make_key(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(panel) = self.panel.lock().clone() {
+                let _ = self.app.run_on_main_thread(move || panel.make_key_window());
+                return;
+            }
+        }
+        if let Ok(window) = self.window() {
+            if let Err(e) = window.set_focus() {
+                tracing::warn!(error = %e, "cannot focus the HUD");
+            }
+        }
     }
 
     fn set_native_visible(&self, visible: bool) {
@@ -487,28 +578,26 @@ impl PanelManager {
         self.apply_level();
     }
 
+    fn hud_level(&self) -> HudLevel {
+        hud_level(
+            self.state().pinned,
+            self.settings.get().appearance.always_on_top,
+        )
+    }
+
     fn apply_level(&self) {
-        let pinned = self.state().pinned;
-        let always_on_top = self.settings.get().appearance.always_on_top;
+        let level = self.hud_level();
         #[cfg(target_os = "macos")]
         {
-            use tauri_nspanel::PanelLevel;
             if let Some(panel) = self.panel.lock().clone() {
-                let level = if pinned {
-                    PanelLevel::Status
-                } else if always_on_top {
-                    PanelLevel::Floating
-                } else {
-                    PanelLevel::Normal
-                };
                 let _ = self.app.run_on_main_thread(move || {
-                    panel.set_level(level.value());
+                    panel.set_level(native_level(level).value());
                 });
                 return;
             }
         }
         if let Ok(window) = self.window() {
-            let _ = window.set_always_on_top(pinned || always_on_top);
+            let _ = window.set_always_on_top(level != HudLevel::Normal);
         }
     }
 
@@ -574,4 +663,25 @@ fn work_areas(window: &WebviewWindow) -> Vec<(String, Rect)> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+
+    #[test]
+    fn the_hud_level_follows_pinned_then_always_on_top() {
+        assert_eq!(hud_level(true, false), HudLevel::Status);
+        assert_eq!(hud_level(true, true), HudLevel::Status);
+        assert_eq!(hud_level(false, true), HudLevel::Floating);
+        assert_eq!(hud_level(false, false), HudLevel::Normal);
+    }
+
+    #[test]
+    fn the_toggle_shortcut_focuses_a_visible_hud_before_hiding_it() {
+        assert_eq!(shortcut_toggle(false, false), ShortcutToggle::Show);
+        assert_eq!(shortcut_toggle(false, true), ShortcutToggle::Show);
+        assert_eq!(shortcut_toggle(true, false), ShortcutToggle::FocusInput);
+        assert_eq!(shortcut_toggle(true, true), ShortcutToggle::Hide);
+    }
 }

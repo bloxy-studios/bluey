@@ -9,6 +9,7 @@ import { SessionDetail } from "@/features/settings/SessionDetail";
 import SessionsTab from "@/features/settings/tabs/SessionsTab";
 import { bluey } from "@/lib/tauri/api";
 import type { MockTransport } from "@/lib/tauri/mock";
+import { useSessionStore } from "@/stores/sessionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { setupInterceptedApp, setupMockApp } from "./helpers";
 
@@ -57,6 +58,48 @@ describe("SessionsTab", () => {
     expect(screen.getByText("Live")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete session Live one" })).toBeDisabled();
   });
+
+  it("clears the HUD's live session when 'Delete all sessions' removes it", async () => {
+    const live = await bluey.session.start({ title: "Live one" });
+    await waitFor(() => expect(useSessionStore.getState().active?.id).toBe(live.id));
+
+    await bluey.session.deleteAll();
+
+    await waitFor(() => expect(useSessionStore.getState().active).toBeNull());
+  });
+
+  it("pages history 50 at a time and says how many sessions exist (UX-017)", async () => {
+    const { transport } = await setupInterceptedApp();
+    // The mock pages like Rust ...
+    const [template] = await bluey.session.search({ query: { limit: 1 } });
+    if (!template) throw new Error("the mock seeds sessions");
+    expect(await bluey.session.search({ query: { offset: 1 } })).toHaveLength(1);
+    // ... and 60 scripted sessions keep this test fast (no 58 start/end round trips).
+    const history = Array.from({ length: 60 }, (_, i) => ({
+      ...template,
+      session: { ...template.session, id: `paged-${i}`, title: `Paged ${i + 1}` },
+    }));
+    const offsets: (number | undefined)[] = [];
+    transport
+      .intercept("sessions_search", async ({ query }) => {
+        offsets.push(query.offset);
+        const from = query.offset ?? 0;
+        return history.slice(from, from + (query.limit ?? 50));
+      })
+      .intercept("data_usage_stats", async (_args, next) => ({ ...(await next()), sessions: history.length }));
+    const user = userEvent.setup();
+    withTooltips(<SessionsTab />);
+
+    expect(await screen.findByText("Showing 50 of 60 sessions")).toBeInTheDocument();
+    expect(screen.getAllByText(/^Paged \d+$/)).toHaveLength(50);
+
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+
+    expect(await screen.findByText("Showing 60 of 60 sessions")).toBeInTheDocument();
+    expect(screen.getAllByText(/^Paged \d+$/)).toHaveLength(60);
+    expect(offsets).toContain(50);
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+  }, 30_000); // renders 50+ rows twice; slow hosts under full-suite load need the headroom
 });
 
 describe("SessionDetail", () => {
@@ -64,6 +107,38 @@ describe("SessionDetail", () => {
 
   beforeEach(async () => {
     mock = await setupMockApp();
+  });
+
+  it("refuses to delete the live session from its detail view", async () => {
+    const live = await bluey.session.start({ title: "Live one" });
+    withTooltips(<SessionDetail sessionId={live.id} onBack={() => {}} />);
+    expect(await screen.findByRole("button", { name: /^Delete$/ })).toBeDisabled();
+  });
+
+  it("shows the summary's answers and the mode's own sections", async () => {
+    await bluey.session.saveSummary({
+      summary: {
+        sessionId: "session-coding-1",
+        modeId: "coding-interview",
+        overview: "Practice round on graphs.",
+        topics: [],
+        questions: [],
+        answers: ["Used BFS for shortest paths"],
+        decisions: [],
+        actionItems: [],
+        openItems: [],
+        improvements: ["State complexity up front"],
+        sections: [{ title: "Interview debrief", content: "Clear reasoning; rushed the edge cases." }],
+      },
+    });
+    withTooltips(<SessionDetail sessionId="session-coding-1" onBack={() => {}} />);
+
+    expect(await screen.findByText("Practice round on graphs.")).toBeInTheDocument();
+    expect(screen.getByText("Answers")).toBeInTheDocument();
+    expect(screen.getByText("Used BFS for shortest paths")).toBeInTheDocument();
+    expect(screen.getByText("State complexity up front")).toBeInTheDocument();
+    expect(screen.getByText("Interview debrief")).toBeInTheDocument();
+    expect(screen.getByText("Clear reasoning; rushed the edge cases.")).toBeInTheDocument();
   });
 
   it("renames the session inline", async () => {
@@ -74,7 +149,9 @@ describe("SessionDetail", () => {
     await user.click(screen.getByRole("button", { name: "Rename session" }));
     const input = screen.getByLabelText("Session title");
     await user.clear(input);
-    await user.type(input, "Mock interview — round 2{Enter}");
+    // One paste instead of per-key typing: no per-character renders (TEST-022).
+    await user.paste("Mock interview — round 2");
+    await user.keyboard("{Enter}");
 
     await screen.findByRole("heading", { name: "Mock interview — round 2" });
     const detail = await bluey.session.get({ id: "session-coding-1" });
@@ -88,13 +165,14 @@ describe("SessionDetail", () => {
 
     await user.click(screen.getByRole("button", { name: "Rename session" }));
     await user.clear(screen.getByLabelText("Session title"));
-    await user.type(screen.getByLabelText("Session title"), "Abandoned title{Escape}");
+    await user.paste("Abandoned title");
+    await user.keyboard("{Escape}");
     expect(await screen.findByRole("heading", { name: "Coding interview practice" })).toBeInTheDocument();
     expect((await bluey.session.get({ id: "session-coding-1" })).session.title).toBe("Coding interview practice");
 
     await user.click(screen.getByRole("button", { name: "Rename session" }));
     await user.clear(screen.getByLabelText("Session title"));
-    await user.type(screen.getByLabelText("Session title"), "Committed on blur");
+    await user.paste("Committed on blur");
     await user.tab();
     await screen.findByRole("heading", { name: "Committed on blur" });
     expect((await bluey.session.get({ id: "session-coding-1" })).session.title).toBe("Committed on blur");

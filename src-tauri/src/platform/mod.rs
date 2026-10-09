@@ -7,7 +7,7 @@ pub mod hud_menu;
 use std::path::PathBuf;
 
 use bluey_core::events::BlueyEvent;
-use bluey_core::types::{AppState, AppStatus};
+use bluey_core::types::{AppState, AppStatus, DisplayMode};
 use bluey_core::{BlueyError, BlueyResult};
 use tauri::menu::{Menu, MenuBuilder, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -26,17 +26,21 @@ const MENU_SESSIONS: &str = "view_sessions";
 const MENU_PREFERENCES: &str = "preferences";
 const MENU_QUIT: &str = "quit";
 
-/// Enable/disable launch at login (best effort, logged).
-pub fn set_autostart(app: &AppHandle, enabled: bool) {
+/// Enable/disable launch at login.
+pub fn set_autostart(app: &AppHandle, enabled: bool) -> BlueyResult<()> {
     let manager = app.autolaunch();
     let result = if enabled {
         manager.enable()
     } else {
         manager.disable()
     };
-    if let Err(e) = result {
+    result.map_err(|e| {
         tracing::warn!(enabled, error = %e, "cannot change launch-at-login");
-    }
+        BlueyError::configuration(
+            "autostart_failed",
+            "macOS did not accept the login item change",
+        )
+    })
 }
 
 /// Show + focus a window. For `settings`/`onboarding` an optional `route`
@@ -109,6 +113,26 @@ pub fn close_window(app: &AppHandle, label: &str) -> BlueyResult<()> {
 /// Best-effort deletion of files reported by retention calls.
 pub fn remove_files(paths: &[PathBuf]) {
     crate::storage::Storage::remove_files(paths);
+}
+
+/// macOS major version (`sw_vers -productVersion`), read once. `None` off
+/// macOS or when it cannot be read.
+pub fn macos_major_version() -> Option<u32> {
+    static VERSION: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *VERSION.get_or_init(|| {
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
+        let output = std::process::Command::new("/usr/bin/sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()?;
+        parse_major_version(&String::from_utf8_lossy(&output.stdout))
+    })
+}
+
+fn parse_major_version(product_version: &str) -> Option<u32> {
+    product_version.trim().split('.').next()?.parse().ok()
 }
 
 /// Menu-bar label for the listening item.
@@ -229,7 +253,8 @@ fn on_menu_event(app: &AppHandle, id: &str) {
             }
             MENU_TOGGLE_PANEL => core.panel.toggle().await.map(|_| ()),
             MENU_PRIVACY => {
-                let enabled = !core.capture.protection().enabled;
+                // Settings are the single source of truth; side effects apply it.
+                let enabled = core.settings.get().privacy.display_mode != DisplayMode::Privacy;
                 let mode = if enabled { "privacy" } else { "standard" };
                 let patch = serde_json::json!({ "privacy": { "displayMode": mode } });
                 match core.settings.update(patch).await {
@@ -263,6 +288,13 @@ fn tray_err(e: tauri::Error) -> BlueyError {
 mod tests {
     use super::*;
     use bluey_core::now_iso;
+
+    #[test]
+    fn the_macos_major_version_is_parsed_from_sw_vers() {
+        assert_eq!(parse_major_version("15.4.1\n"), Some(15));
+        assert_eq!(parse_major_version("26.0"), Some(26));
+        assert_eq!(parse_major_version(""), None);
+    }
 
     fn status(state: AppState, audio_active: bool) -> AppStatus {
         AppStatus {

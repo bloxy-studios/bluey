@@ -10,25 +10,46 @@
 
 ## Capture (ScreenCaptureKit, macOS 14+)
 * **On demand**: `SCScreenshotManager.captureImage(contentFilter:configuration:)` for the
-  active display (default), a window, a region (`sourceRect`) or the active window. Bluey's own
-  windows are excluded from the content filter so the HUD never appears in captures.
+  display with focus (default), a window, a region (`sourceRect`) or the active window. Bluey's
+  own windows are excluded from the content filter so the HUD never appears in captures.
+* **Display with focus**: a request without a `displayId` captures the display that contains
+  the midpoint of the frontmost app's front window, then the display under the mouse, then the
+  main display (`FocusDisplay.resolve`). Only captures follow focus: `observe.start` and the
+  system-audio stream without a `displayId` use the main display, so unplugging the focused
+  display cannot stop them.
+* **Enumeration cache**: a display capture reuses the `SCShareableContent` enumeration for up to
+  1.5 s while the active display list and bounds are unchanged, and excludes Bluey by app (so a
+  Bluey window opened after the enumeration still stays out of the frame). Window and region
+  captures always enumerate afresh.
 * **Multi-monitor / Retina**: displays enumerated with points, origin and scale factor; the
   frame is rendered at native pixels and downscaled so the longest side ≤ `maxImageDimension`
   (default 1600 px), JPEG q0.8. Frames are written to
-  `~/Library/Caches/com.codewithabdul.bluey/frames/` and discarded after use.
+  `~/Library/Caches/com.codewithabdul.bluey/frames/` and deleted by Rust once a context snapshot
+  has OCR'd and inlined them, or when they leave the 8-frame cache; the helper sweeps anything
+  older than 10 minutes every 5 minutes. With *Store screenshots* on, a session's frames are
+  copied to `<data dir>/screenshots/` first and the row points at the copy; *Delete screenshots*
+  and *Reset* remove both directories' files (DATA-001).
 * **Change detection**: a 64-bit difference hash per target; `changed=false` when the Hamming
   ratio is below `minDelta`. The engine skips vision/OCR work for unchanged screens and reuses
   the cached OCR.
-* **Smart observation (off by default)**: a low-FPS `SCStream` (default 1.5 s interval)
-  computing dHash per sampled frame; emits `screen.changed` only on material change. No frame
-  is sent to a model automatically — observation only refreshes the cached context so ⌘↵ is
-  faster and proactive preparation has fresh OCR.
+* **Smart observation (not yet available)**: the helper can run a low-FPS `SCStream` (default
+  1.5 s interval) computing dHash per sampled frame and emitting `screen.changed` on material
+  change, but nothing consumes those events yet, so Settings shows Smart as unavailable and no
+  setting starts the stream; a stored `smart` value still loads and samples nothing
+  (FEATURE-002).
 * **Cancellation**: a newer capture request supersedes an in-flight one.
 
 ## OCR (Vision)
 `VNRecognizeTextRequest` — `fast` (default, ~100–300 ms for a 1600 px frame) or `accurate`
 (with language correction). Output: blocks with confidence and normalized top-left-origin
 bounding boxes, plus text joined in reading order. Cached per frame hash.
+
+On the ⌘↵ path `context_build_snapshot` waits for OCR at most 150 ms after the frame is
+captured. If OCR misses that soft deadline the snapshot goes out with the image and AX only
+(an `ocr_pending` warning; the request uses vision) and OCR finishes in the background into the
+cache. If the capture itself fails (for example Screen Recording is not granted), the snapshot
+keeps AX, transcript and app identity, has no `screen`, and carries a `screen_unavailable`
+warning with the error code so the UI can offer to open System Settings.
 
 ## Accessibility (AX APIs)
 `accessibility.snapshot` collects the frontmost application, focused window, focused element
@@ -46,9 +67,12 @@ on them.
 ## Snapshot hygiene
 `trim_snapshot` bounds OCR (12k chars), AX visible text (8k), elements (150), transcript window
 (300 s / 200 segments) and removes OCR lines duplicated by AX text before the TS layer scores
-and budgets the context.
+and budgets the context. Fusion then drops AX window-text lines already present in the OCR or
+the focused value (whitespace- and case-insensitive).
 
 ## Privacy controls
-Capture target (display / active window / region), observation mode (manual only by default),
-screenshot retention (off by default), Privacy display mode (content protection — ADR 0006),
-and a visible `◌ Reading screen` state whenever a capture happens.
+Capture target (display / active window; the helper's region target has no picker yet, so
+Settings does not offer it and a stored `region` reads as the active window), observation
+mode (manual only by default), screenshot retention (off by default), Privacy display mode
+(content protection — ADR 0006), and a visible `◌ Reading screen` state whenever a capture
+happens.

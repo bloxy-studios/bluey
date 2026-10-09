@@ -89,6 +89,36 @@ describe("generateSessionSummary", () => {
     expect(summary.createdAt).toBe("2026-09-07T10:00:00.000Z");
   });
 
+  it("keeps the start and the end of a long session and tells the user what was left out", async () => {
+    // 60 minutes, one ~40-token line every 10 s: far beyond the transcript budget (AI-007).
+    const filler = "we walked through the quarterly numbers and the hiring plan in some detail today";
+    const transcript = Array.from({ length: 360 }, (_, i) =>
+      makeSegment({
+        id: `t${i}`,
+        text: i === 0 ? "Agenda: pick the Q3 launch date." : i === 359 ? "Final call: ship on May 3." : filler,
+        startTime: i * 10_000,
+        endTime: i * 10_000 + 9_000,
+      }),
+    );
+    const { api, requests } = apiReturning(summaryJson);
+
+    const summary = await generateSessionSummary(summarizeInput({ transcript }), { api });
+
+    const userPart = requests[0]!.messages[1]?.content[0];
+    const userText = userPart && "text" in userPart ? userPart.text : "";
+    expect(userText).toContain("Agenda: pick the Q3 launch date.");
+    expect(userText).toContain("Final call: ship on May 3.");
+    expect(userText).toMatch(/\[… \d+ lines from the middle of the session \(\d\d:\d\d–\d\d:\d\d\) omitted …\]/);
+    expect(summary.overview).toMatch(/^Standup about the database migration\.\n\nThis session was long/);
+    expect(summary.overview).toMatch(/about \d+ min in the middle \(\d\d:\d\d–\d\d:\d\d\) was not included/);
+  });
+
+  it("leaves the overview alone when the whole transcript fits", async () => {
+    const { api } = apiReturning(summaryJson);
+    const summary = await generateSessionSummary(summarizeInput(), { api });
+    expect(summary.overview).toBe("Standup about the database migration.");
+  });
+
   it("degrades to an overview-only summary for malformed output", async () => {
     const { api } = apiReturning("The meeting was mostly about the migration.");
     const summary = await generateSessionSummary(summarizeInput(), { api });

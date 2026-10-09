@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -28,6 +28,24 @@ describe("GeneralTab", () => {
     });
     // The backend agrees (round-trip through the transport).
     expect((await bluey.settings.get()).general.launchAtLogin).toBe(true);
+  });
+
+  it("shows the stored language code by name and saves the picked code (UX-042)", async () => {
+    const user = userEvent.setup();
+    render(<GeneralTab />);
+
+    const picker = screen.getByLabelText<HTMLSelectElement>("Output language");
+    expect(picker).toHaveValue("en"); // the Rust default
+    expect(picker.selectedOptions[0]?.textContent).toBe("English");
+
+    await user.selectOptions(picker, "Spanish");
+    await waitFor(() => expect(useSettingsStore.getState().settings?.general.outputLanguage).toBe("es"));
+  });
+
+  it("reads a language name stored by an older build as its code", async () => {
+    await useSettingsStore.getState().update({ general: { outputLanguage: "Japanese" } });
+    render(<GeneralTab />);
+    expect(screen.getByLabelText("Output language")).toHaveValue("ja");
   });
 });
 
@@ -78,20 +96,48 @@ describe("ModeEditor", () => {
     // Custom-only fields stay hidden for built-ins.
     expect(screen.queryByLabelText("Response format")).not.toBeInTheDocument();
 
-    const wasOn = mode.contextRequirements.includes("session_memory");
-    const chip = screen.getByRole("checkbox", { name: "Session memory" });
+    const wasOn = mode.contextRequirements.includes("transcript");
+    const chip = screen.getByRole("checkbox", { name: "Transcript" });
     expect(chip).toHaveAttribute("aria-checked", String(wasOn));
 
     await user.click(chip);
     await waitFor(async () => {
       const updated = await bluey.modes.get({ id: "coding-interview" });
-      expect(updated.contextRequirements.includes("session_memory")).toBe(!wasOn);
+      expect(updated.contextRequirements.includes("transcript")).toBe(!wasOn);
     });
-    // Untouched sources survive the patch.
+    // Untouched sources survive the patch, session memory (no chip) included.
     const updated = await bluey.modes.get({ id: "coding-interview" });
-    for (const source of mode.contextRequirements.filter((s) => s !== "session_memory")) {
+    for (const source of mode.contextRequirements.filter((s) => s !== "transcript")) {
       expect(updated.contextRequirements).toContain(source);
     }
+  });
+
+  it("offers only chips that change what is gathered; Screen covers the accessibility tree (MODE-011)", async () => {
+    const user = userEvent.setup();
+    const mode = useModesStore.getState().modes.find((m) => m.id === "coding-interview");
+    if (!mode) throw new Error("coding-interview mode missing");
+    render(
+      <TooltipProvider>
+        <ModeEditor mode={mode} isActive={false} onDeleted={() => {}} />
+      </TooltipProvider>,
+    );
+
+    const chips = within(screen.getByRole("group", { name: "Context sources" })).getAllByRole("checkbox");
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "Screen",
+      "Transcript",
+      "Résumé / CV",
+      "Job description",
+      "Documents",
+    ]);
+
+    await user.click(screen.getByRole("checkbox", { name: "Screen" }));
+    await waitFor(async () => {
+      const updated = await bluey.modes.get({ id: "coding-interview" });
+      expect(updated.contextRequirements).not.toContain("screen");
+      expect(updated.contextRequirements).not.toContain("accessibility");
+      expect(updated.contextRequirements).toContain("session_memory");
+    });
   });
 
   it("shows description, group and response format for custom modes", async () => {

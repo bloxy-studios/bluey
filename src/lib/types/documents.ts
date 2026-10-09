@@ -71,6 +71,10 @@ export interface RetrievalQuery {
   scopes: Array<{ scope: DocumentScope; scopeId?: string }>;
   kinds?: DocumentKind[];
   limit?: number;
-  /** Use embeddings if available, otherwise keyword ranking. */
-  strategy?: "auto" | "keyword" | "semantic";
+  /**
+   * Use embeddings if available, otherwise keyword ranking. `leading` returns
+   * the first chunks (document order) of every document in scope without
+   * matching the query — for personal instructions and a pinned résumé.
+   */
+  strategy?: "auto" | "keyword" | "semantic" | "leading";
 }

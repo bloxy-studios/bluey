@@ -52,6 +52,7 @@
 pub mod agent;
 pub mod anthropic;
 pub mod antigravity;
+pub mod api_error;
 pub mod azure;
 pub mod claude_code;
 pub mod clerk;

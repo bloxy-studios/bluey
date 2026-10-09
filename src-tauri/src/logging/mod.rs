@@ -9,7 +9,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use bluey_core::events::BlueyEvent;
@@ -20,12 +20,18 @@ use tracing_subscriber::{reload, EnvFilter, Layer, Registry};
 
 use crate::events::EventBus;
 
+pub mod panic_hook;
+
 type ReloadHandle = reload::Handle<EnvFilter, Registry>;
 
 /// Handle to the initialised logging stack.
 pub struct Logging {
     reload: ReloadHandle,
+    sink: Arc<FileSink>,
 }
+
+/// Daily log files older than this many days are deleted at startup (DEBT-009).
+const LOG_RETENTION_DAYS: u64 = 14;
 
 /// Bus used by the `dev.log` mirror layer; set once at bootstrap.
 static LOG_BUS: OnceLock<Arc<EventBus>> = OnceLock::new();
@@ -35,17 +41,18 @@ impl Logging {
     /// the `BLUEY_LOG_LEVEL`/`RUST_LOG` overrides, resolved by the caller).
     pub fn init(logs_dir: PathBuf, level: &str) -> Self {
         let (filter, reload) = reload::Layer::new(build_filter(level));
+        prune_old_logs(&logs_dir, chrono::Utc::now().date_naive());
         let sink = Arc::new(FileSink::new(logs_dir));
         let file_layer = tracing_subscriber::fmt::layer()
             .json()
             .with_ansi(false)
-            .with_writer(MakeFileWriter { sink });
+            .with_writer(MakeLineWriter(LineSink::File(sink.clone())));
 
         let stderr_layer = if cfg!(debug_assertions) {
             Some(
                 tracing_subscriber::fmt::layer()
                     .compact()
-                    .with_writer(std::io::stderr),
+                    .with_writer(MakeLineWriter(LineSink::Stderr)),
             )
         } else {
             None
@@ -58,7 +65,13 @@ impl Logging {
             .with(BusLayer);
         // Ignore double-init in tests.
         let _ = registry.try_init();
-        Self { reload }
+        Self { reload, sink }
+    }
+
+    /// Delete every log file (Reset all data). Logging carries on into a
+    /// fresh file for the day.
+    pub fn delete_files(&self) {
+        self.sink.delete_all();
     }
 
     /// Change the level filter at runtime (settings → advanced.logLevel).
@@ -101,8 +114,12 @@ fn build_filter(level: &str) -> EnvFilter {
 // ── Secret redaction ─────────────────────────────────────────────────────────
 
 /// Mask secret-shaped substrings: `sk-…`, `fc-…`, `AIza…` (Google API keys),
-/// `Bearer …`, `api-key: …` / `"api-key":"…"` values and `key=` URL queries
-/// (the Gemini Live WebSocket URL).
+/// `Bearer …`, JWTs, `api-key` / `access_token`-style key values and `key=`
+/// URL queries (the Gemini Live WebSocket URL).
+///
+/// It runs on the formatted JSON line, where a field value holding
+/// `"api-key":"…"` reads `\"api-key\":\"…\"`: the key patterns accept the
+/// escaping backslashes (SEC-016).
 pub fn redact(line: &str) -> String {
     static PATTERNS: OnceLock<Vec<(regex::Regex, &'static str)>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| {
@@ -124,8 +141,15 @@ pub fn redact(line: &str) -> String {
                 "[redacted]",
             ),
             (
-                regex::Regex::new(r#"(?i)(api-key["':\s=]+)[A-Za-z0-9._\-]{8,}"#)
+                regex::Regex::new(r"eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*")
                     .expect("valid regex"),
+                "[redacted]",
+            ),
+            (
+                regex::Regex::new(
+                    r#"(?i)((?:api-key|(?:access|refresh|id)_token|client_secret|password)["':\s=\\]+)[A-Za-z0-9._~+/\-]{8,}"#,
+                )
+                .expect("valid regex"),
                 "$1[redacted]",
             ),
             (
@@ -143,7 +167,7 @@ pub fn redact(line: &str) -> String {
                 "[redacted]",
             ),
             (
-                regex::Regex::new(r#"(?i)(chatgpt-account-id["':\s=]+)[A-Za-z0-9._\-]{8,}"#)
+                regex::Regex::new(r#"(?i)(chatgpt-account-id["':\s=\\]+)[A-Za-z0-9._\-]{8,}"#)
                     .expect("valid regex"),
                 "$1[redacted]",
             ),
@@ -191,15 +215,75 @@ impl FileSink {
             let _ = writeln!(file, "{redacted}");
         }
     }
+    /// Close the day's file and delete every log file.
+    fn delete_all(&self) {
+        let mut state = self.state.lock();
+        *state = None;
+        for (path, _) in log_files(&self.dir) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
-struct MakeFileWriter {
-    sink: Arc<FileSink>,
+/// The daily log files in `dir` with the day each one covers.
+fn log_files(dir: &Path) -> Vec<(PathBuf, chrono::NaiveDate)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let day = name
+                .to_str()?
+                .strip_prefix("bluey-")?
+                .strip_suffix(".log")?;
+            let day = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+            Some((entry.path(), day))
+        })
+        .collect()
 }
 
+/// Delete daily log files older than [`LOG_RETENTION_DAYS`] (by the day in the
+/// file name). Returns how many were removed.
+fn prune_old_logs(dir: &Path, today: chrono::NaiveDate) -> usize {
+    let Some(cutoff) = today.checked_sub_days(chrono::Days::new(LOG_RETENTION_DAYS)) else {
+        return 0;
+    };
+    log_files(dir)
+        .into_iter()
+        .filter(|(_, day)| *day < cutoff)
+        .filter(|(path, _)| std::fs::remove_file(path).is_ok())
+        .count()
+}
+
+/// Where a formatted event goes. Both sinks redact the whole line.
+#[derive(Clone)]
+enum LineSink {
+    File(Arc<FileSink>),
+    /// Debug builds only; redacted too so a dev console never shows a key.
+    Stderr,
+}
+
+impl LineSink {
+    fn write_line(&self, bytes: &[u8]) {
+        match self {
+            Self::File(sink) => sink.write_line(bytes),
+            Self::Stderr => {
+                let text = String::from_utf8_lossy(bytes);
+                let _ = writeln!(std::io::stderr(), "{}", redact(text.trim_end()));
+            }
+        }
+    }
+}
+
+struct MakeLineWriter(LineSink);
+
+/// Buffers one formatted event and hands it to the sink on drop, so the
+/// redaction sees the complete line.
 struct EventWriter {
     buf: Vec<u8>,
-    sink: Arc<FileSink>,
+    sink: LineSink,
 }
 
 impl Write for EventWriter {
@@ -220,12 +304,12 @@ impl Drop for EventWriter {
     }
 }
 
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for MakeFileWriter {
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for MakeLineWriter {
     type Writer = EventWriter;
     fn make_writer(&'a self) -> Self::Writer {
         EventWriter {
             buf: Vec::with_capacity(256),
-            sink: self.sink.clone(),
+            sink: self.0.clone(),
         }
     }
 }
@@ -306,5 +390,90 @@ mod tests {
             assert!(!out.contains(secret), "{secret} leaked: {out}");
         }
         assert!(out.contains(r#""chatgpt-account-id":"[redacted]"#));
+    }
+
+    #[test]
+    fn redacts_secrets_inside_json_escaped_field_values() {
+        // A field value holding JSON, as the JSON formatter writes it (SEC-016).
+        let body = r#"{"api-key":"abcdef1234567890","access_token":"tok_1234567890abc","refresh_token":"rt-0987654321zyx","chatgpt-account-id":"acct-1234567890"}"#;
+        let line = serde_json::json!({ "fields": { "message": body } }).to_string();
+        assert!(
+            line.contains(r#"\"api-key\""#),
+            "fixture must be escaped: {line}"
+        );
+        let out = redact(&line);
+        for secret in [
+            "abcdef1234567890",
+            "tok_1234567890abc",
+            "rt-0987654321zyx",
+            "acct-1234567890",
+        ] {
+            assert!(!out.contains(secret), "{secret} leaked: {out}");
+        }
+    }
+
+    #[test]
+    fn redacts_bare_jwts() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEyMyJ9.c2lnbmF0dXJlLXZhbHVl";
+        let out = redact(&format!("session token {jwt} expired"));
+        assert!(!out.contains("eyJzdWIiOiJ1c2VyXzEyMyJ9"), "{out}");
+        assert!(out.contains("session token [redacted] expired"), "{out}");
+    }
+
+    fn temp_logs_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(bluey_core::new_id("bluey-logs-test"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn prunes_daily_logs_older_than_the_retention_window() {
+        let dir = temp_logs_dir();
+        for name in [
+            "bluey-2026-08-01.log",
+            "bluey-2026-09-14.log",
+            "bluey-2026-09-15.log",
+            "bluey-2026-09-29.log",
+            "notes.txt",
+        ] {
+            std::fs::write(dir.join(name), "{}").unwrap();
+        }
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+
+        assert_eq!(prune_old_logs(&dir, today), 2);
+        assert_eq!(
+            names(&dir),
+            ["bluey-2026-09-15.log", "bluey-2026-09-29.log", "notes.txt"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn delete_all_removes_the_logs_and_keeps_logging_to_a_fresh_file() {
+        let dir = temp_logs_dir();
+        std::fs::write(dir.join("bluey-2026-01-02.log"), "{}").unwrap();
+        let sink = FileSink::new(dir.clone());
+        sink.write_line(b"{\"before\":1}");
+        assert_eq!(names(&dir).len(), 2);
+
+        sink.delete_all();
+        assert!(names(&dir).is_empty(), "{:?}", names(&dir));
+
+        sink.write_line(b"{\"after\":1}");
+        let files = names(&dir);
+        assert_eq!(files.len(), 1);
+        let text = std::fs::read_to_string(dir.join(&files[0])).unwrap();
+        assert_eq!(text.trim(), r#"{"after":1}"#);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

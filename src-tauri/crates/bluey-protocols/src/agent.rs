@@ -1,7 +1,7 @@
 //! Research-agent sidecar protocol (see `docs/AGENT_SIDECAR_PROTOCOL.md`):
 //! request encoding and event → [`DeepResearchEvent`] mapping.
 
-use bluey_core::types::{Citation, DeepResearchEvent, DeepResearchRequest};
+use bluey_core::types::{Citation, DeepResearchEvent, DeepResearchRequest, ResearchBackend};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -26,6 +26,36 @@ pub fn research_run_params(request: &DeepResearchRequest, model: Option<&str>) -
         obj.insert("model".into(), json!(model));
     }
     params
+}
+
+/// The `agent.info` result: how the sidecar was built and which research
+/// backends it can run (`lite` has no Claude Code CLI).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentInfo {
+    /// `full`, `lite` or `dev` (un-bundled).
+    pub variant: String,
+    pub backends: Vec<ResearchBackend>,
+}
+
+/// Parse the `agent.info` result. Unknown backend names are skipped so a
+/// newer sidecar never makes the whole answer unreadable.
+pub fn parse_agent_info(result: Value) -> Option<AgentInfo> {
+    #[derive(Deserialize)]
+    struct Info {
+        variant: String,
+        #[serde(default)]
+        backends: Vec<String>,
+    }
+    let info: Info = serde_json::from_value(result).ok()?;
+    let backends = info
+        .backends
+        .iter()
+        .filter_map(|name| serde_json::from_value(Value::String(name.clone())).ok())
+        .collect();
+    Some(AgentInfo {
+        variant: info.variant,
+        backends,
+    })
 }
 
 /// Build the `research.cancel` params.
@@ -199,6 +229,7 @@ mod tests {
             max_turns: Some(12),
             tools: vec![ResearchTool::ExaSearch, ResearchTool::DocumentRead],
             allowed_document_ids: Some(vec!["doc-1".into()]),
+            deadline_ms: Some(75_000),
         }
     }
 
@@ -209,8 +240,25 @@ mod tests {
         assert_eq!(params["tools"][0], "exa_search");
         assert_eq!(params["allowedDocumentIds"][0], "doc-1");
         assert_eq!(params["model"], "claude-sonnet-5");
+        assert_eq!(params["deadlineMs"], 75_000);
         let params = research_run_params(&request(), None);
         assert!(params.get("model").is_none());
+    }
+
+    #[test]
+    fn parses_agent_info() {
+        let info = parse_agent_info(
+            serde_json::json!({ "variant": "lite", "backends": ["gemini", "someday"] }),
+        )
+        .unwrap();
+        assert_eq!(info.variant, "lite");
+        assert_eq!(info.backends, vec![ResearchBackend::Gemini]);
+        let full = parse_agent_info(
+            serde_json::json!({ "variant": "full", "backends": ["gemini", "claude"] }),
+        )
+        .unwrap();
+        assert!(full.backends.contains(&ResearchBackend::Claude));
+        assert!(parse_agent_info(serde_json::json!({ "backends": [] })).is_none());
     }
 
     #[test]

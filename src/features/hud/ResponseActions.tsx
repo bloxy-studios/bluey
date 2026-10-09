@@ -2,12 +2,14 @@ import { Check, Copy, Code, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react
 import { useState } from "react";
 
 import { Tooltip } from "@/components/ui/Tooltip";
-import { showToast } from "@/components/ui/toast-store";
+import { showErrorToast, showToast } from "@/components/ui/toast-store";
 import { bluey } from "@/lib/tauri/api";
-import type { BlueyResponse, FeedbackCategory, FeedbackRating } from "@/lib/types";
+import { toBlueyError, type BlueyResponse, type FeedbackCategory, type FeedbackRating } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { copyText } from "@/lib/utils/clipboard";
+import { answerPlainText } from "./answer-text";
 import { extractCodeBlocks } from "./markdown";
+import { ResponseProvenance } from "./ResponseProvenance";
 
 const FEEDBACK_CHIPS: Array<{ id: FeedbackCategory; label: string }> = [
   { id: "wrong", label: "Wrong" },
@@ -33,11 +35,12 @@ function ActionButton({
       <button
         type="button"
         aria-label={label}
+        aria-pressed={active}
         onClick={onClick}
         className={cn(
           "flex size-7 items-center justify-center rounded-[7px] text-fg-muted transition-colors",
-          "hover:bg-white/10 hover:text-fg",
-          active && "text-fg bg-white/10",
+          "hover:bg-fg/10 hover:text-fg",
+          active && "text-fg bg-fg/10",
         )}
       >
         {children}
@@ -51,7 +54,7 @@ export interface ResponseActionsProps {
   onRegenerate: () => void;
 }
 
-/** Copy answer / copy code / 👍 👎 (+ category chips) / regenerate. */
+/** Copy answer / copy code / 👍 👎 (+ category chips) / regenerate, then which model answered. */
 export function ResponseActions({ response, onRegenerate }: ResponseActionsProps) {
   const [rating, setRating] = useState<FeedbackRating | null>(response.feedback?.rating ?? null);
   const [showChips, setShowChips] = useState(false);
@@ -60,7 +63,7 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
   const code = response.code?.code ?? codeBlocks[0]?.code;
 
   const copyAnswer = async () => {
-    if (await copyText(response.content)) {
+    if (await copyText(answerPlainText(response))) {
       setCopiedAnswer(true);
       showToast("Copied");
       setTimeout(() => setCopiedAnswer(false), 1000);
@@ -72,13 +75,17 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
   };
 
   const sendFeedback = async (nextRating: FeedbackRating, categories?: FeedbackCategory[]) => {
+    const saved = rating;
     setRating(nextRating);
     setShowChips(nextRating === "down" && !categories);
     try {
       await bluey.responses.feedback({ responseId: response.id, rating: nextRating, categories });
       if (categories?.length) showToast("Thanks for the feedback");
     } catch (error) {
-      console.warn("[feedback] failed", error);
+      // Not recorded: show the rating that really is saved, and say so (UX-028).
+      setRating(saved);
+      setShowChips(false);
+      showErrorToast(toBlueyError(error, "storage"));
     }
   };
 
@@ -105,6 +112,7 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
           <RotateCcw className="size-[15px]" aria-hidden />
         </ActionButton>
       </div>
+      <ResponseProvenance response={response} />
 
       {showChips ? (
         <div className="mt-2 motion-safe:animate-rise-in">
@@ -115,7 +123,7 @@ export function ResponseActions({ response, onRegenerate }: ResponseActionsProps
                 key={chip.id}
                 type="button"
                 onClick={() => void sendFeedback("down", [chip.id])}
-                className="h-[24px] rounded-full border border-hud-border bg-white/4 px-2.5 text-[12px] text-fg-muted transition-colors hover:bg-white/10 hover:text-fg"
+                className="h-[24px] rounded-full border border-hud-border bg-fg/4 px-2.5 text-[12px] text-fg-muted transition-colors hover:bg-fg/10 hover:text-fg"
               >
                 {chip.label}
               </button>

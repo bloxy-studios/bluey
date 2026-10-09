@@ -3,6 +3,7 @@ import { type ReactNode } from "react";
 
 import { BlueyMark } from "@/components/BlueyMark";
 import { Spinner } from "@/components/ui/Spinner";
+import { useAuthStore } from "./auth-store";
 import { BrowserSignIn } from "./BrowserSignIn";
 import { useAuthStatus } from "./useAuthStatus";
 
@@ -85,6 +86,43 @@ function HudSignInPrompt() {
   );
 }
 
+/**
+ * `auth_get_status` failed (never a missing configuration): offer a retry instead of the developer
+ * setup screen, compact in the HUD.
+ */
+function StatusErrorPrompt({ variant }: { variant: "full" | "hud" }) {
+  const retry = () => void useAuthStore.getState().load();
+  const body = (
+    <>
+      <div className="flex-1 text-[13px] text-fg-muted">Couldn't check your sign-in.</div>
+      <button
+        type="button"
+        onClick={retry}
+        className="h-8 rounded-control bg-accent px-3.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover"
+      >
+        Retry
+      </button>
+    </>
+  );
+  if (variant === "hud") {
+    return (
+      <div className="flex h-full items-start justify-center pt-4">
+        <div className="flex w-[420px] items-center gap-3 rounded-panel border border-hud-border bg-hud-bg px-5 py-4 shadow-[0_8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[24px]">
+          <BlueyMark size={22} className="text-fg" />
+          {body}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <CenteredShell>
+      <div className="flex w-[440px] max-w-full items-center gap-3 rounded-card border border-border bg-bg-elevated p-6">
+        {body}
+      </div>
+    </CenteredShell>
+  );
+}
+
 export interface AuthGateProps {
   children: ReactNode;
   /** "hud" keeps the gate compact (the HUD panel cannot host the sign-in card). */
@@ -93,12 +131,13 @@ export interface AuthGateProps {
 
 /**
  * Gates window content on authentication:
- * unconfigured → setup screen · signed out → browser sign-in card (or a compact
+ * status unreadable → retry prompt · unconfigured → setup screen · signed out → browser sign-in card (or a compact
  * HUD prompt) · unknown / not loaded → spinner · signed in / dev mode → children.
  */
 export function AuthGate({ children, variant = "full" }: AuthGateProps) {
-  const { mode, state, loaded } = useAuthStatus();
+  const { mode, state, loaded, statusFailed } = useAuthStatus();
 
+  if (loaded && statusFailed) return <StatusErrorPrompt variant={variant} />;
   if (loaded && mode === "unconfigured") return <ConfigurationScreen />;
   if (loaded && mode === "dev") return <>{children}</>;
   if (!loaded || state === "unknown") {

@@ -21,12 +21,13 @@ import {
   toBlueyError,
   type BlueyDocument,
   type BlueyMode,
-  type ContextRequirement,
+  type ModeDraft,
   type ResponseSchemaId,
 } from "@/lib/types";
 import { cn } from "@/lib/utils/cn";
 import { formatBytes } from "@/lib/utils/format";
-import { CONTEXT_SOURCE_LABELS, CONTEXT_SOURCES, RESPONSE_FORMAT_OPTIONS } from "./mode-options";
+import { validateModeDraft } from "@/modes/registry";
+import { CONTEXT_SOURCE_CHIPS, RESPONSE_FORMAT_OPTIONS, toggleContextChip } from "./mode-options";
 import { ModeFilesDropzone } from "./ModeFilesDropzone";
 
 const LATENCY_OPTIONS = [
@@ -61,6 +62,21 @@ const MODEL_ROLE_OPTIONS = [
   { value: "research", label: "Research model" },
 ];
 
+/** The inline error for one edited field (`undefined` when it is valid). */
+function fieldError(field: "name" | "description" | "systemInstructions", value: string): string | undefined {
+  const draft: ModeDraft = { name: "mode", [field]: value };
+  return validateModeDraft(draft).fieldErrors[field];
+}
+
+function FieldError({ id, message }: { id: string; message: string | undefined }) {
+  if (!message) return null;
+  return (
+    <p id={id} role="alert" className="mt-1.5 text-[12.5px] text-danger">
+      {message}
+    </p>
+  );
+}
+
 export interface ModeEditorProps {
   mode: BlueyMode;
   isActive: boolean;
@@ -89,6 +105,9 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
   const [instructions, setInstructions] = useState(mode.systemInstructions);
   const [documents, setDocuments] = useState<BlueyDocument[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const nameError = fieldError("name", name);
+  const descriptionError = fieldError("description", description.trim());
+  const instructionsError = fieldError("systemInstructions", instructions);
 
   const patch = useCallback(
     async (value: Parameters<typeof bluey.modes.update>[0]["patch"]) => {
@@ -101,21 +120,38 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
     [mode.id],
   );
 
+  // Invalid values stay local (with an inline error) and are never sent.
   const saveName = useDebouncedCallback((value: string) => {
-    if (value.trim().length > 0) void patch({ name: value.trim() });
+    if (!fieldError("name", value)) void patch({ name: value.trim() });
   }, 500);
-  const saveDescription = useDebouncedCallback(
-    (value: string) => void patch({ description: value.trim() }),
-    600,
-  );
-  const saveGroup = useDebouncedCallback(
-    (value: string) => void patch({ group: value.trim() || undefined }),
-    600,
-  );
-  const saveInstructions = useDebouncedCallback(
-    (value: string) => void patch({ systemInstructions: value }),
-    600,
-  );
+  const saveDescription = useDebouncedCallback((value: string) => {
+    if (!fieldError("description", value.trim())) void patch({ description: value.trim() });
+  }, 600);
+  const saveGroup = useDebouncedCallback((value: string) => void patch({ group: value.trim() || null }), 600);
+  const saveInstructions = useDebouncedCallback((value: string) => {
+    if (!fieldError("systemInstructions", value)) void patch({ systemInstructions: value });
+  }, 600);
+
+  const resetToDefault = async () => {
+    // Pending edits must not land on top of the restored definition.
+    for (const save of [saveName, saveDescription, saveGroup, saveInstructions]) save.cancel();
+    try {
+      const restored = await bluey.modes.resetBuiltIn({ id: mode.id });
+      setName(restored.name);
+      setDescription(restored.description);
+      setGroup(restored.group ?? "");
+      setInstructions(restored.systemInstructions);
+    } catch (error) {
+      showErrorToast(toBlueyError(error, "storage"));
+    }
+  };
+
+  const runAction = (action: () => Promise<unknown>, done?: string) => {
+    action().then(
+      () => done && showToast(done),
+      (error: unknown) => showErrorToast(toBlueyError(error, "storage")),
+    );
+  };
 
   const refreshDocuments = useCallback(async () => {
     try {
@@ -136,11 +172,8 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
     void patch({ responseStyle });
   };
 
-  const toggleContextSource = (source: ContextRequirement) => {
-    const current = new Set(mode.contextRequirements);
-    if (current.has(source)) current.delete(source);
-    else current.add(source);
-    void patch({ contextRequirements: CONTEXT_SOURCES.filter((s) => current.has(s)) });
+  const toggleContextSource = (chip: (typeof CONTEXT_SOURCE_CHIPS)[number]) => {
+    void patch({ contextRequirements: toggleContextChip(mode.contextRequirements, chip) });
   };
 
   const removeDocument = async (doc: BlueyDocument) => {
@@ -159,16 +192,21 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
           {mode.builtIn ? (
             <h1 className="text-[28px] font-semibold leading-tight text-fg">{mode.name}</h1>
           ) : (
-            <input
-              value={name}
-              aria-label="Mode name"
-              onChange={(e) => {
-                setName(e.target.value);
-                saveName(e.target.value);
-              }}
-              className="w-full bg-transparent text-[28px] font-semibold leading-tight text-fg outline-none placeholder:text-fg-subtle"
-              placeholder="Untitled Mode"
-            />
+            <div className="min-w-0 flex-1">
+              <input
+                value={name}
+                aria-label="Mode name"
+                aria-invalid={nameError ? true : undefined}
+                aria-describedby={nameError ? "mode-name-error" : undefined}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  saveName(e.target.value);
+                }}
+                className="w-full bg-transparent text-[28px] font-semibold leading-tight text-fg outline-none placeholder:text-fg-subtle"
+                placeholder="Untitled Mode"
+              />
+              <FieldError id="mode-name-error" message={nameError} />
+            </div>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -177,20 +215,16 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
               </IconButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => void bluey.modes.duplicate({ id: mode.id })}>
+              <DropdownMenuItem onSelect={() => runAction(() => bluey.modes.duplicate({ id: mode.id }))}>
                 Duplicate
               </DropdownMenuItem>
               <DropdownMenuItem
-                onSelect={() => {
-                  void bluey.modes.setDefault({ id: mode.id }).then(() => showToast("Default mode set"));
-                }}
+                onSelect={() => runAction(() => bluey.modes.setDefault({ id: mode.id }), "Default mode set")}
               >
                 Set as default
               </DropdownMenuItem>
               {mode.builtIn ? (
-                <DropdownMenuItem onSelect={() => void bluey.modes.resetBuiltIn({ id: mode.id })}>
-                  Reset to default
-                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void resetToDefault()}>Reset to default</DropdownMenuItem>
               ) : (
                 <>
                   <DropdownMenuSeparator />
@@ -213,6 +247,8 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
                 <Input
                   id="mode-description"
                   value={description}
+                  aria-invalid={descriptionError ? true : undefined}
+                  aria-describedby={descriptionError ? "mode-description-error" : undefined}
                   onChange={(e) => {
                     setDescription(e.target.value);
                     saveDescription(e.target.value);
@@ -220,6 +256,7 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
                   placeholder="One line about when to use this mode"
                   className="w-full"
                 />
+                <FieldError id="mode-description-error" message={descriptionError} />
                 <div className="mt-4 flex flex-wrap items-end gap-3">
                   <div className="flex flex-col gap-1.5">
                     <label htmlFor="mode-group" className="text-[12.5px] font-medium text-fg-muted">
@@ -260,9 +297,12 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
                 setInstructions(e.target.value);
                 saveInstructions(e.target.value);
               }}
-              placeholder="Tell Bluey what this meeting is about, or leave it blank to use the default prompt."
+              placeholder="Tell Bluey what this meeting is about. Leave it blank to add no instructions for this mode."
+              aria-invalid={instructionsError ? true : undefined}
+              aria-describedby={instructionsError ? "meeting-context-error" : undefined}
               className="min-h-[180px]"
             />
+            <FieldError id="meeting-context-error" message={instructionsError} />
 
             <FieldLabel hint="Overrides the global response style for this mode">Response style</FieldLabel>
             <div className="flex flex-wrap items-center gap-2.5">
@@ -291,7 +331,7 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
                 value={mode.preferredModelRole ?? ""}
                 onChange={(e) =>
                   void patch({
-                    preferredModelRole: (e.target.value || undefined) as BlueyMode["preferredModelRole"],
+                    preferredModelRole: (e.target.value || null) as BlueyMode["preferredModelRole"] | null,
                   })
                 }
                 options={MODEL_ROLE_OPTIONS}
@@ -300,15 +340,15 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
 
             <FieldLabel hint="What Bluey gathers before answering in this mode">Context sources</FieldLabel>
             <div role="group" aria-label="Context sources" className="flex flex-wrap gap-2">
-              {CONTEXT_SOURCES.map((source) => {
-                const enabled = mode.contextRequirements.includes(source);
+              {CONTEXT_SOURCE_CHIPS.map((chip) => {
+                const enabled = mode.contextRequirements.includes(chip.source);
                 return (
                   <button
-                    key={source}
+                    key={chip.source}
                     type="button"
                     role="checkbox"
                     aria-checked={enabled}
-                    onClick={() => toggleContextSource(source)}
+                    onClick={() => toggleContextSource(chip)}
                     className={cn(
                       "h-8 rounded-full border px-3 text-[12.5px] font-medium transition-colors",
                       enabled
@@ -316,7 +356,7 @@ export function ModeEditor({ mode, isActive, onDeleted }: ModeEditorProps) {
                         : "border-border bg-bg-elevated text-fg-muted hover:text-fg",
                     )}
                   >
-                    {CONTEXT_SOURCE_LABELS[source]}
+                    {chip.label}
                   </button>
                 );
               })}

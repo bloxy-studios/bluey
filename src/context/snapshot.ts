@@ -4,8 +4,8 @@
  * `buildNativeSnapshot` asks Rust for the fast-path snapshot with
  * settings-driven options (screen only when the mode requires it or the
  * trigger is a capture). `enrichSnapshot` then fills the TS-owned parts:
- * session context, user context (retrieved chunks + personal instructions),
- * mode context and the explicit user instruction.
+ * the chat thread, session context, user context (retrieved chunks +
+ * personal instructions), mode context and the explicit user instruction.
  */
 
 import type { AskTrigger } from "@/lib/engine-contract";
@@ -14,6 +14,8 @@ import type {
   BlueyResponse,
   CaptureTarget,
   ContextSnapshot,
+  ConversationTurn,
+  DetectedEvent,
   RetrievedChunk,
   Session,
   SessionContext,
@@ -24,6 +26,7 @@ import type {
   TranscriptSegment,
 } from "@/lib/types";
 import { effectiveStyle, requires } from "@/modes/registry";
+import { isSpokenAsk } from "./relevance";
 
 export interface SnapshotApi {
   context: {
@@ -37,7 +40,16 @@ export interface BuildNativeSnapshotArgs {
   trigger: AskTrigger;
   /** Force screen inclusion regardless of mode requirements. */
   captureScreen?: boolean;
+  /**
+   * `false` when the user turned screen context off in the HUD: no capture,
+   * OCR or accessibility tree, whatever the trigger or mode asks for.
+   */
+  screenAllowed?: boolean;
   transcriptWindowSeconds?: number;
+  /** The heard question the ask answers: its conversation is part of the context. */
+  detectedEvent?: DetectedEvent;
+  /** Silent work (proactive preparation, live suggestions): the build must not move the app state. */
+  background?: boolean;
   api: SnapshotApi;
 }
 
@@ -48,7 +60,6 @@ function captureTargetFor(settings: Settings): CaptureTarget {
     case "active_window":
       return { type: "active_window" };
     case "display":
-    case "region":
     default: {
       const preferred = settings.screen.preferredDisplay;
       return preferred === "active" ? { type: "display" } : { type: "display", displayId: preferred };
@@ -59,18 +70,20 @@ function captureTargetFor(settings: Settings): CaptureTarget {
 /** Settings-driven snapshot options for the Rust fast path. */
 export function snapshotOptionsFor(args: Omit<BuildNativeSnapshotArgs, "api">): SnapshotOptions {
   const { mode, settings, trigger, captureScreen, transcriptWindowSeconds } = args;
+  const screenAllowed = args.screenAllowed !== false;
   const includeScreen =
-    captureScreen === true || trigger === "shortcut_capture" || requires(mode, "screen");
-  const includeTranscript = requires(mode, "transcript") || trigger === "shortcut_generate" || trigger === "detected_event";
+    screenAllowed && (captureScreen === true || trigger === "shortcut_capture" || requires(mode, "screen"));
+  const includeTranscript = requires(mode, "transcript") || isSpokenAsk(trigger, args.detectedEvent);
 
   const options: SnapshotOptions = {
     includeScreen,
     includeOcr: includeScreen,
-    includeAccessibility: includeScreen || requires(mode, "accessibility"),
+    includeAccessibility: includeScreen || (screenAllowed && requires(mode, "accessibility")),
     includeTranscript,
     ocrLevel: settings.screen.ocrLevel,
     inlineImage: includeScreen,
   };
+  if (args.background) options.background = true;
   if (includeTranscript) {
     options.transcriptWindowSeconds = transcriptWindowSeconds ?? DEFAULT_TRANSCRIPT_WINDOW_SECONDS;
   }
@@ -111,15 +124,44 @@ export interface EnrichSnapshotArgs {
 }
 
 const RECENT_RESPONSE_LIMIT = 5;
+/** Chat turns carried into the prompt as conversation memory (fusion renders the last few). */
+const CONVERSATION_TURN_LIMIT = 5;
 const RECENT_RESPONSE_CHARS = 320;
 const RECENT_EVENT_LIMIT = 12;
 const NOTE_LIMIT = 10;
 const NOTE_CHARS = 400;
+/** Personal instructions apply to every answer; cap them so they stay a preamble. */
+export const PERSONAL_INSTRUCTIONS_CHARS = 1500;
+
+/**
+ * Every `personal_instructions` chunk (global, mode and session scope, in the
+ * order retrieval returned them), joined and capped. Undefined when none.
+ */
+function joinPersonalInstructions(chunks: RetrievedChunk[]): string | undefined {
+  const text = chunks
+    .filter((chunk) => chunk.documentKind === "personal_instructions")
+    .map((chunk) => chunk.content.trim())
+    .filter((content) => content.length > 0)
+    .join("\n\n");
+  if (text.length === 0) return undefined;
+  return text.length > PERSONAL_INSTRUCTIONS_CHARS ? `${text.slice(0, PERSONAL_INSTRUCTIONS_CHARS).trimEnd()}…` : text;
+}
 
 interface SessionExtras {
   events?: SessionEvent[];
   notes?: SessionNote[];
   documentIds?: string[];
+}
+
+function toConversation(previousResponses: BlueyResponse[]): ConversationTurn[] {
+  return previousResponses.slice(-CONVERSATION_TURN_LIMIT).map((response) => ({
+    id: response.id,
+    prompt: response.prompt,
+    title: response.title,
+    content: response.content,
+    code: response.code,
+    createdAt: response.createdAt,
+  }));
 }
 
 function toSessionContext(
@@ -128,17 +170,19 @@ function toSessionContext(
   existing: SessionContext | undefined,
   extras: SessionExtras = {},
 ): SessionContext {
-  const recentResponses = (previousResponses ?? [])
-    .slice(-RECENT_RESPONSE_LIMIT)
-    .map((response) => ({
-      id: response.id,
-      title: response.title,
-      content:
-        response.content.length > RECENT_RESPONSE_CHARS
-          ? `${response.content.slice(0, RECENT_RESPONSE_CHARS)}…`
-          : response.content,
-      createdAt: response.createdAt,
-    }));
+  // Without chat turns from the UI, keep what the native builder loaded from the DB.
+  const recentResponses =
+    previousResponses === undefined
+      ? (existing?.recentResponses ?? [])
+      : previousResponses.slice(-RECENT_RESPONSE_LIMIT).map((response) => ({
+          id: response.id,
+          title: response.title,
+          content:
+            response.content.length > RECENT_RESPONSE_CHARS
+              ? `${response.content.slice(0, RECENT_RESPONSE_CHARS)}…`
+              : response.content,
+          createdAt: response.createdAt,
+        }));
   return {
     sessionId: session.id,
     modeId: session.modeId,
@@ -175,7 +219,6 @@ export function enrichSnapshot(snapshot: ContextSnapshot, args: EnrichSnapshotAr
   } = args;
 
   const chunks = retrieved ?? snapshot.userContext?.chunks ?? [];
-  const personalChunk = chunks.find((chunk) => chunk.documentKind === "personal_instructions");
   const contentChunks = chunks.filter((chunk) => chunk.documentKind !== "personal_instructions");
 
   const enriched: ContextSnapshot = {
@@ -183,13 +226,17 @@ export function enrichSnapshot(snapshot: ContextSnapshot, args: EnrichSnapshotAr
     mode: { mode, responseStyle: effectiveStyle(mode, settings) },
     userContext: {
       chunks: contentChunks,
-      personalInstructions: personalChunk?.content ?? snapshot.userContext?.personalInstructions,
+      personalInstructions: joinPersonalInstructions(chunks) ?? snapshot.userContext?.personalInstructions,
       displayName: snapshot.userContext?.displayName,
     },
   };
 
   if (instruction !== undefined && instruction.trim().length > 0) {
     enriched.userInstruction = instruction.trim();
+  }
+  // The chat thread is conversation memory whether or not a session is active.
+  if (previousResponses && previousResponses.length > 0) {
+    enriched.conversation = toConversation(previousResponses);
   }
   if (session) {
     enriched.session = toSessionContext(session, previousResponses, snapshot.session, {

@@ -84,7 +84,8 @@ function DocumentRow({
 /**
  * Settings → Context ("My Context"): documents Bluey can draw on in every mode —
  * résumé, job description, company notes… Stored with `scope: "global"`; mode-
- * and session-scoped files live in Modes → Files and the session itself.
+ * scoped files live in Modes → Files. Retrieval also reads a `session` scope,
+ * but no UI attaches files to a session yet (DOC-006).
  */
 export default function ContextTab() {
   const embeddingsEnabled = useSettingsStore((s) => s.settings?.ai.embeddingsEnabled ?? false);

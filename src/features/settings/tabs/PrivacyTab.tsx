@@ -3,25 +3,19 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/Dialog";
-import { Input } from "@/components/ui/Input";
 import { SectionHeader } from "@/components/ui/SectionHeader";
-import { Select } from "@/components/ui/Select";
 import { SegmentedTabs } from "@/components/ui/Tabs";
 import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
 import { showErrorToast, showToast } from "@/components/ui/toast-store";
-import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
+import { clearOnboardingStep } from "@/features/onboarding/progress";
+import { useCaptureProtection } from "@/hooks/useCaptureProtection";
 import { bluey } from "@/lib/tauri/api";
 import type { DataUsageStats } from "@/lib/tauri/commands";
-import { toBlueyError, type CaptureProtection, type DisplayMode } from "@/lib/types";
+import { toBlueyError, type DisplayMode } from "@/lib/types";
 import { formatBytes } from "@/lib/utils/format";
 import { useSettingsStore } from "@/stores/settingsStore";
-import {
-  clampRetentionMinutes,
-  RAW_AUDIO_RETENTION_DEFAULT_MINUTES,
-  RAW_AUDIO_RETENTION_MAX_MINUTES,
-  RAW_AUDIO_RETENTION_MIN_MINUTES,
-} from "../privacy-retention";
+import { SavedCredentials } from "../SavedCredentials";
 
 interface DangerAction {
   id: string;
@@ -34,24 +28,10 @@ interface DangerAction {
 export default function PrivacyTab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
-  const [protection, setProtection] = useState<CaptureProtection | null>(null);
+  // Follows the saved display mode wherever it changes (HUD eye, tray, here) (SEC-004, UX-004).
+  const protection = useCaptureProtection();
   const [stats, setStats] = useState<DataUsageStats | null>(null);
   const [confirm, setConfirm] = useState<DangerAction | null>(null);
-  const [retentionMinutes, setRetentionMinutes] = useState(
-    String(settings?.privacy.rawAudioRetentionMinutes ?? RAW_AUDIO_RETENTION_DEFAULT_MINUTES),
-  );
-
-  useEffect(() => {
-    if (settings?.privacy.rawAudioRetentionMinutes !== undefined) {
-      setRetentionMinutes(String(settings.privacy.rawAudioRetentionMinutes));
-    }
-  }, [settings?.privacy.rawAudioRetentionMinutes]);
-
-  const saveRetention = useDebouncedCallback((value: string) => {
-    const minutes = clampRetentionMinutes(Number(value));
-    setRetentionMinutes(String(minutes));
-    void update({ privacy: { rawAudioRetentionMinutes: minutes } });
-  }, 500);
 
   const refreshStats = async () => {
     try {
@@ -63,31 +43,14 @@ export default function PrivacyTab() {
 
   useEffect(() => {
     void refreshStats();
-    void bluey.capture
-      .getProtection()
-      .then(setProtection)
-      .catch(() => undefined);
   }, []);
 
   if (!settings) return null;
   const { privacy } = settings;
 
-  const setDisplayMode = async (mode: DisplayMode) => {
-    await update({ privacy: { displayMode: mode } });
-    try {
-      setProtection(await bluey.capture.setProtection({ enabled: mode === "privacy" }));
-    } catch (error) {
-      showErrorToast(toBlueyError(error, "capture"));
-    }
-  };
-
-  const setRawAudio = async (value: typeof privacy.storeRawAudio) => {
-    const patch: Partial<typeof privacy> = { storeRawAudio: value };
-    if (value === "custom" && privacy.rawAudioRetentionMinutes === undefined) {
-      patch.rawAudioRetentionMinutes = RAW_AUDIO_RETENTION_DEFAULT_MINUTES;
-    }
-    await update({ privacy: patch });
-  };
+  // Settings only: the Rust side effect applies content protection, so a failed save never
+  // leaves native protection disagreeing with the saved mode (UX-004).
+  const setDisplayMode = (mode: DisplayMode) => update({ privacy: { displayMode: mode } });
 
   const disableAllCapture = async () => {
     try {
@@ -142,22 +105,16 @@ export default function PrivacyTab() {
       },
     },
     {
-      id: "cache",
-      label: "Clear AI cache",
-      description: "Cached AI responses and embeddings.",
-      confirmTitle: "Clear the AI cache?",
-      run: async () => {
-        await bluey.data.clearAiCache();
-        await refreshStats();
-      },
-    },
-    {
       id: "reset",
       label: "Reset Bluey",
       description: "Erase everything and restore defaults.",
       confirmTitle: "Reset Bluey completely?",
       run: async () => {
         await bluey.data.resetAll();
+        // Nothing is left, the sign-in included: start over in onboarding (DOC-003).
+        clearOnboardingStep();
+        await bluey.window.open({ label: "onboarding" });
+        await bluey.panel.hide();
         await refreshStats();
       },
     },
@@ -217,47 +174,14 @@ export default function PrivacyTab() {
         />
       </SettingRow>
 
+      {/* Only the honest state: nothing records audio to disk yet, so there is no retention to choose (FEATURE-003). */}
       <SettingRow
         icon={Mic}
         title="Raw audio"
-        description="Recordings are never kept unless you choose otherwise."
+        description="Audio is transcribed as it arrives and never written to disk. Keeping recordings is coming in a later version."
       >
-        <Select
-          aria-label="Raw audio retention"
-          value={privacy.storeRawAudio}
-          onChange={(e) => void setRawAudio(e.target.value as typeof privacy.storeRawAudio)}
-          options={[
-            { value: "never", label: "Never keep" },
-            { value: "until_session_end", label: "Until session ends" },
-            { value: "custom", label: "Custom window" },
-          ]}
-        />
+        <span className="rounded-full bg-bg-tile px-2.5 py-1 text-[12px] font-medium text-fg-muted">Never kept</span>
       </SettingRow>
-
-      {privacy.storeRawAudio === "custom" ? (
-        <SettingRow
-          icon={Mic}
-          title="Retention window"
-          description={`Raw audio is discarded after ${privacy.rawAudioRetentionMinutes ?? RAW_AUDIO_RETENTION_DEFAULT_MINUTES} minutes (${RAW_AUDIO_RETENTION_MIN_MINUTES}–${RAW_AUDIO_RETENTION_MAX_MINUTES}).`}
-        >
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              inputMode="numeric"
-              min={RAW_AUDIO_RETENTION_MIN_MINUTES}
-              max={RAW_AUDIO_RETENTION_MAX_MINUTES}
-              aria-label="Raw audio retention minutes"
-              value={retentionMinutes}
-              onChange={(e) => {
-                setRetentionMinutes(e.target.value);
-                saveRetention(e.target.value);
-              }}
-              className="w-[88px]"
-            />
-            <span className="text-[13px] text-fg-muted">min</span>
-          </div>
-        </SettingRow>
-      ) : null}
 
       <SettingRow
         icon={Cloud}
@@ -280,6 +204,8 @@ export default function PrivacyTab() {
           Disable all capture
         </Button>
       </SettingRow>
+
+      <SavedCredentials />
 
       <SectionHeader title="Data" description="Everything Bluey stores lives on this Mac" />
 

@@ -230,6 +230,20 @@ pub struct AiRequest {
     /// The WebView's half of the fast-path trace (ADR 0010 §2), when the engine measured it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<super::TraceStamps>,
+    /// Supersede group (the engine's generation scope, e.g. `ask` / `prepare`):
+    /// a newer generation cancels an older one only within the same session
+    /// *and* scope, because each scope counts its own generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Work the user did not start (proactive preparation, live suggestions):
+    /// it streams and reports `ai.*` events like any request but never drives
+    /// the app state machine (no Thinking, no Error).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// The model role the request's mode prefers, captured when the request
+    /// was built, so routing does not depend on the mode active when it lands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model_role: Option<ModelRole>,
     pub created_at: String,
 }
 
@@ -320,6 +334,27 @@ pub struct ConnectionTestResult {
     pub error: Option<BlueyError>,
 }
 
+/// Mirrors `AiReadiness`: whether an answer can be routed right now — the
+/// router run against the real provider state (keys, enabled flags, account
+/// states, Cloud AI), not a guess from the settings. No network.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiReadiness {
+    /// An answer request routes to a provider.
+    pub ok: bool,
+    /// Where it routes (`ok`): the provider and model a connection test should try.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// A question about the screen (images) routes too.
+    pub vision: bool,
+    /// Why an answer cannot be routed (`!ok`): the router's error, e.g.
+    /// `config.provider_unusable` with its `cause`, or `config.no_model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<BlueyError>,
+}
+
 // ── Research ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -385,6 +420,10 @@ pub struct DeepResearchRequest {
     pub tools: Vec<ResearchTool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_document_ids: Option<Vec<String>>,
+    /// Wall-clock budget in ms from the start of the job: past it the agent
+    /// stops calling tools and writes its report from what it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
 }
 
 /// Mirrors `DeepResearchEvent` (tag = "type").

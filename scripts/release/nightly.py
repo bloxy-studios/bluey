@@ -51,13 +51,30 @@ def last_nightly(release):
     return (match.group(1), match.group(2)) if match else (None, None)
 
 
+def ci_passed(api, commit):
+    """Whether the latest CI (`ci.yml`) run for `commit` pushed to main concluded `success`.
+
+    Users auto-install nightlies, so a commit whose tests failed, were cancelled or have not
+    finished is never built (TEST-006)."""
+    runs = api.call("GET", PREFIX + f"/actions/workflows/ci.yml/runs?head_sha={commit}&event=push&branch=main&per_page=1")
+    rows = runs.get("workflow_runs") if isinstance(runs, dict) else None
+    require(isinstance(rows, list), "Unexpected workflow run listing response")
+    return bool(rows) and rows[0].get("head_sha") == commit and rows[0].get("status") == "completed" \
+        and rows[0].get("conclusion") == "success"
+
+
 def plan(root, commit, api, force, today=None):
+    """`skipped` says why no build is needed ("" when one is)."""
     commit = validate_commit(commit)
     date = (today or datetime.datetime.now(datetime.timezone.utc)).strftime("%Y%m%d")
     version = check_version(nightly_version(source_metadata(root)["version"], date))
     previous_commit, _ = last_nightly(api.find_release(NIGHTLY_TAG))
-    build = bool(force) or previous_commit != commit
-    return {"build": build, "version": version, "commit": commit}
+    skipped = ""
+    if not force and previous_commit == commit:
+        skipped = "main unchanged since the last nightly"
+    elif not ci_passed(api, commit):
+        skipped = "CI has not passed for this commit"
+    return {"build": not skipped, "version": version, "commit": commit, "skipped": skipped}
 
 
 def collect(incoming, output, version, source):
@@ -172,7 +189,7 @@ def main():
         result = plan(args.root, os.environ.get("GITHUB_SHA", ""), GitHub(), force)
         with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
             stream.write(f"build={str(result['build']).lower()}\nversion={result['version']}\ncommit={result['commit']}\n")
-        print(("Nightly build needed: " if result["build"] else "main unchanged since the last nightly; skipping: ") + result["version"])
+        print(("Nightly build needed: " if result["build"] else result["skipped"] + "; skipping: ") + result["version"])
     else:
         require(os.environ.get("GITHUB_ACTIONS") == "true", "Nightly publication runs only inside the Actions workflow")
         release_id = publish(GitHub(), args.root, args.incoming, args.version, args.commit, args.run_id, args.run_attempt)

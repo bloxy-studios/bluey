@@ -2,6 +2,7 @@
 # macOS-only build pipeline; nothing here creates a tag or GitHub Release.
 # Default: developer build (.app + .dmg), NEVER eligible for publication.
 # TARGET=... RESEARCH_BACKEND=gemini|claude bash scripts/release.sh
+# BLUEY_LOCAL_SIGNING_IDENTITY=... signs a developer build with a stable local identity.
 # PUBLISH_RELEASE=true is reserved for the gated Actions publishing workflow.
 # Setup, credentials and native acceptance checks: docs/RELEASING.md.
 set +x  # Never trace signing/notarization or optional OAuth inputs.
@@ -17,6 +18,11 @@ case "$PUBLISH_RELEASE" in true|false) ;; *) fail 'PUBLISH_RELEASE must be true 
 # Every build signs its updater bundle (bundle.createUpdaterArtifacts); Tauri refuses to build without the key.
 [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]] \
   || fail 'TAURI_SIGNING_PRIVATE_KEY (or TAURI_SIGNING_PRIVATE_KEY_PATH) is required to sign the updater bundle (docs/UPDATES.md › Signing)'
+# Only `tauri bundle`, which signs the updater bundle, gets the key: package install scripts,
+# tests, sidecar builds and the app compile run without it (SEC-008).
+without_updater_key() {
+  env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PATH -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$@"
+}
 
 # Nightly builds carry a version above the sources (docs/UPDATES.md); publication builds never override.
 # (macOS ships bash 3.2: no arrays under `set -u`, no `${var,,}`; keep this file 3.2-clean.)
@@ -38,6 +44,7 @@ if [[ "$PUBLISH_RELEASE" == true ]]; then
   python3 scripts/release/release_metadata.py version --root "$ROOT" --tag "$RELEASE_TAG" --check-tag --commit "$RELEASE_COMMIT"
   # Do not allow alternate Tauri credential discovery or implicit certificate import.
   unset APPLE_CERTIFICATE APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
+  [[ -z "${BLUEY_LOCAL_SIGNING_IDENTITY:-}" ]] || fail 'BLUEY_LOCAL_SIGNING_IDENTITY is for developer builds only'
 else
   python3 scripts/release/release_metadata.py version --root "$ROOT"
 fi
@@ -80,19 +87,27 @@ chmod +x "$SHIM/bun"
 export PATH="$SHIM:$PATH"
 
 printf '%s\n' 'Installing locked dependencies (including nested sidecar installs)'
-bun install --frozen-lockfile
-bun run typecheck
-bun run lint
-bun run test
-bash scripts/check-rust.sh
+without_updater_key bun install --frozen-lockfile
+without_updater_key bun run typecheck
+without_updater_key bun run lint
+without_updater_key bun run test
+without_updater_key bash scripts/check-rust.sh
+
+# A stable local identity (an Apple Development certificate) instead of ad-hoc keeps
+# Keychain approvals across local rebuilds (ADR 0011). Never notarized or publishable.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" && -n "${BLUEY_LOCAL_SIGNING_IDENTITY:-}" ]]; then
+  export APPLE_SIGNING_IDENTITY="$BLUEY_LOCAL_SIGNING_IDENTITY"
+  unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+  printf '%s\n' 'Developer-only build signed with a local identity; NOT eligible for publication.'
+fi
 
 # Keep the original chain (these helpers build BOTH architectures, ignoring TARGET).
 # Tauri then selects the target-suffixed sidecars and signs them with app entitlements.
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   export BLUEY_CODESIGN_IDENTITY="$APPLE_SIGNING_IDENTITY"
 fi
-TARGET="$TARGET" bash scripts/build-helper.sh
-BLUEY_AGENT_VARIANT="$AGENT_VARIANT" TARGET="$TARGET" bash scripts/build-agent.sh
+without_updater_key env TARGET="$TARGET" bash scripts/build-helper.sh
+without_updater_key env BLUEY_AGENT_VARIANT="$AGENT_VARIANT" TARGET="$TARGET" bash scripts/build-agent.sh
 for bin in bluey-helper bluey-agent; do
   [[ -x "src-tauri/binaries/${bin}-${TARGET}" ]] || fail 'missing target sidecar binary'
 done
@@ -106,10 +121,15 @@ fi
 # Config retains hardened runtime + entitlements.plist. No --no-sign/--skip-stapling,
 # no recursive re-signing. Tauri notarizes + staples the app before making the DMG, then
 # writes the signed updater bundle (`Bluey.app.tar.gz` + `.sig`) next to the app.
+# The compile (the Vite build in beforeBuildCommand, every build.rs and proc macro) runs
+# without the updater key; only `tauri bundle`, which signs the updater bundle, gets it.
 if [[ -n "$BUILD_VERSION" ]]; then
-  bun run tauri build --target "$TARGET" --bundles app,dmg --config "{\"version\":\"$BUILD_VERSION\"}" -- --locked
+  VERSION_CONFIG="{\"version\":\"$BUILD_VERSION\"}"
+  without_updater_key bun run tauri build --no-bundle --target "$TARGET" --config "$VERSION_CONFIG" -- --locked
+  bun run tauri bundle --target "$TARGET" --bundles app,dmg --config "$VERSION_CONFIG"
 else
-  bun run tauri build --target "$TARGET" --bundles app,dmg -- --locked
+  without_updater_key bun run tauri build --no-bundle --target "$TARGET" -- --locked
+  bun run tauri bundle --target "$TARGET" --bundles app,dmg
 fi
 
 # A build that exits 0 without its outputs must fail here, never at an upload step.

@@ -41,6 +41,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 mkdir -p "$OUT_DIR"
+# Hash of the sources this build starts from; ensure-sidecars.sh compares it (TEST-009).
+STAMP="$(bash "$REPO_ROOT/scripts/sidecar-stamp.sh" helper)"
 
 # arch → Rust/Tauri target-triple suffix
 build_one() {
@@ -78,6 +80,7 @@ build_one() {
         codesign "${sign_args[@]}" --sign - "$dest"
     fi
 
+    printf '%s\n' "$STAMP" > "$dest.stamp"
     echo "==> installed $dest"
 }
 

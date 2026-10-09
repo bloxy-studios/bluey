@@ -2,33 +2,32 @@
 //! job, JSON-Lines over stdio (`bluey_protocols::{jsonl, agent}`), credentials
 //! injected from the Keychain into the child environment only, document reads
 //! served from SQLite for the request's allow-list, cancellation and a hard
-//! wall-clock cap. Events are mapped onto `research.event`.
+//! wall-clock cap (the job table in [`jobs`]). Events are mapped onto
+//! `research.event`.
 
-use std::collections::HashMap;
+mod jobs;
+
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use bluey_core::events::BlueyEvent;
 use bluey_core::presets;
 use bluey_core::types::{
-    AiProviderConfig, AiProviderKind, DeepResearchEvent, DeepResearchRequest, ModelRole,
-    ResearchBackend, Settings,
+    AiProviderConfig, AiProviderKind, DeepResearchRequest, ModelRole, ResearchBackend, Settings,
 };
 use bluey_core::{BlueyError, BlueyResult};
-use bluey_protocols::agent::{self as proto, AgentEvent};
+use bluey_protocols::agent::{self as proto, AgentInfo};
 use bluey_protocols::jsonl::{self, Incoming};
-use bluey_storage::DocumentRepository;
-use serde_json::Value;
 use tauri::AppHandle;
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
+use tokio::sync::OnceCell;
 
 use crate::events::EventBus;
 use crate::secrets::{provider_key, SecretsStore, AGENT_ANTHROPIC_KEY, EXA_KEY, FIRECRAWL_KEY};
 use crate::settings::SettingsManager;
 use crate::storage::Storage;
+use jobs::{AgentJobs, JobTiming};
 
 /// Sidecar binary name (matches `bundle.externalBin`).
 pub const AGENT_BIN: &str = "bluey-agent";
@@ -36,6 +35,8 @@ pub const AGENT_BIN: &str = "bluey-agent";
 const JOB_WALL_CLOCK: Duration = Duration::from_secs(10 * 60);
 /// Grace period between `research.cancel` and killing the process.
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
+/// How long the one-off `agent.info` probe may take.
+const INFO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Claude-backend variables forwarded from Bluey's own environment (`.env`) when set.
 const CLAUDE_PASSTHROUGH_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_FOUNDRY",
@@ -53,20 +54,13 @@ const CLAUDE_PASSTHROUGH_ENV: &[&str] = &[
 /// Backend-independent knobs forwarded when set.
 const COMMON_PASSTHROUGH_ENV: &[&str] = &["BLUEY_AGENT_MAX_TURNS", "BLUEY_AGENT_MOCK"];
 
-struct Job {
-    child: Option<CommandChild>,
-    allowed_documents: Option<Vec<String>>,
-    started: Instant,
-}
-
 pub struct AgentManager {
     app: AppHandle,
-    bus: Arc<EventBus>,
     secrets: Arc<SecretsStore>,
     settings: Arc<SettingsManager>,
-    storage: Arc<Storage>,
-    jobs: Arc<parking_lot::Mutex<HashMap<String, Job>>>,
-    next_request_id: AtomicU64,
+    jobs: Arc<AgentJobs>,
+    /// What the installed sidecar build supports (`agent.info`), asked once.
+    info: OnceCell<AgentInfo>,
 }
 
 impl AgentManager {
@@ -79,12 +73,17 @@ impl AgentManager {
     ) -> Self {
         Self {
             app,
-            bus,
             secrets,
             settings,
-            storage,
-            jobs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-            next_request_id: AtomicU64::new(1),
+            jobs: Arc::new(AgentJobs::new(
+                bus,
+                storage,
+                JobTiming {
+                    cancel_grace: CANCEL_GRACE,
+                    wall_clock: JOB_WALL_CLOCK,
+                },
+            )),
+            info: OnceCell::new(),
         }
     }
 
@@ -95,27 +94,103 @@ impl AgentManager {
         path.is_file().then_some(path)
     }
 
-    /// Whether the sidecar binary exists and a Claude credential is available.
+    /// Whether the sidecar binary exists, the selected backend has a model
+    /// credential, and the installed build can run that backend (the lite
+    /// build has no Claude Code CLI).
     pub async fn available(&self) -> bool {
         if Self::binary_path().is_none() {
             return false;
         }
         let settings = self.settings.get();
-        match settings.ai.research_backend {
+        let backend = settings.ai.research_backend;
+        let has_credential = match backend {
             ResearchBackend::Gemini => match Self::gemini_provider_id(&settings) {
                 Some(id) => self.secrets.has(&provider_key(&id)).await.unwrap_or(false),
                 None => false,
             },
             ResearchBackend::Claude => {
                 if env_truthy("CLAUDE_CODE_USE_FOUNDRY") {
-                    return env_present("ANTHROPIC_FOUNDRY_API_KEY")
+                    env_present("ANTHROPIC_FOUNDRY_API_KEY")
                         || env_present("ANTHROPIC_FOUNDRY_AUTH_TOKEN")
-                        || env_present("AZURE_FOUNDRY_API_KEY");
+                        || env_present("AZURE_FOUNDRY_API_KEY")
+                } else {
+                    self.secrets.has(AGENT_ANTHROPIC_KEY).await.unwrap_or(false)
+                        || env_present("ANTHROPIC_API_KEY")
                 }
-                self.secrets.has(AGENT_ANTHROPIC_KEY).await.unwrap_or(false)
-                    || env_present("ANTHROPIC_API_KEY")
             }
+        };
+        // Asking the sidecar spawns it (up to INFO_TIMEOUT) on the ask path:
+        // only when the answer matters.
+        has_credential
+            && (!needs_sidecar_info(backend)
+                || backend_supported(self.info().await.as_ref(), backend))
+    }
+
+    /// Research backends the installed sidecar can run (empty when it is not
+    /// installed or did not answer).
+    pub async fn supported_backends(&self) -> Vec<ResearchBackend> {
+        if Self::binary_path().is_none() {
+            return Vec::new();
         }
+        self.info()
+            .await
+            .map(|info| info.backends)
+            .unwrap_or_default()
+    }
+
+    /// The sidecar's `agent.info`, probed once per run; a failed probe is not
+    /// cached (the next call asks again).
+    async fn info(&self) -> Option<AgentInfo> {
+        self.info
+            .get_or_try_init(|| async { self.probe_info().await.ok_or(()) })
+            .await
+            .ok()
+            .cloned()
+    }
+
+    /// Spawn the sidecar with no credentials, ask `agent.info`, and kill it.
+    async fn probe_info(&self) -> Option<AgentInfo> {
+        let mut env = crate::sidecar::child_base_env();
+        // A dev `BLUEY_CLAUDE_CLI` makes Claude runnable even on the lite build.
+        push_passthrough(&mut env, &["BLUEY_CLAUDE_CLI"]);
+        let command = self
+            .app
+            .shell()
+            .sidecar(AGENT_BIN)
+            .ok()?
+            .env_clear()
+            .envs(env);
+        let (mut rx, mut child) = command.spawn().ok()?;
+        let line = jsonl::encode_request("info-1", "agent.info", serde_json::json!({}));
+        if child.write(format!("{line}\n").as_bytes()).is_err() {
+            let _ = child.kill();
+            return None;
+        }
+        let answer = tokio::time::timeout(INFO_TIMEOUT, async {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    CommandEvent::Stdout(line) => {
+                        match jsonl::parse_line(&String::from_utf8_lossy(&line)) {
+                            Ok(Incoming::Response { result, .. }) => {
+                                return result.ok().and_then(proto::parse_agent_info)
+                            }
+                            _ => continue,
+                        }
+                    }
+                    CommandEvent::Terminated(_) => return None,
+                    _ => {}
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        let _ = child.kill();
+        if answer.is_none() {
+            tracing::warn!("the research agent did not answer agent.info");
+        }
+        answer
     }
 
     /// Environment for one job: every credential the sidecar may need, read
@@ -197,6 +272,8 @@ impl AgentManager {
 
     /// Spawn the sidecar for `request` and stream its events onto the bus.
     pub async fn start(self: &Arc<Self>, request: DeepResearchRequest) -> BlueyResult<()> {
+        // The job sends the query and allow-listed documents to a model provider.
+        crate::ai::ensure_cloud_ai(&self.settings.get())?;
         if !self.settings.get().ai.deep_research_enabled {
             return Err(BlueyError::configuration(
                 "deep_research_disabled",
@@ -209,7 +286,7 @@ impl AgentManager {
                 "the research agent sidecar is not installed with this build",
             ));
         }
-        if self.jobs.lock().contains_key(&request.job_id) {
+        if self.jobs.is_running(&request.job_id) {
             return Err(BlueyError::research(
                 "job_already_running",
                 "this job is already running",
@@ -220,7 +297,6 @@ impl AgentManager {
         // environment with every `.env` key in it.
         let mut env = crate::sidecar::child_base_env();
         env.extend(self.job_env().await?);
-        let job_id = request.job_id.clone();
         let model = self.research_model();
 
         let command = self
@@ -232,257 +308,44 @@ impl AgentManager {
             })?
             .env_clear()
             .envs(env);
-        let (rx, mut child) = command.spawn().map_err(|e| {
+        let (rx, child) = command.spawn().map_err(|e| {
             BlueyError::sidecar("spawn", format!("cannot spawn the agent sidecar: {e}"))
         })?;
-
-        let request_id = format!("r-{}", self.next_request_id.fetch_add(1, Ordering::SeqCst));
-        let line = jsonl::encode_request(
-            &request_id,
-            "research.run",
+        self.jobs.launch(
+            request.job_id.clone(),
             proto::research_run_params(&request, model.as_deref()),
-        );
-        if let Err(e) = child.write(format!("{line}\n").as_bytes()) {
-            let _ = child.kill();
-            return Err(BlueyError::sidecar(
-                "write",
-                format!("cannot talk to the agent sidecar: {e}"),
-            ));
-        }
-
-        self.jobs.lock().insert(
-            job_id.clone(),
-            Job {
-                child: Some(child),
-                allowed_documents: request.allowed_document_ids.clone(),
-                started: Instant::now(),
-            },
-        );
-        self.bus
-            .publish(BlueyEvent::ResearchEvent(DeepResearchEvent::Started {
-                job_id: job_id.clone(),
-            }));
-        self.spawn_reader(job_id.clone(), rx);
-        self.spawn_watchdog(job_id);
-        Ok(())
+            request.allowed_document_ids.clone(),
+            Box::new(child),
+            rx,
+        )
     }
 
-    fn spawn_reader(
-        self: &Arc<Self>,
-        job_id: String,
-        mut rx: tauri::async_runtime::Receiver<CommandEvent>,
-    ) {
-        let this = self.clone();
-        tauri::async_runtime::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    CommandEvent::Stdout(line) => {
-                        let text = String::from_utf8_lossy(&line);
-                        this.handle_line(&job_id, &text).await;
-                    }
-                    CommandEvent::Stderr(line) => {
-                        let text = String::from_utf8_lossy(&line);
-                        tracing::debug!(target: "bluey_agent", job = %job_id, "{}", text.trim_end());
-                    }
-                    CommandEvent::Error(error) => {
-                        tracing::warn!(job = %job_id, %error, "agent process error");
-                    }
-                    CommandEvent::Terminated(payload) => {
-                        tracing::debug!(job = %job_id, code = ?payload.code, "agent exited");
-                        // A job that exits without a terminal event failed.
-                        if this.jobs.lock().remove(&job_id).is_some() {
-                            this.publish_failed(
-                                &job_id,
-                                BlueyError::research(
-                                    "agent_exited",
-                                    "the research agent exited before finishing",
-                                ),
-                            );
-                        }
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        });
-    }
-
-    async fn handle_line(&self, job_id: &str, text: &str) {
-        match jsonl::parse_line(text) {
-            Ok(Incoming::Event { event, data }) => match proto::parse_agent_event(&event, data) {
-                Some(AgentEvent::Research(research_event)) => {
-                    if !self.jobs.lock().contains_key(job_id) {
-                        tracing::debug!(job = %job_id, "ignoring an event for a finished job");
-                        return;
-                    }
-                    let terminal = matches!(
-                        research_event,
-                        DeepResearchEvent::Completed { .. } | DeepResearchEvent::Failed { .. }
-                    );
-                    // `started` was already published when the process was spawned.
-                    if !matches!(research_event, DeepResearchEvent::Started { .. }) {
-                        self.bus.publish(BlueyEvent::ResearchEvent(research_event));
-                    }
-                    if terminal {
-                        self.finish(job_id);
-                    }
-                }
-                Some(AgentEvent::DocumentRequest {
-                    request_id,
-                    document_id,
-                }) => {
-                    self.answer_document_request(job_id, &request_id, &document_id)
-                        .await
-                }
-                None => tracing::debug!(job = %job_id, %event, "unhandled agent event"),
-            },
-            Ok(Incoming::Response { id, result }) => {
-                if let Err(wire) = result {
-                    let error = wire.into_bluey();
-                    tracing::warn!(job = %job_id, request = %id, code = %error.code, "agent rejected a request");
-                    if self.jobs.lock().remove(job_id).is_some() {
-                        self.publish_failed(job_id, error);
-                    }
-                }
-            }
-            Err(reason) => {
-                tracing::debug!(job = %job_id, %reason, "ignoring non-protocol agent line")
-            }
-        }
-    }
-
-    /// Serve `document.request` from SQLite, enforcing the request allow-list.
-    async fn answer_document_request(&self, job_id: &str, request_id: &str, document_id: &str) {
-        let allowed = {
-            let jobs = self.jobs.lock();
-            jobs.get(job_id).map(|job| {
-                job.allowed_documents
-                    .as_ref()
-                    .map(|ids| ids.iter().any(|id| id == document_id))
-                    .unwrap_or(false)
-            })
-        };
-        let text = match allowed {
-            Some(true) => {
-                let id = document_id.to_string();
-                self.storage
-                    .run(move |db| DocumentRepository::get_text(db, &id))
-                    .await
-                    .map_err(|e| e.message)
-            }
-            Some(false) => Err("document is not in the allow-list for this job".to_string()),
-            None => Err("job is no longer running".to_string()),
-        };
-        let params = proto::document_response_params(
-            request_id,
-            document_id,
-            text.as_deref().map_err(String::as_str),
-        );
-        self.write(job_id, "document.response", params);
-    }
-
-    fn write(&self, job_id: &str, method: &str, params: Value) {
-        let id = format!("r-{}", self.next_request_id.fetch_add(1, Ordering::SeqCst));
-        let line = jsonl::encode_request(&id, method, params);
-        let mut jobs = self.jobs.lock();
-        if let Some(child) = jobs.get_mut(job_id).and_then(|job| job.child.as_mut()) {
-            if let Err(e) = child.write(format!("{line}\n").as_bytes()) {
-                tracing::warn!(job = %job_id, method, error = %e, "agent stdin write failed");
-            }
-        }
-    }
-
-    fn finish(&self, job_id: &str) {
-        // The job is over: forget it now — so its `Terminated` is not reported
-        // as a failure — and make sure the process really exits.
-        let child = self.jobs.lock().remove(job_id).and_then(|job| job.child);
-        if let Some(child) = child {
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(CANCEL_GRACE).await;
-                let _ = child.kill();
-            });
-        }
-    }
-
-    fn spawn_watchdog(self: &Arc<Self>, job_id: String) {
-        let this = self.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(JOB_WALL_CLOCK).await;
-            let running = this
-                .jobs
-                .lock()
-                .get(&job_id)
-                .map(|job| job.started.elapsed() >= JOB_WALL_CLOCK)
-                .unwrap_or(false);
-            if running {
-                tracing::warn!(job = %job_id, "research job hit the wall-clock cap");
-                // Forget the job first so the sidecar's own `failed{cancelled}`
-                // is not reported on top of the timeout.
-                let child = this.jobs.lock().remove(&job_id).and_then(|job| job.child);
-                if let Some(mut child) = child {
-                    let id = format!("r-{}", this.next_request_id.fetch_add(1, Ordering::SeqCst));
-                    let line = jsonl::encode_request(
-                        &id,
-                        "research.cancel",
-                        proto::research_cancel_params(&job_id),
-                    );
-                    let _ = child.write(format!("{line}\n").as_bytes());
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(CANCEL_GRACE).await;
-                        let _ = child.kill();
-                    });
-                }
-                this.publish_failed(
-                    &job_id,
-                    BlueyError::research(
-                        "timeout",
-                        "the research job took too long and was stopped",
-                    ),
-                );
-            }
-        });
-    }
-
-    fn publish_failed(&self, job_id: &str, error: BlueyError) {
-        self.bus
-            .publish(BlueyEvent::ResearchEvent(DeepResearchEvent::Failed {
-                job_id: job_id.to_string(),
-                error,
-            }));
-    }
-
-    /// Ask the job to stop, then kill it after a grace period. Returns whether
-    /// the job was known.
+    /// Ask the job to stop; the job table publishes `failed{cancelled}` if the
+    /// sidecar does not finish within the grace period. Returns whether the
+    /// job was known.
     pub async fn cancel(&self, job_id: &str) -> bool {
-        if !self.jobs.lock().contains_key(job_id) {
-            return false;
-        }
-        self.write(
-            job_id,
-            "research.cancel",
-            proto::research_cancel_params(job_id),
-        );
-        let jobs = self.jobs.clone();
-        let id = job_id.to_string();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(CANCEL_GRACE).await;
-            if let Some(job) = jobs.lock().remove(&id) {
-                if let Some(child) = job.child {
-                    let _ = child.kill();
-                }
-            }
-        });
-        true
+        self.jobs.cancel(job_id)
     }
 
     /// Kill every running job (app exit).
     pub fn shutdown(&self) {
-        let jobs: Vec<Job> = self.jobs.lock().drain().map(|(_, job)| job).collect();
-        for job in jobs {
-            if let Some(child) = job.child {
-                let _ = child.kill();
-            }
-        }
+        self.jobs.shutdown();
+    }
+}
+
+/// Whether the installed build can run `backend`. Both builds run Gemini
+/// (pure JS); Claude needs the CLI, which only the full build (or a dev
+/// `BLUEY_CLAUDE_CLI`) has — an unknown build is not trusted with it.
+/// Whether `backend` depends on what the installed sidecar build supports
+/// (`agent.info`); Gemini runs on every build.
+fn needs_sidecar_info(backend: ResearchBackend) -> bool {
+    matches!(backend, ResearchBackend::Claude)
+}
+
+fn backend_supported(info: Option<&AgentInfo>, backend: ResearchBackend) -> bool {
+    match backend {
+        ResearchBackend::Gemini => true,
+        ResearchBackend::Claude => info.is_some_and(|info| info.backends.contains(&backend)),
     }
 }
 
@@ -527,5 +390,29 @@ mod env_boundary_tests {
                 "{name} would forward account material to the sidecar"
             );
         }
+    }
+
+    #[test]
+    fn claude_needs_a_build_that_reports_it() {
+        let lite = AgentInfo {
+            variant: "lite".into(),
+            backends: vec![ResearchBackend::Gemini],
+        };
+        let full = AgentInfo {
+            variant: "full".into(),
+            backends: vec![ResearchBackend::Gemini, ResearchBackend::Claude],
+        };
+        assert!(!backend_supported(Some(&lite), ResearchBackend::Claude));
+        assert!(backend_supported(Some(&full), ResearchBackend::Claude));
+        assert!(!backend_supported(None, ResearchBackend::Claude));
+        assert!(backend_supported(Some(&lite), ResearchBackend::Gemini));
+        assert!(backend_supported(None, ResearchBackend::Gemini));
+    }
+
+    #[test]
+    fn only_claude_spawns_the_sidecar_to_check_availability() {
+        // `available()` sits on the ask path; Gemini must not pay a sidecar spawn.
+        assert!(!needs_sidecar_info(ResearchBackend::Gemini));
+        assert!(needs_sidecar_info(ResearchBackend::Claude));
     }
 }

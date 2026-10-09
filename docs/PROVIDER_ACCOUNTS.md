@@ -55,9 +55,14 @@ the plan — together they keep the two right-hand columns true after every offi
 4. **Requests** — the adapter resolves a `CredentialSource::OAuth` per request (refresh under a
    single-flight lock 60 s before expiry) and applies the provider's `RequestShaper` last, so the
    request matches the official client's captured shape.
-5. **Fallback** — `NeedsReauth`, `Unavailable` or `RateLimited{until}` routes the role to the
-   API-key provider (then the router's chain) and the HUD shows *Reconnect* / *Use API key
-   instead*; a rate-limited account is skipped until its window resets.
+5. **Fallback** — `NeedsReauth`, `Unavailable` or `RateLimited{until}` makes the account keyless
+   for the router: the role's chain runs first, and when it is exhausted the same role runs on
+   the first usable API-key provider (the reserved `gemini` first) with that kind's preset model
+   (`→ fallback <provider> (<account> unavailable)` in the selection reason, shown in the HUD).
+   A failed request's error carries `details.fallbackProviderId` only when such a provider
+   exists, so the copy says *Bluey uses your API key meanwhile* only then; with none the router
+   returns `config.provider_unusable` (`cause: account_<state>`). A rate-limited account is
+   skipped until its window resets.
 
 ## Verified wire facts
 
@@ -381,6 +386,23 @@ An alternative to a fresh browser flow on the owner's own Mac: Bluey reads the o
 local credential store, copies the tokens into its own Keychain entry and continues exactly like
 *Connect*. It never writes to the other client's store.
 
+Semantics (ADR 0011):
+
+* The other client's Keychain item is read **only when the user clicks Import** — never at boot or
+  during requests. macOS may ask once; if the user denies it (`-25293` / `-128`) the error is
+  `account.import_denied` — "macOS blocked Bluey from reading <App>'s sign-in — click Import again
+  and choose Allow" — not "not signed in".
+* The account remembers how it was connected (`accounts:origin:<id>`: `import` or `browser`,
+  recorded before the tokens are kept; a connection whose origin cannot be recorded fails). An
+  account without a record (connected by an older build) is treated as an import. ChatGPT and
+  Claude rotate refresh tokens, so Bluey
+  **never refreshes an imported ChatGPT or Claude session**: the copy would sign the original
+  client out (or be signed out by it). When the imported access token expires, the account moves
+  to *needs sign-in* (`account.needs_reauth`, details `imported: true`): sign in in the browser
+  (Bluey's own session) or import again.
+* Google (Antigravity) refresh tokens do not rotate, so an imported Google session keeps
+  refreshing like a Bluey-owned one.
+
 | Client | Location on macOS | Format | Verified |
 |---|---|---|---|
 | Codex CLI | `~/.codex/auth.json` (default store; `$CODEX_HOME` overrides); or Keychain service `Codex Auth`, account `cli\|<sha256(codex_home)[:16]>` when `cli_auth_credentials_store = "keyring"\|"auto"` | `{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token","access_token","refresh_token","account_id"},"last_refresh"}`; treat `last_refresh` older than 8 days as refresh-first | 2026-09-11 (`openai/codex` @ `ab95cd4`, `login/src/auth/storage.rs`) |
@@ -413,7 +435,7 @@ local credential store, copies the tokens into its own Keychain entry and contin
 |---|---|---|
 | 1 | Claude Code capture (CLI version, auth transport, identity text, billing header, `metadata.user_id`, betas, Stainless headers, `/v1/models` with OAuth, profile endpoint, loopback port rules) | built in PR 3b from the Claude table: `cch` = the simple SHA-256 reading, Bluey's prompt as a `<system-reminder>` in the first user turn (no `mid-conversation-system`), curated catalog fallback. Still open until the §4b.1 capture + probe of the owner's CLI (2.1.268): the `cch` algorithm (two references disagree), the Stainless versions bundled in 2.1.268, six-vs-five scopes, whether the token response carries `account`/`organization` (Bluey refetches the profile), `/v1/models` with OAuth, and the redirect-URI rejection in claude-code #93216 (open 2026-09-09) — a possible day-one login blocker the pasted-code flow works around. |
 | 2 | OpenAI Codex (client id, authorize URL/scopes, port 1455, device-code contract, ID-token claims, headers, `instructions` validation, `client_version`, 429 headers, image limits) | built in PR 3a from the ChatGPT table. Still open until the first real sign-in + capture + probe: whether 4-scope tokens also work (Bluey sends six), whether the token response carries `expires_in` (Bluey falls back to the JWT `exp`), the `instructions` replay (template vs `""`), the 200-response usage headers the probe reads, and image byte / pixel limits |
-\1built in PR 3c from the Google AI table with CLIProxyAPI's answers where the references disagree: `antigravity/hub/<version> darwin/<arch>` from the Hub manifest, the daily non-sandbox host, the thin header set, no identity text by default (the probe A/Bs it). Still open until the §4c.1 capture of the real app: the UA family and header set, the host, the Pro / Ultra tier ids, whether `maxOutputTokens` is accepted for Gemini lines (Bluey keeps it), quota response headers, `-preview` ids, the exact schema of the Keychain item |
+| 3 | Antigravity (client id/secret, scopes, redirect rules, `loadCodeAssist`/`onboardUser`, wrapper/envelope, header fingerprint, system instruction, model ids per pool, sandbox hosts) | built in PR 3c from the Google AI table with CLIProxyAPI's answers where the references disagree: `antigravity/hub/<version> darwin/<arch>` from the Hub manifest, the daily non-sandbox host, the thin header set, no identity text by default (the probe A/Bs it). Still open until the §4c.1 capture of the real app: the UA family and header set, the host, the Pro / Ultra tier ids, whether `maxOutputTokens` is accepted for Gemini lines (Bluey keeps it), quota response headers, `-preview` ids, the exact schema of the Keychain item |
 | 4 | Import paths and formats | see *Importing an existing sign-in* |
 | 5–7 | Gemini image hints, WebP, structured-output cost | `docs/LATENCY.md` |
 | 8 | Rate-limit UX copy | decided with the Accounts UI in PR 2; the drift table above fixes the semantics |

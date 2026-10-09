@@ -2,7 +2,7 @@ import { CheckCircle2, Sparkles } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/Button";
-import { Dialog } from "@/components/ui/Dialog";
+import { ConfirmDialog, Dialog } from "@/components/ui/Dialog";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -23,6 +23,7 @@ import {
   providerNeedsBaseUrl,
   type ProviderDraftValues,
 } from "./provider-form";
+import { adoptFirstKey } from "./first-key-presets";
 import { SecretKeyField } from "./SecretKeyField";
 
 export function ProviderDialog({
@@ -128,10 +129,22 @@ export interface ProviderCardProps {
   isDefault?: boolean;
   onEdit: () => void;
   onToggleEnabled: (enabled: boolean) => void;
+  /** Labels of the roles assigned to this provider ("Default", "Vision"…). */
+  usedBy?: string[];
+  /** Drop the provider (its key goes with it) and unassign its roles; absent → not removable. */
+  onRemove?: () => void | Promise<void>;
 }
 
-export function ProviderCard({ provider, isDefault = false, onEdit, onToggleEnabled }: ProviderCardProps) {
+export function ProviderCard({
+  provider,
+  isDefault = false,
+  onEdit,
+  onToggleEnabled,
+  usedBy = [],
+  onRemove,
+}: ProviderCardProps) {
   const applyRemote = useSettingsStore((s) => s.applyRemote);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [testing, setTesting] = useState(false);
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<ConnectionTestResult | null>(null);
@@ -176,15 +189,28 @@ export function ProviderCard({ provider, isDefault = false, onEdit, onToggleEnab
                 Default
               </span>
             ) : null}
+            {!provider.hasApiKey ? (
+              <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger">
+                No key
+              </span>
+            ) : null}
           </div>
           <div className="mt-0.5 truncate text-[12.5px] text-fg-muted">
             {provider.baseUrl ||
               (provider.kind === "google_gemini" ? "generativelanguage.googleapis.com" : "—")}
           </div>
+          {usedBy.length > 0 ? (
+            <div className="mt-0.5 text-[12px] text-fg-subtle">Used by {usedBy.join(", ")}</div>
+          ) : null}
         </div>
         <Button variant="ghost" size="sm" onClick={onEdit}>
           Edit
         </Button>
+        {onRemove ? (
+          <Button variant="danger" size="sm" onClick={() => setConfirmRemove(true)}>
+            Remove
+          </Button>
+        ) : null}
         <Switch
           aria-label={`Enable ${provider.name}`}
           checked={provider.enabled}
@@ -198,7 +224,10 @@ export function ProviderCard({ provider, isDefault = false, onEdit, onToggleEnab
           aria-label={`${provider.name} API key`}
           placeholder={provider.kind === "google_gemini" ? "AIza… (Google AI Studio key)" : "API key"}
           help={providerKeyHelp(provider.kind)}
-          onSaved={() => setResult(null)} // a stale "Test connection" verdict no longer applies
+          onSaved={() => {
+            setResult(null); // a stale "Test connection" verdict no longer applies
+            if (!provider.hasApiKey) void adoptFirstKey(provider);
+          }}
         />
         <div className="flex items-center gap-2">
           {preset ? (
@@ -228,6 +257,26 @@ export function ProviderCard({ provider, isDefault = false, onEdit, onToggleEnab
           <ErrorBanner error={result.error} onRetry={() => void test()} compact className="mt-3" />
         ) : null
       ) : null}
+      {onRemove ? (
+        <ConfirmDialog
+          open={confirmRemove}
+          onOpenChange={setConfirmRemove}
+          title={`Remove ${provider.name}?`}
+          description={removeDescription(usedBy)}
+          confirmLabel="Remove provider"
+          onConfirm={async () => {
+            await onRemove();
+            setConfirmRemove(false);
+          }}
+        />
+      ) : null}
     </div>
   );
+}
+
+/** What removing a provider takes with it: its Keychain key, and the roles it serves. */
+function removeDescription(usedBy: string[]): string {
+  const key = "Its API key is deleted from the macOS Keychain.";
+  if (usedBy.length === 0) return key;
+  return `${key} These roles lose their model and need another provider: ${usedBy.join(", ")}.`;
 }

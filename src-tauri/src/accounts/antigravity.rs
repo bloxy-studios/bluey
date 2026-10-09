@@ -448,9 +448,7 @@ fn loopback_flow(
 
 /// The standalone app's / `agy`'s Keychain item (generic password `gemini` / `antigravity`).
 fn read_keychain_tokens() -> BlueyResult<ag::ImportedTokens> {
-    let raw = keyring::Entry::new(ag::KEYCHAIN_SERVICE, ag::KEYCHAIN_ACCOUNT)
-        .ok()
-        .and_then(|entry| entry.get_password().ok())
+    let raw = super::read_foreign_secret(ag::KEYCHAIN_SERVICE, ag::KEYCHAIN_ACCOUNT, "Antigravity")?
         .ok_or_else(|| {
             import_not_found(
                 "Antigravity is not signed in on this Mac (no Keychain item `gemini` / `antigravity`) — open Antigravity or run `agy` and sign in first, or connect in the browser",

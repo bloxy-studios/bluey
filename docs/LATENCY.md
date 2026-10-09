@@ -3,8 +3,24 @@
 Companion to ADR 0010. This document is the method and the numbers; the ADR is the decision.
 The trace and the bench described here are built (PR 4a): every request carries a `LatencyTrace`
 (`ai_requests.trace`, `ai.trace` in developer mode, p50 / p95 per stage in Settings → Advanced →
-*Fast path*), and `bun run bench:fastpath` prints the percentile table. The fast-path *changes*
-(ADR 0010 §3–9) follow in PR 4b / 5 and paste their before / after tables here.
+*Fast path*), and `bun run bench:fastpath` prints the percentile table. Of the fast-path
+*changes* (ADR 0010 §3–9) only the OCR soft deadline has shipped, plus per-frame streaming in the
+HUD; the rest is planned. *Status* below is the source of truth, and the sections that describe
+planned work say so.
+
+## Status
+
+| ADR 0010 item | State | What the code does today |
+|---|---|---|
+| §2 trace and bench | built | `LatencyTrace` per request; `bun run bench:fastpath` |
+| §3 OCR off the critical path | partly built | `context_build_snapshot` waits at most 150 ms for OCR after the frame when the image travels with the snapshot (`OCR_SOFT_DEADLINE`, `src-tauri/src/context/mod.rs`); a slower pass keeps running into the per-hash OCR cache (`CaptureManager::ocr`) and the snapshot carries an `ocr_pending` warning, so the request uses the image. `context.enriched` and the *Screen input* setting are planned |
+| §3 accessibility raced (80 ms) | planned | the snapshot awaits AX (1 s helper timeout) |
+| §4 image pipeline | planned | the display by default, 1600 px long edge (`max_image_dimension`), JPEG q 0.8, no `mediaResolution` hint |
+| §5 retrieval in parallel | planned | retrieval starts after the snapshot returns (`src/ai/engine.ts`) |
+| §6 connection warm-up | planned | no `AiManager::warm`; no keep-alive tuning on the shared client |
+| §7 stable prompt prefix | planned | the checklist below has not been applied to `SECTION_ORDER` |
+| §8 warm frame and prefetch | planned | every ⌘↵ captures a fresh frame |
+| streaming render | built | streamed drafts are coalesced to one store write per animation frame (`src/stores/chatStore.ts`) |
 
 ## What "fast" means here
 
@@ -28,7 +44,9 @@ time to first token). The local half has a hard budget; the network half is repo
 
 Conditions: warm connection (a warm-up request within the last 45 s), `gemini-3.5-flash-lite`,
 `thinkingLevel: minimal`, one 1440 px screenshot at JPEG q 0.65, ≤ 2.5 K prompt tokens, no
-research. Anything else is a different benchmark and says so in its table.
+research. Anything else is a different benchmark and says so in its table. These are the
+conditions the budget is written for; the warm-up and the 1440 px frame are still planned (*Status*),
+so today's tables say which conditions they could not meet.
 
 ## The trace
 
@@ -108,10 +126,12 @@ image payload, no retrieval). Rules:
 table comes from the owner's Mac — run `bun run bench:fastpath --iterations 30 --provider mock`
 (local stages) and, with a Gemini key, `--provider gemini`, then paste both tables here under this
 heading with the commit and the machine. Until then the structural facts below describe the
-baseline the bench will measure (file:line at `49485b5`):
+baseline the bench will measure (recorded at `49485b5`; the first bullet updated for the OCR soft
+deadline):
 
-* the snapshot awaits OCR and AX (`src-tauri/src/context/mod.rs:77-78`; helper timeouts capture
-  3 s / OCR 5 s / AX 1 s, `sidecar/mod.rs:400-410`; Vision default level `accurate`);
+* the snapshot awaits AX and waits for OCR at most 150 ms after the frame
+  (`src-tauri/src/context/mod.rs`; helper timeouts capture 3 s / OCR 5 s / AX 1 s,
+  `sidecar/mod.rs`; Vision default level `fast`);
 * retrieval runs after the snapshot and embeds the query over the network first
   (`src/ai/engine.ts:268-280`, `src-tauri/src/documents/mod.rs:137-161`);
 * frames are 1600 px, JPEG q 0.8, no `mediaResolution` hint (`capture/mod.rs:125`,
@@ -120,6 +140,8 @@ baseline the bench will measure (file:line at `49485b5`):
 * `ttft_ms` is the only end-to-end-ish metric today (`ai/mod.rs:363-388`).
 
 ## Image pipeline
+
+*Planned (ADR 0010 §4; see* Status *for what capture does today).*
 
 * Active window when one is focused, else the active display; the HUD is excluded.
 * 1440 px long edge (device pixels after Retina scaling), JPEG q 0.65, 4:2:0, alpha stripped, no
@@ -146,7 +168,7 @@ UNVERIFIED list: `docs/reference/verification-2026-09-11/image-and-caching.md`; 
 | Gemini | `thinkingLevel` | `gemini-3.8-flash`: `low` · `medium` (default) · `high` — **`minimal` returns an error**; `gemini-3.5-flash-lite`: `minimal` (default) · `low` · `medium` · `high`. Thinking cannot be switched off; `maxOutputTokens` counts thought tokens | the fast role stays on Flash-Lite with `minimal`; never send `minimal` to 3.8-flash; lower the level rather than truncating |
 | Gemini | implicit caching | on by default; **minimum 4,096 input tokens** for 3.8 / 3.7 / 3.6 / 3.5 Flash and 3.1 Pro (2,048 for 2.5); Flash-Lite threshold unpublished (VERIFY empirically); hits in `usageMetadata.cachedContentTokenCount` | a ≤ 2.5 K fast-path prompt is **never implicitly cached** — the fast path wins by being small; `Balanced` / `Deep` prompts benefit |
 | Gemini | explicit caching | `generateContent` only; `POST /v1beta/cachedContents` (`model`, `contents`, `systemInstruction`, `ttl`, default 1 h) → `cachedContent` on the request; 3.8-flash $0.075 / 1 M cached tokens + $0.50 / 1 M tokens / hour storage; flash-lite $0.03 + $1.00 / hour, not on the free tier | viable for mode + documents once that prefix is ≥ 4,096 tokens; the minimum for explicit caches is "varies by model" (VERIFY) |
-| Gemini | warm-up call | `GET https://generativelanguage.googleapis.com/v1beta/models/{model}` (empty body); `x-goog-api-key` header is the documented form everywhere except this endpoint's sample (VERIFY once) | `AiManager::warm` uses `models.get` on the fast model |
+| Gemini | warm-up call | `GET https://generativelanguage.googleapis.com/v1beta/models/{model}` (empty body); `x-goog-api-key` header is the documented form everywhere except this endpoint's sample (VERIFY once) | the planned `AiManager::warm` would use `models.get` on the fast model |
 | OpenAI (Codex) | `input_image` | `{type: "input_image", image_url: "data:…;base64,…", detail: high \| low \| auto \| original}`; default `auto`; ≤ 30,000 patches per image after resize or **rejected**; 512 MB payload | |
 | OpenAI (Codex) | image tokens on current models | patch-based: `ceil(w/32) × ceil(h/32)` patches, shrunk to the detail budget, **× 1.2** for `gpt-6-astra`, `gpt-5.6-*`, `gpt-5.5`, `gpt-5.4`; on `gpt-6-astra` / `gpt-5.6-*` **`auto` = `original`** (full resolution: a 2560×1600 Retina frame ≈ 4,800 tokens, derived); `high` ≤ 2,500 patches (≈ ≤ 3,000 tokens; a 1440×900 frame ≈ 1,566, derived); `low` fits 512×512 (≤ 308 tokens, derived). The 85-token `low` belongs to legacy gpt-4o / 4.1 | send `detail: high` explicitly, never the default; `low` is both illegible at 1440 px and something the Codex CLI itself refuses to send |
 | OpenAI (Codex) | prompt caching | on by default; minimum **1,024** tokens (GPT-5.6+); hits `usage.input_tokens_details.cached_tokens`; `prompt_cache_key` is for accounting (the CLI sets it to the session id); TTL 30 min default; images in the prefix are cacheable | static prefix first, screenshot last |
@@ -156,22 +178,30 @@ UNVERIFIED list: `docs/reference/verification-2026-09-11/image-and-caching.md`; 
 
 ## OCR policy
 
-OCR is kept and taken off the critical path (ADR 0010 §3): `context_build_snapshot` returns when
-the frame is encoded; OCR (Vision `fast`) and a late accessibility result arrive as
-`context.enriched` and are attached to the saved response, the FTS index and the next turn. The
-*Screen input* setting (Image · Image + text · Text only) decides what the request carries;
-*Text only* awaits OCR (5 s helper timeout) by choice. For follow-up turns on an unchanged screen
-hash, the engine sends the OCR text instead of the image.
+Built (ADR 0010 §3, first half): when the image travels with the snapshot,
+`context_build_snapshot` waits at most 150 ms for OCR (Vision `fast` by default) once the frame is
+captured. A pass that misses the deadline keeps running and lands in the per-hash OCR cache, so
+the next ask on an unchanged screen reuses it; this snapshot carries an `ocr_pending` warning and
+the request reads the image instead (`docs/CAPTURE_ARCHITECTURE.md` › OCR).
+
+Planned: a late OCR or accessibility result arriving as `context.enriched` and being attached to
+the saved response, the FTS index and the next turn; a *Screen input* setting (Image · Image + text
+· Text only, where *Text only* awaits OCR by choice); and sending the OCR text instead of the image
+for follow-up turns on an unchanged screen hash.
 
 ## Connection warm-up
 
-`AiManager::warm(provider_id)` sends the cheapest authenticated request for the provider (a
+*Planned (ADR 0010 §6); nothing warms connections today.*
+
+`AiManager::warm(provider_id)` will send the cheapest authenticated request for the provider (a
 model `GET`) at boot, when the HUD becomes visible, when listening starts, and every 45 s while
 the HUD is visible or listening. Never while idle in the tray. `t_response_headers −
 t_request_sent` in the trace shows the connect cost disappearing; the log line
-`warmed <provider>` shows the cadence.
+`warmed <provider>` will show the cadence.
 
 ## Prompt prefix stability
+
+*Planned (ADR 0010 §7): the target order and the audit checklist, not yet applied.*
 
 Order: identity + safety → mode instructions + schema → documents / personal instructions in a
 deterministic order → session memory → transcript → screen → task line. No timestamps, request
@@ -190,5 +220,5 @@ them, and the `cache_control` breakpoint moves onto that message.
 |---|---|---|
 | 5 | Gemini `mediaResolution` enum values and token counts for `gemini-3.8-flash` / `gemini-3.5-flash-lite`; implicit-caching thresholds on 3.x Flash | resolved at family level (enum, placement, 280/560/1120/2240; implicit caching from 4,096 tokens); per-model token counts and the Flash-Lite caching threshold need one `countTokens` / cache-hit sweep on a Mac with a key |
 | 6 | WebP encoding via ImageIO on macOS 14 | unresolved by documentation; owner runs the one-line check in the table above — JPEG until it prints `true` |
-| 7 | Structured output cost on the fast path (`responseJsonSchema` vs markdown TTFT, seven mode fixtures × 5 runs) | open — run with the bench in PR 4b/5, record the decision here |
+| 7 | Structured output cost on the fast path (`responseJsonSchema` vs markdown TTFT, seven mode fixtures × 5 runs) | open — run with the bench when the fast-path changes land, record the decision here |
 | 8 | Rate-limit UX copy ("Claude 5h window resets at 14:32 — using Gemini meanwhile") | open — decided in PR 2 with the Accounts UI |

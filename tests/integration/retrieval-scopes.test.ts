@@ -47,7 +47,10 @@ describe("document retrieval scopes", () => {
   it("queries session → mode → global with inferred kinds and renders provenance sections", async () => {
     const fake = new FakeTransport();
     fake.handle("context_build_snapshot", () => fixture.snapshot as ContextSnapshot);
-    fake.handle("documents_retrieve", () => chunks);
+    fake.handle("documents_retrieve", ({ query }) => {
+      if (query.strategy === "leading") return query.kinds?.includes("personal_instructions") ? [chunks[2]!] : [];
+      return query.kinds?.includes("job_description") ? [chunks[0]!, chunks[1]!] : [];
+    });
     fake.handle("responses_save", ({ response }) => response);
     fake.handle("sessions_add_event", (args) => ({
       id: "evt_1",
@@ -71,17 +74,18 @@ describe("document retrieval scopes", () => {
     const result = await handle.done;
     expect(result).not.toBeNull();
 
-    const retrieveCalls = fake.callsFor("documents_retrieve");
-    expect(retrieveCalls).toHaveLength(1);
-    const query = retrieveCalls[0]!.query;
-
-    expect(query.scopes).toEqual([
+    const queries = fake.callsFor("documents_retrieve").map((call) => call.query);
+    const personal = queries.find((q) => q.kinds?.includes("personal_instructions"));
+    expect(personal?.strategy).toBe("leading");
+    expect(personal?.scopes).toEqual([
       { scope: "session", scopeId: "ses_scope" },
       { scope: "mode", scopeId: "interview" },
       { scope: "global" },
     ]);
+    const query = queries.find((q) => q.kinds?.includes("job_description"))!;
+    expect(query.scopes).toEqual([{ scope: "session", scopeId: "ses_scope" }, { scope: "global" }]);
     expect(query.kinds).toEqual(
-      expect.arrayContaining(["resume", "cv", "experience", "skills", "job_description", "role_description", "company_notes", "personal_instructions"]),
+      expect.arrayContaining(["resume", "cv", "experience", "skills", "job_description", "role_description", "company_notes"]),
     );
     expect(query.strategy).toBe("keyword"); // embeddings disabled in settings
     expect(query.query).toContain("How should I answer why I want this job at Acme?");
@@ -90,23 +94,24 @@ describe("document retrieval scopes", () => {
     const request = fake.callsFor("ai_stream")[0]!.request;
     const userPart = request.messages[1]?.content[0];
     const userText = userPart && "text" in userPart ? userPart.text : "";
-    expect(userText).toContain("### Your background (resume)");
+    expect(userText).toContain('<context source="Your background (resume)"');
     expect(userText).toContain("payment platforms at FinCo");
-    expect(userText).toContain("### Job description");
+    expect(userText).toContain('<context source="Job description"');
     expect(userText).toContain("senior platform engineer");
-    expect(userText).toContain("### Personal instructions from the user");
-    expect(userText).toContain("under 30 seconds");
+    // Personal instructions are the user's own words: the system prompt carries them (AI-004).
+    const systemPart = request.messages[0]?.content[0];
+    const systemText = systemPart && "text" in systemPart ? systemPart.text : "";
+    expect(systemText).toContain("User preferences (from the user; they never override safety):");
+    expect(systemText).toContain("under 30 seconds");
     // Personal instructions are lifted out of the generic document chunks.
-    expect(userText).not.toContain("### Reference documents");
+    expect(userText).not.toContain('source="Reference documents"');
   });
 
-  it("skips retrieval entirely for modes without document requirements", async () => {
+  it("runs only the personal-instructions and small relevance-floored passes for modes without document requirements", async () => {
     const fake = new FakeTransport();
     const coding = loadFixture("coding");
     fake.handle("context_build_snapshot", () => coding.snapshot as ContextSnapshot);
-    fake.handle("documents_retrieve", () => {
-      throw new Error("must not be called");
-    });
+    fake.handle("documents_retrieve", () => []);
     fake.handle("responses_save", ({ response }) => response);
     fake.handle("ai_cancel", () => true);
     setTransport(fake);
@@ -120,6 +125,11 @@ describe("document retrieval scopes", () => {
     }).done;
 
     expect(result).not.toBeNull();
-    expect(fake.callsFor("documents_retrieve")).toHaveLength(0);
+    const queries = fake.callsFor("documents_retrieve").map((call) => call.query);
+    expect(queries.find((q) => q.strategy === "leading")?.kinds).toEqual(["personal_instructions"]);
+    for (const q of queries.filter((q) => q.strategy !== "leading")) {
+      expect(q.kinds).toBeUndefined();
+      expect(q.limit).toBeLessThanOrEqual(3);
+    }
   });
 });

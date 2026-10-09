@@ -24,6 +24,14 @@ const LANGUAGE_OPTIONS = [
   { value: "zh", label: "Chinese" },
 ];
 
+/** Select value for "no pinned device"; it is sent as `null`. */
+const SYSTEM_DEFAULT_MICROPHONE = "";
+
+function systemDefaultLabel(devices: AudioDevice[]): string {
+  const current = devices.find((d) => d.isDefault);
+  return current ? `System default — ${current.name}` : "System default";
+}
+
 export default function AudioTab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
@@ -105,9 +113,16 @@ export default function AudioTab() {
       <SettingRow icon={Mic} title="Microphone" description="The input device used for your voice.">
         <Select
           aria-label="Microphone device"
-          value={audio.microphoneDeviceId ?? devices.find((d) => d.isDefault)?.id ?? ""}
-          onChange={(e) => void update({ audio: { microphoneDeviceId: e.target.value } })}
-          options={devices.map((d) => ({ value: d.id, label: d.isDefault ? `Default — ${d.name}` : d.name }))}
+          value={audio.microphoneDeviceId ?? SYSTEM_DEFAULT_MICROPHONE}
+          onChange={(e) => {
+            // No pinned device: the helper follows the macOS default input (UX-033).
+            const id = e.target.value === SYSTEM_DEFAULT_MICROPHONE ? null : e.target.value;
+            void update({ audio: { microphoneDeviceId: id } });
+          }}
+          options={[
+            { value: SYSTEM_DEFAULT_MICROPHONE, label: systemDefaultLabel(devices) },
+            ...devices.map((d) => ({ value: d.id, label: d.name })),
+          ]}
         />
       </SettingRow>
 

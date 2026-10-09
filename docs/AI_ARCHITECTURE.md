@@ -25,6 +25,10 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
   shapes read off the question or the screen beat task-derived shapes, which beat the shapes
   the trigger and mode imply; the detection table is in `MODE_SYSTEM.md › Answer shapes`. A
   multiple-choice or compare question about code keeps the `answer` task and schema.
+  Classification reads the whole screen (OCR plus accessibility text, selection and focused
+  value). Vision is required when OCR has under 200 characters, the question points at a
+  visual, or — on ⌘↵/assist — the OCR reads like a chart or figure (legend, axis, figure…,
+  or a run of bare axis numbers); accessibility chrome never counts as screen content.
 - **Prompt architecture** (`src/ai/prompt-builder.ts`, `src/ai/prompts/*`,
   `src/modes/prompts/*`): separate parts — system (identity + safety + the **response
   contract**) · mode (judgment) + schema fragment (fields and section titles only) · style
@@ -53,16 +57,33 @@ AskInput (UI)  ──►  Response Engine (TS)  ──►  AIRequest  ──► 
 - **Generations** (`src/ai/generations.ts`): stale-response protection (ADR 0005).
 - **Optimizer** (`src/ai/optimizer.ts`): remove repetition, filler openers and first sentences
   that restate the question or narrate the approach ("The question is asking…", "Let's break
-  this down.", "Looking at the screen, …" — only when an answer remains), respect length & tone,
+  this down.", "Looking at the screen, …" — only when an answer remains, never a sentence naming
+  an option, a number or code, and never for spoken, written, code, choice or debug answers),
+  respect length & tone,
   preserve code, caveats and citations. The length cap keeps the first paragraph and never
-  applies to the spoken, written and code shapes. Goal: the minimum text necessary to be useful.
+  applies to the spoken, written, code, design and summary shapes (the concise style line drops
+  its ~120-word ceiling for design, code and summary answers too). Goal: the minimum text necessary to be useful.
+- **Prompt evaluation** (`tests/prompt-eval/`): the real engine composes one request per row of
+  the evaluation matrix over the fake transport. `invariants.test.ts` checks one `Task:`,
+  `Shape:` and `Voice:` line, the question once, untrusted text only inside the request's
+  nonce blocks, spoken transcript order and the static-layer token budget; `golden.test.ts`
+  snapshots six composed prompts (`__golden__/`, update with `-u` only after reading the diff);
+  `live.test.ts` grades real answers against each case's rubric only with
+  `BLUEY_PROMPT_EVAL_LIVE=1` and `ANTHROPIC_API_KEY` set.
 - **Proactive preparation**: when the classifier detects a likely question with
   `requiresResponse`, the loop in `src/stores/proactive.ts` calls `engine.prepare()`. With
   *Show suggestions = Live* (default) it first opens a suggestion turn in the HUD and passes
   callbacks, so the same pipeline streams the answer into that turn as it is written, persists
   it like any shown answer, and neither caches nor announces it. With *On request* — or while
   another answer is already streaming — `prepare()` runs silently, caches the result by event
-  id (5 entries, 3-minute TTL) and emits `response.prepared`; ⌘⇧↵ shows it instantly.
+  id (5 entries, 3-minute TTL) and emits `response.prepared`; ⌘⇧↵ shows it instantly (and
+  saves it to the session). A pure `shouldSurface` gate drops back-channel, repeats, stale
+  queued questions and (outside conversational modes) anything but direct questions; a
+  counterpart's unfinished fragment is held ~900 ms and merged with the next final. Esc, Stop,
+  a manual ask, ⌘⇧↵ or New chat cancel the live stream (only Esc and Stop count as dismissing
+  it and raise the gate's bar); nothing streams into a hidden HUD (the newest question is
+  prepared when it is shown, unless it has gone stale meanwhile). Team Meeting / Lecture detections that need
+  no answer go on the session timeline instead.
 
 ### Orchestration layer (Rust, `src-tauri/src/ai`)
 
@@ -180,7 +201,13 @@ visionRequired, preferredRole)` over the user's role assignments
   (`bun run fingerprints:capture | import-har | diff | bless`) keeps them true against the real
   clients. Facts, consent copy and the runbook: `docs/PROVIDER_ACCOUNTS.md`.
 - **Cancellation**: each request has a `CancellationToken`; `ai_cancel(requestId)` aborts the
-  HTTP stream; newer generations cancel older ones.
+  HTTP stream; a newer generation cancels an older one only within the same session and
+  `scope` (ask / live / prepare / classify), so a live suggestion never cancels the user's own
+  answer. `background` requests (prepare, live suggestions) never move the app state (no
+  Thinking, no Error); `ai.*` events still flow.
+- **Cloud AI switch**: with Privacy → Cloud AI off, `AiManager` refuses every model call
+  (`ai_stream`, `ai_embed`, `ai_transcribe_file`, so document embedding too) with
+  `privacy.cloud_ai_disabled`.
 - **Metrics**: time to first token, total latency, token usage → `ai_requests` table +
   `dev.metrics` event.
 
@@ -267,9 +294,12 @@ the latency-sensitive live paths, which stay on the direct provider adapters abo
 
 ### Offline behaviour
 
-If no provider is reachable the HUD shows "Bluey is offline"; mode switching, settings, session
-history, transcript display, screen capture and local OCR keep working. Requests fail fast with
-`BlueyError{kind: network}` and a Retry action.
+There is no offline mode or banner. Each request that cannot reach its provider fails on its own
+with `BlueyError{kind: network}` (`network.timeout`, `network.http_5xx`, …) and a *Retry* action,
+shown on that turn in the HUD with the copy from `src/lib/errors/present.ts` ("Network problem").
+Mode switching, settings, session history, transcript display, screen capture and local OCR
+don't need the network and keep working; live transcription handles outages on its own
+(`audio.error{stt_degraded}` while the provider reconnects — see `AUDIO_ARCHITECTURE.md`).
 
 ### Performance targets (targets, not guarantees)
 

@@ -7,10 +7,6 @@ use bluey_core::{now_iso, BlueyError, BlueyResult};
 use bluey_storage::{ModeRepository, UsageStats};
 use tauri::State;
 
-use crate::secrets::{
-    provider_key, AGENT_ANTHROPIC_KEY, CLERK_OAUTH_TOKENS_KEY, CLERK_TOKEN_KEY, EXA_KEY,
-    FIRECRAWL_KEY,
-};
 use crate::state::AppCore;
 
 #[tauri::command]
@@ -25,6 +21,7 @@ pub async fn data_usage_stats(core: State<'_, AppCore>) -> BlueyResult<UsageStat
 pub async fn data_delete_screenshots(core: State<'_, AppCore>) -> BlueyResult<u64> {
     let (deleted, paths) = core.storage.run(bluey_storage::delete_screenshots).await?;
     crate::platform::remove_files(&paths);
+    clear_screenshot_dirs(&core);
     vacuum(&core).await;
     Ok(deleted)
 }
@@ -36,14 +33,10 @@ pub async fn data_clear_transcripts(core: State<'_, AppCore>) -> BlueyResult<u64
     Ok(removed)
 }
 
-#[tauri::command]
-pub async fn data_clear_ai_cache(core: State<'_, AppCore>) -> BlueyResult<u64> {
-    core.storage.run(bluey_storage::clear_ai_cache).await
-}
-
 /// Wipe everything: sessions and their files, documents, responses, settings,
-/// shortcuts, provider configs, Keychain entries owned by Bluey and the Clerk
-/// session. Built-in modes are re-seeded so the app keeps working.
+/// shortcuts, provider configs, Keychain entries owned by Bluey, the Clerk
+/// session and the log files. Built-in modes are re-seeded so the app keeps
+/// working.
 ///
 /// Every step runs even when an earlier one fails — one stuck Keychain entry
 /// must not leave sessions, documents or settings in place — and the failures
@@ -59,22 +52,16 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
 
     failures.note("sessions", core.sessions.delete_all().await.map(|_| ()));
 
-    // Keychain entries first (while the provider list is still known).
-    let providers = core.settings.get().ai.providers;
-    for provider in &providers {
-        failures.note(
-            &format!("provider key {}", provider.id),
-            core.secrets.delete(&provider_key(&provider.id)).await,
-        );
-    }
-    for key in [
-        EXA_KEY,
-        FIRECRAWL_KEY,
-        AGENT_ANTHROPIC_KEY,
-        CLERK_TOKEN_KEY,
-        CLERK_OAUTH_TOKENS_KEY,
-    ] {
-        failures.note(key, core.secrets.delete(key).await);
+    // Every Keychain item of Bluey's service, found by an attribute-only
+    // enumeration: keys of providers removed long ago go too, and nothing is
+    // decrypted (ADR 0011).
+    match core.secrets.delete_all().await {
+        Ok(failed) => {
+            for (account, error) in failed {
+                failures.push(&format!("keychain item {account}"), error);
+            }
+        }
+        Err(error) => failures.push("keychain", error),
     }
     // Subscription accounts: tokens, catalogs and statuses (ADR 0009).
     for (step, error) in core.accounts.reset_all().await {
@@ -85,6 +72,8 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
         Ok(paths) => crate::platform::remove_files(&paths),
         Err(error) => failures.push("database", error),
     }
+    clear_screenshot_dirs(&core);
+    crate::storage::Storage::remove_db_backups(&core.paths.db_path);
 
     // Re-seed built-in modes and restore defaults in memory + on disk.
     failures.note(
@@ -114,7 +103,16 @@ pub async fn data_reset_all(core: State<'_, AppCore>) -> BlueyResult<()> {
     }
     failures.note("sign-in", core.auth.clear_session().await.map(|_| ()));
     vacuum(&core).await;
+    // Last, so the logs this reset wrote go too (DEBT-009).
+    crate::app::delete_log_files();
     failures.into_result()
+}
+
+/// Temp frames the helper wrote and any screenshot copy no row points at any
+/// more: deleting screenshots means every image file goes (DATA-001).
+fn clear_screenshot_dirs(core: &AppCore) {
+    crate::storage::Storage::clear_dir(&core.paths.frames_dir);
+    crate::storage::Storage::clear_dir(&core.paths.screenshots_dir);
 }
 
 /// Failures collected while resetting, reported together so the user learns
@@ -171,7 +169,13 @@ pub async fn data_export_session(
 }
 
 async fn vacuum(core: &AppCore) {
-    if let Err(e) = core.storage.run(|db| db.vacuum()).await {
+    // The checkpoint empties the WAL, which VACUUM just filled with the
+    // rewritten database (DATA-010).
+    if let Err(e) = core
+        .storage
+        .run(|db| db.vacuum().and_then(|()| db.checkpoint()))
+        .await
+    {
         tracing::warn!(error = %e, "vacuum after deletion failed");
     }
 }
