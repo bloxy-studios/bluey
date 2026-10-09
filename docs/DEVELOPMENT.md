@@ -98,6 +98,13 @@ planned by `bluey_core::presets::plan_env_import`, ADR 0007):
   not help: macOS pins such items to the binary's hash, exactly like ad-hoc. The first signing
   may ask to let `codesign` use the certificate's private key (*Always Allow*).
 - `security find-identity -v -p codesigning` lists usable identities.
+- The database is not split this way. A debug build opens the installed app's
+  `~/Library/Application Support/com.codewithabdul.bluey/bluey.db` and applies any new
+  migrations to it (after writing `bluey.db.bak-<version>`), so an older installed build may then
+  run on a newer schema. To keep the installed app's data separate, set `BLUEY_DATA_DIR` to a
+  scratch directory, or to a copy made with `sqlite3 <db> ".backup '<dir>/bluey.db'"`. Logs
+  (`~/Library/Logs/Bluey`) and temp frames (`~/Library/Caches/com.codewithabdul.bluey/frames`)
+  are shared either way, and the dev helper sweeps stale frames there at startup.
 
 ## Subscription accounts (ADR 0009)
 
