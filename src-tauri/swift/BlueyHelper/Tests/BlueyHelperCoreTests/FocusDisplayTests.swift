@@ -48,4 +48,14 @@ final class FocusDisplayTests: XCTestCase {
         XCTAssertNil(
             FocusDisplay.resolve(displays: [], focusedWindow: nil, mouse: nil, mainDisplayID: 1))
     }
+
+    /// Only captures follow focus: system audio and the screen observer keep
+    /// the main display, so unplugging the focused display cannot stop them.
+    func testARequestWithoutADisplayIdMeansTheFallbackDisplay() {
+        XCTAssertEqual(ShareableContent.displayID(nil, among: [1, 2], fallback: 1), 1)
+        XCTAssertEqual(ShareableContent.displayID(nil, among: [1, 2], fallback: 2), 2)
+        XCTAssertEqual(ShareableContent.displayID(nil, among: [2], fallback: 1), 2)
+        XCTAssertEqual(ShareableContent.displayID("2", among: [1, 2], fallback: 1), 2)
+        XCTAssertNil(ShareableContent.displayID("9", among: [1, 2], fallback: 1))
+    }
 }

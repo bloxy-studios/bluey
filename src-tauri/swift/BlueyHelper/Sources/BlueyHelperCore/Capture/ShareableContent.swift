@@ -96,20 +96,41 @@ public enum ShareableContent {
         content.windows.filter { isOwnWindow($0) }
     }
 
-    /// Resolve a display by its stringified CGDirectDisplayID; nil → the display
-    /// with focus (see FocusDisplay), not simply the menu-bar display.
+    /// Resolve a display by its stringified CGDirectDisplayID; nil → the main
+    /// (menu-bar) display. System audio and the screen observer use this: they
+    /// must not follow focus to a display that may be unplugged mid-session.
     public static func display(
         withId id: String?, in content: SCShareableContent
     ) -> SCDisplay? {
-        if let id, let numeric = UInt32(id) {
-            return content.displays.first { $0.displayID == numeric }
-        }
-        let focused = FocusDisplay.resolve(
-            displays: content.displays.map { (id: $0.displayID, frame: $0.frame) },
-            focusedWindow: FocusDisplay.focusedWindowBounds(),
-            mouse: FocusDisplay.mouseLocation(),
-            mainDisplayID: CGMainDisplayID())
-        return content.displays.first { $0.displayID == focused } ?? content.displays.first
+        let ids = content.displays.map(\.displayID)
+        let chosen = displayID(id, among: ids, fallback: CGMainDisplayID())
+        return content.displays.first { $0.displayID == chosen }
+    }
+
+    /// Like `display(withId:in:)`, but nil → the display with focus (see
+    /// FocusDisplay): what a capture without a displayId means (CTX-013).
+    public static func focusedDisplay(
+        withId id: String?, in content: SCShareableContent
+    ) -> SCDisplay? {
+        let chosen = displayID(
+            id, among: content.displays.map(\.displayID),
+            fallback: FocusDisplay.resolve(
+                displays: content.displays.map { (id: $0.displayID, frame: $0.frame) },
+                focusedWindow: FocusDisplay.focusedWindowBounds(),
+                mouse: FocusDisplay.mouseLocation(),
+                mainDisplayID: CGMainDisplayID()))
+        return content.displays.first { $0.displayID == chosen }
+    }
+
+    /// The display a request names: its numeric `id` (nil when unknown), else
+    /// `fallback` when it is connected, else the first display. `fallback` is
+    /// only evaluated without an id (focus resolution reads the window list).
+    static func displayID(
+        _ id: String?, among ids: [UInt32], fallback: @autoclosure () -> UInt32?
+    ) -> UInt32? {
+        if let id, let numeric = UInt32(id) { return ids.contains(numeric) ? numeric : nil }
+        if let fallback = fallback(), ids.contains(fallback) { return fallback }
+        return ids.first
     }
 
     public static func window(withId id: UInt32, in content: SCShareableContent) -> SCWindow? {

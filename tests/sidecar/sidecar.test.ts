@@ -4,13 +4,13 @@
  * fully offline — no network, no model, no CLI subprocess.
  */
 
-import { PassThrough, Writable } from "node:stream";
+import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 
-import { sanitizeErrorMessage, type QueryFn } from "../../sidecars/agent/src/agent";
+import { claudeSpent, sanitizeErrorMessage, type QueryFn } from "../../sidecars/agent/src/agent";
 import type { BuildVariant } from "../../sidecars/agent/src/config";
 import type { GenerateFn } from "../../sidecars/agent/src/gemini";
-import { flushStream, startSidecar, type StartSidecarOptions } from "../../sidecars/agent/src/main";
+import { FlushingSink, startSidecar, type StartSidecarOptions } from "../../sidecars/agent/src/main";
 
 type Frame = Record<string, unknown>;
 
@@ -521,22 +521,42 @@ describe("sidecar agent.info", () => {
 
 describe("sidecar exit flush", () => {
   it("waits until the final frame has left the process, not just been queued", async () => {
-    // A slow pipe: `write()` returns true (the frame is under the high-water
-    // mark) long before the bytes are actually out (AI-014).
+    // A slow pipe as Bun drives it: `write()` returns true long before the
+    // bytes are out, and an empty write's callback fires at once, ahead of
+    // earlier chunks (AI-014).
     const written: string[] = [];
-    const slowPipe = new Writable({
-      write(chunk: Buffer, _encoding, callback) {
+    const slowPipe = {
+      write(chunk: string, callback?: () => void): boolean {
+        if (chunk === "") {
+          queueMicrotask(() => callback?.());
+          return true;
+        }
         setTimeout(() => {
-          written.push(chunk.toString());
-          callback();
+          written.push(chunk);
+          callback?.();
         }, 100);
+        return true;
       },
-    });
+    };
     const frame = `${JSON.stringify({ event: "research.completed", data: { report: "x".repeat(4_000) } })}\n`;
-    expect(slowPipe.write(frame)).toBe(true);
+    const sink = new FlushingSink(slowPipe as unknown as NodeJS.WritableStream);
+    expect(sink.write(frame)).toBe(true);
 
-    await flushStream(slowPipe);
+    await sink.flushed();
 
     expect(written.join("")).toBe(frame);
+  });
+});
+
+describe("claudeSpent", () => {
+  it("counts each model turn once, with its latest usage", () => {
+    // A deadline's hard stop reports these numbers instead of zeros.
+    const turns = new Map([
+      ["msg_1", { inputTokens: 1_200, outputTokens: 80 }],
+      ["msg_2", { inputTokens: 2_500, outputTokens: 40 }],
+    ]);
+    turns.set("msg_2", { inputTokens: 2_500, outputTokens: 120 });
+    expect(claudeSpent(turns)).toEqual({ turns: 2, usage: { inputTokens: 3_700, outputTokens: 200 } });
+    expect(claudeSpent(new Map())).toEqual({ turns: 0, usage: { inputTokens: 0, outputTokens: 0 } });
   });
 });

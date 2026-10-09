@@ -84,6 +84,32 @@ describe("CitationStore", () => {
     );
   });
 
+  it("sanitizeReport keeps known URLs with balanced parentheses intact", () => {
+    const store = new CitationStore();
+    store.add({ title: "Mercury", url: "https://en.wikipedia.org/wiki/Mercury_(planet)" });
+    const report =
+      "[Wikipedia](https://en.wikipedia.org/wiki/Mercury_(planet)). " +
+      "See https://en.wikipedia.org/wiki/Mercury_(planet) too (or https://made.up/a).";
+    expect(store.sanitizeReport(report)).toBe(
+      "[Wikipedia](https://en.wikipedia.org/wiki/Mercury_(planet)). " +
+        "See https://en.wikipedia.org/wiki/Mercury_(planet) too (or made.up).",
+    );
+    expect(store.finalize([], report).map((c) => c.url)).toEqual([
+      "https://en.wikipedia.org/wiki/Mercury_(planet)",
+    ]);
+  });
+
+  it("sanitizeReport leaves URLs inside code spans and fenced blocks alone", () => {
+    const store = new CitationStore();
+    const report =
+      "Run `curl https://api.example.com/v1` first.\n\n```sh\nwget https://cdn.example.com/x.tgz\n```\n" +
+      "Then https://made.up/a.";
+    expect(store.sanitizeReport(report)).toBe(
+      "Run `curl https://api.example.com/v1` first.\n\n```sh\nwget https://cdn.example.com/x.tgz\n```\n" +
+        "Then made.up.",
+    );
+  });
+
   it("clamps very long snippets", () => {
     const store = new CitationStore();
     store.add({ title: "Long", url: "https://example.com/long", snippet: "x".repeat(2000) });
@@ -99,6 +125,16 @@ describe("evidenceReport", () => {
     const report = evidenceReport("turns", store.list());
     expect(report).toContain("ran out of turns");
     expect(report).toContain("- [A draft](https://example.com/a) — first");
+    expect(store.sanitizeReport(report)).toBe(report);
+    expect(store.finalize(undefined, report)).toHaveLength(2);
+  });
+
+  it("survives the sanitizer when a source URL has parentheses", () => {
+    const store = new CitationStore();
+    store.add({ title: "Mercury (planet)", url: "https://en.wikipedia.org/wiki/Mercury_(planet)" });
+    store.add({ title: "B", url: "https://example.com/b" });
+    const report = evidenceReport("time", store.list());
+    expect(report).toContain("- [Mercury (planet)](https://en.wikipedia.org/wiki/Mercury_(planet))");
     expect(store.sanitizeReport(report)).toBe(report);
     expect(store.finalize(undefined, report)).toHaveLength(2);
   });

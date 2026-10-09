@@ -64,16 +64,17 @@ with the reason.
   (cloud)*; the Live model follows the transcription role when it is a `*-transcribe-live`
   model.
 - **Apple** — `SFSpeechRecognizer` per source in the transcription language (the Mac's own
-  locale for *auto*, `en-US` when that has no recognizer) with on-device recognition when the
-  locale supports it (`supportsOnDeviceRecognition`) and automatic punctuation (macOS 13+).
+  locale for *auto* when it has an on-device model, else `en-US`) with on-device recognition
+  when the locale supports it (`supportsOnDeviceRecognition`) and automatic punctuation (macOS 13+).
   When the locale has no on-device model the recognizer runs on Apple's servers: `audio.started`
   reports `speech { locale, onDevice }` (also `AudioStatus.speechLocale/speechOnDevice`) and
   Bluey shows an `audio.speech_server` notice instead of switching silently. With Privacy →
   Cloud AI off, `audio.start` sends `requireOnDevice: true` and the helper does not use Apple's
   servers: that source is not transcribed and `audio.error{speech_on_device_unavailable}` says
   why. Partial results
-  stream; an utterance is committed as a final when the recognizer resets after a pause, and
-  requests are rotated every ~55 s to respect the framework's one-minute limit — only the
+  stream; an utterance is committed as a final (spanning its own partials' audio times) when
+  the recognizer resets after a pause, and requests are rotated every ~55 s to respect the
+  framework's one-minute limit — only the
   current request can rotate or restart, a retired request's late callbacks are ignored. Every
   partial and final carries the helper's `utteranceId` (request generation + counter), so a
   partial and its final are one segment. Works offline, no API key.

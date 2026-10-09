@@ -115,24 +115,49 @@ export class CitationStore {
   /**
    * De-link every URL in `report` the tools never returned: a Markdown link
    * keeps its text, a bare URL is reduced to its host (no longer a link).
+   * Code spans and fenced blocks are left alone: they never render as links.
    */
   sanitizeReport(report: string): string {
     const known = (url: string): boolean => this.has(url);
-    const withoutLinks = report.replace(MARKDOWN_LINK, (match, text: string, url: string) =>
-      known(url) ? match : text,
-    );
-    return withoutLinks.replace(BARE_URL, (url: string, offset: number, whole: string) => {
-      // Skip the URL half of a Markdown link that survived the first pass.
-      if (whole.slice(Math.max(0, offset - 2), offset) === "](") return url;
-      return known(url) ? url : hostOf(url);
+    return outsideCode(report, (prose) => {
+      const withoutLinks = prose.replace(MARKDOWN_LINK, (match, text: string, url: string) =>
+        known(url) ? match : text,
+      );
+      return withoutLinks.replace(BARE_URL, (url: string, offset: number, whole: string) => {
+        // Skip the URL half of a Markdown link that survived the first pass.
+        if (whole.slice(Math.max(0, offset - 2), offset) === "](") return url;
+        return known(url) ? url : hostOf(url);
+      });
     });
   }
 }
 
+/** URL characters, plus balanced `(…)` groups such as Wikipedia's `Mercury_(planet)`. */
+const URL_CHAR = String.raw`[^\s<>()[\]"']`;
+const URL_PARENS = String.raw`\(${URL_CHAR}*\)`;
 /** `[text](url)` / `[text](url "title")` with an http(s) target. */
-const MARKDOWN_LINK = /\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+"[^"]*")?\)/g;
-/** A bare http(s) URL; trailing sentence punctuation is not part of it. */
-const BARE_URL = /https?:\/\/[^\s<>()[\]"']+[^\s<>()[\]"'.,;:!?]/g;
+const MARKDOWN_LINK = new RegExp(
+  String.raw`\[([^\]]*)\]\((https?:\/\/(?:${URL_CHAR}|${URL_PARENS})+)(?:\s+"[^"]*")?\)`,
+  "g",
+);
+/** A bare http(s) URL; trailing sentence punctuation and unbalanced `)` are not part of it. */
+const BARE_URL = new RegExp(
+  String.raw`https?:\/\/(?:${URL_CHAR}|${URL_PARENS})*(?:[^\s<>()[\]"'.,;:!?]|${URL_PARENS})`,
+  "g",
+);
+/** Fenced code blocks (to the end if unclosed) and inline code spans. */
+const CODE = /(```|~~~)[\s\S]*?(?:\1|$)|`[^`\n]+`/g;
+
+/** Apply `fn` to the parts of `text` outside code, where URLs render as links. */
+function outsideCode(text: string, fn: (prose: string) => string): string {
+  let out = "";
+  let last = 0;
+  for (const match of text.matchAll(CODE)) {
+    out += fn(text.slice(last, match.index)) + match[0];
+    last = match.index + match[0].length;
+  }
+  return out + fn(text.slice(last));
+}
 
 /** Every http(s) URL in `report` (Markdown link targets and bare URLs), in order. */
 export function reportUrls(report: string): string[] {

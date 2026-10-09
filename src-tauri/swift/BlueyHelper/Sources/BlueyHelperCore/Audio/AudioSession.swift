@@ -145,14 +145,19 @@ public final class AudioSession {
                 sources = sources.filter {
                     ($0 == "microphone" && wantMic) || ($0 == "system" && wantSystem)
                 }
+                let onDevice = params.transcription?.onDevice ?? true
+                // Cloud AI off: Apple's servers are not an option either.
+                let requireOnDevice = params.transcription?.requireOnDevice ?? false
                 for source in sources {
                     let transcriber = SpeechTranscriber(
                         source: source,
                         // `language: auto` sends no locale: the user's own.
                         locale: params.transcription?.locale
-                            ?? SpeechTranscriber.defaultLocale().identifier,
-                        onDevice: params.transcription?.onDevice ?? true,
-                        requireOnDevice: params.transcription?.requireOnDevice ?? false,
+                            ?? SpeechTranscriber.defaultLocale(
+                                onDevice: onDevice || requireOnDevice
+                            ).identifier,
+                        onDevice: onDevice,
+                        requireOnDevice: requireOnDevice,
                         sampleRate: Double(self.sampleRate),
                         emit: self.emit)
                     if transcriber.start() {

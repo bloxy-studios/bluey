@@ -87,6 +87,28 @@ export interface AgentRunDeps {
   buildVariant?: BuildVariant;
   /** Base environment (defaults to process.env). */
   env?: Record<string, string | undefined>;
+  /** Test injection: Gemini's grace for its report turn past `deadlineMs`. */
+  deadlineGraceMs?: number;
+}
+
+type TokenUsage = { inputTokens: number; outputTokens: number };
+
+/**
+ * The turns and tokens of a Claude run so far, from the latest usage of each
+ * model turn: one API turn can arrive as several assistant messages sharing
+ * its message id.
+ */
+export function claudeSpent(turns: ReadonlyMap<string, TokenUsage>): {
+  turns: number;
+  usage: TokenUsage;
+} {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const usage of turns.values()) {
+    inputTokens += usage.inputTokens;
+    outputTokens += usage.outputTokens;
+  }
+  return { turns: turns.size, usage: { inputTokens, outputTokens } };
 }
 
 export interface ResearchJobHandle {
@@ -381,6 +403,10 @@ export function startResearchJob(
   /** Set when the deadline's hard stop aborted the run (not a user cancel). */
   let outOfTime = false;
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Turns and tokens spent so far, for a report written at the hard stop. */
+  let spent = { turns: 0, usage: { inputTokens: 0, outputTokens: 0 } };
+  /** Claude: the latest usage of each model turn (one API message id each). */
+  const claudeTurns = new Map<string, TokenUsage>();
   let finished = false;
   let tmpDir: string | undefined;
 
@@ -424,8 +450,8 @@ export function startResearchJob(
   /** Out of turns or time: the gathered sources become the report (AI-008). */
   const emitEvidenceReport = (
     reason: "turns" | "time",
-    turns = 0,
-    usage = { inputTokens: 0, outputTokens: 0 },
+    turns: number,
+    usage: { inputTokens: number; outputTokens: number },
   ): void => {
     const sources = store.list().slice(0, EVIDENCE_REPORT_MAX_SOURCES);
     if (sources.length === 0) {
@@ -438,7 +464,7 @@ export function startResearchJob(
 
   /** The run was aborted: by the user (cancelled) or by the deadline's hard stop. */
   const emitAborted = (): void => {
-    if (outOfTime && !cancelRequested) emitEvidenceReport("time");
+    if (outOfTime && !cancelRequested) emitEvidenceReport("time", spent.turns, spent.usage);
     else emitCancelled();
   };
 
@@ -557,6 +583,11 @@ export function startResearchJob(
   function handleAssistantMessage(m: Record<string, unknown>): void {
     if (m["parent_tool_use_id"] != null) return; // subagent traffic (never expected here)
     const message = rec(m["message"]);
+    const messageId = message ? str(message["id"]) : undefined;
+    if (message && messageId) {
+      claudeTurns.set(messageId, usageFrom(message));
+      spent = claudeSpent(claudeTurns);
+    }
     const content = Array.isArray(message?.["content"]) ? (message?.["content"] as unknown[]) : [];
     for (const rawBlock of content) {
       const block = rec(rawBlock);
@@ -780,6 +811,9 @@ export function startResearchJob(
         onTextDelta: (text) => writer.event("research.textDelta", { jobId, text }),
         onToolCall: (toolName, input) => writer.event("research.toolCall", { jobId, tool: toolName, input }),
         onProgress: progress,
+        onTurn: (turns, usage) => {
+          spent = { turns, usage };
+        },
       });
     } catch (err) {
       if (cancelRequested || outOfTime || (err instanceof Error && err.name === "AbortError")) {
@@ -819,7 +853,7 @@ export function startResearchJob(
     if (deadlineAt !== undefined) {
       // Hard stop: Gemini gets a grace period for its report turn; Claude
       // cannot be asked for one mid-run, so its gathered sources are reported.
-      const grace = config.backend === "gemini" ? DEADLINE_REPORT_GRACE_MS : 0;
+      const grace = config.backend === "gemini" ? (deps.deadlineGraceMs ?? DEADLINE_REPORT_GRACE_MS) : 0;
       deadlineTimer = setTimeout(
         () => {
           if (finished) return;

@@ -64,6 +64,8 @@ export interface GeminiRunOptions {
   onTextDelta(text: string): void;
   onToolCall(tool: string, input: Record<string, unknown>): void;
   onProgress(message: string): void;
+  /** After each model turn: the turns and tokens spent so far. */
+  onTurn?(turns: number, usage: { inputTokens: number; outputTokens: number }): void;
 }
 
 export interface GeminiRunResult {
@@ -265,6 +267,7 @@ export async function runGemini(options: GeminiRunOptions): Promise<GeminiRunRes
     const turn = await collectTurn(stream, signal, streamText ? options.onTextDelta : undefined);
     usage.inputTokens += turn.usage.input;
     usage.outputTokens += turn.usage.output;
+    options.onTurn?.(turns, { ...usage });
     return turn;
   };
 

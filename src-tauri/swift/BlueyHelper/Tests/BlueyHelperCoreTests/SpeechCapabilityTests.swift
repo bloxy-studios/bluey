@@ -31,14 +31,32 @@ final class SpeechCapabilityTests: XCTestCase {
     func testDefaultLocaleIsTheUsersWhenSpeechSupportsIt() {
         let supported: Set<Locale> = [Locale(identifier: "en-US"), Locale(identifier: "en-GB")]
         let british = SpeechTranscriber.defaultLocale(
-            current: Locale(identifier: "en_GB"), supported: supported)
+            current: Locale(identifier: "en_GB"), supported: supported,
+            recognizesOnDevice: { _ in true })
         XCTAssertEqual(british.identifier, "en-GB")
+    }
+
+    /// `auto` never moves audio off the Mac: without an on-device model for
+    /// the user's locale it keeps en-US, unless on-device was not asked for.
+    func testDefaultLocaleStaysOnDeviceWhenTheUsersLocaleCannot() {
+        let supported: Set<Locale> = [Locale(identifier: "en-US"), Locale(identifier: "nl-NL")]
+        let english: (Locale) -> Bool = { $0.identifier == "en-US" }
+        let dutch = Locale(identifier: "nl_NL")
+        XCTAssertEqual(
+            SpeechTranscriber.defaultLocale(
+                current: dutch, supported: supported, recognizesOnDevice: english
+            ).identifier, "en-US")
+        XCTAssertEqual(
+            SpeechTranscriber.defaultLocale(
+                onDevice: false, current: dutch, supported: supported, recognizesOnDevice: english
+            ).identifier, "nl-NL")
     }
 
     func testDefaultLocaleFallsBackToEnglishUS() {
         let supported: Set<Locale> = [Locale(identifier: "en-US")]
         let klingon = SpeechTranscriber.defaultLocale(
-            current: Locale(identifier: "tlh_001"), supported: supported)
+            current: Locale(identifier: "tlh_001"), supported: supported,
+            recognizesOnDevice: { _ in true })
         XCTAssertEqual(klingon.identifier, "en-US")
     }
 
