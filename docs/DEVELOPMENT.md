@@ -155,12 +155,15 @@ Settings → General → _Developer mode_ (or `?dev=1` in the browser) enables:
 
 `scripts/release.sh` retains local build-only `.app`/`.dmg` output and the lite Gemini/full
 Claude sidecar choice. Release builds require **Bun 1.4.2** and frozen root/sidecar installs.
-No-credential builds are developer-only and can never become publication-eligible artifacts.
+No-credential builds are developer-only and can never become publication-eligible artifacts;
+`BLUEY_LOCAL_SIGNING_IDENTITY` signs one with a stable Apple Development identity so it keeps its
+Keychain approvals across rebuilds (ADR 0011, [Releasing](RELEASING.md)).
 The existing helpers build both sidecar architectures; Tauri selects the requested target.
 
 Every build also writes the in-app updater bundle (`Bluey.app.tar.gz` + `.sig`, see
 [Updates](UPDATES.md)), so `scripts/release.sh` and `bun run tauri build` need
-`TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) in the environment — the
+`TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) in the environment (the
+script hands it only to `tauri bundle`, after a `tauri build --no-bundle` without it) — the
 owner's key from its backup, or a throwaway pair from `bun run tauri signer generate -w /tmp/dev.key`
 for builds that will never feed real installs. `bun run tauri dev` does not sign anything.
 

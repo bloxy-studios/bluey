@@ -30,8 +30,9 @@ public key compiled into `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 independent of Apple code-signing and works for unsigned developer builds too.
 
 - The private key and its password are the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; `tauri build` signs `Bluey.app.tar.gz` with them when
-  `bundle.createUpdaterArtifacts` is on. The owner keeps a backup of both: **losing the key means
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; the bundling step signs `Bluey.app.tar.gz` with them when
+  `bundle.createUpdaterArtifacts` is on. `scripts/release.sh` compiles with
+  `tauri build --no-bundle` without the key and hands it to `tauri bundle` alone. The owner keeps a backup of both: **losing the key means
   installed apps can never update again** (they would need a fresh download).
 - Rotation: generate a new pair (`bun run tauri signer generate -w ~/.tauri/bluey-updater.key`),
   ship one release signed with the **old** key whose config carries the **new** public key, then
