@@ -30,10 +30,11 @@
 * **Change detection**: a 64-bit difference hash per target; `changed=false` when the Hamming
   ratio is below `minDelta`. The engine skips vision/OCR work for unchanged screens and reuses
   the cached OCR.
-* **Smart observation (off by default)**: a low-FPS `SCStream` (default 1.5 s interval)
-  computing dHash per sampled frame; emits `screen.changed` only on material change. No frame
-  is sent to a model automatically — observation only refreshes the cached context so ⌘↵ is
-  faster and proactive preparation has fresh OCR.
+* **Smart observation (not yet available)**: the helper can run a low-FPS `SCStream` (default
+  1.5 s interval) computing dHash per sampled frame and emitting `screen.changed` on material
+  change, but nothing consumes those events yet, so Settings shows Smart as unavailable and no
+  setting starts the stream; a stored `smart` value still loads and samples nothing
+  (FEATURE-002).
 * **Cancellation**: a newer capture request supersedes an in-flight one.
 
 ## OCR (Vision)

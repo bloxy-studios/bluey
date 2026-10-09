@@ -213,7 +213,7 @@ export function createDefaultSettings(): Settings {
     screen: {
       captureTarget: "display",
       observation: "manual",
-      observationIntervalMs: 5000,
+      observationIntervalMs: 1500,
       preferredDisplay: "active",
       ocrLevel: "accurate",
       ocrLanguages: ["en-US"],
@@ -269,7 +269,6 @@ export function createDefaultSettings(): Settings {
       storeTranscripts: true,
       storeRawAudio: "never",
       cloudAiEnabled: true,
-      debugLogTranscripts: false,
     },
     shortcuts: DEFAULT_SHORTCUTS.map((s) => ({ ...s })),
     advanced: {

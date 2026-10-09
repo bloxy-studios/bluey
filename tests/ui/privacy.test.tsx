@@ -1,7 +1,8 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { readOnboardingStep, saveOnboardingStep } from "@/features/onboarding/progress";
 import PrivacyTab from "@/features/settings/tabs/PrivacyTab";
 import { bluey } from "@/lib/tauri/api";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -70,5 +71,46 @@ describe("PrivacyTab display mode (UX-004, SEC-004)", () => {
     expect(applied).toEqual([]);
     expect((await bluey.capture.getProtection()).enabled).toBe(false);
     expect(screen.getByRole("tab", { name: "Standard" })).toHaveAttribute("aria-selected", "true");
+  });
+});
+
+describe("PrivacyTab data actions (DEBT-011)", () => {
+  it("offers no Clear AI cache action, since nothing is ever cached", async () => {
+    await setupMockApp();
+    render(<PrivacyTab />);
+
+    expect(await screen.findByRole("button", { name: "Clear transcripts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reset Bluey" })).toBeInTheDocument();
+    expect(screen.queryByText(/AI cache/i)).not.toBeInTheDocument();
+    expect("clearAiCache" in bluey.data).toBe(false);
+  });
+});
+
+describe("PrivacyTab reset (DOC-003)", () => {
+  it("returns to onboarding with the HUD hidden after a successful reset", async () => {
+    const { transport } = await setupInterceptedApp();
+    const calls: string[] = [];
+    transport.intercept("data_reset_all", (_args, next) => {
+      calls.push("reset");
+      return next();
+    });
+    transport.intercept("window_open", async (args) => {
+      calls.push(`open:${args.label}`);
+    });
+    transport.intercept("panel_hide", (_args, next) => {
+      calls.push("hide");
+      return next();
+    });
+    saveOnboardingStep("permissions");
+    const user = userEvent.setup();
+    render(<PrivacyTab />);
+
+    await user.click(await screen.findByRole("button", { name: "Reset Bluey" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Reset Bluey" }));
+
+    await waitFor(() => expect(calls).toEqual(["reset", "open:onboarding", "hide"]));
+    expect(readOnboardingStep()).toBeNull();
+    expect((await bluey.panel.getState()).visible).toBe(false);
   });
 });

@@ -37,6 +37,15 @@ describe("AITab", () => {
     await setupMockApp();
   });
 
+  it("says what the Research role drives and where deep research picks its model (PROV-011)", async () => {
+    renderTab();
+
+    expect(await screen.findByText("Answers that need research. Deep research: see below")).toBeInTheDocument();
+    expect(screen.getByText(/Uses the Research model when it comes from a Gemini provider/)).toBeInTheDocument();
+    await useSettingsStore.getState().update({ ai: { researchBackend: "claude" } });
+    expect(await screen.findByText(/Uses the Research model when it comes from an Anthropic provider/)).toBeInTheDocument();
+  });
+
   it("lists Gemini first, marked as the default provider", async () => {
     renderTab();
     const toggles = await screen.findAllByRole("switch", { name: /^Enable / });
@@ -270,7 +279,7 @@ describe("AITab — removing a provider (UX-008)", () => {
     );
     expect(models()?.default).toBeNull();
     expect(models()?.embedding).toBeNull();
-    expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBeNull();
+    expect(useSettingsStore.getState().settings?.ai).not.toHaveProperty("bootstrapProvider");
     expect(await mock.invoke("secrets_has", { key: "provider:gemini:api_key" })).toBe(false);
   });
 
@@ -315,7 +324,7 @@ describe("AITab — a provider's first key (FEATURE-004)", () => {
     // Undo as the Settings window renders it, not through the store (the info toast used to drop it).
     await user.click(within(toast.closest("[role=status]") as HTMLElement).getByRole("button", { name: "Undo" }));
     await waitFor(() => expect(models()?.default).toBeNull());
-    expect(useSettingsStore.getState().settings?.ai.bootstrapProvider).toBeNull();
+    expect(useSettingsStore.getState().settings?.ai).not.toHaveProperty("bootstrapProvider");
   });
 
   it("leaves assigned roles and the default provider alone", async () => {

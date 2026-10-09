@@ -7,7 +7,6 @@
 //! * [`state`]  — the explicit application state machine.
 //! * [`events`] — the central event enum + names used on the bus.
 //! * [`router`] — task/latency/vision aware model routing policy.
-//! * [`budget`] — context token budgeting & trimming.
 //! * [`shortcuts`] — default bindings, accelerator parsing, conflict detection.
 //! * [`modes`]  — built-in mode definitions as data.
 //! * [`presets`] — provider presets (reserved ids, recommended models) + `.env` import planning.
@@ -22,7 +21,6 @@ pub mod error;
 pub mod types;
 
 pub mod accounts;
-pub mod budget;
 pub mod context;
 pub mod events;
 pub mod latency;

@@ -195,7 +195,6 @@ pub fn run() {
         commands::data::data_usage_stats,
         commands::data::data_delete_screenshots,
         commands::data::data_clear_transcripts,
-        commands::data::data_clear_ai_cache,
         commands::data::data_reset_all,
         commands::data::data_export_session,
         // Developer mode

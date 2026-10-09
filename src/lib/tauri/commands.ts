@@ -371,7 +371,6 @@ export interface CommandMap {
   data_usage_stats: { args: void; result: DataUsageStats };
   data_delete_screenshots: { args: void; result: number };
   data_clear_transcripts: { args: void; result: number };
-  data_clear_ai_cache: { args: void; result: number };
   data_reset_all: { args: void; result: void };
   data_export_session: { args: { sessionId: string; format: "markdown" | "json" }; result: string };
 
@@ -528,7 +527,6 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "data_usage_stats",
   "data_delete_screenshots",
   "data_clear_transcripts",
-  "data_clear_ai_cache",
   "data_reset_all",
   "data_export_session",
   "dev_simulate",

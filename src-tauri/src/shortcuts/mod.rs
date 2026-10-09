@@ -234,7 +234,7 @@ fn trigger(ctx: &TriggerContext, id: ShortcutId) {
     let ctx = ctx.clone();
     tauri::async_runtime::spawn(async move {
         let result: BlueyResult<()> = match id {
-            ShortcutId::TogglePanel => ctx.panel.toggle().await.map(|_| ()),
+            ShortcutId::TogglePanel => ctx.panel.toggle_from_shortcut().await.map(|_| ()),
             ShortcutId::CaptureAnalyze | ShortcutId::GenerateResponse => {
                 // Make sure the HUD is visible for the answer.
                 ctx.panel.show().await.map(|_| ())

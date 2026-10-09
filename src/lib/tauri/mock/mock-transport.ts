@@ -2352,7 +2352,13 @@ export class MockTransport implements Transport {
     settings_get: () => this.settings,
     settings_update: (args) => {
       const before = this.settings;
-      this.settings = this.withKeyFlags(mergeSettings(this.settings, args.patch));
+      const merged = mergeSettings(this.settings, args.patch);
+      // Mirrors Rust `validate` (UX-031).
+      const intervalMs = merged.screen.observationIntervalMs;
+      if (!(intervalMs >= 1000 && intervalMs <= 60000)) {
+        throw invalidParams("screen.observationIntervalMs must be between 1000 and 60000");
+      }
+      this.settings = this.withKeyFlags(merged);
       this.dropRemovedProviderKeys(before);
       this.applyDisplayMode();
       return this.emitSettings();
@@ -2503,7 +2509,6 @@ export class MockTransport implements Transport {
       this.emit("transcript.cleared", {});
       return count;
     },
-    data_clear_ai_cache: () => 12,
     data_reset_all: () => {
       this.settings = createDefaultSettings();
       this.modes = createBuiltInModes();
@@ -2600,7 +2605,9 @@ function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
     if (Array.isArray(value) || typeof value !== "object" || value === null) {
       next[key] = value;
     } else {
-      next[key] = { ...(base[key] as object), ...value };
+      // Like Rust, an explicit null clears an optional field (it is then absent).
+      const merged = Object.entries({ ...(base[key] as object), ...value }).filter(([, v]) => v !== null);
+      next[key] = Object.fromEntries(merged);
     }
   }
   return next as unknown as Settings;

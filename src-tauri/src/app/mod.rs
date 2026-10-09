@@ -16,7 +16,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bluey_core::events::BlueyEvent;
-use bluey_core::types::{AppEvent, DisplayMode, ObservationMode};
+use bluey_core::types::{AppEvent, DisplayMode};
 use bluey_core::{BlueyError, BlueyResult};
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent, Wry};
 
@@ -505,15 +505,8 @@ async fn finish_boot(app: &AppHandle) {
     // Logged inside; nobody toggled it now, so no toast at launch. (Privacy mode is
     // applied earlier, before the HUD is first shown — SEC-012.)
     let _ = crate::platform::set_autostart(app, settings.general.launch_at_login);
-    if settings.screen.observation == ObservationMode::Smart {
-        if let Err(e) = core
-            .capture
-            .observe_start(Some(settings.screen.observation_interval_ms), None)
-            .await
-        {
-            tracing::warn!(error = %e, "cannot start screen observation");
-        }
-    }
+    // Smart observation has no consumer yet (FEATURE-002): a stored `smart`
+    // stays valid but starts no screen sampling.
     // Documents embedded with another model / size (or never embedded) catch up.
     let documents = core.documents.clone();
     tauri::async_runtime::spawn(async move {

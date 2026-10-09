@@ -8,6 +8,7 @@ import { SegmentedTabs } from "@/components/ui/Tabs";
 import { SettingRow } from "@/components/ui/SettingRow";
 import { Switch } from "@/components/ui/Switch";
 import { showErrorToast, showToast } from "@/components/ui/toast-store";
+import { clearOnboardingStep } from "@/features/onboarding/progress";
 import { useCaptureProtection } from "@/hooks/useCaptureProtection";
 import { bluey } from "@/lib/tauri/api";
 import type { DataUsageStats } from "@/lib/tauri/commands";
@@ -104,22 +105,16 @@ export default function PrivacyTab() {
       },
     },
     {
-      id: "cache",
-      label: "Clear AI cache",
-      description: "Cached AI responses and embeddings.",
-      confirmTitle: "Clear the AI cache?",
-      run: async () => {
-        await bluey.data.clearAiCache();
-        await refreshStats();
-      },
-    },
-    {
       id: "reset",
       label: "Reset Bluey",
       description: "Erase everything and restore defaults.",
       confirmTitle: "Reset Bluey completely?",
       run: async () => {
         await bluey.data.resetAll();
+        // Nothing is left, the sign-in included: start over in onboarding (DOC-003).
+        clearOnboardingStep();
+        await bluey.window.open({ label: "onboarding" });
+        await bluey.panel.hide();
         await refreshStats();
       },
     },

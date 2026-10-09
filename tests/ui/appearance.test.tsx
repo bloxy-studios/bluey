@@ -44,6 +44,13 @@ describe("AppearanceTab", () => {
     expect(screen.getByRole("slider", { name: "Panel width" })).toHaveAttribute("aria-valuenow", "690");
   });
 
+  it("offers no Follow active display toggle while nothing honours it (UX-032)", () => {
+    render(<AppearanceTab />);
+    expect(screen.getByLabelText("Panel position")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Follow active display")).not.toBeInTheDocument();
+    expect(screen.queryByText(/display that has focus/)).not.toBeInTheDocument();
+  });
+
   it("changes reduced motion and position", async () => {
     const user = userEvent.setup();
     render(<AppearanceTab />);

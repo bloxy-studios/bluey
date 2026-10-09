@@ -45,7 +45,9 @@ const ROLES: Array<{ role: ModelRole; label: string; hint: string }> = [
   { role: "fast", label: "Fast", hint: "Classification, quick replies" },
   { role: "reasoning", label: "Reasoning", hint: "Hard problems" },
   { role: "vision", label: "Vision", hint: "Screenshots" },
-  { role: "research", label: "Research", hint: "Deep research agent" },
+  // Inline research answers on any provider; the deep research agent only
+  // follows it on its backend's provider (PROV-011).
+  { role: "research", label: "Research", hint: "Answers that need research. Deep research: see below" },
   { role: "transcription", label: "Transcription", hint: "Batch / live speech-to-text" },
   { role: "embedding", label: "Embedding", hint: "Document retrieval" },
 ];
@@ -475,8 +477,8 @@ export default function AITab() {
             <div className="text-[14px] font-medium text-fg">Research backend</div>
             <div className="text-[13px] text-fg-muted">
               {ai.researchBackend === "gemini"
-                ? "Gemini function calling with your Google AI Studio key — nothing else to configure."
-                : "Claude Agent SDK — needs an Anthropic key (or Claude in Foundry) and the full sidecar build."}
+                ? "Gemini function calling with your Google AI Studio key — nothing else to configure. Uses the Research model when it comes from a Gemini provider."
+                : "Claude Agent SDK — needs an Anthropic key (or Claude in Foundry) and the full sidecar build. Uses the Research model when it comes from an Anthropic provider."}
             </div>
           </div>
           <ResearchBackendSelect

@@ -136,13 +136,15 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
 
 Built: ⌘↵ waits at most 150 ms for OCR; a slower pass finishes in the background into the
 in-memory OCR cache for that frame hash and is not sent anywhere on its own. Every ⌘↵ captures a
-fresh frame.
+fresh frame. OCR text follows the *store transcripts / screenshots* settings exactly as before.
 
 Planned, not built (ADR 0010 §8): a speculative warm frame that reuses the smart-observation frame
 (≤ 1.5 s old, unchanged dHash) for ⌘↵ only when screen permission is granted **and** the
 smart-observation setting is on, and retrieval for the current transcript question precomputed
-from the transcript the user is already recording. The constraint it will ship under: nothing is
-captured that the user did not already enable, and no frame is sent to a model without ⌘↵ / ⌘⇧↵.
+from the transcript the user is already recording. Smart observation itself is not available yet
+(FEATURE-002), so today no frame is sampled ahead of ⌘↵. The constraint the warm frame will ship
+under: nothing is captured that the user did not already enable, and no frame is sent to a model
+without ⌘↵ / ⌘⇧↵.
 
 ## Frontend ⇄ backend boundary
 * Every command has a typed signature in `src/lib/tauri/commands.ts`; the Rust side validates
@@ -186,8 +188,8 @@ for Acme", never "John Doe, who worked at X per his resume, is interviewing at A
 
 ## Logging
 `tracing` with levels error/warn/info/debug/trace; production default `info`. Never logged:
-API keys, auth tokens, raw audio, screenshots, resume text, transcript text (unless
-`privacy.debugLogTranscripts` is enabled for local debugging), provider request bodies.
+API keys, auth tokens, raw audio, screenshots, resume text, transcript text, provider request
+bodies.
 Logs are daily files in `~/Library/Logs/Bluey`; files older than 14 days are deleted at startup
 and Reset all data deletes all of them.
 
@@ -199,9 +201,9 @@ never hidden, so `CaptureProtection.partial` is reported there. Bluey does not a
 monitoring software.
 
 ## Data deletion
-`data_delete_screenshots`, `data_clear_transcripts`, `data_clear_ai_cache`,
-`sessions_delete(_all)`, `documents_delete(_all)` and `data_reset_all` remove rows **and** the
-files they reference (frame cache). The database runs with `PRAGMA secure_delete` (freed pages
+`data_delete_screenshots`, `data_clear_transcripts`, `sessions_delete(_all)`,
+`documents_delete(_all)` and `data_reset_all` remove rows **and** the files they reference
+(frame cache). The database runs with `PRAGMA secure_delete` (freed pages
 are zeroed) and FTS5 `secure-delete` (a deleted row's tokens leave the search index at once), and
 each of these deletions — plus retention pruning — ends with a `wal_checkpoint(TRUNCATE)`, so the
 deleted text is not left readable in `bluey.db` or `bluey.db-wal`, and removes the

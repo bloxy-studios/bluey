@@ -4,7 +4,7 @@
 
 use bluey_core::error::{BlueyError, RecoveryAction};
 use bluey_core::events::BlueyEvent;
-use bluey_core::types::{DisplayMode, ObservationMode, Settings};
+use bluey_core::types::{DisplayMode, Settings};
 use tauri::State;
 
 use crate::events::EventBus;
@@ -59,22 +59,8 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
         core.updates.on_settings_changed(&old.updates, &new.updates);
     }
 
-    // Observation mode.
-    if old.screen.observation != new.screen.observation
-        || old.screen.observation_interval_ms != new.screen.observation_interval_ms
-    {
-        let result = match new.screen.observation {
-            ObservationMode::Smart => {
-                core.capture
-                    .observe_start(Some(new.screen.observation_interval_ms), None)
-                    .await
-            }
-            ObservationMode::Manual => core.capture.observe_stop().await,
-        };
-        if let Err(e) = result {
-            report(&core.bus, "screen", e);
-        }
-    }
+    // Screen observation: Smart has no consumer yet (FEATURE-002), so no
+    // setting starts the sampling stream.
 
     // Embedding model / size changed → vectors from the old space are stale.
     let embedding_changed = old.ai.models.embedding != new.ai.models.embedding

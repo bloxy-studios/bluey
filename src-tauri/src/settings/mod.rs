@@ -228,8 +228,16 @@ fn validate(settings: &Settings) -> BlueyResult<()> {
             "ai.embeddingDimensions must be 768, 1536 or 3072",
         ));
     }
+    if !OBSERVATION_INTERVAL_MS.contains(&settings.screen.observation_interval_ms) {
+        return Err(bluey_core::BlueyError::invalid_params(
+            "screen.observationIntervalMs must be between 1000 and 60000",
+        ));
+    }
     Ok(())
 }
+
+/// Screen sampling interval bounds (UX-031).
+const OBSERVATION_INTERVAL_MS: std::ops::RangeInclusive<u32> = 1_000..=60_000;
 
 #[cfg(test)]
 mod tests {
@@ -309,5 +317,19 @@ mod tests {
         settings.refresh_provider_keys();
         assert!(!flag(&settings, "openai"));
         assert_eq!(fake.reads(), 0);
+    }
+
+    #[test]
+    fn the_observation_interval_is_bounded() {
+        let with = |ms: u32| {
+            let mut s = Settings::default();
+            s.screen.observation_interval_ms = ms;
+            validate(&s)
+        };
+        assert!(with(Settings::default().screen.observation_interval_ms).is_ok());
+        assert!(with(1_000).is_ok());
+        assert!(with(60_000).is_ok());
+        assert!(with(0).is_err(), "UX-031");
+        assert!(with(1_000_000_000).is_err(), "UX-031");
     }
 }
