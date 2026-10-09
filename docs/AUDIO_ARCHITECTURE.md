@@ -23,8 +23,9 @@
   labelling reliable.
 - **Format**: both sources are resampled to 16 kHz mono PCM16 and chunked (200 ms).
 - **VAD**: energy-based with adaptive noise floor and ~300 ms hangover; sensitivity low/medium/
-  high. Non-speech chunks are dropped before on-device transcription (cheaper, fewer
-  hallucinations); on the cloud route every chunk is forwarded so the server VAD sees the silence.
+  high. It only labels chunks (`isSpeech` on `audio.chunk`): every chunk still reaches the
+  on-device recognizer, and on the cloud route every chunk is forwarded so the server VAD sees
+  the silence. The label stamps utterance starts and feeds the providers' stall watchdogs.
 - **Retention**: raw audio is **never** written to disk. The `until_session_end`/`custom`
   values of `storeRawAudio` are accepted in settings but not implemented — nothing is retained
   in any mode, and Settings → Privacy shows raw audio as "Never kept" with no retention choice.
@@ -121,7 +122,12 @@ segment is fed to the classifier (`question.detected`).
 
 ## Failure handling
 
-Permission revoked → session stops with `BlueyError{kind: permission}` and a repair flow. Device
+Permission missing at `audio.start` → that source does not start and a `BlueyError{kind:
+permission}` with an *Open System Settings* action explains it (the start fails when no source
+started; otherwise it arrives as `audio.error` and the other source runs). A permission revoked
+mid-session is not detected by Bluey itself: the periodic refresh only updates the permission
+badges, and if macOS stops the system-audio stream the helper ends the whole session with
+`audio.error{system_audio_stopped}`. Device
 lost → automatic re-route, else `audio.error{device_lost}`. A cloud provider that cannot start
 (no key, unsupported model, mock outside developer mode) falls back to Apple Speech with a
 non-fatal `audio.error{stt_fallback}` naming the reason. Mid-session, a connection outage is
