@@ -2343,7 +2343,13 @@ export class MockTransport implements Transport {
     settings_get: () => this.settings,
     settings_update: (args) => {
       const before = this.settings;
-      this.settings = this.withKeyFlags(mergeSettings(this.settings, args.patch));
+      const merged = mergeSettings(this.settings, args.patch);
+      // Mirrors Rust `validate` (UX-031).
+      const intervalMs = merged.screen.observationIntervalMs;
+      if (!(intervalMs >= 1000 && intervalMs <= 60000)) {
+        throw invalidParams("screen.observationIntervalMs must be between 1000 and 60000");
+      }
+      this.settings = this.withKeyFlags(merged);
       this.dropRemovedProviderKeys(before);
       this.applyDisplayMode();
       return this.emitSettings();

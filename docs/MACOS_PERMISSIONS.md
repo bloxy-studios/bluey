@@ -9,7 +9,7 @@ recognition. Older versions are not supported and Bluey does not pretend otherwi
 
 | Permission | What Bluey needs | Why | What it can access | How it's checked |
 |---|---|---|---|---|
-| **Screen Recording** | Capture the current display/window/region on demand (⌘↵) and optional low-frequency observation | To read the question, code or document you are looking at | Pixels of the selected display/window (Bluey's own windows are excluded); nothing is captured without your action unless Smart observation is enabled | `CGPreflightScreenCaptureAccess` (Rust); request via `CGRequestScreenCaptureAccess` |
+| **Screen Recording** | Capture the current display/window/region on demand (⌘↵) | To read the question, code or document you are looking at | Pixels of the selected display/window (Bluey's own windows are excluded); nothing is captured without your action (Smart observation is not available yet) | `CGPreflightScreenCaptureAccess` (Rust); request via `CGRequestScreenCaptureAccess` |
 | **Microphone** | Capture your voice while a session is listening | Live transcript of what you say | Microphone audio only while `● Listening`; never stored by default | `AVCaptureDevice.authorizationStatus(for: .audio)` (helper) |
 | **Speech Recognition** | On-device speech-to-text | Turn audio into text without sending it to a cloud (default provider) | The same audio, processed on device | `SFSpeechRecognizer.authorizationStatus()` (helper) |
 | **Accessibility** | Read the focused window's accessibility tree | Semantic understanding of the UI (focused field, selected text, buttons) that complements OCR | Text and roles of visible elements in the frontmost app; bounded depth/size | `AXIsProcessTrusted` (Rust); prompt via `AXIsProcessTrustedWithOptions` (helper) |

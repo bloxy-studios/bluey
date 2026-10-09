@@ -213,7 +213,7 @@ export function createDefaultSettings(): Settings {
     screen: {
       captureTarget: "display",
       observation: "manual",
-      observationIntervalMs: 5000,
+      observationIntervalMs: 1500,
       preferredDisplay: "active",
       ocrLevel: "accurate",
       ocrLanguages: ["en-US"],

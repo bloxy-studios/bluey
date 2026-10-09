@@ -130,10 +130,9 @@ signed in through the vendors' OAuth flows. These invariants hold for every one 
 
 ## Fast path and prefetch (ADR 0010)
 
-The speculative warm frame reuses the smart-observation frame (≤ 1.5 s old, unchanged dHash) for
-⌘↵ only when screen permission is granted **and** the smart-observation setting is on; retrieval
-for the current transcript question is precomputed from the transcript the user is already
-recording. Nothing is captured that the user did not already enable, and no frame is sent to a
+Smart observation is not available yet (FEATURE-002), so no warm frame is sampled ahead of ⌘↵;
+retrieval for the current transcript question is precomputed from the transcript the user is
+already recording. Nothing is captured that the user did not already enable, and no frame is sent to a
 model without ⌘↵ / ⌘⇧↵. OCR moves off the critical path but keeps its retention rules: OCR text
 follows the *store transcripts / screenshots* settings exactly as before.
 
