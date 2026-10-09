@@ -122,7 +122,7 @@ final bundle require macOS.
 
 ## Project conventions
 
-- **Contracts first.** `src/lib/types` ⇄ `crates/bluey-core/src/types` are mirrored;
+- **Contracts first.** `src/lib/types` ⇄ `src-tauri/crates/bluey-core/src/types` are mirrored;
   `src/lib/tauri/commands.ts` and `events.ts` are the command/event surface. Change both sides.
 - No `invoke()` outside `src/lib/tauri`; use `bluey.*`. No SQL outside `bluey-storage`.
   No provider HTTP outside `src-tauri/src/ai`. No prompts outside `src/ai/prompts`.
@@ -155,12 +155,15 @@ Settings → General → _Developer mode_ (or `?dev=1` in the browser) enables:
 
 `scripts/release.sh` retains local build-only `.app`/`.dmg` output and the lite Gemini/full
 Claude sidecar choice. Release builds require **Bun 1.4.2** and frozen root/sidecar installs.
-No-credential builds are developer-only and can never become publication-eligible artifacts.
+No-credential builds are developer-only and can never become publication-eligible artifacts;
+`BLUEY_LOCAL_SIGNING_IDENTITY` signs one with a stable Apple Development identity so it keeps its
+Keychain approvals across rebuilds (ADR 0011, [Releasing](RELEASING.md)).
 The existing helpers build both sidecar architectures; Tauri selects the requested target.
 
 Every build also writes the in-app updater bundle (`Bluey.app.tar.gz` + `.sig`, see
 [Updates](UPDATES.md)), so `scripts/release.sh` and `bun run tauri build` need
-`TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) in the environment — the
+`TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) in the environment (the
+script hands it only to `tauri bundle`, after a `tauri build --no-bundle` without it) — the
 owner's key from its backup, or a throwaway pair from `bun run tauri signer generate -w /tmp/dev.key`
 for builds that will never feed real installs. `bun run tauri dev` does not sign anything.
 
@@ -169,4 +172,6 @@ complete signing/notarization/native validation of both macOS DMGs. Manual dispa
 to **build-only**; publication must be explicitly requested with an existing tag. See
 [Releasing](RELEASING.md) for owner credentials, environment/tag protection, manual instructions,
 manifest schema, failure/re-run semantics and the native checks that Linux cannot perform.
-Workflow install copies in `docs/ci/workflows/` are kept in sync with the release workflow.
+The install copies in `docs/ci/workflows/` must match `.github/workflows/`; a portable test
+enforces it for `release.yml` and `nightly.yml`, so after changing `ci.yml` a maintainer re-runs
+`scripts/install-workflows.sh` ([CI / release workflows](ci/README.md)).

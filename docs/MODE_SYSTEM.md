@@ -17,16 +17,16 @@ interface BlueyMode {
 
 | Mode | Schema | Latency | Context | Output |
 |---|---|---|---|---|
-| General (default) | answer | fast | screen, accessibility, transcript, documents | the answer, first person, answer first |
-| Interview | suggested-response | ultra-fast | transcript, resume, job_description, screen | exactly what the candidate says next |
-| Behavioral Interview | behavioral | fast | transcript, resume | the spoken answer (STAR inside, unlabelled) · Story used · Key point |
-| Coding Interview | coding | balanced | screen, accessibility, transcript | the fenced solution first in `content` (the app derives `code` from it), then the approach in ≤2 lines · Complexity · Edge cases |
-| System Design | system-design | deep | screen, transcript | requirements → … → trade-offs, optional Mermaid diagram |
-| Case Interview | case | balanced | transcript, screen | the next thing to say · Clarify · Framework · Analyze · Calculate · Synthesize · Recommend |
-| Sales | sales | ultra-fast | transcript, documents | what the seller says next · Why it works · Optional follow-up |
-| Recruiting | recruiting | fast | transcript, documents, job_description | what the recruiter says or asks next · Screening notes · Next step |
+| General (default) | answer | fast | screen, accessibility, transcript, session_memory | the answer, first person, answer first |
+| Interview | suggested-response | ultra-fast | transcript, resume, job_description, session_memory | exactly what the candidate says next |
+| Behavioral Interview | behavioral | fast | transcript, resume, session_memory | the spoken answer (STAR inside, unlabelled) · Story used · Key point |
+| Coding Interview | coding | balanced | screen, accessibility, transcript, session_memory | the fenced solution first in `content` (the app derives `code` from it), then the approach in ≤2 lines · Complexity · Edge cases |
+| System Design | system-design | deep | screen, accessibility, transcript, session_memory | requirements → … → trade-offs, optional Mermaid diagram |
+| Case Interview | case | balanced | screen, transcript, documents, session_memory | the next thing to say · Clarify · Framework · Analyze · Calculate · Synthesize · Recommend |
+| Sales | sales | ultra-fast | transcript, documents, session_memory | what the seller says next · Why it works · Optional follow-up |
+| Recruiting | recruiting | fast | screen, transcript, job_description, documents, session_memory | what the recruiter says or asks next · Screening notes · Next step |
 | Team Meeting | meeting | fast | transcript, session_memory | live: Important / Decision / Action item / Question; after: Summary … |
-| Lecture | lecture | fast | transcript, screen, session_memory | concepts, definitions, notes, study guide, questions |
+| Lecture | lecture | fast | screen, transcript, session_memory | concepts, definitions, notes, study guide, questions |
 
 Definitions live in `bluey_core::modes::built_in_modes` and are seeded into SQLite at every
 launch; users can edit instructions and attach files. Each built-in row keeps a `seed_hash`
@@ -37,7 +37,7 @@ refreshable again. The TS side never copies these definitions: `tests/fixtures/r
 is generated from Rust (`BLUEY_UPDATE_FIXTURES=1 cargo test -p bluey-core --test ts_fixtures`,
 which fails on drift) and feeds the mock transport and the TS tests.
 
-**Built-in instructions are judgment only** (90–180 words each, enforced by
+**Built-in instructions are judgment only** (80–220 words each, enforced by
 `bluey_core::modes` tests): what a strong answer in that situation gets right — which story to
 pick, how to size a design, when to stay silent in a meeting. Voice, length and fields are owned
 by the layers below, so a mode never says "lead with the answer" or "be concise" — the response
@@ -86,8 +86,14 @@ default no longer exists). A stored mode that no longer exists always falls back
    important statements, topic changes) and Lecture (important statements, topic changes) these
    detections need no answer: they go on the session timeline (`src/transcript/notable.ts`), with
    the spoken words only when Privacy → Store transcripts is on.
-6. **Summary** — the post-session summary is structured per mode (e.g. lecture study guide,
-   meeting decisions/action items).
+6. **Summary** — the post-session summary (*Generate summary* on a session in Settings →
+   Sessions) uses the mode the session started in, even after a switch mid-session. Every
+   summary has the same fields (overview, topics, questions, answers, decisions, action items,
+   open items, improvements) and the schema adds its emphasis
+   (`src/ai/prompts/summary.ts`): a *Study guide* section for Lecture, *Technical review* for
+   Coding Interview and System Design, *Deal notes* for Sales, an *Interview debrief* for the
+   interview schemas, decisions and action items first for Team Meeting; General and
+   Recruiting get the common fields only.
 
 ## Voice and precedence
 

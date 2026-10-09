@@ -76,7 +76,8 @@ the publish path. A self-signed certificate does not help (macOS pins it to the 
    `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (every build path — publication, developer, nightly —
    signs its updater bundle, so an environment-scoped copy is not enough; the workflows hand
    them to the `scripts/release.sh` step alone, and the script withholds them from installs,
-   tests and sidecar builds, so only `tauri build` sees them) and keep an offline
+   tests, sidecar builds and the `tauri build --no-bundle` compile, so only `tauri bundle`, which
+   signs the updater bundle, sees them) and keep an offline
    backup: a lost key strands every installed app on its current version (`docs/UPDATES.md ›
    Signing`). The public key lives in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 

@@ -11,7 +11,7 @@ recognition. Older versions are not supported and Bluey does not pretend otherwi
 |---|---|---|---|---|
 | **Screen Recording** | Capture the current display/window/region on demand (⌘↵) and optional low-frequency observation | To read the question, code or document you are looking at | Pixels of the selected display/window (Bluey's own windows are excluded); nothing is captured without your action unless Smart observation is enabled | `CGPreflightScreenCaptureAccess` (Rust); request via `CGRequestScreenCaptureAccess` |
 | **Microphone** | Capture your voice while a session is listening | Live transcript of what you say | Microphone audio only while `● Listening`; never stored by default | `AVCaptureDevice.authorizationStatus(for: .audio)` (helper) |
-| **Speech Recognition** | On-device speech-to-text | Turn audio into text without sending it to a cloud (default provider) | The same audio, processed on device | `SFSpeechRecognizer.authorizationStatus()` (helper) |
+| **Speech Recognition** | Apple Speech speech-to-text | Transcribe without a cloud provider: used when no Google AI Studio key is connected, when Apple Speech is selected, or with Privacy → Cloud AI off (the default, Gemini Live, streams the audio to Google while listening) | The same audio, on device when the language has an on-device model, otherwise on Apple's servers (Bluey shows a notice) | `SFSpeechRecognizer.authorizationStatus()` (helper) |
 | **Accessibility** | Read the focused window's accessibility tree | Semantic understanding of the UI (focused field, selected text, buttons) that complements OCR | Text and roles of visible elements in the frontmost app; bounded depth/size | `AXIsProcessTrusted` (Rust); prompt via `AXIsProcessTrustedWithOptions` (helper) |
 | **Notifications** | Local notifications for prepared suggestions and session events | Optional; you can leave it off | Nothing beyond displaying notifications | `tauri-plugin-notification` |
 | **System audio** | Part of Screen Recording — `SCStream` audio capture of other apps | Transcribe the other side of a call | Audio of other applications, excluding Bluey itself | Requires Screen Recording |
@@ -23,10 +23,13 @@ microphone.
 ## Permission flow
 1. **First run wizard** explains each permission (what / why / access) before requesting it,
    one screen per permission, with *Continue* and *Open System Settings*.
-2. `PermissionState` is refreshed at launch, after each request, every 30 s while a session is
-   active, and — while the onboarding permissions step or Settings → Permissions is open — when
-   that window regains focus and every 2 s (`useLivePermissions`). Revocation stops the dependent subsystem (audio
-   session, observation) and surfaces a repair flow.
+2. `PermissionState` is refreshed at launch, after each request, every 30 s while audio is
+   listening, and — while the onboarding permissions step or Settings → Permissions is open — when
+   that window regains focus and every 2 s (`useLivePermissions`); a change publishes
+   `permissions.changed` and the badges follow. A revocation does not stop a running session by
+   itself: the next capture or audio start that needs the permission fails with a permission error
+   whose *Open System Settings* action opens the right pane, and if macOS stops the system-audio
+   stream the helper ends the audio session with `audio.error`.
 3. Deep links used for *Open System Settings*:
    * Screen Recording: `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`
    * Microphone: `…?Privacy_Microphone`
@@ -51,10 +54,13 @@ attributes TCC checks of child processes to the *responsible* application, so pr
 
 ## Known platform limits
 * Screen Recording changes take effect only after the app restarts in some macOS versions;
-  Bluey detects `denied → granted` transitions and offers *Restart Bluey*.
+  Bluey has no restart offer of its own. macOS usually offers *Quit & Reopen* when the grant
+  changes, the onboarding wizard resumes at the step it reached (ONB-004), and an open
+  permissions screen re-checks on focus and every 2 s.
 * Notifications authorization requires a signed, bundled app (`.app`); it is unavailable when
   running the raw dev binary.
-* On-device speech models are downloaded per locale by macOS; unsupported locales fall back to
-  server-based recognition or the configured cloud transcription provider.
+* On-device speech models are downloaded per locale by macOS; with Apple Speech, a language
+  without an on-device model is recognised on Apple's servers and Bluey shows a notice
+  (`audio.speech_server`) instead of switching provider silently.
 * Accessibility trees of some apps (Electron without AX enabled, games) are empty; Bluey falls
   back to OCR.

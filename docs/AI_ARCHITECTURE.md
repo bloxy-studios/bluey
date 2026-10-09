@@ -294,9 +294,12 @@ the latency-sensitive live paths, which stay on the direct provider adapters abo
 
 ### Offline behaviour
 
-If no provider is reachable the HUD shows "Bluey is offline"; mode switching, settings, session
-history, transcript display, screen capture and local OCR keep working. Requests fail fast with
-`BlueyError{kind: network}` and a Retry action.
+There is no offline mode or banner. Each request that cannot reach its provider fails on its own
+with `BlueyError{kind: network}` (`network.timeout`, `network.http_5xx`, …) and a *Retry* action,
+shown on that turn in the HUD with the copy from `src/lib/errors/present.ts` ("Network problem").
+Mode switching, settings, session history, transcript display, screen capture and local OCR
+don't need the network and keep working; live transcription handles outages on its own
+(`audio.error{stt_degraded}` while the provider reconnects — see `AUDIO_ARCHITECTURE.md`).
 
 ### Performance targets (targets, not guarantees)
 

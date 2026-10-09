@@ -30,3 +30,16 @@ streams `AIChunk`s back over a Tauri `Channel`.
 * The Tauri app crate is macOS-only and is type-checked cross-platform.
 * Adding a provider = one Rust adapter; adding a mode = data; adding a native capability =
   one helper method + one command.
+
+## Addendum 2026-10-09 — research backend and secret storage (DOC-011, ADR 0007, ADR 0011)
+* The research sidecar's default backend is Gemini function calling (ADR 0007); the Claude
+  Agent SDK loop is the opt-in `claude` backend. Both get the same scoped Exa / Firecrawl /
+  document tools.
+* Secrets no longer go through the `keyring` crate: `secrets::keychain::KeychainBackend` calls
+  `security-framework` directly behind the `SecretsStore` cache, and debug builds use their own
+  service, `com.codewithabdul.bluey.dev` (ADR 0011). The Clerk session comes from the browser
+  sign-in Rust runs (ADR 0008).
+* The boundary itself is unchanged: values never reach the WebView. Besides
+  `secrets_set/has/delete`, the WebView sees only states — `secrets_state` (present / locked /
+  absent), `secrets_health` (Settings → Privacy → *Saved credentials*, names and states) — and
+  can ask for `secrets_allow_access`, the one deliberate interactive read, which returns no value.

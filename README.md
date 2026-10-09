@@ -12,8 +12,10 @@ the mode you're in, and prepares concise, useful help before you even ask.
 * **Screen understanding** — on-demand capture (⌘↵) of the display or the active window
   with ScreenCaptureKit, Vision OCR and Accessibility semantics; optional low-frequency smart
   observation with change detection.
-* **Live transcription** — microphone and system audio (separate channels), on-device Apple
-  Speech by default or a cloud realtime provider, speaker labels with honest confidence.
+* **Live transcription** — microphone and system audio (separate channels), speaker labels with
+  honest confidence. By default the audio streams to Gemini Live (Google, cloud) when a Google AI
+  Studio key is connected; without one, or with Privacy → Cloud AI off, Apple Speech transcribes
+  on the Mac (a language without an on-device model uses Apple's servers, and Bluey says so).
 * **Question & event detection** — questions, coding problems, objections, decisions, action
   items… detected live. The moment a question is heard, the answer to say streams into the
   HUD as a suggestion (or waits behind ⌘⇧↵ if you prefer a discreet hint).
@@ -26,8 +28,9 @@ the mode you're in, and prepares concise, useful help before you even ask.
   design sections with Mermaid diagrams, case frameworks, sales objection handling, meeting
   decisions & action items, lecture notes and study guides.
 * **Sessions** — timeline, history, search (FTS), notes, post-session summaries, export.
-* **Research** — Exa / Firecrawl for current information and a Claude Agent SDK sidecar for
-  deep, multi-step research with strictly scoped tools.
+* **Research** — Exa search and Firecrawl scrape for current information, and a research sidecar
+  (Gemini function calling by default, or the Claude Agent SDK) for deep, multi-step research
+  with strictly scoped tools.
 * **Privacy by design** — nothing captured silently; minimal retention defaults; raw audio never
   stored; Privacy display mode (platform content protection, partial on macOS 15+); one-click
   disable; real deletion.
@@ -55,7 +58,7 @@ The macOS release pipeline specifically pins **Bun 1.4.2** and requires Python 3
 ## Quick start
 ```bash
 bun install
-cp .env.example .env          # or .env.local — VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (the key is imported into the Keychain on first run)
+cp .env.example .env          # or .env.local — VITE_CLERK_PUBLISHABLE_KEY + BLUEY_CLERK_OAUTH_CLIENT_ID + GEMINI_API_KEY (imported at launch into the Keychain when it has no entry; debug builds use their own `.dev` service — docs/DEVELOPMENT.md)
 bun run build:helpers         # Swift helper + research agent sidecars
 bun run tauri:dev
 ```
