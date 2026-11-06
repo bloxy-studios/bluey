@@ -390,6 +390,7 @@ mod tests {
                         reasoning_levels: vec!["low".into(), "medium".into(), "high".into()],
                         streaming: true,
                         context_window: Some(272_000),
+                        fast_tier: false,
                     },
                     quota_pool: None,
                     suggested_roles: vec![

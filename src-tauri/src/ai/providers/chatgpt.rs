@@ -6,14 +6,16 @@
 //! The pure parts — body, SSE events, error mapping, the shaper — are
 //! `bluey_protocols::codex`; this file is the HTTP around them.
 //!
-//! `instructions`: Bluey's own prompt is sent as `instructions`
-//! (`InstructionsPolicy::Own`) so the model is primed by Bluey, not by the
-//! 13–21 KB Codex CLI agent prompt. The backend's acceptance of that shape is
-//! the open replay of docs/PROVIDER_ACCOUNTS.md; it is probed in production:
-//! a 400 on the own-prompt shape is retried once with the catalog template
-//! (Bluey's prompt as a `developer` item), and a stream that finishes without
-//! a single text delta switches the next request to the template. Either
-//! switch is sticky for the process and logged once.
+//! Instructions: like the CLI since 0.167.0, no top-level `instructions` —
+//! the base instructions are the leading `developer` item of `input`. Bluey's
+//! own prompt is that item (`InstructionsPolicy::Own`) so the model is primed
+//! by Bluey, not by the 13–21 KB Codex CLI agent prompt. The backend's
+//! acceptance of that shape is the open replay of docs/PROVIDER_ACCOUNTS.md;
+//! it is probed in production: a 400 on the own-prompt shape is retried once
+//! with the catalog template as the leading item (Bluey's prompt as a second
+//! `developer` item — the CLI's shape exactly), and a stream that finishes
+//! without a single text delta switches the next request to the template.
+//! Either switch is sticky for the process and logged once.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -38,11 +40,20 @@ use crate::accounts::chatgpt::{client_environment, send_shaped, templates};
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Whether the Codex backend has refused Bluey's own prompt as `instructions`
+/// Whether the Codex backend has refused Bluey's own prompt as the base instructions
 /// in this process (module docs). Shared by every adapter instance, since one
 /// is built per request.
 static OWN_INSTRUCTIONS_REJECTED: LazyLock<Arc<AtomicBool>> =
     LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+
+/// Whether the Codex backend has refused the Fast tier (`service_tier:
+/// "priority"`) in this process; later requests ask for standard processing.
+static FAST_TIER_REFUSED: LazyLock<Arc<AtomicBool>> =
+    LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+
+/// The code `codex::map_error` gives a 400 it cannot name — the only kind a
+/// different request shape (Fast tier off, template instructions) may fix.
+const GENERIC_REJECTION: &str = "ai.invalid_request";
 
 /// What one `/responses` POST came back with, before any SSE is read.
 enum Sent {
@@ -70,6 +81,8 @@ pub struct ChatgptProvider {
     base_url: String,
     /// The process-wide own-instructions verdict (tests get a fresh one).
     own_instructions_rejected: Arc<AtomicBool>,
+    /// The process-wide Fast-tier verdict (tests get a fresh one).
+    fast_tier_refused: Arc<AtomicBool>,
 }
 
 impl ChatgptProvider {
@@ -84,6 +97,7 @@ impl ChatgptProvider {
             credential,
             base_url: codex::backend_base(),
             own_instructions_rejected: Arc::clone(&OWN_INSTRUCTIONS_REJECTED),
+            fast_tier_refused: Arc::clone(&FAST_TIER_REFUSED),
         }
     }
 
@@ -97,10 +111,19 @@ impl ChatgptProvider {
     #[cfg(test)]
     fn with_fresh_instructions_verdict(mut self) -> Self {
         self.own_instructions_rejected = Arc::new(AtomicBool::new(false));
+        self.fast_tier_refused = Arc::new(AtomicBool::new(false));
         self
     }
 
-    /// Whether this process has seen the backend refuse Bluey's prompt as `instructions`.
+    /// The backend answered a Fast-tier request with 400 and the same request
+    /// without it succeeded: standard processing from now on, logged once.
+    fn refuse_fast_tier(&self) {
+        if !self.fast_tier_refused.swap(true, Ordering::Relaxed) {
+            tracing::warn!("the Codex backend refused the Fast tier; using standard processing");
+        }
+    }
+
+    /// Whether this process has seen the backend refuse Bluey's prompt as the base instructions.
     pub fn own_instructions_rejected(&self) -> bool {
         self.own_instructions_rejected.load(Ordering::Relaxed)
     }
@@ -109,12 +132,14 @@ impl ChatgptProvider {
         if !flag.swap(true, Ordering::Relaxed) {
             tracing::warn!(
                 reason,
-                "the Codex backend did not accept Bluey's prompt as `instructions`; sending the catalog template with Bluey's prompt as a developer item from now on"
+                "the Codex backend did not accept Bluey's prompt as the base instructions; sending the catalog template first with Bluey's prompt as a second developer item from now on"
             );
         }
     }
 
     /// Build, shape and send one `/responses` request.
+    // One call per request shape the stream tries (tier, instructions).
+    #[allow(clippy::too_many_arguments)]
     async fn send_responses(
         &self,
         request: &ProviderRequest,
@@ -122,6 +147,7 @@ impl ChatgptProvider {
         conversation: &str,
         effort: &str,
         instructions: codex::InstructionsPolicy<'_>,
+        service_tier: Option<&str>,
         token: &CancellationToken,
     ) -> BlueyResult<Sent> {
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -134,6 +160,7 @@ impl ChatgptProvider {
             prompt_cache_key: conversation,
             output_schema: request.output_schema.as_ref(),
             image_detail: codex::DEFAULT_IMAGE_DETAIL,
+            service_tier,
         });
         let mut shaped =
             ProviderHttpRequest::new("POST", &format!("{}/responses", self.base_url), body);
@@ -248,53 +275,87 @@ impl AiProvider for ChatgptProvider {
     ) -> BlueyResult<ChunkStream> {
         let account_id = self.account_id()?;
         let conversation = conversation_id(request.session_id.as_deref());
-        let levels = self
-            .credential
-            .catalog
-            .as_ref()
+        let catalog = self.credential.catalog.as_ref();
+        let levels = catalog
             .map(|catalog| codex::model_reasoning(&catalog.models, &request.model))
             .unwrap_or_default();
         let effort = codex::reasoning_effort(request.reasoning, request.latency, &levels, None);
-        let template = self.ensure_template(&request.model).await;
-        // Bluey's prompt as `instructions` first (module docs); the catalog
-        // template is the fallback, so without one `Own` is the only shape.
-        let can_fall_back = template.is_some();
-        let own_first = !self.own_instructions_rejected() || !can_fall_back;
-        let sent = self
-            .send_responses(
-                request,
-                &account_id,
-                &conversation,
-                &effort,
-                instructions_policy(own_first, template.as_deref()),
-                &token,
-            )
-            .await?;
-        match sent {
-            Sent::Stream(stream) if own_first && can_fall_back => Ok(watch_for_empty_output(
-                stream,
-                Arc::clone(&self.own_instructions_rejected),
-            )),
-            Sent::Stream(stream) => Ok(stream),
-            Sent::Rejected { status: 400, .. } if own_first && can_fall_back => {
-                Self::reject_own_instructions(&self.own_instructions_rejected, "http 400");
-                match self
-                    .send_responses(
-                        request,
-                        &account_id,
-                        &conversation,
-                        &effort,
-                        instructions_policy(false, template.as_deref()),
-                        &token,
-                    )
-                    .await?
-                {
-                    Sent::Stream(stream) => Ok(stream),
-                    Sent::Rejected { error, .. } => Err(error),
+        let mut tier = codex::service_tier_for(
+            request.latency,
+            catalog.is_some_and(|c| codex::model_fast_tier(&c.models, &request.model)),
+            self.fast_tier_refused.load(Ordering::Relaxed),
+        );
+        // Bluey's prompt as the base instructions first (module docs). The catalog
+        // template is needed only once the backend has refused that shape, so
+        // a cold template cache never costs a live answer a catalog round trip.
+        let mut template = if self.own_instructions_rejected() {
+            self.ensure_template(&request.model).await
+        } else {
+            None
+        };
+        let mut tier_suspect = false;
+        // At most: the request, one retry without the Fast tier, one with the template.
+        for _ in 0..3 {
+            let sent = self
+                .send_responses(
+                    request,
+                    &account_id,
+                    &conversation,
+                    &effort,
+                    instructions_policy(template.is_none(), template.as_deref()),
+                    tier,
+                    &token,
+                )
+                .await?;
+            match sent {
+                Sent::Stream(stream) => {
+                    if tier_suspect {
+                        self.refuse_fast_tier();
+                    }
+                    return Ok(match template {
+                        Some(_) => stream,
+                        None => watch_for_empty_output(
+                            stream,
+                            Arc::clone(&self.own_instructions_rejected),
+                        ),
+                    });
                 }
+                // The Fast tier is the catalog's offer, not a promise: a 400
+                // is retried once without it before the prompt shape is blamed.
+                // ("unsupported parameter" reads as fingerprint drift: with the
+                // tier on, it is the tier until the retry proves otherwise.)
+                Sent::Rejected { status: 400, error }
+                    if tier.is_some()
+                        && (error.code == GENERIC_REJECTION
+                            || error.code == bluey_core::accounts::codes::FINGERPRINT_DRIFT) =>
+                {
+                    tier = None;
+                    tier_suspect = true;
+                }
+                // Only an unexplained 400 can be the prompt shape; a named one
+                // (unknown model, context length, policy) is final.
+                Sent::Rejected { status: 400, error }
+                    if template.is_none() && error.code == GENERIC_REJECTION =>
+                {
+                    tier_suspect = false;
+                    match self.ensure_template(&request.model).await {
+                        Some(found) => {
+                            Self::reject_own_instructions(
+                                &self.own_instructions_rejected,
+                                "http 400",
+                            );
+                            template = Some(found);
+                        }
+                        None => return Err(error),
+                    }
+                }
+                Sent::Rejected { error, .. } => return Err(error),
             }
-            Sent::Rejected { error, .. } => Err(error),
         }
+        Err(BlueyError::ai(
+            "http_400",
+            "the ChatGPT backend rejected the request in every shape Bluey sends",
+        ))
     }
 
     async fn embed(
@@ -328,7 +389,7 @@ impl AiProvider for ChatgptProvider {
 
 /// Flip the shared verdict when a stream on the own-instructions shape
 /// finishes without a single text delta — the quiet way the backend can
-/// refuse Bluey's prompt as `instructions`. This reply still flows through
+/// refuse Bluey's prompt as the base instructions. This reply still flows through
 /// unchanged (the WebView shows its failure state); the next request carries
 /// the template.
 fn watch_for_empty_output(stream: ChunkStream, rejected: Arc<AtomicBool>) -> ChunkStream {
@@ -581,10 +642,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
         let body: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(body["model"], "gpt-6-astra");
         // Bluey's system prompt primes the model; the Codex agent template does not.
-        assert_eq!(body["instructions"], "You are Bluey.");
-        assert_eq!(body["input"][0]["role"], "user");
-        assert_eq!(body["input"][0]["content"][0]["text"], "hello");
-        assert_eq!(body["input"].as_array().map(Vec::len), Some(1));
+        // No top-level `instructions` (the CLI's 0.167.0 shape): it leads `input`.
+        assert!(body.get("instructions").is_none());
+        assert_eq!(body["input"][0]["role"], "developer");
+        assert_eq!(body["input"][0]["content"][0]["text"], "You are Bluey.");
+        assert_eq!(body["input"][1]["role"], "user");
+        assert_eq!(body["input"][1]["content"][0]["text"], "hello");
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
         assert_eq!(body["store"], false);
         assert_eq!(body["stream"], true);
         assert!(body.get("max_output_tokens").is_none());
@@ -615,13 +679,57 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
             "one own-instructions attempt, one template retry"
         );
         let first: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
-        assert_eq!(first["instructions"], "You are Bluey.");
-        assert_eq!(first["input"][0]["role"], "user");
+        assert!(first.get("instructions").is_none());
+        assert_eq!(first["input"][0]["content"][0]["text"], "You are Bluey.");
+        assert_eq!(first["input"][1]["role"], "user");
         let second: serde_json::Value = serde_json::from_str(&seen[1].1).unwrap();
-        assert_eq!(second["instructions"], "You are Codex.");
+        assert!(second.get("instructions").is_none());
         assert_eq!(second["input"][0]["role"], "developer");
+        assert_eq!(second["input"][0]["content"][0]["text"], "You are Codex.");
+        assert_eq!(second["input"][1]["role"], "developer");
+        assert_eq!(second["input"][1]["content"][0]["text"], "You are Bluey.");
+        assert_eq!(second["input"][2]["content"][0]["text"], "hello");
+    }
+
+    #[tokio::test]
+    async fn instant_answers_ask_for_the_fast_tier_and_drop_it_when_refused() {
+        use bluey_core::types::{
+            CatalogModel, CatalogSource, ModelCapabilities, ProviderModelCatalog,
+        };
+        let (base, seen) = stub_many(vec![rejected_response(), ok_response(HELLO_SSE)]).await;
+        let mut provider = provider(&base);
+        provider.credential.catalog = Some(ProviderModelCatalog {
+            account_id: "chatgpt".into(),
+            provider_id: "chatgpt".into(),
+            fetched_at: "2026-11-06T00:00:00Z".into(),
+            source: CatalogSource::Endpoint,
+            models: vec![CatalogModel {
+                id: "gpt-6-astra".into(),
+                label: "GPT-6 Astra".into(),
+                capabilities: ModelCapabilities {
+                    fast_tier: true,
+                    ..ModelCapabilities::default()
+                },
+                quota_pool: None,
+                suggested_roles: vec![],
+            }],
+        });
+        let stream = provider
+            .stream(&request(), CancellationToken::new())
+            .await
+            .expect("the retry without the tier succeeds");
+        assert_eq!(super::super::collect_text(stream).await.unwrap(), "Hello");
+        assert!(provider.fast_tier_refused.load(Ordering::Relaxed));
+        assert!(
+            !provider.own_instructions_rejected(),
+            "the tier was the problem, not Bluey's prompt"
+        );
+        let seen = seen.await.unwrap();
+        let first: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
+        assert_eq!(first["service_tier"], "priority");
+        let second: serde_json::Value = serde_json::from_str(&seen[1].1).unwrap();
+        assert!(second.get("service_tier").is_none());
         assert_eq!(second["input"][0]["content"][0]["text"], "You are Bluey.");
-        assert_eq!(second["input"][1]["content"][0]["text"], "hello");
     }
 
     #[tokio::test]
@@ -650,10 +758,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
 
         let seen = seen.await.unwrap();
         let first: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
-        assert_eq!(first["instructions"], "You are Bluey.");
+        assert_eq!(first["input"][0]["content"][0]["text"], "You are Bluey.");
         let second: serde_json::Value = serde_json::from_str(&seen[1].1).unwrap();
-        assert_eq!(second["instructions"], "You are Codex.");
-        assert_eq!(second["input"][0]["role"], "developer");
+        assert_eq!(second["input"][0]["content"][0]["text"], "You are Codex.");
+        assert_eq!(second["input"][1]["content"][0]["text"], "You are Bluey.");
     }
 
     #[tokio::test]

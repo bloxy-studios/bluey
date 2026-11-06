@@ -70,7 +70,15 @@ impl AntigravityProvider {
         let mut body = proto::build_generate_body(&proto::GenerateBodyOptions {
             model: &request.model,
             messages: &request.messages,
-            max_output_tokens: request.max_output_tokens,
+            // Gemini 3.x counts thinking against the output budget, as on the
+            // direct Gemini adapter; Claude models get their own allowance in
+            // `normalise_request`.
+            max_output_tokens: match ag::family(&request.model) {
+                ag::Family::Gemini => {
+                    proto::max_output_tokens_with_thinking(request.max_output_tokens, thinking)
+                }
+                _ => request.max_output_tokens,
+            },
             temperature: request.temperature,
             output_schema: request.output_schema.as_ref(),
             thinking_level: thinking,
@@ -302,7 +310,11 @@ mod tests {
             .starts_with('-'));
         assert_eq!(json["request"]["systemInstruction"]["role"], "user");
         assert_eq!(json["request"]["contents"][0]["parts"][0]["text"], "hi");
-        assert_eq!(json["request"]["generationConfig"]["maxOutputTokens"], 400);
+        // Gemini 3 counts thinking against the cap: the low level's allowance on top.
+        assert_eq!(
+            json["request"]["generationConfig"]["maxOutputTokens"],
+            400 + proto::ThinkingLevel::Low.output_allowance()
+        );
         assert_eq!(
             json["request"]["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "low"

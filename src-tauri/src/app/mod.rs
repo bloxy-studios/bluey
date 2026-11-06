@@ -468,6 +468,15 @@ async fn finish_boot(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         accounts_handle.state::<AppCore>().accounts.restore().await;
     });
+    // Preset models a key can no longer call move before the first question.
+    let models_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        models_handle
+            .state::<AppCore>()
+            .ai
+            .repair_assignments_from_live_models()
+            .await;
+    });
     if let Err(e) = core
         .shortcuts
         .apply_bindings(settings.shortcuts.clone())

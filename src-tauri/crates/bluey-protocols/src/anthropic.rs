@@ -30,7 +30,6 @@ pub struct MessagesBodyOptions<'a> {
     pub messages: &'a [AiMessage],
     pub stream: bool,
     pub max_output_tokens: Option<u32>,
-    pub temperature: Option<f32>,
     /// Structured output via `output_config.format` (json_schema).
     pub output_schema: Option<&'a JsonSchemaSpec>,
     /// When the API rejected `output_config` (HTTP 400), rebuild the body with
@@ -84,9 +83,8 @@ pub fn build_messages_body(opts: &MessagesBodyOptions<'_>) -> Value {
     if opts.stream {
         obj.insert("stream".into(), json!(true));
     }
-    if let Some(t) = opts.temperature {
-        obj.insert("temperature".into(), json!(t));
-    }
+    // No `temperature` / `top_p` / `top_k`: current Claude models reject them
+    // with HTTP 400 (`claude_code::apply_thinking`).
     if let Some(spec) = opts.output_schema {
         if !opts.schema_as_prompt_fallback {
             // zod's top-level `$schema` is metadata the validator does not need,
@@ -319,7 +317,10 @@ impl JsonAccumulator {
 /// Whether an HTTP-400 error body indicates the API rejected `output_config`
 /// (→ retry with the schema instructed in the prompt instead).
 pub fn is_output_config_rejection(status: u16, body: &str) -> bool {
-    status == 400 && (body.contains("output_config") || body.contains("output_format"))
+    // `output_config` also carries `effort`: a 400 about effort (an older model)
+    // is not a reason to move the schema into the prompt for good.
+    let about_output_config = body.contains("output_config") || body.contains("output_format");
+    status == 400 && about_output_config && !body.contains("effort")
 }
 
 #[cfg(test)]
@@ -327,6 +328,23 @@ mod tests {
     use super::*;
     use bluey_core::types::ImageMediaType;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn only_a_format_rejection_moves_the_schema_into_the_prompt() {
+        assert!(is_output_config_rejection(
+            400,
+            r#"{"error":{"message":"output_config.format: not supported"}}"#
+        ));
+        assert!(is_output_config_rejection(
+            400,
+            r#"{"error":{"message":"output_format is not supported"}}"#
+        ));
+        assert!(!is_output_config_rejection(
+            400,
+            r#"{"error":{"message":"output_config.effort: This model does not support the effort parameter."}}"#
+        ));
+        assert!(!is_output_config_rejection(500, "output_config.format"));
+    }
 
     #[test]
     fn extracts_system_and_builds_blocks() {
@@ -351,7 +369,6 @@ mod tests {
             messages: &messages,
             stream: true,
             max_output_tokens: Some(1000),
-            temperature: Some(0.1),
             output_schema: None,
             schema_as_prompt_fallback: false,
         });
@@ -380,7 +397,6 @@ mod tests {
             messages: &messages,
             stream: false,
             max_output_tokens: None,
-            temperature: None,
             output_schema: Some(&spec),
             schema_as_prompt_fallback: false,
         });
@@ -399,7 +415,6 @@ mod tests {
             messages: &messages,
             stream: false,
             max_output_tokens: None,
-            temperature: None,
             output_schema: Some(&bounded),
             schema_as_prompt_fallback: false,
         });
@@ -413,7 +428,6 @@ mod tests {
             messages: &messages,
             stream: false,
             max_output_tokens: None,
-            temperature: None,
             output_schema: Some(&spec),
             schema_as_prompt_fallback: true,
         });

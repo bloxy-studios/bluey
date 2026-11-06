@@ -661,6 +661,7 @@ pub fn catalog_models(entries: &[ModelEntry]) -> Vec<CatalogModel> {
                 .or_else(|| curated_label(&entry.id).map(str::to_string))
                 .unwrap_or_else(|| entry.id.clone()),
             capabilities: ModelCapabilities {
+                fast_tier: false,
                 vision: family(&entry.id) != Family::GptOss,
                 tools: true,
                 reasoning_levels: reasoning_levels(&entry.id),
@@ -709,7 +710,7 @@ fn thinking_budget(reasoning: ReasoningLevel) -> Option<u32> {
 
 /// Make a Gemini `generateContent` body fit the pool's model line: `safetySettings`
 /// gone; Gemini keeps `thinkingLevel` (`minimal` → `low` where the line rejects it);
-/// Claude takes a `thinkingBudget` below `maxOutputTokens` (≥ 1024 or none) and
+/// Claude takes a `thinkingBudget` with `maxOutputTokens` raised above it, and
 /// no `temperature` next to it; GPT-OSS and unknown lines carry no thinking
 /// config; `systemInstruction` gets the `user` role the references send.
 pub fn normalise_request(inner: &mut Value, model: &str, reasoning: ReasoningLevel) {
@@ -740,20 +741,21 @@ pub fn normalise_request(inner: &mut Value, model: &str, reasoning: ReasoningLev
         }
         Family::Claude => {
             config.remove("thinkingConfig");
-            let max_out = config
-                .get("maxOutputTokens")
-                .and_then(Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok());
-            let budget = thinking_budget(reasoning).map(|wanted| match max_out {
-                Some(max) => wanted.min(max.saturating_sub(1)),
-                None => wanted,
-            });
-            if let Some(budget) = budget.filter(|b| *b >= 1024) {
+            // Current Claude models answer sampling knobs with HTTP 400.
+            config.remove("temperature");
+            config.remove("topP");
+            config.remove("topK");
+            if let Some(budget) = thinking_budget(reasoning) {
                 config.insert(
                     "thinkingConfig".into(),
                     json!({ "thinkingBudget": budget, "includeThoughts": false }),
                 );
-                config.remove("temperature");
+                // The budget must stay below `maxOutputTokens`: the answer's own
+                // cap goes on top of it instead of the budget eating the cap
+                // (a 1 200-token answer under a 1 199-token budget is cut off).
+                if let Some(max) = config.get("maxOutputTokens").and_then(Value::as_u64) {
+                    config.insert("maxOutputTokens".into(), json!(max + u64::from(budget)));
+                }
             }
         }
         Family::GptOss | Family::Other => {
@@ -1649,8 +1651,12 @@ mod tests {
         normalise_request(&mut opus, "claude-opus-4-6-thinking", ReasoningLevel::Deep);
         assert_eq!(
             opus["generationConfig"]["thinkingConfig"],
-            json!({ "thinkingBudget": 2047, "includeThoughts": false }),
-            "budget stays below maxOutputTokens"
+            json!({ "thinkingBudget": 16_000, "includeThoughts": false }),
+        );
+        assert_eq!(
+            opus["generationConfig"]["maxOutputTokens"],
+            2048 + 16_000,
+            "the answer's cap sits on top of the thinking budget"
         );
         assert!(
             opus["generationConfig"].get("temperature").is_none(),
@@ -1658,13 +1664,13 @@ mod tests {
         );
 
         let mut sonnet = gemini_body("claude-sonnet-4-6", None, Some(400));
-        normalise_request(&mut sonnet, "claude-sonnet-4-6", ReasoningLevel::Light);
+        normalise_request(&mut sonnet, "claude-sonnet-4-6", ReasoningLevel::None);
+        assert!(sonnet["generationConfig"].get("thinkingConfig").is_none());
+        assert_eq!(sonnet["generationConfig"]["maxOutputTokens"], 400);
         assert!(
-            sonnet["generationConfig"].get("thinkingConfig").is_none(),
-            "a 399-token budget is below the 1024 minimum → none"
+            sonnet["generationConfig"].get("temperature").is_none(),
+            "never a sampling knob on Claude"
         );
-        let temperature = sonnet["generationConfig"]["temperature"].as_f64().unwrap();
-        assert!((temperature - 0.3).abs() < 1e-6, "{temperature}");
 
         let mut sonnet_free = gemini_body("claude-sonnet-4-6", None, None);
         normalise_request(&mut sonnet_free, "claude-sonnet-4-6", ReasoningLevel::Light);

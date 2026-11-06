@@ -2,7 +2,7 @@
 //! the task type, latency budget, reasoning level, context size and vision
 //! requirement — plus the user's role assignments. Pure decision logic, no I/O.
 
-use crate::error::BlueyError;
+use crate::error::{BlueyError, BlueyErrorKind};
 use crate::presets;
 use crate::types::{
     AiProviderConfig, AiProviderKind, AiTask, LatencyBudget, ModelAssignment, ModelRole,
@@ -330,6 +330,90 @@ fn api_key_fallback<'p>(
     gemini_first
         .filter(usable)
         .find_map(|p| model_for(p).map(|model| (p, model)))
+}
+
+/// Text roles a failover may borrow an assignment from, after the desired
+/// role's own chain: the quickest first, since a failover already lost time.
+const FAILOVER_ROLE_ORDER: [ModelRole; 5] = [
+    ModelRole::Fast,
+    ModelRole::Default,
+    ModelRole::Vision,
+    ModelRole::Reasoning,
+    ModelRole::Research,
+];
+
+/// Whether a request that failed with `error` before producing any text may
+/// be retried on another provider. Transport failures, provider-side errors
+/// (5xx, overload, rejected request shapes, unknown models), a key the
+/// provider refuses and every subscription stop signal qualify; a privacy
+/// refusal, a cancellation, a missing configuration or an internal bug do not
+/// — another provider would fail the same way.
+pub fn failover_eligible(error: &BlueyError) -> bool {
+    match error.kind {
+        BlueyErrorKind::Network | BlueyErrorKind::Ai => true,
+        BlueyErrorKind::Authentication => error.code.starts_with("account."),
+        // A key the provider refuses, or a model it no longer offers (a stale
+        // catalog or preset): another provider still answers.
+        BlueyErrorKind::Configuration => {
+            error.code.starts_with("config.http_")
+                || matches!(
+                    error.code.as_str(),
+                    "config.model_not_found" | "config.quota_exhausted"
+                )
+        }
+        _ => false,
+    }
+}
+
+/// Pick a different provider for a request whose provider failed before any
+/// text arrived (the stream runner retries on it so a live question still gets
+/// an answer). Order: the desired role's fallback chain, then the other text
+/// roles ([`FAILOVER_ROLE_ORDER`]) — the user's own assignments on another
+/// provider — then the API-key stand-in [`select`] uses for a dead account.
+/// Providers in `exclude` (those that already failed) are never picked.
+/// `None` for non-text roles or when nothing else can serve the request.
+pub fn failover(
+    input: &RoutingInput,
+    assignments: &ModelRoleAssignments,
+    providers: &[AiProviderConfig],
+    exclude: &[String],
+) -> Option<ModelSelection> {
+    let needs_vision = input.vision_required || input.task == AiTask::Vision;
+    let (role, _) = desired_role(input, needs_vision);
+    if !TEXT_ROLES.contains(&role) {
+        return None;
+    }
+    let eligible: Vec<AiProviderConfig> = providers
+        .iter()
+        .filter(|p| !exclude.contains(&p.id))
+        .filter(|p| provider_usable(p) && (!needs_vision || provider_supports_vision(p.kind)))
+        .cloned()
+        .collect();
+    let failed = exclude.join(", ");
+    let borrowed = fallback_chain(role)
+        .iter()
+        .chain(FAILOVER_ROLE_ORDER.iter())
+        .filter_map(|candidate| assignments.get(*candidate))
+        .find_map(|assignment| {
+            eligible
+                .iter()
+                .find(|p| p.id == assignment.provider_id)
+                .map(|p| (p, assignment.model.clone()))
+        });
+    let (provider, model) = match borrowed {
+        Some(found) => found,
+        None => api_key_fallback(role, needs_vision, assignments, &eligible)?,
+    };
+    Some(ModelSelection {
+        provider_id: provider.id.clone(),
+        provider_kind: provider.kind,
+        model: model.clone(),
+        role,
+        reason: format!(
+            "failover → provider {} model {model} ({failed} failed)",
+            provider.id
+        ),
+    })
 }
 
 /// Roles whose models generate text (a stand-in model must be one of these).
@@ -723,5 +807,83 @@ mod tests {
         ] {
             assert!(provider_supports_vision(kind));
         }
+    }
+
+    #[test]
+    fn failover_moves_to_another_assigned_provider_first() {
+        let providers = vec![
+            account("chatgpt", AiProviderKind::ChatgptCodex, true),
+            provider("gemini", AiProviderKind::GoogleGemini, true, true),
+        ];
+        let assignments = ModelRoleAssignments {
+            default: Some(assignment("chatgpt", "gpt-5.6-terra")),
+            fast: Some(assignment("chatgpt", "gpt-5.6-luna")),
+            reasoning: Some(assignment("gemini", "gemini-pro-latest")),
+            ..Default::default()
+        };
+        let i = input(AiTask::Answer);
+        let s =
+            failover(&i, &assignments, &providers, &["chatgpt".into()]).expect("another provider");
+        assert_eq!(s.provider_id, "gemini");
+        assert_eq!(
+            s.model, "gemini-pro-latest",
+            "the user's own assignment wins"
+        );
+        assert_eq!(s.role, ModelRole::Fast);
+        assert!(s.reason.contains("chatgpt failed"), "{}", s.reason);
+    }
+
+    #[test]
+    fn failover_uses_the_api_key_stand_in_when_nothing_else_is_assigned() {
+        let providers = vec![
+            account("claude", AiProviderKind::ClaudeSubscription, true),
+            provider("gemini", AiProviderKind::GoogleGemini, true, true),
+        ];
+        let s = failover(
+            &input(AiTask::Answer),
+            &default_on("claude"),
+            &providers,
+            &["claude".into()],
+        )
+        .expect("stand-in");
+        assert_eq!(s.provider_id, "gemini");
+        assert_eq!(s.model, "gemini-3.5-flash-lite", "the fast role's preset");
+    }
+
+    #[test]
+    fn failover_never_returns_an_excluded_or_unusable_provider() {
+        let providers = vec![
+            provider("gemini", AiProviderKind::GoogleGemini, true, true),
+            provider("anthropic", AiProviderKind::Anthropic, true, false),
+        ];
+        let assignments = default_on("gemini");
+        assert!(failover(
+            &input(AiTask::Answer),
+            &assignments,
+            &providers,
+            &["gemini".into()]
+        )
+        .is_none());
+        let mut embedding = input(AiTask::Embedding);
+        embedding.latency = LatencyBudget::Balanced;
+        assert!(failover(&embedding, &full_assignments(), &self::providers(), &[]).is_none());
+    }
+
+    #[test]
+    fn only_provider_side_failures_qualify_for_failover() {
+        assert!(failover_eligible(&BlueyError::network("timeout", "t")));
+        assert!(failover_eligible(&BlueyError::ai("http_503", "busy")));
+        assert!(failover_eligible(&BlueyError::account(
+            "rate_limited",
+            "limit"
+        )));
+        assert!(failover_eligible(&BlueyError::configuration(
+            "http_401", "bad key"
+        )));
+        assert!(!failover_eligible(&BlueyError::configuration(
+            "no_model", "none"
+        )));
+        assert!(!failover_eligible(&BlueyError::cancelled()));
+        assert!(!failover_eligible(&BlueyError::internal("bug")));
     }
 }

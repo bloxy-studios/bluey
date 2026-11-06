@@ -133,6 +133,23 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertNotIn("merge-multiple", content)
         self.assertNotIn("--clobber", content)
 
+    def test_nightly_signing_identity_is_optional_and_scoped_to_its_import_step(self):
+        # A stable identity keeps macOS approvals across nightlies (ADR 0011); the certificate
+        # reaches only the step that imports it, and its absence keeps the ad-hoc build.
+        content = (SOURCE_ROOT / ".github/workflows/nightly.yml").read_text()
+        import_step = ("        env:\n"
+                       "          CERT_P12_BASE64: ${{ secrets.BLUEY_NIGHTLY_SIGNING_CERT_P12 }}\n"
+                       "          CERT_PASSWORD: ${{ secrets.BLUEY_NIGHTLY_SIGNING_CERT_PASSWORD }}\n"
+                       "        run: bash scripts/release/import-signing-identity.sh\n")
+        self.assertIn(import_step, content)
+        self.assertEqual(content.count("BLUEY_NIGHTLY_SIGNING_CERT_P12"), 1)
+        self.assertEqual(content.count("BLUEY_NIGHTLY_SIGNING_CERT_PASSWORD"), 1)
+        self.assertLess(content.index(import_step), content.index("run: bash scripts/release.sh"))
+        script = (SOURCE_ROOT / "scripts/release/import-signing-identity.sh").read_text()
+        self.assertIn("BLUEY_LOCAL_SIGNING_IDENTITY=", script)
+        self.assertIn("signed ad hoc", script)
+        self.assertNotIn("APPLE_ID", script)
+
 
 if __name__ == "__main__":
     unittest.main()

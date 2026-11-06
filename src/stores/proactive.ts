@@ -36,7 +36,14 @@ import {
 import { bluey } from "@/lib/tauri/api";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { getTransport, type Unlisten } from "@/lib/tauri/transport";
-import type { BlueyError, BlueyMode, DetectedEvent, Settings, TranscriptSegment } from "@/lib/types";
+import {
+  toBlueyError,
+  type BlueyError,
+  type BlueyMode,
+  type DetectedEvent,
+  type Settings,
+  type TranscriptSegment,
+} from "@/lib/types";
 import {
   CLASSIFIER_MIN_CONFIDENCE,
   conversationalMode,
@@ -63,6 +70,10 @@ export const CLASSIFY_WINDOW_SECONDS = 45;
 const MAX_TRACKED_EVENT_IDS = 64;
 /** How long a fragment ("So tell me about") waits for the rest of its question (LIVE-010). */
 export const COALESCE_WINDOW_MS = 900;
+/** How long after a fragment was classified alone the same voice may still finish it (LIVE-010). */
+export const CONTINUATION_WINDOW_MS = 3_000;
+/** A fragment this short heard alone (and without "?") is too little to answer. */
+const MUTED_FRAGMENT_MAX_WORDS = 5;
 /** Finals merged into one utterance at most, so a monologue is not held forever. */
 const MAX_COALESCED_FINALS = 3;
 
@@ -169,6 +180,16 @@ function similarity(a: string, b: string): number {
   let shared = 0;
   for (const word of left) if (right.has(word)) shared += 1;
   return shared / (left.size + right.size - shared);
+}
+
+/** When a question was heard (0 when unparseable, so any dated question outranks it). */
+function detectedTime(event: DetectedEvent): number {
+  const at = Date.parse(event.detectedAt);
+  return Number.isFinite(at) ? at : 0;
+}
+
+function overlaps(a: readonly string[], b: readonly string[]): boolean {
+  return a.some((id) => b.includes(id));
 }
 
 export function isStale(event: DetectedEvent, now: number): boolean {
@@ -304,6 +325,14 @@ export function startProactiveLoop(): Unlisten {
   let surfaced: SurfaceContext["surfaced"] = [];
   /** A counterpart's fragment waiting for the rest of its question (LIVE-010). */
   let held: { segment: TranscriptSegment; ids: string[]; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** A fragment classified on its own, which the same voice may still continue (LIVE-010). */
+  let released: { segment: TranscriptSegment; ids: string[]; at: number; eventId?: string } | null = null;
+  /** The continuation of `released`: its detection replaces the fragment's suggestion. */
+  let correction: { segmentIds: readonly string[]; fragmentEventId?: string } | null = null;
+  /** Segments of the latest short fragment classified alone: listed, never answered. */
+  let mutedSegmentIds: ReadonlySet<string> = new Set();
+  /** The question being prepared and whether its answer has started streaming. */
+  let inflight: { event: DetectedEvent; streaming: boolean } | null = null;
 
   const remember = (id: string) => {
     seen.add(id);
@@ -321,6 +350,8 @@ export function startProactiveLoop(): Unlisten {
       { text: event.text, at: Date.now(), ...(event.speaker ? { speaker: event.speaker } : {}) },
     ];
     useProactiveStore.getState().setPreparing(event.id);
+    inflight = { event, streaming: false };
+    let generation: number | null = null;
     try {
       const settings = useSettingsStore.getState().settings;
       const mode = activeMode();
@@ -328,7 +359,6 @@ export function startProactiveLoop(): Unlisten {
       const sessionState = useSessionStore.getState();
       const chat = useChatStore.getState();
       const live = canShowLive(settings, chat.phase);
-      let generation: number | null = null;
       let callbacks: EngineCallbacks | undefined;
       if (live) {
         const suggestion: SuggestionMeta = {
@@ -346,8 +376,15 @@ export function startProactiveLoop(): Unlisten {
           },
         });
         useProactiveStore.getState().setLive(event.id);
+        const base = liveCallbacks(generation, event);
         callbacks = {
-          ...liveCallbacks(generation, event),
+          ...base,
+          onPhase: (phase, requestId) => {
+            // Its first token is out: a newer question now waits instead of replacing it.
+            if (phase === "streaming" && inflight?.event.id === event.id)
+              inflight = { event, streaming: true };
+            base.onPhase?.(phase, requestId);
+          },
           onHandle: (handle) => {
             liveHandle = handle;
           },
@@ -380,35 +417,68 @@ export function startProactiveLoop(): Unlisten {
       }
     } catch (error) {
       console.warn("[proactive] prepare failed", error);
+      // The live turn opened for it must end with the error, not spin forever.
+      const current = useChatStore.getState();
+      if (
+        generation !== null &&
+        current.generation === generation &&
+        current.turns.at(-1)?.status === "streaming"
+      ) {
+        current.fail(generation, toBlueyError(error, "ai"));
+      }
     } finally {
       busy = false;
       liveHandle = null;
+      inflight = null;
       useProactiveStore.getState().setPreparing(null);
       useProactiveStore.getState().setLive(null);
       const next = queued;
       queued = null;
-      // A question that waited too long behind the previous answer is dropped (LIVE-009).
-      if (next && !isStale(next, Date.now())) void prepareFor(next);
+      // Runnable only now: its wait behind the previous answer does not count against it
+      // (LIVE-009 judges staleness when a question is heard, not while it queues).
+      if (next) void prepareFor(next);
     }
   };
 
   const schedule = (event: DetectedEvent): void => {
     if (busy) {
-      queued = event; // newest question wins; a stale one is not worth preparing
+      // The question asked last wins the queue — by when it was heard, not when its
+      // detection arrived (a slower classification must not overtake a newer question).
+      if (!queued || detectedTime(event) >= detectedTime(queued)) queued = event;
+      // A live suggestion still waiting for its first token is not worth finishing:
+      // the newer question starts now instead of after it (the finally runs the queue).
+      if (queued === event && inflight && !inflight.streaming && liveHandle) void cancelLiveSuggestion();
       return;
     }
     void prepareFor(event);
+  };
+
+  /** A replaced or refuted question's suggestion goes: waiting, deferred or streaming. */
+  const withdraw = (eventId: string): void => {
+    if (queued?.id === eventId) queued = null;
+    if (deferred?.event.id === eventId) deferred = null;
+    if (inflight?.event.id === eventId) void cancelLiveSuggestion();
   };
 
   const onDetected = (event: DetectedEvent): void => {
     if (!isHudWindow() || !proactiveEnabled() || !event.requiresResponse) return;
     if (seen.has(event.id)) return;
     remember(event.id);
+    if (released && overlaps(event.segmentIds, released.ids)) released = { ...released, eventId: event.id };
+    // A short fragment heard alone ("So tell me about") is listed, never answered (LIVE-010).
+    if (event.segmentIds.length > 0 && event.segmentIds.every((id) => mutedSegmentIds.has(id))) return;
     const mode = activeMode();
     if (!mode) return;
     const now = Date.now();
     surfaced = surfaced.filter((entry) => now - entry.at <= SURFACE_DEDUPE_WINDOW_MS);
-    if (shouldSurface(event, { mode, now, surfaced, dismissals }) !== "surface") return;
+    const replaces = correction && overlaps(event.segmentIds, correction.segmentIds) ? correction : null;
+    if (replaces) correction = null;
+    const verdict = shouldSurface(event, { mode, now, surfaced, dismissals });
+    // The rest of a question split by a pause corrects the fragment: the fragment's own
+    // suggestion must not hold it off as a repeat or through the speaker cooldown.
+    const corrects = replaces !== null && (verdict === "cooldown" || verdict === "duplicate");
+    if (verdict !== "surface" && !corrects) return;
+    if (replaces?.fragmentEventId) withdraw(replaces.fragmentEventId);
     if (useSettingsStore.getState().settings?.ai.suggestionDisplay === "live" && !hudVisible()) {
       // No billed live turn streams into a hidden HUD: keep the newest question and
       // prepare it once the HUD is shown, while it is still fresh (LIVE-012).
@@ -434,6 +504,8 @@ export function startProactiveLoop(): Unlisten {
     if (before?.audioActive && now && !now.audioActive) {
       if (held) clearTimeout(held.timer);
       held = null;
+      released = null;
+      correction = null;
       queued = null;
       deferred = null;
       dismissals = 0;
@@ -459,6 +531,11 @@ export function startProactiveLoop(): Unlisten {
         mode,
         settings,
         ...(segmentIds.length > 1 ? { segmentIds } : {}),
+        onRefuted: (refuted) => {
+          // Not a question after all: its suggestion goes and it puts no one on cooldown.
+          withdraw(refuted.id);
+          surfaced = surfaced.filter((entry) => entry.text !== refuted.text);
+        },
       });
       if (event) await recordNotable(event, mode, settings);
     } catch (error) {
@@ -466,13 +543,20 @@ export function startProactiveLoop(): Unlisten {
     }
   };
 
-  const releaseHeld = (): void => {
+  /** `afterPause`: the window ran out, so the same voice may still finish the question (LIVE-010). */
+  const releaseHeld = (afterPause = false): void => {
     if (!held) return;
     const { segment, ids, timer } = held;
     clearTimeout(timer);
     held = null;
+    // Another voice speaking ends the turn: only a fragment cut by a pause is continued.
+    released = afterPause ? { segment, ids, at: Date.now() } : null;
+    if (segment.text.trim().split(/\s+/).length <= MUTED_FRAGMENT_MAX_WORDS) mutedSegmentIds = new Set(ids);
     void classifyFinal(segment, ids);
   };
+
+  const sameVoice = (a: TranscriptSegment, b: TranscriptSegment): boolean =>
+    a.source === b.source && a.speaker === b.speaker;
 
   const onFinal = (segment: TranscriptSegment): void => {
     if (!isHudWindow() || !proactiveEnabled()) return;
@@ -481,11 +565,9 @@ export function startProactiveLoop(): Unlisten {
     let merged = segment;
     let ids = [segment.id];
     const previous = held;
-    if (
-      previous &&
-      previous.segment.source === segment.source &&
-      previous.segment.speaker === segment.speaker
-    ) {
+    const fragment = released;
+    released = null;
+    if (previous && sameVoice(previous.segment, segment)) {
       // The same voice went on within the window: classify the whole utterance once.
       clearTimeout(previous.timer);
       held = null;
@@ -497,10 +579,25 @@ export function startProactiveLoop(): Unlisten {
       ids = [...previous.ids, segment.id];
     } else {
       releaseHeld();
+      if (
+        fragment &&
+        sameVoice(fragment.segment, segment) &&
+        Date.now() - fragment.at <= CONTINUATION_WINDOW_MS
+      ) {
+        // The rest arrived after the fragment was classified alone: the whole question
+        // replaces the fragment's suggestion instead of losing to its cooldown.
+        merged = {
+          ...segment,
+          text: `${fragment.segment.text.trim()} ${segment.text.trim()}`,
+          startTime: fragment.segment.startTime,
+        };
+        ids = [...fragment.ids, segment.id];
+        correction = { segmentIds: ids, ...(fragment.eventId ? { fragmentEventId: fragment.eventId } : {}) };
+      }
     }
     const counterpart = labelSpeaker(merged, mode).speaker !== "You";
     if (counterpart && ids.length < MAX_COALESCED_FINALS && isOpenFragment(merged.text)) {
-      held = { segment: merged, ids, timer: setTimeout(releaseHeld, COALESCE_WINDOW_MS) };
+      held = { segment: merged, ids, timer: setTimeout(() => releaseHeld(true), COALESCE_WINDOW_MS) };
       return;
     }
     void classifyFinal(merged, ids);

@@ -1,5 +1,5 @@
 import { ChevronRight, ExternalLink } from "lucide-react";
-import { lazy, memo, Suspense, useState, type ComponentProps } from "react";
+import { createContext, lazy, memo, Suspense, useContext, useState, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -18,11 +18,17 @@ const MermaidDiagram = lazy(() => import("./MermaidDiagram").then((m) => ({ defa
 
 type CodeProps = ComponentProps<"code"> & { node?: unknown };
 
+/** The streaming draft's still-open code block, so its Copy waits for the whole block. */
+const OpenCodeContext = createContext<string | undefined>(undefined);
+
 function MarkdownCode({ className, children, ...props }: CodeProps) {
+  const openCode = useContext(OpenCodeContext);
   const match = /language-([\w+#-]+)/.exec(className ?? "");
   const text = String(children ?? "").replace(/\n$/, "");
   if (match || text.includes("\n")) {
-    return <CodeBlock code={text} language={match?.[1]} />;
+    return (
+      <CodeBlock code={text} language={match?.[1]} writing={openCode !== undefined && text === openCode} />
+    );
   }
   return (
     <code className={className} {...props}>
@@ -143,9 +149,9 @@ export const ResponseView = memo(function ResponseView({
   streaming,
   className,
 }: ResponseViewProps) {
-  const { renderable, pendingCode } = streaming
+  const { renderable, openCode } = streaming
     ? splitStreamingMarkdown(response.content)
-    : { renderable: response.content, pendingCode: false };
+    : { renderable: response.content, openCode: undefined };
   const jsonLike = looksLikeStructuredJson(renderable);
   const unreadable = jsonLike && !streaming;
 
@@ -158,15 +164,10 @@ export const ResponseView = memo(function ResponseView({
       {unreadable ? (
         <ErrorBanner error={unreadableAnswerError()} compact />
       ) : jsonLike ? null : (
-        <Markdown content={renderable} />
+        <OpenCodeContext.Provider value={openCode}>
+          <Markdown content={renderable} />
+        </OpenCodeContext.Provider>
       )}
-
-      {pendingCode ? (
-        <div className="my-3 flex items-center gap-2 rounded-[10px] border border-hud-border bg-code-bg px-3.5 py-3 text-[13px] text-fg-muted">
-          <Spinner size={12} decorative />
-          Writing code…
-        </div>
-      ) : null}
 
       {response.code && !response.content.includes(response.code.code) ? (
         <CodeBlock code={response.code.code} language={response.code.language} />

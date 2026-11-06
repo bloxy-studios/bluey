@@ -287,6 +287,20 @@ export function voiceFor(
 
 const LATENCY_ORDER: readonly LatencyBudget[] = ["ultra-fast", "fast", "balanced", "deep"];
 
+/**
+ * A suggestion prepared for a heard question has to be on screen while the
+ * interviewer is still listening: at most the fast budget and no deep
+ * reasoning (coding keeps light reasoning for correctness). The user's own
+ * asks — and Regenerate — keep the mode's full depth.
+ */
+export function forLiveSuggestion(intent: Intent): Intent {
+  const latency: LatencyBudget =
+    LATENCY_ORDER.indexOf(intent.latency) > LATENCY_ORDER.indexOf("fast") ? "fast" : intent.latency;
+  const reasoning: ReasoningLevel =
+    intent.task === "coding" && intent.reasoning !== "none" ? "light" : "none";
+  return { ...intent, latency, reasoning };
+}
+
 function slowerOf(a: LatencyBudget, b: LatencyBudget): LatencyBudget {
   const result = LATENCY_ORDER[Math.max(LATENCY_ORDER.indexOf(a), LATENCY_ORDER.indexOf(b))];
   return result ?? "balanced";
@@ -485,7 +499,14 @@ export function classifyIntent(input: IntentInput): Intent {
   const refersToVisual =
     VISUAL_REFERENCE_CUES.test(question) || (screenIsSubject && screenLooksVisual(ocrText));
   const codingLowOcr = task === "coding" && averageOcrConfidence(snapshot) < 0.55;
-  const visionRequired = hasScreen && (insufficientText || refersToVisual || codingLowOcr);
+  // A heard question is about the conversation unless it points at the
+  // screen or a problem is visibly on it: little OCR text (a video call, OCR
+  // still running) must not send it as an image to the slower vision role.
+  const visionRequired =
+    hasScreen &&
+    (spokenTrigger
+      ? refersToVisual || (problemVisible && (insufficientText || codingLowOcr))
+      : insufficientText || refersToVisual || codingLowOcr);
 
   // ── Depth ───────────────────────────────────────────────────────────────
   const reasoning = reasoningFor(task, mode);

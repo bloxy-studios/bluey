@@ -39,7 +39,7 @@ describe("Settings → AI → Accounts (MockTransport)", () => {
     for (const id of ["chatgpt", "claude", "antigravity"]) {
       expect(within(card(id)).getByText("Not connected")).toBeInTheDocument();
     }
-    expect(within(card("chatgpt")).getByText(/Fingerprint codex\/0\.154\.0 · captured 2026-09-11/)).toBeInTheDocument();
+    expect(within(card("chatgpt")).getByText(/Fingerprint codex\/0\.167\.0 · captured 2026-11-06/)).toBeInTheDocument();
     const importButton = within(card("claude")).getByRole("button", { name: "Import Claude Code sign-in" });
     // Bluey never refreshes a rotating import, so the two sides cannot sign each other out.
     expect(importButton).toHaveAttribute("title", expect.stringContaining("never refreshes"));

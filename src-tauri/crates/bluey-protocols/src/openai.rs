@@ -89,6 +89,19 @@ pub fn reasoning_effort_for(
     is_reasoning_model(model).then(|| crate::codex::reasoning_effort(level, latency, &[], None))
 }
 
+/// Extra completion tokens a reasoning model needs at `effort` on top of the
+/// answer's own cap (reasoning tokens count against `max_completion_tokens`).
+pub fn reasoning_allowance(effort: &str) -> u32 {
+    match effort {
+        "none" => 0,
+        "minimal" => 512,
+        "low" => 2_048,
+        "medium" => 4_096,
+        "high" => 8_192,
+        _ => 16_384,
+    }
+}
+
 /// Whether an HTTP-400 error body says the endpoint does not take native
 /// structured output (→ resend with the schema in the prompt instead). An
 /// endpoint that takes it but rejects Bluey's schema ("Invalid schema for
@@ -102,12 +115,15 @@ pub fn is_response_format_rejection(status: u16, body: &str) -> bool {
     if lower.contains("invalid_json_schema") || lower.contains("invalid schema") {
         return false;
     }
-    const UNSUPPORTED: [&str; 5] = [
+    // DeepSeek: "This response_format type is unavailable now".
+    const UNSUPPORTED: [&str; 7] = [
         "unsupported",
         "not supported",
         "unrecognized",
         "unknown",
         "not permitted",
+        "unavailable",
+        "does not support",
     ];
     UNSUPPORTED.iter().any(|phrase| lower.contains(phrase))
 }
@@ -134,7 +150,13 @@ pub fn build_chat_body(opts: &ChatBodyOptions<'_>) -> Value {
         }
     }
     if let Some(max) = opts.max_output_tokens {
-        obj.insert("max_completion_tokens".into(), json!(max));
+        // A reasoning model spends `max_completion_tokens` on its reasoning
+        // first: without headroom a short answer comes back empty (`length`).
+        let allowance = opts.reasoning_effort.map_or(0, reasoning_allowance);
+        obj.insert(
+            "max_completion_tokens".into(),
+            json!(max.saturating_add(allowance)),
+        );
     }
     match opts.reasoning_effort {
         // Reasoning models reject sampling knobs (HTTP 400 "Unsupported parameter").
@@ -211,6 +233,36 @@ pub struct ChatChunk {
     pub choices: Vec<ChunkChoice>,
     #[serde(default)]
     pub usage: Option<ChatUsage>,
+    /// An error some servers (OpenRouter, vLLM, …) send inside a 200 stream.
+    #[serde(default)]
+    pub error: Option<ChunkError>,
+}
+
+/// `{"error": {"message", "code"}}` inside a streamed chunk.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ChunkError {
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// What a `finish_reason` means for the answer: a normal end, or a failure
+/// the stream must report instead of a silently empty or partial answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Finish {
+    Done(FinishReason),
+    /// The provider's content filter stopped the answer (Azure, OpenAI).
+    Filtered,
+    /// The server gave up generating (`finish_reason: "error"`).
+    Failed,
+}
+
+/// Classify a `finish_reason`.
+pub fn classify_finish(reason: &str) -> Finish {
+    match reason {
+        "content_filter" => Finish::Filtered,
+        "error" => Finish::Failed,
+        other => Finish::Done(map_finish_reason(other)),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -475,6 +527,10 @@ mod tests {
             r#"{"error":{"message":"Unrecognized request argument supplied: response_format"}}"#
         ));
         // The endpoint takes structured output; Bluey's schema is what is wrong.
+        assert!(is_response_format_rejection(
+            400,
+            r#"{"error":{"message":"This response_format type is unavailable now","type":"invalid_request_error"}}"#
+        ));
         let bad_schema = r#"{"error":{"message":"Invalid schema for response_format 'answer': 'additionalProperties' is required to be supplied and to be false.","type":"invalid_request_error","param":"response_format","code":"invalid_json_schema"}}"#;
         assert!(!is_response_format_rejection(400, bad_schema));
     }
@@ -535,6 +591,45 @@ mod tests {
         let usage = c.usage.unwrap();
         assert_eq!(usage.prompt_tokens, Some(12));
         assert_eq!(usage.completion_tokens, Some(34));
+    }
+
+    #[test]
+    fn reasoning_models_get_headroom_for_their_reasoning() {
+        let messages = vec![AiMessage::text(AiRole::User, "hi")];
+        let body = |effort: Option<&str>| {
+            build_chat_body(&ChatBodyOptions {
+                model: "gpt-5.6-luna",
+                messages: &messages,
+                stream: true,
+                include_usage: false,
+                max_output_tokens: Some(600),
+                temperature: Some(0.2),
+                reasoning_effort: effort,
+                schema_as_prompt_fallback: false,
+                output_schema: None,
+            })
+        };
+        assert_eq!(body(None)["max_completion_tokens"], 600);
+        assert_eq!(body(Some("low"))["max_completion_tokens"], 600 + 2_048);
+        assert_eq!(body(Some("none"))["max_completion_tokens"], 600);
+        assert!(body(Some("low")).get("temperature").is_none());
+    }
+
+    #[test]
+    fn stream_errors_and_filtered_finishes_are_not_answers() {
+        let chunk =
+            parse_chunk(r#"{"error":{"message":"upstream overloaded","code":502}}"#).unwrap();
+        assert_eq!(
+            chunk.error.and_then(|e| e.message).as_deref(),
+            Some("upstream overloaded")
+        );
+        assert_eq!(classify_finish("content_filter"), Finish::Filtered);
+        assert_eq!(classify_finish("error"), Finish::Failed);
+        assert_eq!(classify_finish("stop"), Finish::Done(FinishReason::Stop));
+        assert_eq!(
+            classify_finish("length"),
+            Finish::Done(FinishReason::Length)
+        );
     }
 
     #[test]

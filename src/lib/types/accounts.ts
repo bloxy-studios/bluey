@@ -97,6 +97,8 @@ export interface ModelCapabilities {
   reasoningLevels: string[];
   streaming: boolean;
   contextWindow?: number;
+  /** The subscription offers a priority ("fast") tier for this model — ChatGPT Fast mode. */
+  fastTier?: boolean;
 }
 
 /** One model a subscription exposes. */

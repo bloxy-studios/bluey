@@ -16,7 +16,7 @@ git add .github/workflows && git commit -m "ci: add workflows"
 |---|---|---|
 | Frontend | ubuntu | `bun install --frozen-lockfile`, `typecheck`, `lint`, `test`, `build` |
 | Rust | ubuntu | `scripts/check-rust.sh --darwin` (rustfmt, `cargo test` + clippy `-D warnings` for `bluey-core` / `bluey-storage` / `bluey-protocols` / `bluey-oauth` / `bluey-fingerprints`, `cargo check` of the app crate for `aarch64-apple-darwin` with the stub C compiler) plus `cargo clippy --all-targets -D warnings` of the app crate on the macOS target so its unit tests type-check too. Placeholder sidecar files satisfy tauri-build's `externalBin` check. |
-| macOS | macos-14 | Swift helper build, **lite** agent sidecar build, `cargo test --features dev-tools` for the app crate (the only place its unit tests can run), app-crate clippy |
+| macOS | macos-15 | Swift helper build, **lite** agent sidecar build, `cargo test --features dev-tools` for the app crate (the only place its unit tests can run), app-crate clippy |
 
 The Rust job does not link anything for macOS — see `docs/DEVELOPMENT.md` › *Working without macOS*.
 

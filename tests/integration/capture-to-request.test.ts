@@ -164,12 +164,17 @@ describe("capture → context → request → response", () => {
     // Phases in order.
     expect(phases).toEqual(["capturing", "analyzing", "thinking", "streaming", "done"]);
 
-    // Drafts grow monotonically and never expose an unterminated code fence.
+    // Drafts grow monotonically. An open code block streams in (the HUD closes it
+    // while it is written), but never a fence marker that is still arriving: no
+    // trailing "`"/"``", and an opening fence only once its language line is whole.
     expect(drafts.length).toBeGreaterThan(0);
     for (let i = 1; i < drafts.length; i += 1) {
       expect(drafts[i]!.startsWith(drafts[i - 1]!)).toBe(true);
     }
-    expect(drafts[0]).not.toContain("```");
+    for (const draft of drafts) {
+      expect(draft).not.toMatch(/(^|\n)\s{0,3}`{1,2}$/);
+      if (draft.includes("```python")) expect(draft).toContain("```python\n");
+    }
 
     // Final response.
     expect(result).not.toBeNull();

@@ -133,13 +133,22 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
 
     // MARK: SCStreamDelegate
 
+    /// `audio.error` code for a stream the user stopped from the menu-bar
+    /// recording indicator: a decision, never retried behind their back.
+    public static let userStoppedCode = "system_audio_user_stopped"
+
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
         Log.shared.error("system audio stream stopped: \(error.localizedDescription)")
+        let nsError = error as NSError
+        let userStopped = nsError.domain == SCStreamErrorDomain
+            && nsError.code == SCStreamError.Code.userStopped.rawValue
         queue.async { [weak self] in
             guard let self else { return }
             self.stream = nil
             self.running = false
-            self.onStopped?(.audio("system_audio_stopped", error.localizedDescription))
+            self.onStopped?(.audio(
+                userStopped ? Self.userStoppedCode : "system_audio_stopped",
+                error.localizedDescription))
         }
     }
 

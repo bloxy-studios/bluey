@@ -217,6 +217,117 @@ pub fn model_override_env(role: ModelRole) -> &'static str {
     }
 }
 
+// ── Live model lists ────────────────────────────────────────────────────────
+//
+// The presets above name the models Bluey recommends, but what a key can call
+// changes: models are retired, renamed and added, and a key may not see
+// every model. Before a preset is assigned (and at launch, for assignments a
+// preset made) it is checked against the provider's own model list; a model
+// the list does not offer is replaced by the newest listed model of the same
+// line, so a role never points at a model the key cannot use.
+
+/// Whether `model` is in a provider's live list — exactly, or as one of its
+/// dated snapshots (`claude-haiku-4-5` ⇢ `claude-haiku-4-5-20251001`).
+pub fn model_listed(model: &str, available: &[String]) -> bool {
+    available.iter().any(|id| {
+        id == model
+            || id.strip_prefix(model).is_some_and(|rest| {
+                rest.len() == 9
+                    && rest.starts_with('-')
+                    && rest[1..].bytes().all(|b| b.is_ascii_digit())
+            })
+    })
+}
+
+/// `(major, minor)` from the first numeric parts of a model id
+/// (`gemini-3.8-flash` → (3, 8), `claude-sonnet-5-5` → (5, 5)); dates skipped.
+fn model_generation(id: &str) -> (u32, u32) {
+    let mut numbers = id
+        .split(['-', '.', '_'])
+        .filter(|part| !part.is_empty() && part.len() < 8)
+        .filter(|part| part.bytes().all(|b| b.is_ascii_digit()))
+        .filter_map(|part| part.parse::<u32>().ok());
+    let major = numbers.next().unwrap_or(0);
+    (major, numbers.next().unwrap_or(0))
+}
+
+/// Whether `id` belongs to the model line that serves `role` on `kind`
+/// (`None` when Bluey does not pick models for that role from a list).
+fn in_line(kind: AiProviderKind, role: ModelRole, id: &str) -> Option<bool> {
+    let id = id.to_ascii_lowercase();
+    let has = |word: &str| id.contains(word);
+    match kind {
+        AiProviderKind::GoogleGemini => {
+            const NOT_TEXT: [&str; 8] = [
+                "tts",
+                "image",
+                "live",
+                "embedding",
+                "transcribe",
+                "audio",
+                "computer-use",
+                "robotics",
+            ];
+            let text = id.starts_with("gemini") && !NOT_TEXT.iter().any(|w| has(w));
+            Some(match role {
+                ModelRole::Fast => text && has("flash-lite"),
+                ModelRole::Default
+                | ModelRole::Reasoning
+                | ModelRole::Vision
+                | ModelRole::Research => text && has("flash") && !has("lite"),
+                ModelRole::Embedding => has("embedding"),
+                ModelRole::Transcription => return None,
+            })
+        }
+        AiProviderKind::Anthropic => Some(
+            id.starts_with("claude")
+                && match role {
+                    ModelRole::Fast => has("haiku"),
+                    ModelRole::Default | ModelRole::Vision => has("sonnet"),
+                    ModelRole::Reasoning | ModelRole::Research => has("opus"),
+                    ModelRole::Transcription | ModelRole::Embedding => return None,
+                },
+        ),
+        _ => None,
+    }
+}
+
+/// The model `role` should use on a `kind` provider whose live list is
+/// `available`: `preferred` when the list offers it, else the newest listed
+/// model of the same line (stable before preview). `None` = keep `preferred`
+/// (an empty list, a line with nothing listed, or a role Bluey does not pick
+/// from lists).
+pub fn live_replacement(
+    kind: AiProviderKind,
+    role: ModelRole,
+    preferred: &str,
+    available: &[String],
+) -> Option<String> {
+    if available.is_empty() || model_listed(preferred, available) {
+        return None;
+    }
+    available
+        .iter()
+        .filter(|id| in_line(kind, role, id) == Some(true))
+        .max_by_key(|id| {
+            let stable = !(id.contains("preview") || id.contains("exp"));
+            (stable, model_generation(id), std::cmp::Reverse(id.len()))
+        })
+        .filter(|id| id.as_str() != preferred)
+        .cloned()
+}
+
+/// Whether `model` is a model some preset of `kind` recommends (so Bluey, not
+/// the user, put it there and may move it when the provider stops offering it).
+pub fn is_preset_model(kind: AiProviderKind, model: &str) -> bool {
+    by_kind(kind).is_some_and(|preset| {
+        preset
+            .models
+            .iter()
+            .any(|(_, preset_model)| *preset_model == Some(model))
+    })
+}
+
 /// Apply `provider`'s preset models to `assignments`.
 ///
 /// * `overwrite = false` fills only roles that are unassigned;
@@ -853,5 +964,84 @@ mod tests {
             model_override_env(ModelRole::Embedding),
             "BLUEY_MODEL_EMBEDDING"
         );
+    }
+
+    #[test]
+    fn a_preset_model_the_key_cannot_see_moves_to_the_newest_of_its_line() {
+        let gemini: Vec<String> = [
+            "gemini-3.5-flash",
+            "gemini-3.9-flash",
+            "gemini-4.0-flash-preview",
+            "gemini-3.9-flash-lite",
+            "gemini-3.9-flash-image",
+            "gemini-3.5-transcribe",
+            "gemini-embedding-2",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let kind = AiProviderKind::GoogleGemini;
+        assert_eq!(
+            live_replacement(kind, ModelRole::Default, "gemini-3.8-flash", &gemini).as_deref(),
+            Some("gemini-3.9-flash"),
+            "the newest stable flash, never a preview, image or lite model"
+        );
+        assert_eq!(
+            live_replacement(kind, ModelRole::Fast, "gemini-3.5-flash-lite", &gemini).as_deref(),
+            Some("gemini-3.9-flash-lite")
+        );
+        assert_eq!(
+            live_replacement(kind, ModelRole::Default, "gemini-3.5-flash", &gemini),
+            None,
+            "a listed model stays"
+        );
+        assert_eq!(
+            live_replacement(
+                kind,
+                ModelRole::Transcription,
+                "gemini-x-transcribe",
+                &gemini
+            ),
+            None,
+            "transcription models are not picked from the list"
+        );
+        assert_eq!(live_replacement(kind, ModelRole::Default, "m", &[]), None);
+    }
+
+    #[test]
+    fn anthropic_snapshots_count_as_listed_and_lines_follow_the_family() {
+        let claude: Vec<String> = [
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-5",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(
+            model_listed("claude-haiku-4-5", &claude),
+            "a dated snapshot"
+        );
+        assert!(!model_listed(
+            "claude-opus-5",
+            &["claude-opus-5-5".to_string()]
+        ));
+        let kind = AiProviderKind::Anthropic;
+        assert_eq!(
+            live_replacement(kind, ModelRole::Default, "claude-sonnet-5", &claude).as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        assert_eq!(
+            live_replacement(kind, ModelRole::Fast, "claude-haiku-4-5", &claude),
+            None
+        );
+        assert_eq!(
+            live_replacement(kind, ModelRole::Reasoning, "claude-opus-5", &claude),
+            None
+        );
+        assert!(is_preset_model(kind, "claude-sonnet-5"));
+        assert!(!is_preset_model(kind, "my-proxy-model"));
     }
 }

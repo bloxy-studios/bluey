@@ -2,9 +2,8 @@
  * Streaming layer over `bluey.ai.stream`.
  *
  * - `streamRequest` wires `AIChunk`s to handlers and returns {cancel, done}.
- * - `CodeFenceBuffer` withholds an unterminated fenced code block from drafts
- *   until the closing fence arrives (spec §80) while exposing plain text
- *   progressively.
+ * - `CodeFenceBuffer` exposes streamed text progressively, open code blocks
+ *   included, holding back only fence markers that are still arriving.
  * - `extractPartialStringField` (from `lib/utils/partial-json`) pulls a
  *   growing `content` field out of a partially-streamed JSON structured output.
  */
@@ -13,38 +12,28 @@ import type { AIChunk, AIRequest, BlueyError, ModelSelection } from "@/lib/types
 
 // ── Code fence handling ─────────────────────────────────────────────────────
 
-/**
- * Compute the draft-safe prefix of `text`: everything before an unterminated
- * ``` fence (the open fence line itself is withheld), and without a trailing
- * partial fence ("`" / "``" at the very end of the text).
- */
-export function visibleWithHeldFences(text: string): string {
-  let offset = 0;
-  let open = false;
-  let openStart = -1;
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] ?? "";
-    if (/^\s{0,3}```/.test(line)) {
-      // A fence line only counts once fully terminated by a newline, except
-      // a closing fence which may legitimately end the text.
-      const isLastLine = i === lines.length - 1;
-      if (!open) {
-        open = true;
-        openStart = offset;
-      } else if (!isLastLine || /^\s{0,3}```\s*$/.test(line)) {
-        open = false;
-        openStart = -1;
-      }
-    }
-    offset += line.length + 1;
-  }
-  if (open && openStart >= 0) return text.slice(0, openStart);
+const FENCE_LINE = /^\s{0,3}```/;
+const PARTIAL_FENCE = /^\s{0,3}`{1,2}$/;
 
-  // Withhold a trailing partial fence marker (1-2 backticks on their own).
+/**
+ * Compute the draft-safe prefix of `text`. An open ``` block streams through:
+ * the HUD closes it temporarily (`splitStreamingMarkdown`), so a coding answer
+ * whose `content` opens with its solution paints line by line instead of only
+ * once the whole block is written. Held back are only fence markers still
+ * arriving: a trailing partial fence ("`" / "``" at the very end) and an
+ * opening fence line without its newline yet (it would render "```pyt" as the
+ * language tag).
+ */
+export function draftSafeText(text: string): string {
   const lastNewline = text.lastIndexOf("\n");
+  const head = text.slice(0, lastNewline + 1);
   const lastLine = text.slice(lastNewline + 1);
-  if (/^\s{0,3}`{1,2}$/.test(lastLine)) return text.slice(0, lastNewline + 1);
+  if (PARTIAL_FENCE.test(lastLine)) return head;
+  if (FENCE_LINE.test(lastLine)) {
+    // An even count of fences before it means this line opens a block.
+    const fencesBefore = head.split("\n").filter((line) => FENCE_LINE.test(line)).length;
+    if (fencesBefore % 2 === 0) return head;
+  }
   return text;
 }
 
@@ -58,7 +47,7 @@ export class CodeFenceBuffer {
   }
 
   visible(): string {
-    return visibleWithHeldFences(this.raw);
+    return draftSafeText(this.raw);
   }
 
   /** Full raw text (used once the stream completes). */
@@ -182,29 +171,43 @@ export function streamRequest(
     }
   };
 
-  api.ai.stream(request, onChunk).catch((error: unknown) => {
-    settle({
-      text,
-      finishReason: "error",
-      selection,
-      error: {
-        kind: "ai",
-        code: "ai.stream_failed",
-        message: error instanceof Error ? error.message : "AI stream failed",
-        recoverable: true,
-        recovery: { type: "retry" },
-      },
-      totalMs: clock() - startedAt,
-    });
-  });
+  // `ai_stream` returns once Rust has registered the request; a cancel sent
+  // before that finds nothing to cancel (returns false) and would be lost, so
+  // it is sent again once the command returns.
+  let cancelRequested = false;
+  const sendCancel = async (): Promise<void> => {
+    try {
+      await api.ai.cancel({ requestId: request.requestId });
+    } catch {
+      // Cancellation is best-effort; the gate protects against stale output.
+    }
+  };
+
+  api.ai.stream(request, onChunk).then(
+    () => {
+      if (cancelRequested) void sendCancel();
+    },
+    (error: unknown) => {
+      settle({
+        text,
+        finishReason: "error",
+        selection,
+        error: {
+          kind: "ai",
+          code: "ai.stream_failed",
+          message: error instanceof Error ? error.message : "AI stream failed",
+          recoverable: true,
+          recovery: { type: "retry" },
+        },
+        totalMs: clock() - startedAt,
+      });
+    },
+  );
 
   return {
     cancel: async () => {
-      try {
-        await api.ai.cancel({ requestId: request.requestId });
-      } catch {
-        // Cancellation is best-effort; the gate protects against stale output.
-      }
+      cancelRequested = true;
+      await sendCancel();
       settle({ text, finishReason: "cancelled", selection, totalMs: clock() - startedAt });
     },
     done,

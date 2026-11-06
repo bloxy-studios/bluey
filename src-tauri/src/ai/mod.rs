@@ -79,6 +79,10 @@ struct TraceEntry {
 /// Traces kept in memory for late stamps (and the bench).
 const TRACE_BOOK_CAPACITY: usize = 64;
 
+/// How many other providers one request may fail over to before its error
+/// reaches the user (`AiManager::run_stream`).
+const MAX_FAILOVERS: usize = 2;
+
 /// The AI orchestrator.
 pub struct AiManager {
     http: reqwest::Client,
@@ -269,27 +273,67 @@ impl AiManager {
             return;
         }
         match error {
-            Some(error) => accounts.note_request_error(provider_id, error).await,
+            Some(error) => {
+                accounts.note_request_error(provider_id, error).await;
+                if error.code == "config.model_not_found" {
+                    // The plan stopped offering the model: re-read its catalog
+                    // so the roles move to a model it does offer (the refresh
+                    // repairs assignments the catalog no longer lists).
+                    let accounts = Arc::clone(accounts);
+                    let account_id = provider_id.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        match accounts.refresh_catalog(&account_id, true).await {
+                            Ok(catalog) => {
+                                tracing::info!(account = %account_id, models = catalog.models.len(), "catalog refreshed after an unknown-model answer")
+                            }
+                            Err(error) => {
+                                tracing::info!(account = %account_id, code = %error.code, "catalog refresh after an unknown-model answer failed")
+                            }
+                        }
+                    });
+                }
+            }
             None => accounts.note_request_success(provider_id).await,
+        }
+    }
+
+    /// What the router sees of `request`.
+    fn routing_input<'a>(&self, request: &'a AiRequest) -> RoutingInput<'a> {
+        RoutingInput {
+            task: request.task,
+            latency: request.latency_budget,
+            reasoning: request.reasoning,
+            context_tokens: request.context_tokens,
+            vision_required: request.vision_required,
+            preferred_role: preferred_role_for(request, || {
+                self.modes.active_mode().preferred_model_role
+            }),
+            model_override: request.model_override.as_ref(),
         }
     }
 
     /// Route a request to a provider+model.
     pub fn select(&self, request: &AiRequest) -> BlueyResult<ModelSelection> {
         let settings = self.settings.get();
-        let preferred_role =
-            preferred_role_for(request, || self.modes.active_mode().preferred_model_role);
-        let input = RoutingInput {
-            task: request.task,
-            latency: request.latency_budget,
-            reasoning: request.reasoning,
-            context_tokens: request.context_tokens,
-            vision_required: request.vision_required,
-            preferred_role,
-            model_override: request.model_override.as_ref(),
-        };
-        router::select(&input, &settings.ai.models, &self.providers())
-            .map_err(|error| self.name_account_state(error))
+        router::select(
+            &self.routing_input(request),
+            &settings.ai.models,
+            &self.providers(),
+        )
+        .map_err(|error| self.name_account_state(error))
+    }
+
+    /// Another provider for a request whose providers in `failed` broke before
+    /// any text arrived (`router::failover`); `None` with Cloud AI off.
+    fn failover_selection(&self, request: &AiRequest, failed: &[String]) -> Option<ModelSelection> {
+        let settings = self.settings.get();
+        ensure_cloud_ai(&settings).ok()?;
+        router::failover(
+            &self.routing_input(request),
+            &settings.ai.models,
+            &self.providers(),
+            failed,
+        )
     }
 
     /// Whether an answer (and a screen question) routes right now: the same
@@ -546,6 +590,26 @@ impl AiManager {
         Some(trace)
     }
 
+    /// Tell the WebView (and the bus) which provider+model is answering.
+    fn announce_selection(
+        &self,
+        request_id: &str,
+        selection: &ModelSelection,
+        channel: &Channel<AiChunk>,
+    ) {
+        let started_chunk = AiChunk::Started {
+            request_id: request_id.to_string(),
+            selection: selection.clone(),
+        };
+        let _ = channel.send(started_chunk.clone());
+        self.bus.publish(BlueyEvent::AiChunk(started_chunk));
+        self.bus.publish(BlueyEvent::AiStarted {
+            request_id: request_id.to_string(),
+            provider: selection.provider_id.clone(),
+            model: selection.model.clone(),
+        });
+    }
+
     async fn run_stream(
         self: Arc<Self>,
         request: AiRequest,
@@ -562,26 +626,53 @@ impl AiManager {
             ..RustStamps::default()
         };
 
-        let started_chunk = AiChunk::Started {
-            request_id: request_id.clone(),
-            selection: selection.clone(),
-        };
-        let _ = channel.send(started_chunk.clone());
-        self.bus.publish(BlueyEvent::AiChunk(started_chunk));
-        self.bus.publish(BlueyEvent::AiStarted {
-            request_id: request_id.clone(),
-            provider: selection.provider_id.clone(),
-            model: selection.model.clone(),
-        });
+        let mut selection = selection;
+        self.announce_selection(&request_id, &selection, &channel);
 
-        let outcome = self
-            .drive_provider(&request, &selection, &channel, &token, started, &mut rust)
-            .await;
+        // A provider that fails before its first token (plan limit, overload,
+        // network, an unknown model) must not cost a live question its answer:
+        // the same request reruns on the next usable provider, up to
+        // MAX_FAILOVERS times. Once text has streamed the failure stands.
+        let mut failed_providers: Vec<String> = Vec::new();
+        let outcome = loop {
+            let outcome = self
+                .drive_provider(&request, &selection, &channel, &token, started, &mut rust)
+                .await;
+            let StreamOutcome::Failed { error } = &outcome else {
+                break outcome;
+            };
+            if rust.first_token.is_some()
+                || token.is_cancelled()
+                || failed_providers.len() >= MAX_FAILOVERS
+                || !router::failover_eligible(error)
+            {
+                break outcome;
+            }
+            failed_providers.push(selection.provider_id.clone());
+            // Move the failed account first, so the stand-in (and the next
+            // question) routes around it.
+            self.note_provider_outcome(&selection.provider_id, Some(error))
+                .await;
+            let Some(next) = self.failover_selection(&request, &failed_providers) else {
+                break outcome;
+            };
+            tracing::warn!(
+                request_id = %request_id,
+                from = %selection.provider_id,
+                to = %next.provider_id,
+                model = %next.model,
+                code = %error.code,
+                "provider failed before answering — failing over"
+            );
+            selection = next;
+            self.announce_selection(&request_id, &selection, &channel);
+        };
         rust.stream_done = Some(crate::clock::mono_ms());
 
         self.active.lock().remove(&request_id);
+        let already_noted = failed_providers.contains(&selection.provider_id);
         match &outcome {
-            StreamOutcome::Failed { error } if !error.is_cancelled() => {
+            StreamOutcome::Failed { error } if !error.is_cancelled() && !already_noted => {
                 self.note_provider_outcome(&selection.provider_id, Some(error))
                     .await
             }
@@ -727,20 +818,35 @@ impl AiManager {
             session_id: request.session_id.clone(),
         };
         rust.request_sent = Some(crate::clock::mono_ms());
-        let opened = match adapter.stream(&provider_request, token.clone()).await {
-            // A subscription token rejected before its expiry (revoked early,
-            // clock skew): one forced refresh and one retry, before any byte.
-            Err(error)
-                if self
-                    .refreshed_after_rejection(&config, oauth_token.as_deref(), &error)
-                    .await =>
-            {
-                match self.adapter_for(&config).await {
-                    Ok(adapter) => adapter.stream(&provider_request, token.clone()).await,
-                    Err(error) => Err(error),
+        // A provider that has not started answering by this deadline — however
+        // many of its own retries or refreshes are still pending — is treated
+        // as down, so the request fails over instead of hanging (`run_stream`).
+        let first_token_limit = first_token_deadline(request.latency_budget);
+        let first_deadline = tokio::time::Instant::now() + first_token_limit;
+        let opening = async {
+            match adapter.stream(&provider_request, token.clone()).await {
+                // A subscription token rejected before its expiry (revoked early,
+                // clock skew): one forced refresh and one retry, before any byte.
+                Err(error)
+                    if self
+                        .refreshed_after_rejection(&config, oauth_token.as_deref(), &error)
+                        .await =>
+                {
+                    match self.adapter_for(&config).await {
+                        Ok(adapter) => adapter.stream(&provider_request, token.clone()).await,
+                        Err(error) => Err(error),
+                    }
+                }
+                opened => opened,
+            }
+        };
+        let opened = match tokio::time::timeout_at(first_deadline, opening).await {
+            Ok(opened) => opened,
+            Err(_) => {
+                return StreamOutcome::Failed {
+                    error: not_answering(&config.name, first_token_limit),
                 }
             }
-            opened => opened,
         };
         let mut stream = match opened {
             Ok(stream) => {
@@ -756,9 +862,23 @@ impl AiManager {
         let mut ttft_ms: Option<u64> = None;
         let mut input_tokens = None;
         let mut output_tokens = None;
+        // Until the first token: the first-token deadline; afterwards a quiet
+        // spell of STREAM_IDLE_LIMIT ends the stream (adapters without an idle
+        // timer of their own would otherwise wait forever).
+        let mut deadline = first_deadline;
         loop {
             let item = tokio::select! {
                 _ = token.cancelled() => return StreamOutcome::Cancelled { ttft_ms },
+                () = tokio::time::sleep_until(deadline) => {
+                    let error = match ttft_ms {
+                        None => not_answering(&config.name, first_token_limit),
+                        Some(_) => BlueyError::network(
+                            "timeout",
+                            format!("{} stopped sending the answer", config.name),
+                        ),
+                    };
+                    return StreamOutcome::Failed { error };
+                }
                 item = stream.next() => item,
             };
             let Some(item) = item else {
@@ -809,6 +929,9 @@ impl AiManager {
                 }
                 Err(error) if error.is_cancelled() => return StreamOutcome::Cancelled { ttft_ms },
                 Err(error) => return StreamOutcome::Failed { error },
+            }
+            if ttft_ms.is_some() {
+                deadline = tokio::time::Instant::now() + STREAM_IDLE_LIMIT;
             }
         }
     }
@@ -1092,18 +1215,118 @@ impl AiManager {
             return self.accounts()?.apply_presets(provider_id, overwrite).await;
         }
         let mut models = self.settings.get().ai.models;
-        let changed = bluey_core::presets::apply_presets(
-            &mut models,
-            &config,
-            overwrite,
-            &Default::default(),
-        )?;
+        // Recommended models the key cannot call are swapped for the newest
+        // model of the same line the provider lists (never on a failed list).
+        let mut overrides = std::collections::BTreeMap::new();
+        if let (Some(preset), Some(available)) = (
+            presets::by_kind(config.kind),
+            self.live_models(&config.id).await,
+        ) {
+            for role in ModelRole::ALL {
+                let Some(preferred) = preset.model_for(role) else {
+                    continue;
+                };
+                if !overwrite && models.get(role).is_some() {
+                    continue;
+                }
+                if let Some(live) =
+                    presets::live_replacement(config.kind, role, preferred, &available)
+                {
+                    tracing::info!(provider = %provider_id, ?role, preferred, live = %live, "preset model not offered by this key; using the newest listed one");
+                    overrides.insert(role, live);
+                }
+            }
+        }
+        let changed =
+            bluey_core::presets::apply_presets(&mut models, &config, overwrite, &overrides)?;
         tracing::info!(provider = %provider_id, roles = changed.len(), overwrite, "applied provider presets");
         let (_, new) = self
             .settings
             .update(serde_json::json!({ "ai": { "models": models } }))
             .await?;
         Ok(new)
+    }
+
+    /// The provider's live model list, or `None` when it cannot be read
+    /// quickly (offline, refused) — callers then keep what they have.
+    async fn live_models(&self, provider_id: &str) -> Option<Vec<String>> {
+        const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+        let listed = tokio::time::timeout(LIST_TIMEOUT, self.list_models(provider_id, None)).await;
+        match listed {
+            Ok(Ok(models)) if !models.is_empty() => Some(models),
+            Ok(Ok(_)) => None,
+            Ok(Err(error)) => {
+                tracing::debug!(provider = %provider_id, code = %error.code, "model list unavailable");
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Launch check: text roles that point at a model a *preset* put there
+    /// and that the provider's live list no longer offers move to the newest
+    /// listed model of the same line. Models the user chose are never touched
+    /// (an unknown one fails over and names itself instead).
+    pub async fn repair_assignments_from_live_models(&self) {
+        const TEXT_ROLES: [ModelRole; 5] = [
+            ModelRole::Default,
+            ModelRole::Fast,
+            ModelRole::Reasoning,
+            ModelRole::Vision,
+            ModelRole::Research,
+        ];
+        if ensure_cloud_ai(&self.settings.get()).is_err() {
+            return;
+        }
+        let providers = self.providers();
+        let mut models = self.settings.get().ai.models;
+        let mut lists: HashMap<String, Option<Vec<String>>> = HashMap::new();
+        let mut changed = Vec::new();
+        for role in TEXT_ROLES {
+            let Some(assignment) = models.get(role).cloned() else {
+                continue;
+            };
+            let Some(provider) = providers.iter().find(|p| p.id == assignment.provider_id) else {
+                continue;
+            };
+            let eligible = provider.auth_method == ProviderAuthMethod::ApiKey
+                && provider.enabled
+                && provider.has_api_key
+                && presets::is_preset_model(provider.kind, &assignment.model);
+            if !eligible {
+                continue;
+            }
+            if !lists.contains_key(&provider.id) {
+                let listed = self.live_models(&provider.id).await;
+                lists.insert(provider.id.clone(), listed);
+            }
+            let Some(Some(available)) = lists.get(&provider.id) else {
+                continue;
+            };
+            if let Some(live) =
+                presets::live_replacement(provider.kind, role, &assignment.model, available)
+            {
+                tracing::warn!(provider = %provider.id, ?role, from = %assignment.model, to = %live, "assigned preset model is no longer offered; moving the role");
+                models.set(
+                    role,
+                    Some(ModelAssignment {
+                        provider_id: provider.id.clone(),
+                        model: live,
+                    }),
+                );
+                changed.push(role);
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        if let Err(error) = self
+            .settings
+            .update(serde_json::json!({ "ai": { "models": models } }))
+            .await
+        {
+            tracing::warn!(code = %error.code, "cannot save the repaired model roles");
+        }
     }
 
     /// Test the provider serving the default role (setup checks).
@@ -1135,6 +1358,32 @@ enum StreamOutcome {
 
 /// User-facing generations drive the HUD state machine; auxiliary tasks
 /// (classification, summarisation, embeddings, vision-only analysis) do not.
+/// How long a provider may take to produce the first token of an answer
+/// before the request counts it as down (and fails over): generous enough for
+/// a deep-thinking model, short enough that a live question is never held.
+fn first_token_deadline(latency: LatencyBudget) -> Duration {
+    match latency {
+        LatencyBudget::UltraFast => Duration::from_secs(12),
+        LatencyBudget::Fast => Duration::from_secs(15),
+        LatencyBudget::Balanced => Duration::from_secs(45),
+        LatencyBudget::Deep => Duration::from_secs(150),
+    }
+}
+
+/// A quiet spell this long after the answer started ends the stream.
+const STREAM_IDLE_LIMIT: Duration = Duration::from_secs(45);
+
+/// The provider has not started answering within `limit`.
+fn not_answering(provider: &str, limit: Duration) -> BlueyError {
+    BlueyError::network(
+        "timeout",
+        format!(
+            "{provider} did not start answering within {} s",
+            limit.as_secs()
+        ),
+    )
+}
+
 fn is_primary(task: AiTask) -> bool {
     matches!(
         task,

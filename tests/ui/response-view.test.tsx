@@ -52,14 +52,32 @@ describe("ResponseView", () => {
     }
   });
 
-  it("buffers an unclosed code fence while streaming", () => {
-    const { renderable, pendingCode } = splitStreamingMarkdown("Intro\n\n```python\nprint('par");
+  it("streams an unclosed code fence with a temporary closing fence", () => {
+    const { renderable, pendingCode, openCode } = splitStreamingMarkdown("Intro\n\n```python\nprint('par");
     expect(pendingCode).toBe(true);
-    expect(renderable).not.toContain("```");
+    expect(renderable).toBe("Intro\n\n```python\nprint('par\n```");
+    expect(openCode).toBe("print('par");
 
     render(<ResponseView streaming response={makeResponse({ content: "Intro\n\n```python\nprint('par" })} />);
-    expect(screen.getByText("Writing code…")).toBeInTheDocument();
-    expect(screen.queryByText(/print\(/)).not.toBeInTheDocument();
+    expect(screen.getByText("print('par")).toBeInTheDocument();
+    // A partial block cannot be copied until its closing fence arrives.
+    expect(screen.getByLabelText("Code still being written")).toBeDisabled();
+    expect(screen.queryByLabelText("Copy code")).not.toBeInTheDocument();
+  });
+
+  it("keeps Copy on a finished block while a later block is still open", () => {
+    const content = "```js\na()\n```\n\nThen:\n\n```js\nb(";
+    expect(splitStreamingMarkdown(content).openCode).toBe("b(");
+    render(<ResponseView streaming response={makeResponse({ content })} />);
+    expect(screen.getByLabelText("Copy code")).toBeEnabled();
+    expect(screen.getByLabelText("Code still being written")).toBeDisabled();
+  });
+
+  it("leaves balanced fences untouched and only closes with a bare fence", () => {
+    expect(splitStreamingMarkdown("a\n```\nx\n```\nb")).toEqual({ renderable: "a\n```\nx\n```\nb", pendingCode: false });
+    // "```python" inside an open block is code, not a closer.
+    expect(splitStreamingMarkdown("```\nx\n```python\n").pendingCode).toBe(true);
+    expect(splitStreamingMarkdown("~~~\nx\n").renderable).toBe("~~~\nx\n~~~");
   });
 
   it("renders citations as sources", () => {

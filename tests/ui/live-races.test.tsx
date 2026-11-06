@@ -13,6 +13,7 @@ import type { DetectedEvent } from "@/lib/types";
 import { useAppStore } from "@/stores/appStore";
 import { useChatStore } from "@/stores/chatStore";
 import { setEngine } from "@/stores/engine";
+import { useHudUiStore } from "@/stores/hudUiStore";
 import { usePanelStore } from "@/stores/panelStore";
 import { cancelLiveSuggestion, QUESTION_STALE_MS, useProactiveStore } from "@/stores/proactive";
 import type * as ProactiveModule from "@/stores/proactive";
@@ -142,6 +143,26 @@ describe("live suggestion races", () => {
     expect(engine.cancelled).toBe(true);
     expect(engine.committed.map((response) => response.id)).toEqual(["prep-x"]);
     expect(engine.committed[0]?.prepared).toBeUndefined();
+  });
+
+  it("⌘⇧↵ while the newest question's suggestion streams keeps it and brings it into view", async () => {
+    engine.hold = true;
+    const { result } = renderHook(() => useAsk());
+    mock.emit("question.detected", detected("q1"));
+    await waitFor(() => expect(useProactiveStore.getState().liveEventId).toBe("q1"));
+    const reveals = useHudUiStore.getState().revealRequest;
+
+    act(() => result.current.generateOrTakePrepared());
+    await flush();
+    // Not cancelled and rerun from scratch: the same turn keeps streaming.
+    expect(engine.cancelledPrepares).toEqual([]);
+    expect(engine.asks).toHaveLength(0);
+    expect(useChatStore.getState().turns.map((turn) => turn.status)).toEqual(["streaming"]);
+    expect(useHudUiStore.getState().revealRequest).toBe(reveals + 1);
+
+    engine.hold = false;
+    engine.release();
+    await waitFor(() => expect(useChatStore.getState().turns.at(-1)?.status).toBe("done"));
   });
 
   it("taking the prepared answer or starting a new chat is not a dismissal; Stop is", async () => {

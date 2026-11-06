@@ -89,6 +89,15 @@ public final class AudioSession {
     private var system: SystemAudioCapture?
     /// System audio started with this run (for mid-run status updates).
     private var systemActive = false
+    /// The microphone is capturing (follows `onLiveChange`).
+    private var micActive = false
+    /// Bumped on every teardown: a pending system-audio retry of an
+    /// earlier run sees the mismatch and gives up.
+    private var runGeneration = 0
+    /// Waits before re-starting a system-audio stream that stopped with an
+    /// error; after the last one, every `systemRetryInterval`.
+    private static let systemRetryDelays: [TimeInterval] = [1, 2, 5]
+    private static let systemRetryInterval: TimeInterval = 10
     private var chunkers: [String: PCMChunker] = [:]
     private var vads: [String: VoiceActivityDetector] = [:]
     private var transcribers: [String: SpeechTranscriber] = [:]
@@ -200,13 +209,8 @@ public final class AudioSession {
                 guard let self else { return }
                 self.queue.async {
                     guard self.state != .idle else { return }
-                    self.emit(
-                        "audio.started",
-                        AnyEncodable(
-                            AudioStartedEvent(
-                                microphone: live, systemAudio: self.systemActive,
-                                device: live ? self.deviceService.defaultInputDevice() : nil,
-                                speech: nil)))
+                    self.micActive = live
+                    self.emitSourceStatus()
                 }
             }
             self.mic = mic
@@ -220,15 +224,7 @@ public final class AudioSession {
         }
 
         if wantSystem {
-            let system = SystemAudioCapture(targetSampleRate: Double(sampleRate))
-            system.onSamples = { [weak self] samples in
-                self?.ingest(source: "system", samples: samples)
-            }
-            system.onStopped = { [weak self] error in
-                guard let self, let error else { return }
-                self.emitError(error)
-                self.stopInternal(reason: "error")
-            }
+            let system = makeSystemCapture()
             self.system = system
             group.enter()
             system.start { error in
@@ -252,6 +248,7 @@ public final class AudioSession {
                 self.emitError(firstError)
             }
             self.systemActive = systemOk
+            self.micActive = micOk
             self.emit(
                 "audio.started",
                 AnyEncodable(
@@ -267,6 +264,103 @@ public final class AudioSession {
         }
     }
 
+    // MARK: system audio loss and recovery
+
+    /// A system-audio capture wired to this session. Runs on `queue`.
+    private func makeSystemCapture() -> SystemAudioCapture {
+        let system = SystemAudioCapture(targetSampleRate: Double(sampleRate))
+        system.onSamples = { [weak self] samples in
+            self?.ingest(source: "system", samples: samples)
+        }
+        system.onStopped = { [weak self, weak system] error in
+            guard let self, let error else { return }
+            self.queue.async {
+                // Only the live stream of a running session counts.
+                guard self.state != .idle, let system, self.system === system else { return }
+                self.handleSystemLost(error)
+            }
+        }
+        return system
+    }
+
+    /// The stream stopped mid-run (display replug, clamshell, a re-consent
+    /// prompt): drop system audio only and keep re-starting it while the
+    /// microphone carries on. A Stop the user clicked in the menu-bar
+    /// recording indicator is honoured: system audio stays off for the run.
+    /// Must run on `queue`.
+    private func handleSystemLost(_ error: HelperError) {
+        emitError(error)
+        system = nil
+        systemActive = false
+        guard micActive else {
+            stopLockedEmitting(reason: "error")
+            return
+        }
+        emitSourceStatus()
+        if error.code != SystemAudioCapture.userStoppedCode {
+            scheduleSystemRetry(attempt: 0)
+        }
+    }
+
+    /// Must run on `queue`.
+    private func scheduleSystemRetry(attempt: Int) {
+        let delays = Self.systemRetryDelays
+        let delay = attempt < delays.count ? delays[attempt] : Self.systemRetryInterval
+        let generation = runGeneration
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.runGeneration == generation, self.state != .idle,
+                self.system == nil
+            else { return }
+            let system = self.makeSystemCapture()
+            self.system = system
+            system.start { [weak self] error in
+                guard let self else { return }
+                self.queue.async {
+                    self.finishSystemRetry(
+                        system, error: error, attempt: attempt, generation: generation)
+                }
+            }
+        }
+    }
+
+    /// Must run on `queue`.
+    private func finishSystemRetry(
+        _ system: SystemAudioCapture, error: HelperError?, attempt: Int, generation: Int
+    ) {
+        // The run ended (or moved on) while the stream was starting.
+        guard runGeneration == generation, state != .idle, self.system === system else {
+            system.stop()
+            return
+        }
+        if let error {
+            Log.shared.warn("system audio retry \(attempt + 1) failed: \(error.message)")
+            self.system = nil
+            // Screen Recording was revoked: retrying cannot help, so say so
+            // once and leave system audio off (the microphone carries on).
+            if error.kind == .permission {
+                emitError(error)
+                return
+            }
+            scheduleSystemRetry(attempt: attempt + 1)
+            return
+        }
+        Log.shared.info("system audio restarted after \(attempt + 1) attempt(s)")
+        systemActive = true
+        emitSourceStatus()
+    }
+
+    /// Mid-run source status: `audio.started` again, without a speech route
+    /// (the host keeps the one from the first event). Must run on `queue`.
+    private func emitSourceStatus() {
+        emit(
+            "audio.started",
+            AnyEncodable(
+                AudioStartedEvent(
+                    microphone: micActive, systemAudio: systemActive,
+                    device: micActive ? deviceService.defaultInputDevice() : nil,
+                    speech: nil)))
+    }
+
     public func stop(completion: @escaping (Result<OkResult, HelperError>) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -276,14 +370,6 @@ public final class AudioSession {
             }
             self.stopLockedEmitting(reason: "requested")
             completion(.success(OkResult()))
-        }
-    }
-
-    /// Stop triggered internally (device loss / stream error).
-    private func stopInternal(reason: String) {
-        queue.async { [weak self] in
-            guard let self, self.state != .idle else { return }
-            self.stopLockedEmitting(reason: reason)
         }
     }
 
@@ -306,6 +392,9 @@ public final class AudioSession {
         mic = nil
         system?.stop()
         system = nil
+        micActive = false
+        systemActive = false
+        runGeneration += 1
         for transcriber in transcribers.values {
             transcriber.finish()
         }
@@ -406,8 +495,16 @@ public final class AudioSession {
                 AnyEncodable(AudioDeviceChangedEvent(devices: devices, currentInput: current)))
             if self.state != .idle, self.usingDefaultDevice {
                 if devices.isEmpty {
+                    // A system-audio-only run has no microphone to lose.
+                    guard let mic = self.mic else { return }
                     self.emitError(.audio("device_lost", "no input devices available"))
-                    self.stopLockedEmitting(reason: "device_lost")
+                    guard self.systemActive else {
+                        self.stopLockedEmitting(reason: "device_lost")
+                        return
+                    }
+                    // Keep system audio; the restart() below re-opens the
+                    // microphone once an input device appears.
+                    mic.suspend()
                 } else {
                     // MicrophoneCapture also reacts to AVAudioEngineConfigurationChange;
                     // restart() is idempotent and cheap.

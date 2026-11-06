@@ -29,12 +29,18 @@ pub(super) fn degraded_error() -> BlueyError {
     )
 }
 
+/// Give-ups per source in one run (without transcripts in between) after
+/// which the cloud is abandoned for on-device Apple Speech.
+pub(super) const FAILURES_BEFORE_FALLBACK: u32 = 2;
+
 #[derive(Debug, Default)]
 pub(super) struct SttHealth {
     /// Sources whose provider session ended, and when.
     failed: HashMap<AudioSource, Instant>,
     /// Sources in an announced outage.
     degraded: HashSet<AudioSource>,
+    /// Consecutive give-ups per source (cleared by transcripts).
+    failures: HashMap<AudioSource, u32>,
 }
 
 impl SttHealth {
@@ -48,12 +54,20 @@ impl SttHealth {
     /// re-opened after [`REOPEN_COOLDOWN`]. True when this starts an outage.
     pub(super) fn failed(&mut self, source: AudioSource, now: Instant) -> bool {
         self.failed.insert(source, now);
+        *self.failures.entry(source).or_default() += 1;
         self.degraded(source)
+    }
+
+    /// The cloud gave up on `source` repeatedly with no transcript between:
+    /// a cool-down and another try would only lose more of the conversation.
+    pub(super) fn keeps_failing(&self, source: AudioSource) -> bool {
+        self.failures.get(&source).copied().unwrap_or(0) >= FAILURES_BEFORE_FALLBACK
     }
 
     /// Transcripts flow (or the provider reconnected). True when this ended
     /// the last outage, so the notice can be cleared.
     pub(super) fn healthy(&mut self, source: AudioSource) -> bool {
+        self.failures.remove(&source);
         self.degraded.remove(&source) && self.degraded.is_empty()
     }
 
@@ -95,6 +109,19 @@ mod tests {
             health.may_forward(MIC, t0 + REOPEN_COOLDOWN),
             "re-opened, not cooling down"
         );
+    }
+
+    #[test]
+    fn a_source_that_keeps_failing_is_flagged_until_transcripts_flow() {
+        let mut health = SttHealth::default();
+        let t0 = Instant::now();
+        health.failed(MIC, t0);
+        assert!(!health.keeps_failing(MIC), "one give-up gets a cool-down");
+        health.failed(MIC, t0 + REOPEN_COOLDOWN);
+        assert!(health.keeps_failing(MIC));
+        assert!(!health.keeps_failing(SYSTEM));
+        health.healthy(MIC);
+        assert!(!health.keeps_failing(MIC), "transcripts reset the count");
     }
 
     #[test]

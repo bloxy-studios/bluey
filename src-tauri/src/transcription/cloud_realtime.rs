@@ -22,7 +22,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-use super::reconnect::{is_fatal, reopen, Command, Outage, Reopened, Watchdog, SEND_TIMEOUT};
+use super::reconnect::{
+    is_fatal, reopen, Command, Outage, Reopened, Replay, Watchdog, WatchdogVerdict, SEND_TIMEOUT,
+};
 use super::{
     session_closed, EventSink, PcmChunk, SessionOptions, TranscriptionEvent, TranscriptionProvider,
     TranscriptionSession,
@@ -226,10 +228,13 @@ impl Worker {
 
     async fn run(self, mut rx: mpsc::Receiver<Command>) {
         let mut outage = Outage::new(self.options.source, self.sink.clone());
-        let mut socket = match reopen(&mut rx, &mut outage, 0, || self.connect()).await {
+        // Audio sent since the last completed utterance, replayed after a reconnect.
+        let mut replay = Replay::default();
+        let mut socket = match reopen(&mut rx, &mut outage, 0, &mut replay, || self.connect()).await
+        {
             Reopened::Open(socket) => socket,
             Reopened::Closed => return,
-            Reopened::Fatal(error) => return self.fail(error).await,
+            Reopened::Fatal(error) | Reopened::GaveUp(error) => return self.fail(error).await,
         };
         let mut watchdog = Watchdog::default();
         // Reconnects since the last transcript event (a healthy session resets it).
@@ -245,9 +250,11 @@ impl Worker {
                     None | Some(Command::Close) => break,
                     Some(Command::Audio(chunk)) => {
                         let frame = realtime::append_audio(&chunk.base64);
+                        let is_speech = chunk.is_speech;
+                        replay.push(chunk);
                         if send(&mut socket, frame).await.is_err() {
                             reconnect = Some(true);
-                        } else if chunk.is_speech {
+                        } else if is_speech {
                             watchdog.sent_speech();
                         }
                     }
@@ -277,6 +284,7 @@ impl Worker {
                         RealtimeEvent::Completed { transcript, .. } => {
                             reconnects = 0;
                             partial = None;
+                            replay.clear();
                             if !transcript.trim().is_empty() {
                                 let _ = self.sink.send(TranscriptionEvent::Final { source: self.options.source, text: transcript, language: None }).await;
                             }
@@ -300,9 +308,18 @@ impl Worker {
                     }
                     }
                 },
-                () = watchdog.expired() => {
-                    tracing::warn!(source = ?self.options.source, "voice live stopped answering; reconnecting");
-                    reconnect = Some(false);
+                () = watchdog.expired() => match watchdog.verdict() {
+                    // Probe first: silence after noise is not a dead socket.
+                    WatchdogVerdict::Probe => {
+                        let ping = socket.send(Message::Ping(Vec::new().into()));
+                        if !matches!(tokio::time::timeout(SEND_TIMEOUT, ping).await, Ok(Ok(()))) {
+                            reconnect = Some(false);
+                        }
+                    }
+                    WatchdogVerdict::Stalled => {
+                        tracing::warn!(source = ?self.options.source, "voice live stopped answering; reconnecting");
+                        reconnect = Some(false);
+                    }
                 }
             }
             let Some(counted) = reconnect else { continue };
@@ -323,12 +340,24 @@ impl Worker {
             partial = None;
             watchdog = Watchdog::default();
             // Until the service is back (or the session closes); audio in the
-            // meantime is lost.
-            socket = match reopen(&mut rx, &mut outage, attempt, || self.connect()).await {
+            // meantime is kept and replayed to the new socket first.
+            socket = match reopen(&mut rx, &mut outage, attempt, &mut replay, || {
+                self.connect()
+            })
+            .await
+            {
                 Reopened::Open(fresh) => fresh,
                 Reopened::Closed => return,
-                Reopened::Fatal(error) => return self.fail(error).await,
+                Reopened::Fatal(error) | Reopened::GaveUp(error) => return self.fail(error).await,
             };
+            for chunk in replay.pending() {
+                if send(&mut socket, realtime::append_audio(&chunk.base64))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
         }
         // Closing: give the service a moment to flush the last utterance.
         let deadline = tokio::time::Instant::now() + DRAIN_GRACE;

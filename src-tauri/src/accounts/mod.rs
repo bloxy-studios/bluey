@@ -1050,7 +1050,15 @@ impl AccountsManager {
                 }
             }
             match self.credential_for(&account_id).await {
-                Ok(_) => {}
+                // The plan's models change (a plan upgrade, a model retired,
+                // a new one added) without Bluey hearing of it: re-read the
+                // catalog once per launch, so roles never point at a model the
+                // plan no longer offers. A fresh cached catalog is kept.
+                Ok(_) => {
+                    if let Err(error) = self.refresh_catalog(&account_id, false).await {
+                        tracing::info!(account = %account_id, code = %error.code, "catalog refresh at launch failed; keeping the stored one");
+                    }
+                }
                 Err(error) if error.kind == BlueyErrorKind::Authentication => {
                     tracing::warn!(account = %account_id, code = %error.code, "stored account sign-in rejected");
                 }

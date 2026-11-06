@@ -4,9 +4,9 @@
  * configured. Cheap by construction (tiny schema, ~100 output tokens).
  */
 
-import { createResponseEngine } from "@/ai/engine";
+import { CLASSIFY_REFINE_DEADLINE_MS, createResponseEngine, type EngineBus } from "@/ai/engine";
 import { setTransport } from "@/lib/tauri/transport";
-import type { AIChunk } from "@/lib/types";
+import type { AIChunk, DetectedEvent } from "@/lib/types";
 import { FakeTransport } from "../fixtures/helpers/fake-transport";
 import { makeMode, makeSegment, makeSettings } from "../fixtures/helpers/builders";
 
@@ -139,5 +139,80 @@ describe("classify with fast-model refinement", () => {
     expect(event).not.toBeNull();
     expect(event!.confidence).toBeGreaterThan(0.7);
     expect(fake.callsFor("ai_stream")).toHaveLength(0);
+  });
+
+  describe("never delays or reorders a heard question", () => {
+    function recordingBus(): { bus: EngineBus; detected: DetectedEvent[] } {
+      const detected: DetectedEvent[] = [];
+      const bus = {
+        emit: (name: string, payload: unknown) => {
+          if (name === "question.detected") detected.push(payload as DetectedEvent);
+        },
+        on: () => () => {},
+      } as unknown as EngineBus;
+      return { bus, detected };
+    }
+
+    /** A refinement that answers only after `delayMs`. */
+    function slowRefinement(json: string, delayMs: number) {
+      return (request: { requestId: string }, emit: (chunk: AIChunk) => void): void => {
+        setTimeout(() => refinementScript(json)(request, emit), delayMs);
+      };
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("announces the heuristic detection before the model answers", async () => {
+      vi.useFakeTimers();
+      fake.setAIScript(slowRefinement('{"type":"question","requiresResponse":true,"confidence":0.9}', 300));
+      const { bus, detected } = recordingBus();
+      const engine = createResponseEngine({ bus });
+      const pending = engine.classify({ segment: MID_CONFIDENCE_SEGMENT, recent: [], mode: interviewMode, settings: settingsWithFastModel });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(detected).toHaveLength(1); // surfaced at once, not after the model
+      expect(detected[0]!.confidence).toBeCloseTo(0.58, 5);
+      await vi.advanceTimersByTimeAsync(300);
+      expect((await pending)!.confidence).toBe(0.9);
+      expect(detected).toHaveLength(1); // the refinement never re-announces it
+    });
+
+    it("withdraws the suggestion when the model says none within the deadline", async () => {
+      vi.useFakeTimers();
+      fake.setAIScript(slowRefinement('{"type":"none","confidence":0.9}', 200));
+      const { bus, detected } = recordingBus();
+      const refuted: string[] = [];
+      const engine = createResponseEngine({ bus });
+      const pending = engine.classify({
+        segment: MID_CONFIDENCE_SEGMENT,
+        recent: [],
+        mode: interviewMode,
+        settings: settingsWithFastModel,
+        onRefuted: (event) => refuted.push(event.id),
+      });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await pending).toBeNull();
+      expect(refuted).toEqual([detected[0]!.id]);
+    });
+
+    it("ignores a verdict that arrives after the deadline", async () => {
+      vi.useFakeTimers();
+      fake.setAIScript(slowRefinement('{"type":"none","confidence":0.9}', CLASSIFY_REFINE_DEADLINE_MS + 500));
+      const { bus } = recordingBus();
+      const refuted: string[] = [];
+      const engine = createResponseEngine({ bus });
+      const pending = engine.classify({
+        segment: MID_CONFIDENCE_SEGMENT,
+        recent: [],
+        mode: interviewMode,
+        settings: settingsWithFastModel,
+        onRefuted: (event) => refuted.push(event.id),
+      });
+      await vi.advanceTimersByTimeAsync(CLASSIFY_REFINE_DEADLINE_MS);
+      expect((await pending)!.confidence).toBeCloseTo(0.58, 5); // the heuristic stands
+      await vi.advanceTimersByTimeAsync(500);
+      expect(refuted).toEqual([]);
+    });
   });
 });

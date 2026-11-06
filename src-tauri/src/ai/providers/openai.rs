@@ -156,6 +156,8 @@ pub(super) fn spawn_openai_sse(
     tauri::async_runtime::spawn(async move {
         let mut events = response.bytes_stream().eventsource();
         let mut finished = false;
+        let mut done_marker = false;
+        let mut saw_text = false;
         loop {
             let frame = tokio::select! {
                 _ = token.cancelled() => break,
@@ -175,12 +177,20 @@ pub(super) fn spawn_openai_sse(
                 }
             };
             if bluey_protocols::sse::is_done(&frame.data) {
+                done_marker = true;
                 break;
             }
             let chunk = match proto::parse_chunk(&frame.data) {
                 Ok(chunk) => chunk,
                 Err(_) => continue, // tolerate unknown frames
             };
+            if let Some(error) = chunk.error {
+                let message = error
+                    .message
+                    .unwrap_or_else(|| "the provider reported an error mid-answer".into());
+                let _ = tx.send(Err(BlueyError::ai("stream_error", message))).await;
+                return;
+            }
             if let Some(usage) = chunk.usage {
                 if tx
                     .send(Ok(StreamItem::Usage {
@@ -195,6 +205,7 @@ pub(super) fn spawn_openai_sse(
             }
             for choice in chunk.choices {
                 if let Some(content) = choice.delta.content {
+                    saw_text |= !content.is_empty();
                     if !content.is_empty() && tx.send(Ok(StreamItem::Delta(content))).await.is_err()
                     {
                         return;
@@ -202,14 +213,35 @@ pub(super) fn spawn_openai_sse(
                 }
                 if let Some(reason) = choice.finish_reason {
                     finished = true;
-                    let _ = tx
-                        .send(Ok(StreamItem::Finished(proto::map_finish_reason(&reason))))
-                        .await;
+                    let item = match proto::classify_finish(&reason) {
+                        proto::Finish::Done(finish) => Ok(StreamItem::Finished(finish)),
+                        proto::Finish::Filtered => Err(BlueyError::ai(
+                            "blocked_content_filter",
+                            "the provider's content filter stopped the answer",
+                        )),
+                        proto::Finish::Failed => Err(BlueyError::network(
+                            "stream",
+                            "the provider stopped generating the answer",
+                        )),
+                    };
+                    let _ = tx.send(item).await;
                 }
             }
         }
         if !finished && !token.is_cancelled() {
-            let _ = tx.send(Ok(StreamItem::Finished(FinishReason::Stop))).await;
+            // Neither a finish reason nor `[DONE]`, and nothing said: the
+            // connection was cut before the answer began — a failure (that may
+            // fail over), not an empty answer. Lenient servers that skip both
+            // markers after a real answer keep that answer.
+            let item = if done_marker || saw_text {
+                Ok(StreamItem::Finished(FinishReason::Stop))
+            } else {
+                Err(BlueyError::network(
+                    "stream",
+                    "the response stream ended before the answer started",
+                ))
+            };
+            let _ = tx.send(item).await;
         }
     });
     stream

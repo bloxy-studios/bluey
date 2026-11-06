@@ -146,6 +146,14 @@ export function useAsk() {
    * (then any other prepared response); otherwise generate from the transcript.
    */
   const generateOrTakePrepared = useCallback((triggeredAtMs?: number) => {
+    // The suggestion for the newest question is already streaming: keep it and bring it
+    // into view — restarting would throw away its head start on the same question.
+    const liveEventId = useProactiveStore.getState().liveEventId;
+    const latestQuestion = useTranscriptStore.getState().questions.at(-1);
+    if (liveEventId && (!latestQuestion || latestQuestion.id === liveEventId)) {
+      useHudUiStore.getState().revealLatest();
+      return;
+    }
     const engine = getEngine();
     const preparedEventId = useProactiveStore.getState().preparedEventId;
     const prepared =

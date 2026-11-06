@@ -54,12 +54,22 @@ with the reason.
   (`provider:gemini:api_key`); it appears only in the WebSocket URL query and is redacted from
   every log line. A key refused at the WebSocket handshake (HTTP 401/403) or in-band
   (`UNAUTHENTICATED`, `PERMISSION_DENIED`) ends the session with `config.api_key_invalid`;
-  `INVALID_ARGUMENT`/`NOT_FOUND` → `config.model_not_found`. A lost connection is re-opened
-  with exponential backoff (0.5 s doubling, capped at 8 s) until it succeeds, listening stops,
-  or the service rejects the configuration; sends time out after 5 s and a watchdog reconnects
-  when speech went out but nothing came back for 15 s (a half-open socket). Five server
-  closes/errors without transcript progress end the provider session. Audio never
-  back-pressures capture: a chunk that does not fit the worker's buffer is dropped. Live uses
+  `INVALID_ARGUMENT`/`NOT_FOUND` → `config.model_not_found`. The service reports most failures
+  as a WebSocket **close** rather than an in-band error, so the close code and reason are read
+  (`map_live_close`): "API key not valid" → `config.api_key_invalid`, a model "not found" →
+  `config.model_not_found`, "exceeded your current quota" → `config.quota_exhausted`, other
+  1007/1008 → `config.live_rejected` — all fatal, so listening moves to Apple Speech instead of
+  reconnecting forever. Any other loss is re-opened with exponential backoff (0.5 s doubling,
+  capped at 8 s) until it succeeds, listening stops, the service rejects the configuration, or
+  eight attempts failed (the session then gives up); sends time out after 5 s. When speech went
+  out but nothing came back for 15 s the socket is probed with a ping, and only a probe left
+  unanswered for 5 s counts as stalled — typing or music on the line no longer forces
+  reconnects. Audio sent since the last final, and audio that arrives while reconnecting, is
+  kept (about 10 s) and replayed to the new socket first, so a question asked during a network
+  blip is still transcribed. A rotation whose replacement socket cannot be opened keeps the
+  healthy old one and retries 5 s later. Five server closes/errors without transcript progress
+  end the provider session. Audio never back-pressures capture: a chunk that does not fit the
+  worker's buffer is dropped. Live uses
   the service's SMART mode (imported recordings are verbatim). Settings → Audio → *Gemini Live
   (cloud)*; the Live model follows the transcription role when it is a `*-transcribe-live`
   model.
@@ -137,9 +147,15 @@ lost → automatic re-route, else `audio.error{device_lost}`. A cloud provider t
 non-fatal `audio.error{stt_fallback}` naming the reason. Mid-session, a connection outage is
 announced once as `audio.error{stt_degraded}` (also `AudioStatus.error`, cleared when transcripts
 flow again) while the provider reconnects (Gemini Live and Voice Live share the policy above);
-a provider session that gives up is re-opened on the next chunk after a 10 s cool-down, and a
-configuration error (key rejected, model not found, unsupported) moves listening to Apple
-Speech with `stt_fallback`. The other source keeps going throughout. Apple Speech itself unavailable → `speech_unavailable`.
+a provider session that gives up is re-opened on the next chunk after a 10 s cool-down; a
+second give-up without a transcript in between, or a configuration error (key rejected, model
+not found, quota spent, unsupported), moves listening to Apple Speech with `stt_fallback`. The
+other source keeps going throughout: a system-audio stream that stops mid-run (display
+replug, clamshell, a re-consent prompt) drops only system audio and is restarted with backoff
+(1, 2, 5 s, then every 10 s) — unless the user pressed Stop in the menu-bar recording
+indicator, which is honoured — and a vanished input device suspends only the microphone.
+Apple Speech recovers by itself too: it restarts when the recognizer reports it is available
+again, and retries with backoff (2, 5, 10, 30 s) instead of stopping after repeated errors. Apple Speech itself unavailable → `speech_unavailable`.
 `stt_fallback` is announced once per run as an info notice, not an error. With Privacy → Cloud AI
 off a cloud provider is never used: listening runs on Apple Speech (`stt_fallback`) on the Mac
 only (`requireOnDevice`, see above), and turning the switch off mid-run moves a live cloud

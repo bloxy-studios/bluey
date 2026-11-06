@@ -4,7 +4,7 @@
  * modes (MODE-004).
  */
 
-import { classifyIntent, type Intent } from "@/context/relevance";
+import { classifyIntent, forLiveSuggestion, type Intent } from "@/context/relevance";
 import type { AskTrigger } from "@/lib/engine-contract";
 import type { BlueyMode, DetectedEvent } from "@/lib/types";
 import { makeMode, makeSnapshot } from "../../fixtures/helpers/builders";
@@ -305,5 +305,45 @@ describe("eval-matrix routing gaps (TEST-001 rows 13, 23, 25)", () => {
     expect(followUp("And in Go?").task).toBe("coding");
     expect(followUp("And in Go?").answerShape).toBe("code");
     expect(followUp("Why is that O(n)?").answerShape).toBe("explain");
+  });
+});
+
+describe("live suggestions for heard questions are instant (voice interviews)", () => {
+  const designMode = makeMode({ id: "system-design", responseSchema: "system-design" });
+  const onVideoCall = (text: string, mode: BlueyMode = makeMode()) =>
+    classifyIntent({
+      snapshot: makeSnapshot({
+        screen: { width: 1600, height: 1000, frameId: "f1" },
+        ocr: { blocks: [], text: "Mute  Share  Leave", level: "fast", languages: ["en"], durationMs: 1 },
+      }),
+      mode,
+      detectedEvent: { ...EVENT, text },
+      trigger: "detected_event",
+      now: NOW,
+    });
+
+  it("does not send a heard question as an image just because OCR found little text", () => {
+    expect(onVideoCall("Why do you want to work here?").visionRequired).toBe(false);
+  });
+
+  it("still sends the screen when the heard question points at it", () => {
+    expect(onVideoCall("Can you walk me through the diagram on your screen?").visionRequired).toBe(true);
+  });
+
+  it("caps a heard system-design question at the fast budget without deep reasoning", () => {
+    const deep = onVideoCall("How would you design a URL shortener?", designMode);
+    expect(deep.reasoning).toBe("deep");
+    const live = forLiveSuggestion(deep);
+    expect(live.latency).toBe("fast");
+    expect(live.reasoning).toBe("none");
+    expect(live.task).toBe(deep.task);
+    expect(live.schemaId).toBe(deep.schemaId);
+  });
+
+  it("keeps an already instant answer and light reasoning for code", () => {
+    const answer = onVideoCall("Tell me about yourself.");
+    expect(forLiveSuggestion(answer).latency).toBe(answer.latency);
+    const code: Intent = { ...answer, task: "coding", reasoning: "light", latency: "balanced" };
+    expect(forLiveSuggestion(code)).toMatchObject({ reasoning: "light", latency: "fast" });
   });
 });

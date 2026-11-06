@@ -818,11 +818,19 @@ impl AudioManager {
         tracing::warn!(?source, error = %error, "cloud transcription failed");
         stt.sessions.remove(&source);
         let announce = stt.health.failed(source, std::time::Instant::now());
-        if matches!(
+        // A rejected key/model/quota never recovers by itself, and a source
+        // that keeps giving up would lose the interview to cool-downs: both
+        // move to on-device Apple Speech (it works offline).
+        let permanent = matches!(
             error.kind,
             BlueyErrorKind::Configuration | BlueyErrorKind::NotSupported
-        ) {
-            let reason = error.message.clone();
+        );
+        if permanent || stt.health.keeps_failing(source) {
+            let reason = if permanent {
+                error.message.clone()
+            } else {
+                "live cloud transcription keeps failing".to_string()
+            };
             self.status.lock().error = Some(error.clone());
             self.bus.publish(BlueyEvent::AudioError(error));
             self.fall_back_to_apple(reason);
