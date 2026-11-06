@@ -94,6 +94,14 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: ${{ matrix.target }}
+      - name: Stable signing identity (optional; keeps macOS permissions across updates)
+        # With the owner's certificate in these secrets every nightly carries the same code
+        # identity, so macOS keeps its permission and Keychain approvals across updates;
+        # without them the build stays ad-hoc (scripts/release/import-signing-identity.sh).
+        env:
+          CERT_P12_BASE64: ${{ secrets.BLUEY_NIGHTLY_SIGNING_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.BLUEY_NIGHTLY_SIGNING_CERT_PASSWORD }}
+        run: bash scripts/release/import-signing-identity.sh
       - name: Developer build carrying the nightly version
         # The updater key reaches only the step that signs, never the actions above (SEC-008).
         env:

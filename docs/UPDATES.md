@@ -46,6 +46,23 @@ identity to macOS. Screen Recording, Accessibility, Microphone and Speech Recogn
 the Keychain approvals of saved API keys were given to the previous identity and stop applying.
 Signing every feed build with one stable identity (Developer ID) is the fix and an owner action.
 
+**Nightlies with a stable identity.** Until Developer ID exists, the Nightly feed can keep its
+approvals with the owner's **Apple Development** certificate: `nightly.yml` imports it from two
+repository secrets (`scripts/release/import-signing-identity.sh`) and signs the app and both
+sidecars with it instead of ad hoc. The first nightly signed this way is a new identity once
+more; every later one keeps the grants and Keychain approvals. The certificate's name (the
+Apple ID e-mail) is readable in the signature of every public nightly. Setup, on the Mac that
+holds the certificate:
+
+1. Keychain Access → *login* → *My Certificates* → **Apple Development: …** → Export… → save as
+   `.p12` with a strong export password.
+2. `base64 -i bluey-signing.p12 | gh secret set BLUEY_NIGHTLY_SIGNING_CERT_P12 --repo bloxy-studios/bluey`
+3. `gh secret set BLUEY_NIGHTLY_SIGNING_CERT_PASSWORD --repo bloxy-studios/bluey` (paste the
+   export password at the prompt), then delete the `.p12`.
+
+Without the secrets a nightly is signed ad hoc, as before. Apple Development certificates expire
+after a year; renew and replace the secrets, which is one more identity change.
+
 Until then the app detects the loss (MAC-001): `PermissionManager` persists the last-known
 granted set with the app version (`permission_snapshot` settings key). On the first refresh of a
 run with a different version, identity-bound grants that are now denied or not requested fill
