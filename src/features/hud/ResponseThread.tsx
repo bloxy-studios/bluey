@@ -8,6 +8,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { truncatedAnswerError } from "@/lib/errors/answers";
 import { eventBus } from "@/lib/tauri/event-bus";
 import { useChatStore, type ChatTurn, type SuggestionMeta } from "@/stores/chatStore";
+import { useHudUiStore } from "@/stores/hudUiStore";
 import { useResearchStore } from "@/stores/researchStore";
 import { ResponseActions } from "./ResponseActions";
 import { ResponseView } from "./ResponseView";
@@ -179,6 +180,21 @@ export function ResponseThread({ onRetry, onRegenerate }: ResponseThreadProps) {
     });
     return () => cancelAnimationFrame(frame);
   }, [lastTurnId, lastContent, handleScroll]);
+
+  // Asked to see the newest turn (⌘⇧↵ while its live suggestion streams): its top comes into view.
+  const revealRequest = useHudUiStore((s) => s.revealRequest);
+  useEffect(() => {
+    if (revealRequest === 0) return;
+    const frame = requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      const turnEl = contentRef.current?.lastElementChild;
+      if (!el || !(turnEl instanceof HTMLElement)) return;
+      const view = { scrollTop: 0, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+      el.scrollTo({ top: followScrollTop(view, offsetInScroller(el, turnEl)), behavior: "smooth" });
+      handleScroll();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [revealRequest, handleScroll]);
 
   // Global scroll shortcuts (⌥⌘↑ / ⌥⌘↓ by default, forwarded by the backend).
   useEffect(() => {

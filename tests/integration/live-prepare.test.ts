@@ -100,7 +100,9 @@ describe("live prepare", () => {
       ["prepare", true],
     ]);
     expect(sent[0]?.preferredModelRole).toBe("reasoning");
-    expect(sent[1]?.preferredModelRole).toBe("reasoning");
+    // A heard question's suggestion must be instant: a mode that prefers the slow
+    // reasoning role still has its live suggestions answered by the default role.
+    expect(sent[1]?.preferredModelRole).toBe("default");
   });
   it("a prepared answer opened live is saved and logged like any shown answer", async () => {
     const fake = setup();

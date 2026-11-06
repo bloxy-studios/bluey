@@ -110,6 +110,11 @@ export interface ClassifyInput {
   settings: Settings;
   /** Finals coalesced into `segment` (a question split by a pause); defaults to `[segment.id]`. */
   segmentIds?: string[];
+  /**
+   * The heuristic detection was announced at once, then the fast model said
+   * "none" within its deadline: the suggestion opened for it should be withdrawn.
+   */
+  onRefuted?(event: DetectedEvent): void;
 }
 
 export interface ResponseEngine {

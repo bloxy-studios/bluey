@@ -87,12 +87,17 @@ impl AnthropicProvider {
             messages: &request.messages,
             stream: true,
             max_output_tokens: request.max_output_tokens,
-            temperature: request.temperature,
             output_schema: request.output_schema.as_ref(),
             schema_as_prompt_fallback: schema_as_prompt,
         });
-        // Adaptive thinking on both paths when Bluey asks for reasoning
-        // (model-gated: never Haiku); it also drops the sampling knobs.
+        if self.is_oauth() {
+            // The CLI's per-model cap first, so the thinking allowance below
+            // lands on top of it rather than being overwritten.
+            claude_code::normalise_max_tokens(&mut body, &request.model, request.max_output_tokens);
+        }
+        // Adaptive thinking on both paths, model-gated (4.6+): when Bluey asks
+        // for reasoning, and at `low` effort on models that think by default.
+        // Sampling knobs never go out (current models answer them with a 400).
         claude_code::apply_thinking(
             &mut body,
             &request.model,
@@ -119,11 +124,6 @@ impl AnthropicProvider {
                 send_with_retry(build, token, "Anthropic").await
             }
             Auth::Oauth(credential) => {
-                claude_code::normalise_max_tokens(
-                    &mut body,
-                    &request.model,
-                    request.max_output_tokens,
-                );
                 let account = credential.account_id.clone().ok_or_else(|| {
                     BlueyError::account(
                         "not_connected",
@@ -260,7 +260,8 @@ impl AiProvider for AnthropicProvider {
         };
         let response = self
             .http
-            .get(proto::models_url(&self.base_url))
+            // The default page is 20 models; one page should hold them all.
+            .get(format!("{}?limit=1000", proto::models_url(&self.base_url)))
             .header("x-api-key", api_key)
             .header("anthropic-version", proto::ANTHROPIC_VERSION)
             .send()
@@ -299,6 +300,7 @@ fn spawn_anthropic_sse(
         let mut finish = FinishReason::Stop;
         let mut input_tokens: Option<u32> = None;
         let mut finished_sent = false;
+        let mut saw_text = false;
         loop {
             let frame = tokio::select! {
                 _ = token.cancelled() => break,
@@ -331,6 +333,7 @@ fn spawn_anthropic_sse(
                     input_tokens: tokens,
                 } => input_tokens = tokens,
                 proto::StreamEvent::TextDelta { text } => {
+                    saw_text |= !text.is_empty();
                     if !text.is_empty() && tx.send(Ok(StreamItem::Delta(text))).await.is_err() {
                         return;
                     }
@@ -343,6 +346,17 @@ fn spawn_anthropic_sse(
                     stop_reason,
                     output_tokens,
                 } => {
+                    if stop_reason.as_deref() == Some("refusal") {
+                        // A declined request is not an answer: as an error it
+                        // fails over to another provider instead of showing blank.
+                        let _ = tx
+                            .send(Err(BlueyError::ai(
+                                "blocked_refusal",
+                                "Claude declined to answer this request",
+                            )))
+                            .await;
+                        return;
+                    }
                     if let Some(reason) = stop_reason.as_deref() {
                         finish = proto::map_stop_reason(reason);
                     }
@@ -383,7 +397,17 @@ fn spawn_anthropic_sse(
             }
         }
         if !finished_sent && !token.is_cancelled() {
-            let _ = tx.send(Ok(StreamItem::Finished(finish))).await;
+            // No `message_stop`: a cut connection. With nothing said it is a
+            // failure (and may fail over); a partial answer is kept as is.
+            let item = if saw_text || !json_acc.is_empty() {
+                Ok(StreamItem::Finished(finish))
+            } else {
+                Err(BlueyError::network(
+                    "stream",
+                    "the Claude stream ended before the answer started",
+                ))
+            };
+            let _ = tx.send(item).await;
         }
     });
     stream
@@ -509,8 +533,17 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             .as_str()
             .unwrap()
             .starts_with("<system-reminder>\nYou are Bluey.\n</system-reminder>\n\nhello"));
-        assert_eq!(body["max_tokens"], 128_000);
-        assert!(body.get("thinking").is_none(), "no reasoning requested");
+        assert_eq!(
+            body["max_tokens"], 128_000,
+            "the allowance stays under the cap"
+        );
+        // Sonnet 5 thinks when `thinking` is omitted: an instant answer says `low`.
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert!(
+            body.get("temperature").is_none(),
+            "sampling is a 400 on Sonnet 5"
+        );
         assert!(body["metadata"]["user_id"]
             .as_str()
             .unwrap()
@@ -615,7 +648,14 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         }
         let seen = seen.await.unwrap();
         let last: serde_json::Value = serde_json::from_str(&seen[2].1).unwrap();
-        assert!(last.get("output_config").is_none(), "sticky: {last}");
+        assert!(
+            last["output_config"].get("format").is_none(),
+            "sticky: {last}"
+        );
+        assert_eq!(
+            last["output_config"]["effort"], "low",
+            "Sonnet 5 still answers instantly"
+        );
         assert!(last["system"].as_str().unwrap().contains("JSON Schema"));
     }
 }

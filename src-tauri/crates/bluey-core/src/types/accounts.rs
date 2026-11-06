@@ -191,6 +191,10 @@ pub struct ModelCapabilities {
     pub streaming: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
+    /// The subscription offers this model a priority ("fast") processing tier
+    /// — ChatGPT's Fast mode, `service_tier: "priority"` on the wire.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast_tier: bool,
 }
 
 /// Mirrors `CatalogModel` — one model a subscription exposes.

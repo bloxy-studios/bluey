@@ -28,6 +28,9 @@ interface HudUiStore extends HudUiState {
   setScreenEnabled(enabled: boolean): void;
   toggleScreen(): void;
   toggleTranscript(): void;
+  /** Bumped to bring the newest turn into view (not persisted): ⌘⇧↵ over a live suggestion. */
+  revealRequest: number;
+  revealLatest(): void;
 }
 
 const DEFAULTS: HudUiState = { screenEnabled: true, transcriptCollapsed: false };
@@ -81,12 +84,14 @@ export const useHudUiStore = create<HudUiStore>((set, get) => {
     },
     toggleScreen: () => get().setScreenEnabled(!get().screenEnabled),
     toggleTranscript: () => apply({ transcriptCollapsed: !get().transcriptCollapsed }),
+    revealRequest: 0,
+    revealLatest: () => set({ revealRequest: get().revealRequest + 1 }),
   };
 });
 
 /** Test helper. */
 export function resetHudUiForTest(): void {
-  useHudUiStore.setState({ ...DEFAULTS, draft: "", screenWarning: null });
+  useHudUiStore.setState({ ...DEFAULTS, draft: "", screenWarning: null, revealRequest: 0 });
   try {
     globalThis.localStorage?.removeItem(HUD_UI_STORAGE_KEY);
   } catch {

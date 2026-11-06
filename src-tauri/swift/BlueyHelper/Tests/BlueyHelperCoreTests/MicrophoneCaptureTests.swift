@@ -34,6 +34,32 @@ final class MicrophoneCaptureTests: XCTestCase {
         XCTAssertTrue(attempts.isEmpty)
     }
 
+    /// The last input device left: the microphone goes quiet without an
+    /// error of its own and comes back on the restart a new device triggers.
+    func testASuspendedMicrophoneResumesOnRestart() {
+        let mic = MicrophoneCapture(deviceService: AudioDeviceService())
+        mic.startEngineOverride = { nil }
+        var changes: [Bool] = []
+        var errors: [String] = []
+        let resumed = expectation(description: "microphone back")
+        mic.onError = { errors.append($0.code) }
+        mic.onLiveChange = { live in
+            changes.append(live)
+            if live { resumed.fulfill() }
+        }
+        let started = expectation(description: "started")
+        mic.start(deviceUID: nil) { _ in started.fulfill() }
+        wait(for: [started], timeout: 2)
+
+        mic.suspend()
+        mic.suspend()  // already down: no second transition
+        mic.restart()
+        wait(for: [resumed], timeout: 2)
+
+        XCTAssertEqual(changes, [false, true])
+        XCTAssertTrue(errors.isEmpty)
+    }
+
     func testALiveMicrophoneIsNotRebuiltOnAnUnrelatedDeviceChange() {
         let mic = MicrophoneCapture(deviceService: AudioDeviceService())
         var builds = 0

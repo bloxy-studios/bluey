@@ -90,6 +90,18 @@ public final class MicrophoneCapture {
         }
     }
 
+    /// No input device is left: release the engine but stay wanted, so the
+    /// next `restart()` (a device appeared) resumes capture.
+    public func suspend() {
+        queue.async { [weak self] in
+            guard let self, self.wantRunning else { return }
+            self.teardownEngine()
+            guard self.live else { return }
+            self.live = false
+            self.onLiveChange?(false)
+        }
+    }
+
     private var requestedDeviceReturned: Bool {
         guard onFallbackDevice, let uid = requestedDeviceUID else { return false }
         return deviceService.deviceID(forUID: uid) != nil

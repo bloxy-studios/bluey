@@ -649,6 +649,9 @@ pub struct ResponsesBodyOptions<'a> {
     pub output_schema: Option<&'a JsonSchemaSpec>,
     /// `auto | low | high | original` for `input_image` parts.
     pub image_detail: &'a str,
+    /// `Some("priority")` asks for the Fast tier ([`PRIORITY_SERVICE_TIER`]);
+    /// `None` leaves the field out (standard processing).
+    pub service_tier: Option<&'a str>,
 }
 
 fn message_item(role: &str, content: Vec<Value>) -> Value {
@@ -734,7 +737,7 @@ pub fn build_responses_body(opts: &ResponsesBodyOptions<'_>) -> Value {
             "strict": strict,
         });
     }
-    json!({
+    let mut body = json!({
         "model": opts.model,
         "instructions": instructions,
         "input": input,
@@ -747,7 +750,30 @@ pub fn build_responses_body(opts: &ResponsesBodyOptions<'_>) -> Value {
         "include": fp::INCLUDE,
         "prompt_cache_key": opts.prompt_cache_key,
         "text": text,
-    })
+    });
+    if let Some(tier) = opts.service_tier {
+        body["service_tier"] = Value::String(tier.to_string());
+    }
+    body
+}
+
+/// The `service_tier` for a request: the Fast tier only for answers that must
+/// feel instant (ultra-fast / fast budgets) on a model the account's catalog
+/// offers it for, and never once this process saw the backend refuse it.
+pub fn service_tier_for(
+    latency: LatencyBudget,
+    model_offers_fast_tier: bool,
+    refused: bool,
+) -> Option<&'static str> {
+    let instant = matches!(latency, LatencyBudget::UltraFast | LatencyBudget::Fast);
+    (instant && model_offers_fast_tier && !refused).then_some(PRIORITY_SERVICE_TIER)
+}
+
+/// Whether a stored catalog offers `slug` the Fast tier.
+pub fn model_fast_tier(models: &[CatalogModel], slug: &str) -> bool {
+    models
+        .iter()
+        .any(|m| m.id == slug && m.capabilities.fast_tier)
 }
 
 pub const EFFORT_ORDER: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
@@ -1073,6 +1099,16 @@ pub struct ModelMessages {
     pub instructions_template: Option<String>,
 }
 
+/// One `service_tiers[]` entry of a catalog model (`{id, name, description}`).
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+pub struct ServiceTierEntry {
+    #[serde(default)]
+    pub id: String,
+}
+
+/// `service_tier` value of the Codex CLI's Fast mode (`ServiceTier::Fast`).
+pub const PRIORITY_SERVICE_TIER: &str = "priority";
+
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 pub struct ModelEntry {
     pub slug: String,
@@ -1104,6 +1140,12 @@ pub struct ModelEntry {
     pub model_messages: Option<ModelMessages>,
     #[serde(default)]
     pub available_in_plans: Option<Vec<String>>,
+    /// Service tiers the account may request for this model (`priority` = Fast).
+    #[serde(default)]
+    pub service_tiers: Vec<ServiceTierEntry>,
+    /// Legacy spelling of the same offer (`["fast"]`).
+    #[serde(default)]
+    pub additional_speed_tiers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
@@ -1132,6 +1174,18 @@ impl ModelEntry {
             .collect()
     }
 
+    /// The catalog offers this model the Fast tier (the CLI's
+    /// `ModelPreset::supports_fast_mode`).
+    pub fn fast_tier(&self) -> bool {
+        self.service_tiers
+            .iter()
+            .any(|tier| tier.id == PRIORITY_SERVICE_TIER || tier.id == "fast")
+            || self
+                .additional_speed_tiers
+                .iter()
+                .any(|tier| tier == "fast")
+    }
+
     pub fn template(&self) -> Option<&str> {
         self.model_messages
             .as_ref()
@@ -1140,20 +1194,44 @@ impl ModelEntry {
     }
 }
 
+/// ChatGPT renamed Team to Business; either spelling names the same plan.
+fn plan_names_match(listed: &str, plan: &str) -> bool {
+    let canonical = |name: &str| match name.to_ascii_lowercase().as_str() {
+        "team" | "business" => "business".to_string(),
+        other => other.to_string(),
+    };
+    canonical(listed) == canonical(plan)
+}
+
 /// The models a plan can pick from: listed, available in the plan, by priority.
+///
+/// The backend already answers `/models` per account — the CLI applies no plan
+/// filter of its own — so `available_in_plans` only narrows the list when it
+/// is present; a plan the catalog spells differently (Go, Business, Edu, …)
+/// keeps the whole visible list rather than leaving the account with none.
 pub fn listed_models<'a>(response: &'a ModelsResponse, plan: Option<&str>) -> Vec<&'a ModelEntry> {
-    let mut listed: Vec<&ModelEntry> = response
+    let visible: Vec<&ModelEntry> = response
         .models
         .iter()
         .filter(|m| !m.slug.is_empty())
         .filter(|m| matches!(m.visibility.as_deref(), None | Some("list")))
+        .collect();
+    let names_plan = |m: &ModelEntry, plan: &str| {
+        m.available_in_plans
+            .as_ref()
+            .is_some_and(|plans| plans.iter().any(|p| plan_names_match(p, plan)))
+    };
+    // A plan no entry names is one the catalog does not describe: no filter.
+    let plan = plan.filter(|plan| visible.iter().any(|m| names_plan(m, plan)));
+    let in_plan: Vec<&ModelEntry> = visible
+        .iter()
+        .copied()
         .filter(|m| match (plan, &m.available_in_plans) {
-            (Some(plan), Some(plans)) if !plans.is_empty() => {
-                plans.iter().any(|p| p.eq_ignore_ascii_case(plan))
-            }
+            (Some(plan), Some(plans)) if !plans.is_empty() => names_plan(m, plan),
             _ => true,
         })
         .collect();
+    let mut listed = if in_plan.is_empty() { visible } else { in_plan };
     listed.sort_by(|a, b| {
         a.priority
             .unwrap_or(i64::MAX)
@@ -1230,6 +1308,7 @@ pub fn catalog_models(response: &ModelsResponse, plan: Option<&str>) -> Vec<Cata
                     reasoning_levels: m.reasoning_levels(),
                     streaming: true,
                     context_window: m.context_window,
+                    fast_tier: m.fast_tier(),
                 },
                 quota_pool: None,
                 suggested_roles,
@@ -1496,7 +1575,9 @@ pub fn map_error(
                     "the Codex backend no longer accepts the request shape Bluey sends: {}",
                     message.unwrap_or_default()
                 )),
-                _ if lower.contains("model") && (lower.contains("not found") || lower.contains("does not exist") || lower.contains("unsupported model") || lower.contains("unknown model")) => {
+                // Includes "The 'X' model is not supported when using Codex with
+                // a ChatGPT account" — a stale catalog, not a prompt problem.
+                _ if lower.contains("model") && (lower.contains("not found") || lower.contains("does not exist") || lower.contains("unsupported model") || lower.contains("unknown model") || lower.contains("not supported")) => {
                     BlueyError::configuration(
                         "model_not_found",
                         "ChatGPT does not offer this model to the plan — refresh the account's models",
@@ -1601,6 +1682,7 @@ pub fn probe_body(
         prompt_cache_key,
         output_schema: None,
         image_detail: DEFAULT_IMAGE_DETAIL,
+        service_tier: None,
     })
 }
 
@@ -1879,6 +1961,7 @@ mod tests {
             prompt_cache_key: "cache-key",
             output_schema: None,
             image_detail: "auto",
+            service_tier: None,
         });
         assert_eq!(body["instructions"], "TEMPLATE");
         assert_eq!(body["input"][0]["role"], "developer");
@@ -1929,6 +2012,7 @@ mod tests {
                 strict: None,
             }),
             image_detail: "high",
+            service_tier: None,
         });
         assert_eq!(own["instructions"], "You are Bluey.");
         assert_eq!(
@@ -1952,10 +2036,56 @@ mod tests {
             prompt_cache_key: "k",
             output_schema: None,
             image_detail: "auto",
+            service_tier: None,
         });
         assert_eq!(
             no_system["instructions"], DEFAULT_INSTRUCTIONS,
             "never empty"
+        );
+    }
+
+    #[test]
+    fn the_fast_tier_is_asked_for_only_on_instant_answers_the_catalog_allows() {
+        let fast = build_responses_body(&ResponsesBodyOptions {
+            model: "m",
+            messages: &[AiMessage::text(AiRole::User, "hi")],
+            instructions: InstructionsPolicy::Own,
+            effort: "low",
+            verbosity: "low",
+            prompt_cache_key: "k",
+            output_schema: None,
+            image_detail: "auto",
+            service_tier: service_tier_for(LatencyBudget::UltraFast, true, false),
+        });
+        assert_eq!(fast["service_tier"], "priority");
+        assert_eq!(
+            service_tier_for(LatencyBudget::Fast, true, false),
+            Some("priority")
+        );
+        assert_eq!(service_tier_for(LatencyBudget::Balanced, true, false), None);
+        assert_eq!(service_tier_for(LatencyBudget::Fast, false, false), None);
+        assert_eq!(
+            service_tier_for(LatencyBudget::Fast, true, true),
+            None,
+            "refused once"
+        );
+        let standard = build_responses_body(&ResponsesBodyOptions {
+            service_tier: None,
+            ..ResponsesBodyOptions {
+                model: "m",
+                messages: &[AiMessage::text(AiRole::User, "hi")],
+                instructions: InstructionsPolicy::Own,
+                effort: "low",
+                verbosity: "low",
+                prompt_cache_key: "k",
+                output_schema: None,
+                image_detail: "auto",
+                service_tier: Some("priority"),
+            }
+        });
+        assert!(
+            standard.get("service_tier").is_none(),
+            "standard leaves it out"
         );
     }
 
@@ -1988,6 +2118,7 @@ mod tests {
                 strict: Some(true),
             }),
             image_detail: "auto",
+            service_tier: None,
         });
         let format = &strict["text"]["format"];
         assert_eq!(format["name"], "bluey_answer");
@@ -2020,6 +2151,7 @@ mod tests {
                 strict: Some(false),
             }),
             image_detail: "auto",
+            service_tier: None,
         });
         let format = &lenient["text"]["format"];
         assert_eq!(format["strict"], false);
@@ -2250,6 +2382,61 @@ mod tests {
         );
         assert!(model_reasoning(&models, "nope").is_empty());
         assert!(catalog_models(&ModelsResponse::default(), None).is_empty());
+    }
+
+    #[test]
+    fn a_plan_the_catalog_spells_differently_keeps_the_visible_models() {
+        let response = parse_models(CATALOG).unwrap();
+        let ids = |plan| {
+            catalog_models(&response, Some(plan))
+                .into_iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>()
+        };
+        // Go and Edu are not in any `available_in_plans`: the per-account
+        // answer stands instead of an empty picker.
+        assert_eq!(
+            ids("go"),
+            vec!["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"]
+        );
+        assert_eq!(ids("edu"), ids("go"));
+        let renamed = parse_models(
+            r#"{"models":[
+                {"slug":"a","visibility":"list","priority":1,"available_in_plans":["business"]},
+                {"slug":"b","visibility":"list","priority":2,"available_in_plans":["plus"]}
+            ]}"#,
+        )
+        .unwrap();
+        let team: Vec<String> = catalog_models(&renamed, Some("team"))
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(team, vec!["a"], "Team and Business are one plan");
+    }
+
+    #[test]
+    fn the_fast_tier_comes_from_either_catalog_spelling() {
+        let response = parse_models(
+            r#"{"models":[
+                {"slug":"tiered","visibility":"list","priority":1,
+                 "service_tiers":[{"id":"priority","name":"Fast","description":"Priority processing."}]},
+                {"slug":"legacy","visibility":"list","priority":2,"additional_speed_tiers":["fast"]},
+                {"slug":"plain","visibility":"list","priority":3}
+            ]}"#,
+        )
+        .unwrap();
+        let fast: Vec<(String, bool)> = catalog_models(&response, None)
+            .into_iter()
+            .map(|m| (m.id, m.capabilities.fast_tier))
+            .collect();
+        assert_eq!(
+            fast,
+            vec![
+                ("tiered".to_string(), true),
+                ("legacy".to_string(), true),
+                ("plain".to_string(), false)
+            ]
+        );
     }
 
     fn headers(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -2553,6 +2740,7 @@ mod tests {
             prompt_cache_key: "6f1d2c3b-4a5e-4f60-9a1b-2c3d4e5f6a7b",
             output_schema: None,
             image_detail: DEFAULT_IMAGE_DETAIL,
+            service_tier: None,
         });
         let mut request = ProviderHttpRequest::new("POST", &responses_url(), body);
         request

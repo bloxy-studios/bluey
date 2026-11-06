@@ -12,6 +12,8 @@ export interface CodeBlockProps {
   code: string;
   language?: string;
   className?: string;
+  /** Still streaming in: Copy waits for the whole block, highlighting for the last line. */
+  writing?: boolean;
 }
 
 /**
@@ -19,7 +21,7 @@ export interface CodeBlockProps {
  * Expand/Collapse for long code; shiki highlighting loaded lazily with a
  * plain fallback while it loads.
  */
-export function CodeBlock({ code, language, className }: CodeBlockProps) {
+export function CodeBlock({ code, language, className, writing = false }: CodeBlockProps) {
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const lineCount = code.split("\n").length;
@@ -30,6 +32,8 @@ export function CodeBlock({ code, language, className }: CodeBlockProps) {
   const theme = useDocumentTheme();
 
   useEffect(() => {
+    // Re-highlighting on every streamed token is wasted work: the plain block shows until it is done.
+    if (writing) return;
     let alive = true;
     void highlightCode(code, language, theme).then((result) => {
       if (alive) setHtml(result);
@@ -37,7 +41,7 @@ export function CodeBlock({ code, language, className }: CodeBlockProps) {
     return () => {
       alive = false;
     };
-  }, [code, language, theme]);
+  }, [code, language, theme, writing]);
 
   useEffect(() => () => {
     if (copyTimer.current) clearTimeout(copyTimer.current);
@@ -69,16 +73,17 @@ export function CodeBlock({ code, language, className }: CodeBlockProps) {
           <button
             type="button"
             onClick={() => void onCopy()}
-            aria-label="Copy code"
-            className="flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11.5px] text-fg-muted transition-colors hover:bg-fg/8 hover:text-fg"
+            disabled={writing}
+            aria-label={writing ? "Code still being written" : "Copy code"}
+            className="flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11.5px] text-fg-muted transition-colors hover:bg-fg/8 hover:text-fg disabled:pointer-events-none disabled:opacity-60"
           >
             {copied ? <Check className="size-3.5 text-success" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
-            {copied ? "Copied" : "Copy"}
+            {writing ? "Writing…" : copied ? "Copied" : "Copy"}
           </button>
         </div>
       </div>
       <div className={cn("selectable relative", !expanded && "max-h-[300px] overflow-hidden")}>
-        {html ? (
+        {html && !writing ? (
           // shiki output is trusted local rendering of the code string
           <div dangerouslySetInnerHTML={{ __html: html }} />
         ) : (

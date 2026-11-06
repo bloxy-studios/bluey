@@ -60,7 +60,7 @@ import {
 import { useAuthStore } from "@/lib/auth/auth-store";
 import { allocateBudget, defaultContextBudget } from "@/context/budget";
 import { estimateTokens, fuseContext } from "@/context/fusion";
-import { classifyIntent, type Intent } from "@/context/relevance";
+import { classifyIntent, forLiveSuggestion, type Intent } from "@/context/relevance";
 import { retrieveRelevantContext } from "@/context/retrieval";
 import { buildNativeSnapshot, enrichSnapshot } from "@/context/snapshot";
 import { outputSchemaFor, parseJsonLoose, parseStructuredOutput } from "@/modes/schemas";
@@ -85,9 +85,9 @@ import { generateSessionSummary } from "@/sessions/summary";
 import { optimizeResponse } from "./optimizer";
 import {
   CodeFenceBuffer,
+  draftSafeText,
   extractPartialStringField,
   streamRequest,
-  visibleWithHeldFences,
   type StreamHandle,
   type StreamOutcome,
 } from "./stream";
@@ -141,6 +141,12 @@ const SCOPE_PREPARE = "prepare";
 const SCOPE_LIVE = "live";
 
 export const PREPARED_CACHE_MAX = 5;
+/**
+ * How long the optional fast-model classification may take to overrule the
+ * heuristic: a later verdict is ignored, so it can never delay or reorder a
+ * question already being answered.
+ */
+export const CLASSIFY_REFINE_DEADLINE_MS = 700;
 export { PREPARED_TTL_MS };
 
 interface PreparedEntry {
@@ -398,7 +404,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       });
     }
 
-    const intent: Intent = classifyIntent({
+    const classified: Intent = classifyIntent({
       instruction: input.instruction,
       snapshot,
       mode: input.mode,
@@ -406,6 +412,8 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       trigger: input.trigger,
       now,
     });
+    // prepare() (silent or live) answers a heard question: instant over deep.
+    const intent: Intent = opts.background ? forLiveSuggestion(classified) : classified;
 
     const style = effectiveStyle(input.mode, input.settings);
     const headroom = maxOutputTokensFor(style.length, intent.task, intent.answerShape, true);
@@ -458,7 +466,13 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     // mode switch mid-flight cannot re-route it (MODE-012).
     request.scope = opts.scope;
     request.background = opts.background;
-    if (input.mode.preferredModelRole) request.preferredModelRole = input.mode.preferredModelRole;
+    if (input.mode.preferredModelRole) {
+      // A mode that prefers the slow reasoning/research roles (System Design)
+      // still gets its live suggestions from the default role.
+      const preferred = input.mode.preferredModelRole;
+      request.preferredModelRole =
+        opts.background && (preferred === "reasoning" || preferred === "research") ? "default" : preferred;
+    }
     const promptBuiltMs = perfNow() - anchorTs;
     let firstPaintMs: number | undefined;
     let firstPaintScheduled = false;
@@ -513,7 +527,7 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
             }
             fenceBuffer.push(delta);
             const draftContent = attempt.outputSchema
-              ? visibleWithHeldFences(extractPartialStringField(accumulated, "content") ?? "")
+              ? draftSafeText(extractPartialStringField(accumulated, "content") ?? "")
               : fenceBuffer.visible();
             if (draftContent.length > lastDraftLength) {
               lastDraftLength = draftContent.length;
@@ -670,6 +684,8 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       signal: controller.signal,
       attach: (handle: StreamHandle) => {
         streamHandle = handle;
+        // Cancelled while the stream was being started: stop it rather than let it run unseen.
+        if (controller.signal.aborted) void handle.cancel();
       },
       cancel: async (): Promise<void> => {
         controller.abort();
@@ -885,6 +901,24 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
     };
   }
 
+  /** The fast model's verdict, or `"late"` when it missed the deadline. */
+  async function refineInTime(
+    input: ClassifyInput,
+    heuristic: DetectedEvent,
+  ): Promise<DetectedEvent | null | "late"> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<"late">((resolve) => {
+      timer = setTimeout(() => resolve("late"), CLASSIFY_REFINE_DEADLINE_MS);
+    });
+    // Model assist is strictly optional: a failure keeps the heuristic.
+    const refined = refineWithFastModel(input, heuristic).catch(() => heuristic);
+    try {
+      return await Promise.race([refined, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function classify(input: ClassifyInput): Promise<DetectedEvent | null> {
     const heuristic = classifySegment({
       segment: input.segment,
@@ -895,18 +929,21 @@ export function createResponseEngine(deps: EngineDeps = {}): ResponseEngine {
       idGen,
     });
     if (!heuristic) return null;
+    // Announced at once: the answer must start while the question is fresh, and
+    // waiting on the model would also let a later question overtake this one.
+    if (heuristic.requiresResponse) bus.emit("question.detected", heuristic);
 
-    let event: DetectedEvent | null = heuristic;
     const fastModelConfigured = input.settings.ai.models.fast != null && cloudAiAllowed(input.settings);
-    if (fastModelConfigured && heuristic.confidence >= 0.4 && heuristic.confidence <= 0.7) {
-      try {
-        event = await refineWithFastModel(input, heuristic);
-      } catch {
-        event = heuristic; // model assist is strictly optional
-      }
+    if (!fastModelConfigured || heuristic.confidence < 0.4 || heuristic.confidence > 0.7) return heuristic;
+    const refined = await refineInTime(input, heuristic);
+    if (refined === "late") return heuristic;
+    if (refined === null) {
+      // A timely "none" withdraws the suggestion the heuristic already opened.
+      if (heuristic.requiresResponse) input.onRefuted?.(heuristic);
+      return null;
     }
-    if (event?.requiresResponse) bus.emit("question.detected", event);
-    return event;
+    if (!heuristic.requiresResponse && refined.requiresResponse) bus.emit("question.detected", refined);
+    return refined;
   }
 
   // ── summarizeSession ──────────────────────────────────────────────────────

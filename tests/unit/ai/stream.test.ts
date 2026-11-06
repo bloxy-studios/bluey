@@ -1,17 +1,21 @@
+import { vi } from "vitest";
+
 import {
   CodeFenceBuffer,
+  draftSafeText,
   extractPartialStringField,
   streamRequest,
-  visibleWithHeldFences,
 } from "@/ai/stream";
 import type { AIChunk, AIRequest, ModelSelection } from "@/lib/types";
 
 describe("CodeFenceBuffer", () => {
-  it("withholds an unterminated fenced block and releases it after the closing fence", () => {
+  it("streams an open fenced block progressively (the HUD closes it temporarily)", () => {
     const buffer = new CodeFenceBuffer();
     expect(buffer.push("Here is the fix:\n")).toBe("Here is the fix:\n");
-    expect(buffer.push("```ts\nconst a = 1;")).toBe("Here is the fix:\n");
-    expect(buffer.push("\nconst b = 2;")).toBe("Here is the fix:\n");
+    // The fence line is held until its language tag is complete.
+    expect(buffer.push("```t")).toBe("Here is the fix:\n");
+    expect(buffer.push("s\nconst a = 1;")).toBe("Here is the fix:\n```ts\nconst a = 1;");
+    expect(buffer.push("\nconst b = 2;")).toBe("Here is the fix:\n```ts\nconst a = 1;\nconst b = 2;");
     const visible = buffer.push("\n```\nDone.");
     expect(visible).toContain("```ts\nconst a = 1;\nconst b = 2;\n```");
     expect(visible).toContain("Done.");
@@ -21,7 +25,10 @@ describe("CodeFenceBuffer", () => {
     const buffer = new CodeFenceBuffer();
     expect(buffer.push("text\n`")).toBe("text\n");
     expect(buffer.push("`")).toBe("text\n");
-    expect(buffer.push("`js\ncode")).toBe("text\n"); // now a real open fence
+    expect(buffer.push("`js")).toBe("text\n"); // an opening fence still typing its tag
+    expect(buffer.push("\ncode")).toBe("text\n```js\ncode");
+    expect(buffer.push("\n``")).toBe("text\n```js\ncode\n"); // a closing fence arriving
+    expect(buffer.push("`")).toBe("text\n```js\ncode\n```");
   });
 
   it("flush returns everything, including an unterminated fence", () => {
@@ -32,8 +39,9 @@ describe("CodeFenceBuffer", () => {
 
   it("handles multiple fenced blocks", () => {
     const text = "one\n```a\nx\n```\ntwo\n```b\ny\n```\nthree";
-    expect(visibleWithHeldFences(text)).toBe(text);
-    expect(visibleWithHeldFences("one\n```a\nx\n```\ntwo\n```b\ny")).toBe("one\n```a\nx\n```\ntwo\n");
+    expect(draftSafeText(text)).toBe(text);
+    expect(draftSafeText("one\n```a\nx\n```\ntwo\n```b\ny")).toBe("one\n```a\nx\n```\ntwo\n```b\ny");
+    expect(draftSafeText("one\n```a\nx\n```\ntwo\n```b")).toBe("one\n```a\nx\n```\ntwo\n");
   });
 });
 
@@ -168,11 +176,34 @@ describe("streamRequest", () => {
       // no completed chunk — stream hangs until cancel
     ]);
     const handle = streamRequest(request, {}, api);
+    await Promise.resolve(); // the stream command has returned: the request is registered
     await handle.cancel();
     const outcome = await handle.done;
     expect(cancelled).toEqual([request.requestId]);
     expect(outcome.finishReason).toBe("cancelled");
     expect(outcome.text).toBe("partial");
+  });
+
+  it("re-sends a cancel that arrived before the stream command returned", async () => {
+    const request = makeRequest();
+    const registered: { resolve?: () => void } = {};
+    const cancelled: string[] = [];
+    const api = {
+      ai: {
+        stream: () => new Promise<void>((resolve) => (registered.resolve = resolve)),
+        cancel: async ({ requestId }: { requestId: string }) => {
+          cancelled.push(requestId);
+          return false; // Rust has not registered the request yet
+        },
+      },
+    };
+    const handle = streamRequest(request, {}, api);
+    await handle.cancel();
+    expect((await handle.done).finishReason).toBe("cancelled");
+    expect(cancelled).toEqual([request.requestId]);
+
+    registered.resolve?.();
+    await vi.waitFor(() => expect(cancelled).toEqual([request.requestId, request.requestId]));
   });
 
   it("first settle wins: a late completed chunk does not override cancellation", async () => {

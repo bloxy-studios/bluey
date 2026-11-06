@@ -109,10 +109,18 @@ public final class SpeechTranscriber {
     /// Set by `start()`; read after it returns.
     public private(set) var route: Route?
     /// Non-routine task errors in a row (reset by any transcript); past
-    /// `maxConsecutiveErrors` the recognizer is reported unavailable instead
-    /// of being restarted in a hot loop.
+    /// `maxConsecutiveErrors` the recognizer is reported unavailable and
+    /// retried with backoff instead of being restarted in a hot loop.
     private var consecutiveErrors = 0
     private static let maxConsecutiveErrors = 5
+    /// Backoff between retries of an unavailable or failing recognizer; the
+    /// last value repeats for as long as the run lasts.
+    private static let retryDelays: [TimeInterval] = [2, 5, 10, 30]
+    private var retryAttempt = 0
+    /// Bumped to cancel a scheduled retry (a newer one, or recovery).
+    private var retryToken = 0
+    /// SFSpeechRecognizer's delegate (it holds it weakly).
+    private var availabilityObserver: AvailabilityObserver?
 
     public init(
         source: String, locale: String, onDevice: Bool, requireOnDevice: Bool = false,
@@ -155,6 +163,12 @@ public final class SpeechTranscriber {
                 return
             }
             self.recognizer = recognizer
+            let observer = AvailabilityObserver { [weak self] available in
+                guard let self else { return }
+                self.queue.async { self.availabilityChangedLocked(available) }
+            }
+            recognizer.delegate = observer
+            self.availabilityObserver = observer
             self.bufferFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1,
                 interleaved: false)
@@ -254,7 +268,10 @@ public final class SpeechTranscriber {
     ) {
         if let result {
             for event in utterances.observe(observation(result, epochMs, generation)) {
+                // Transcribing again: a later outage is reported afresh.
                 consecutiveErrors = 0
+                retryAttempt = 0
+                unavailableReported = false
                 emit(
                     event.isFinal ? "transcript.final" : "transcript.partial",
                     AnyEncodable(
@@ -281,12 +298,16 @@ public final class SpeechTranscriber {
         if routine {
             rotateRequestLocked("routine \(ns.code)")
         } else if recognizer?.isAvailable == false {
+            // The delegate restarts it when it is back; the retry covers a
+            // change that is never reported.
             reportUnavailable("speech recognizer became unavailable")
+            scheduleRetryLocked()
         } else {
             consecutiveErrors += 1
             Log.shared.warn("speech(\(source)) task error: \(ns.domain) \(ns.code)")
             guard consecutiveErrors < Self.maxConsecutiveErrors else {
                 reportUnavailable("speech recognition keeps failing (\(ns.domain) \(ns.code))")
+                scheduleRetryLocked()
                 return
             }
             rotateRequestLocked("error")
@@ -313,11 +334,64 @@ public final class SpeechTranscriber {
             startMs: startMs, endMs: endMs, confidence: confidence)
     }
 
+    // MARK: recovery (on `queue`)
+
+    /// `SFSpeechRecognizerDelegate.availabilityDidChange`.
+    private func availabilityChangedLocked(_ available: Bool) {
+        guard !stopped, recognizer != nil else { return }
+        Log.shared.info("speech(\(source)) recognizer available: \(available)")
+        guard available else {
+            reportUnavailable("speech recognizer became unavailable")
+            return
+        }
+        // Back: forget the outage and start a fresh request now.
+        unavailableReported = false
+        consecutiveErrors = 0
+        retryAttempt = 0
+        retryToken += 1 // cancels a pending retry
+        rotateRequestLocked("available")
+    }
+
+    /// Restart the request after the next backoff delay; one pending at a
+    /// time. A still-unavailable recognizer waits for the following one.
+    private func scheduleRetryLocked() {
+        let delays = Self.retryDelays
+        let delay = delays[min(retryAttempt, delays.count - 1)]
+        retryAttempt += 1
+        retryToken += 1
+        let token = retryToken
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, !self.stopped, self.retryToken == token else { return }
+            guard self.recognizer?.isAvailable == true else {
+                self.scheduleRetryLocked()
+                return
+            }
+            self.rotateRequestLocked("retry \(self.retryAttempt)")
+        }
+    }
+
     private func reportUnavailable(_ message: String, code: String = "speech_unavailable") {
         guard !unavailableReported else { return }
         unavailableReported = true
         emit(
             "audio.error",
             AnyEncodable(SpeechErrorEvent(code: code, message: message, kind: "audio")))
+    }
+}
+
+/// Forwards `availabilityDidChange` (SFSpeechRecognizer keeps its delegate
+/// weakly, so the transcriber holds this). Called on the recognizer's queue.
+/// https://developer.apple.com/documentation/speech/sfspeechrecognizerdelegate
+private final class AvailabilityObserver: NSObject, SFSpeechRecognizerDelegate {
+    private let onChange: (Bool) -> Void
+
+    init(onChange: @escaping (Bool) -> Void) {
+        self.onChange = onChange
+    }
+
+    func speechRecognizer(
+        _ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool
+    ) {
+        onChange(available)
     }
 }

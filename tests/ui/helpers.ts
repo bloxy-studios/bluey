@@ -208,11 +208,15 @@ export class ProactiveFakeEngine extends FakeEngine {
   /** Request ids of live preparations cancelled through their handle. */
   cancelledPrepares: string[] = [];
   hold = false;
+  /** False: a held live preparation streams nothing until released (no first token yet). */
+  firstTokenBeforeHold = true;
+  /** True: every final is detected as a question, "?" or not (like a lenient classifier). */
+  detectEverything = false;
   private pending: Array<() => void> = [];
 
   override async classify(input: ClassifyInput): Promise<DetectedEvent | null> {
     this.classified.push(input);
-    if (!input.segment.text.trim().endsWith("?")) return null;
+    if (!this.detectEverything && !input.segment.text.trim().endsWith("?")) return null;
     const event: DetectedEvent = {
       id: `det-${this.classified.length}`,
       type: "question",
@@ -249,10 +253,12 @@ export class ProactiveFakeEngine extends FakeEngine {
         wake?.();
       },
     });
-    if (live) {
+    const streamFirstToken = () => {
       callbacks.onPhase?.("streaming", requestId);
       callbacks.onDraft?.({ ...response, content: "Prepared for" });
-    }
+    };
+    const tokenAfterHold = live && this.hold && !this.firstTokenBeforeHold;
+    if (live && !tokenAfterHold) streamFirstToken();
     if (this.hold) {
       await new Promise<void>((resolve) => {
         wake = resolve;
@@ -263,6 +269,7 @@ export class ProactiveFakeEngine extends FakeEngine {
       callbacks.onPhase?.("cancelled", requestId);
       return null;
     }
+    if (tokenAfterHold) streamFirstToken();
     if (live) {
       // A live suggestion is handed to the caller and never announced.
       callbacks.onComplete?.(response);

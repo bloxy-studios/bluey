@@ -543,7 +543,6 @@ impl ProviderProfile for ClaudeProfile {
             messages: &messages,
             stream: true,
             max_output_tokens: Some(16),
-            temperature: None,
             output_schema: None,
             schema_as_prompt_fallback: false,
         });

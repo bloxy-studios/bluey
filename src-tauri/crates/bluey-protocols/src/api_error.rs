@@ -136,6 +136,23 @@ pub fn map_api_error(
             format!("the {provider} API rejected the credentials (HTTP {status})"),
         )
         .recoverable(RecoveryAction::ConfigureProvider),
+        // Out of credits is not a rate limit: retrying never clears it.
+        429 if body.is_some_and(|b| {
+            matches!(
+                b.code.as_deref(),
+                Some("insufficient_quota" | "billing_hard_limit_reached")
+            )
+        }) =>
+        {
+            BlueyError::new(
+                BlueyErrorKind::Configuration,
+                "config.quota_exhausted",
+                format!(
+                    "the {provider} account is out of credits — add billing there or use another provider"
+                ),
+            )
+            .recoverable(RecoveryAction::ConfigureProvider)
+        }
         429 => {
             let mut details = Map::new();
             if let Some(delay) = retry_after {
@@ -228,6 +245,17 @@ mod tests {
             error.message,
             "Azure Foundry rejected the request: Unsupported parameter: 'temperature'."
         );
+    }
+
+    #[test]
+    fn an_exhausted_balance_is_not_a_rate_limit() {
+        let body = ApiErrorBody {
+            code: Some("insufficient_quota".into()),
+            message: Some("You exceeded your current quota".into()),
+        };
+        let error = map_api_error(429, Some(&body), None, "OpenAI", "gpt-5.6-luna");
+        assert_eq!(error.code, "config.quota_exhausted");
+        assert_eq!(error.kind, BlueyErrorKind::Configuration);
     }
 
     #[test]

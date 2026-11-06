@@ -214,6 +214,36 @@ describe("proactive preparation loop", () => {
     expect(engine.classified).toHaveLength(4); // ends in "?": classified at once
   });
 
+  it("answers the whole question when its rest comes after the fragment was answered alone (LIVE-010)", async () => {
+    engine.detectEverything = true;
+    engine.hold = true;
+    const lead = makeSegment({ text: "So walk me through how you would design" });
+    mock.emit("transcript.final", lead);
+    // The pause outlasts the coalescing window: the fragment is answered on its own…
+    await waitFor(() => expect(engine.prepared).toHaveLength(1), { timeout: 2_000 });
+    expect(engine.prepared[0]?.detectedEvent?.text).toBe("So walk me through how you would design");
+
+    // …then the same voice finishes it: within the speaker cooldown, yet it is answered.
+    const rest = makeSegment({ text: "a URL shortener?" });
+    mock.emit("transcript.final", rest);
+    await waitFor(() => expect(engine.prepared).toHaveLength(2));
+    expect(engine.cancelledPrepares).toEqual(["req-prepare-1"]); // the fragment's suggestion is withdrawn
+    const whole = engine.prepared[1]?.detectedEvent;
+    expect(whole?.text).toBe("So walk me through how you would design a URL shortener?");
+    expect(whole?.segmentIds).toEqual([lead.id, rest.id]);
+    engine.hold = false;
+    engine.release();
+    await waitFor(() => expect(useChatStore.getState().turns.at(-1)?.status).toBe("done"));
+  });
+
+  it("never answers a short fragment heard on its own", async () => {
+    engine.detectEverything = true;
+    mock.emit("transcript.final", makeSegment({ text: "So tell me about" }));
+    await waitFor(() => expect(engine.classified).toHaveLength(1), { timeout: 2_000 });
+    await flush();
+    expect(engine.prepared).toHaveLength(0); // listed, but four words without "?" open nothing
+  });
+
   it("dedupes question ids and serializes preparation (newest waiting question wins)", async () => {
     await useSettingsStore.getState().update({ ai: { suggestionDisplay: "on_request" } });
     engine.hold = true;
@@ -254,6 +284,67 @@ describe("proactive preparation loop", () => {
       "Question live-1?",
       "Question live-2?",
     ]);
+    expect(useProactiveStore.getState().liveEventId).toBeNull();
+  });
+
+  it("answers a question that waited behind a long answer: its window starts when it can run", async () => {
+    await useSettingsStore.getState().update({ ai: { suggestionDisplay: "on_request" } });
+    engine.hold = true;
+    mock.emit("question.detected", detected("long-1"));
+    await waitFor(() => expect(engine.prepared).toHaveLength(1));
+    // Heard 19.5 s ago: fresh when detected, past the 20 s stale mark by the time long-1 ends.
+    const waiting = { ...detected("long-2"), detectedAt: new Date(Date.now() - 19_500).toISOString() };
+    mock.emit("question.detected", waiting);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    engine.hold = false;
+    engine.release();
+    await waitFor(() =>
+      expect(engine.prepared.map((p) => p.detectedEvent?.id)).toEqual(["long-1", "long-2"]),
+    );
+  });
+
+  it("keeps the question heard last in the queue, not the detection that arrived last", async () => {
+    await useSettingsStore.getState().update({ ai: { suggestionDisplay: "on_request" } });
+    engine.hold = true;
+    mock.emit("question.detected", detected("busy"));
+    await waitFor(() => expect(engine.prepared).toHaveLength(1));
+    mock.emit("question.detected", detected("newer"));
+    // A slower classification of an earlier question lands afterwards.
+    mock.emit("question.detected", {
+      ...detected("older"),
+      detectedAt: new Date(Date.now() - 5_000).toISOString(),
+    });
+    engine.hold = false;
+    engine.release();
+    await waitFor(() => expect(engine.prepared).toHaveLength(2));
+    expect(engine.prepared.map((p) => p.detectedEvent?.id)).toEqual(["busy", "newer"]);
+  });
+
+  it("starts a newer question at once over a live suggestion that has no first token yet", async () => {
+    engine.hold = true;
+    engine.firstTokenBeforeHold = false;
+    mock.emit("question.detected", detected("slow-start"));
+    await waitFor(() => expect(useProactiveStore.getState().liveEventId).toBe("slow-start"));
+    mock.emit("question.detected", detected("next"));
+    await waitFor(() => expect(engine.prepared).toHaveLength(2));
+    expect(engine.cancelledPrepares).toEqual(["req-prepare-1"]);
+    expect(engine.prepared[1]?.detectedEvent?.id).toBe("next");
+    expect(useChatStore.getState().turns.map((t) => t.status)).toEqual(["cancelled", "streaming"]);
+    engine.hold = false;
+    engine.release();
+    await waitFor(() => expect(useChatStore.getState().turns.at(-1)?.status).toBe("done"));
+  });
+
+  it("fails the live turn with the error when preparation throws", async () => {
+    class ThrowingEngine extends FakeEngine {
+      override async prepare(): Promise<never> {
+        throw new Error("context build exploded");
+      }
+    }
+    setEngine(new ThrowingEngine());
+    mock.emit("question.detected", detected("det-throw"));
+    await waitFor(() => expect(useChatStore.getState().turns.at(-1)?.status).toBe("error"));
+    expect(useChatStore.getState().turns.at(-1)?.error?.message).toBe("context build exploded");
     expect(useProactiveStore.getState().liveEventId).toBeNull();
   });
 

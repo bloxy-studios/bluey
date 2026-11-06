@@ -11,10 +11,16 @@
 //! only around a rotation, so a genuinely repeated short answer ("Yes.") is
 //! kept the rest of the time.
 //!
-//! Server-side errors and closes reconnect with exponential backoff and give
-//! up after a few attempts without transcript progress. Audio never
-//! back-pressures the capture pipeline: a chunk that does not fit the worker's
-//! buffer is dropped.
+//! The service reports most failures as a WebSocket **close** (1007 for a
+//! bad key, 1008 for an unknown model, 1011 with "quota" when the key's quota
+//! is spent) rather than an in-band `error`; [`map_live_close`] reads the code
+//! and reason, so a bad key or a spent quota ends the session (the manager
+//! moves to Apple Speech) instead of reconnecting forever. Other errors and
+//! closes reconnect with exponential backoff and give up after a few attempts
+//! without transcript progress; audio sent since the last final, and audio
+//! that arrives while reconnecting, is replayed to the new socket. Audio never
+//! back-pressures the capture pipeline: a chunk that does not fit the
+//! worker's buffer is dropped.
 //!
 //! The API key travels only in the WebSocket URL query (the Live API's
 //! requirement); every log line uses [`proto::redact_live_url`].
@@ -31,7 +37,9 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-use super::reconnect::{is_fatal, reopen, Command, Outage, Reopened, Watchdog, SEND_TIMEOUT};
+use super::reconnect::{
+    is_fatal, reopen, Command, Outage, Reopened, Replay, Watchdog, WatchdogVerdict, SEND_TIMEOUT,
+};
 use super::{
     session_closed, EventSink, FinalDedupe, PcmChunk, SessionOptions, TranscriptionEvent,
     TranscriptionProvider, TranscriptionSession, DEDUPE_WINDOW,
@@ -54,6 +62,8 @@ const MAX_CONNECT_ATTEMPTS: u32 = 3;
 /// progress in between.
 const MAX_RECONNECTS_WITHOUT_PROGRESS: u32 = 5;
 const COMMAND_BUFFER: usize = 256;
+/// A failed rotation keeps the old socket and tries again this much later.
+const ROTATION_RETRY: Duration = Duration::from_secs(5);
 
 pub struct GeminiLiveProvider {
     api_key: String,
@@ -138,6 +148,8 @@ impl TranscriptionSession for LiveSession {
 struct Connection {
     socket: Socket,
     opened_at: Instant,
+    /// When to retry a rotation that failed (the old socket keeps serving).
+    rotation_retry_at: Option<Instant>,
     /// `audioStreamEnd` was sent since the last speech chunk.
     stream_end_sent: bool,
     last_speech: Option<Instant>,
@@ -215,6 +227,59 @@ pub fn map_live_error(status: &str) -> BlueyError {
     }
 }
 
+/// Map a close frame from the Live API. The service closes with 1007 ("API key
+/// not valid", invalid payload), 1008 (model not found, policy) and 1011
+/// ("You exceeded your current quota", internal) instead of sending an
+/// in-band error, so the reason text decides: a bad key, an unknown model
+/// or a spent quota is fatal for the session (Apple Speech takes over); any
+/// other close is worth a reconnect.
+pub fn map_live_close(code: Option<u16>, reason: &str) -> BlueyError {
+    let lower = reason.to_ascii_lowercase();
+    let says = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+    if says(&["api key", "api_key", "unauthenticated", "permission"]) {
+        return map_live_error("UNAUTHENTICATED");
+    }
+    if says(&[
+        "quota",
+        "resource_exhausted",
+        "resource exhausted",
+        "billing",
+    ]) {
+        return BlueyError::new(
+            BlueyErrorKind::Configuration,
+            "config.quota_exhausted",
+            "the Google AI Studio key has no live transcription quota left",
+        )
+        .recoverable(bluey_core::error::RecoveryAction::ConfigureProvider);
+    }
+    if says(&["not found", "not supported", "is not available"]) {
+        return map_live_error("NOT_FOUND");
+    }
+    match code {
+        Some(1007) | Some(1008) => BlueyError::new(
+            BlueyErrorKind::Configuration,
+            "config.live_rejected",
+            format!(
+                "the Gemini Live API rejected the transcription session ({})",
+                if reason.is_empty() {
+                    "no reason given"
+                } else {
+                    reason
+                }
+            ),
+        )
+        .recoverable(bluey_core::error::RecoveryAction::ConfigureProvider),
+        _ => BlueyError::network("stream", "the Gemini Live socket was closed"),
+    }
+}
+
+fn close_error(frame: Option<&tungstenite::protocol::CloseFrame>) -> BlueyError {
+    match frame {
+        Some(frame) => map_live_close(Some(u16::from(frame.code)), &frame.reason),
+        None => map_live_close(None, ""),
+    }
+}
+
 /// Map the HTTP status of a rejected WebSocket upgrade (a bad key is refused
 /// at the handshake, before any in-band error frame).
 pub fn map_live_http_status(status: u16) -> BlueyError {
@@ -245,6 +310,7 @@ impl Worker {
                     let mut conn = Connection {
                         socket,
                         opened_at: Instant::now(),
+                        rotation_retry_at: None,
                         stream_end_sent: true,
                         last_speech: None,
                         watchdog: Watchdog::default(),
@@ -322,7 +388,38 @@ impl Worker {
         Err(last_error)
     }
 
-    async fn forward(&self, conn: &mut Connection, chunk: &PcmChunk) -> BlueyResult<()> {
+    /// Send a chunk and keep it for replay until a final covers it.
+    async fn forward(
+        &self,
+        conn: &mut Connection,
+        chunk: PcmChunk,
+        replay: &mut Replay,
+    ) -> BlueyResult<()> {
+        replay.push(chunk.clone());
+        self.send_chunk(conn, &chunk).await
+    }
+
+    /// Give a fresh connection the audio the old one may never have
+    /// transcribed. Dedupe is armed so a final the old socket did deliver is
+    /// not repeated.
+    async fn replay_to(&self, conn: &mut Connection, replay: &Replay) -> BlueyResult<()> {
+        if replay.is_empty() {
+            return Ok(());
+        }
+        let pending = replay.pending();
+        tracing::info!(
+            source = ?self.options.source,
+            chunks = pending.len(),
+            "replaying audio sent during the reconnect"
+        );
+        *self.dedupe_until.lock() = Some(Instant::now() + DRAIN_GRACE + DEDUPE_WINDOW);
+        for chunk in &pending {
+            self.send_chunk(conn, chunk).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_chunk(&self, conn: &mut Connection, chunk: &PcmChunk) -> BlueyResult<()> {
         conn.send(proto::live_audio_message(&chunk.base64, chunk.sample_rate))
             .await?;
         if chunk.is_speech {
@@ -397,8 +494,12 @@ impl Worker {
 
     /// Open the replacement socket first, then let the old one drain finals.
     /// Dedupe is armed for the hand-over window only.
-    async fn rotate(&self, old: Connection) -> BlueyResult<Connection> {
-        let fresh = self.connect().await?;
+    /// On failure the old socket comes back with the error, still serving.
+    async fn rotate(&self, old: Connection) -> Result<Connection, (BlueyError, Box<Connection>)> {
+        let fresh = match self.connect().await {
+            Ok(fresh) => fresh,
+            Err(error) => return Err((error, Box::new(old))),
+        };
         *self.dedupe_until.lock() = Some(Instant::now() + DRAIN_GRACE + DEDUPE_WINDOW);
         let worker = Self {
             api_key: self.api_key.clone(),
@@ -446,15 +547,18 @@ impl Worker {
 
     async fn run(self, mut rx: mpsc::Receiver<Command>) {
         let mut outage = Outage::new(self.options.source, self.sink.clone());
-        let mut conn = match reopen(&mut rx, &mut outage, 0, || self.connect()).await {
+        let mut replay = Replay::default();
+        let mut conn = match reopen(&mut rx, &mut outage, 0, &mut replay, || self.connect()).await {
             Reopened::Open(conn) => conn,
             Reopened::Closed => return,
-            Reopened::Fatal(error) => return self.fail(error).await,
+            Reopened::Fatal(error) | Reopened::GaveUp(error) => return self.fail(error).await,
         };
         // Server-caused reconnects since the last transcript event.
         let mut reconnects = 0u32;
         loop {
-            let rotate_at = conn.opened_at + SOFT_SESSION_LIMIT;
+            let rotate_at = conn
+                .rotation_retry_at
+                .unwrap_or(conn.opened_at + SOFT_SESSION_LIMIT);
             let silence_deadline = match (conn.stream_end_sent, conn.last_speech) {
                 (false, Some(at)) => Some(at + SILENCE_STREAM_END),
                 _ => None,
@@ -462,20 +566,36 @@ impl Worker {
             let action = tokio::select! {
                 command = rx.recv() => match command {
                     None | Some(Command::Close) => break,
-                    Some(Command::Audio(chunk)) => match self.forward(&mut conn, &chunk).await {
-                        Ok(()) => Action::None,
-                        Err(_) => Action::Reconnect,
-                    },
+                    Some(Command::Audio(chunk)) => {
+                        match self.forward(&mut conn, chunk, &mut replay).await {
+                            Ok(()) => Action::None,
+                            Err(_) => Action::Reconnect,
+                        }
+                    }
                 },
                 message = conn.socket.next() => match message {
-                    Some(Ok(Message::Close(_))) | None => {
-                        tracing::info!("gemini live socket closed by the server; reconnecting");
+                    Some(Ok(Message::Close(frame))) => {
+                        let error = close_error(frame.as_ref());
+                        if is_fatal(&error) {
+                            Action::Fatal(error)
+                        } else {
+                            tracing::info!("gemini live socket closed by the server; reconnecting");
+                            Action::Reconnect
+                        }
+                    }
+                    None => {
+                        tracing::info!("gemini live socket ended; reconnecting");
                         Action::Reconnect
                     }
                     Some(Ok(message)) => {
                         conn.watchdog.heard();
                         match decode_frame(&message) {
-                            Some(event) => self.handle(event).await,
+                            Some(event) => {
+                                if matches!(event, LiveEvent::Final { .. }) {
+                                    replay.clear();
+                                }
+                                self.handle(event).await
+                            }
                             None => Action::None,
                         }
                     }
@@ -484,13 +604,25 @@ impl Worker {
                         Action::Reconnect
                     }
                 },
-                () = conn.watchdog.expired() => {
-                    tracing::warn!(
-                        source = ?self.options.source,
-                        "gemini live stopped answering; reconnecting"
-                    );
-                    Action::Stalled
-                }
+                () = conn.watchdog.expired() => match conn.watchdog.verdict() {
+                    // Silence after "speech" may be typing or music: ask the
+                    // socket first (its pong is a frame), reconnect only if
+                    // nothing at all comes back.
+                    WatchdogVerdict::Probe => {
+                        let ping = conn.socket.send(Message::Ping(Vec::new().into()));
+                        match tokio::time::timeout(SEND_TIMEOUT, ping).await {
+                            Ok(Ok(())) => Action::None,
+                            _ => Action::Stalled,
+                        }
+                    }
+                    WatchdogVerdict::Stalled => {
+                        tracing::warn!(
+                            source = ?self.options.source,
+                            "gemini live stopped answering; reconnecting"
+                        );
+                        Action::Stalled
+                    }
+                },
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(rotate_at)) => {
                     tracing::info!(
                         source = ?self.options.source,
@@ -523,13 +655,19 @@ impl Worker {
                 }
                 Action::Rotate => match self.rotate(conn).await {
                     Ok(fresh) => {
+                        // The old socket drains its own finals.
+                        replay.clear();
                         conn = fresh;
                         continue;
                     }
-                    Err(error) if is_fatal(&error) => return self.fail(error).await,
-                    Err(error) => {
-                        tracing::warn!(error = %error, "gemini live rotation failed; reconnecting");
-                        1
+                    Err((error, _)) if is_fatal(&error) => return self.fail(error).await,
+                    Err((error, old)) => {
+                        // Keep serving on the healthy old socket and try again
+                        // shortly; it is only replaced once it really closes.
+                        tracing::warn!(error = %error, "gemini live rotation failed; keeping the current session");
+                        conn = *old;
+                        conn.rotation_retry_at = Some(Instant::now() + ROTATION_RETRY);
+                        continue;
                     }
                 },
                 Action::Reconnect => {
@@ -548,12 +686,19 @@ impl Worker {
                 Action::Stalled => 0,
             };
             // Until the service is back (or the session closes); audio in the
-            // meantime is lost.
-            conn = match reopen(&mut rx, &mut outage, attempt, || self.connect()).await {
+            // meantime is kept and replayed to the new socket.
+            conn = match reopen(&mut rx, &mut outage, attempt, &mut replay, || {
+                self.connect()
+            })
+            .await
+            {
                 Reopened::Open(fresh) => fresh,
                 Reopened::Closed => return,
-                Reopened::Fatal(error) => return self.fail(error).await,
+                Reopened::Fatal(error) | Reopened::GaveUp(error) => return self.fail(error).await,
             };
+            if self.replay_to(&mut conn, &replay).await.is_err() {
+                tracing::warn!("gemini live replay failed on the fresh socket");
+            }
         }
         // Closing: flush the current utterance and drain what is left.
         self.drain(conn, DRAIN_GRACE).await;
@@ -575,7 +720,9 @@ fn decode_frame(message: &Message) -> Option<LiveEvent> {
 async fn wait_for_setup(conn: &mut Connection) -> BlueyResult<()> {
     loop {
         match conn.socket.next().await {
-            Some(Ok(Message::Close(_))) | None => {
+            // The service refuses a bad key or model by closing the socket.
+            Some(Ok(Message::Close(frame))) => return Err(close_error(frame.as_ref())),
+            None => {
                 return Err(BlueyError::network(
                     "stream",
                     "the Gemini Live socket closed during setup",
@@ -602,6 +749,35 @@ async fn wait_for_setup(conn: &mut Connection) -> BlueyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The service reports a bad key, an unknown model and a spent quota as
+    /// close frames; each must end the session instead of a reconnect loop.
+    #[test]
+    fn close_frames_name_what_went_wrong() {
+        let bad_key = map_live_close(
+            Some(1007),
+            "API key not valid. Please pass a valid API key.",
+        );
+        assert_eq!(bad_key.code, "config.api_key_invalid");
+        assert!(is_fatal(&bad_key));
+        let model = map_live_close(
+            Some(1008),
+            "models/gemini-x is not found for API version v1beta, or is not supported for bidiGenerateContent.",
+        );
+        assert_eq!(model.code, "config.model_not_found");
+        let quota = map_live_close(
+            Some(1011),
+            "You exceeded your current quota, please check your plan.",
+        );
+        assert_eq!(quota.code, "config.quota_exhausted");
+        assert!(is_fatal(&quota), "Apple Speech takes over");
+        let policy = map_live_close(Some(1008), "");
+        assert!(is_fatal(&policy));
+        let blip = map_live_close(Some(1011), "Internal error encountered.");
+        assert!(!is_fatal(&blip), "an internal error is worth a reconnect");
+        assert!(!is_fatal(&map_live_close(Some(1000), "")));
+        assert!(!is_fatal(&map_live_close(None, "")));
+    }
 
     #[test]
     fn live_errors_map_to_contract_codes() {

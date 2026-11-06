@@ -339,13 +339,18 @@ pub fn models_url(base_url: &str) -> String {
 }
 
 /// The ids the doc lists (2026-09-11), when `/v1/models` refuses an OAuth token.
+/// Newest first per family (the order `/v1/models` lists them in), so the
+/// first Sonnet / Opus / Haiku is the current one.
 pub const CURATED_MODELS: &[(&str, &str)] = &[
+    ("claude-opus-5-5", "Claude Opus 5.5"),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+    ("claude-haiku-5-5", "Claude Haiku 5.5"),
+    ("claude-fable-5-1", "Claude Fable 5.1"),
     ("claude-opus-5", "Claude Opus 5"),
     ("claude-sonnet-5", "Claude Sonnet 5"),
-    ("claude-fable-5-1", "Claude Fable 5.1"),
-    ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
     ("claude-opus-4-8", "Claude Opus 4.8"),
     ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,9 +377,60 @@ pub fn family(model: &str) -> Family {
     }
 }
 
-/// Effort (`output_config.effort`) is for effort-capable models with thinking on — never Haiku.
+/// `(major, minor)` of a Claude model id: `claude-opus-5-5` → (5, 5),
+/// `claude-sonnet-5` → (5, 0), `claude-haiku-4-5-20251001` → (4, 5), the
+/// legacy `claude-3-5-sonnet-20241022` → (3, 5). Date suffixes are skipped;
+/// `None` for an id without a version (an alias such as `…-latest`).
+pub fn model_version(model: &str) -> Option<(u32, u32)> {
+    let mut numbers = model
+        .split(['-', '.', '@', '_'])
+        .filter(|part| !part.is_empty() && part.len() < 8)
+        .filter(|part| part.bytes().all(|b| b.is_ascii_digit()))
+        .filter_map(|part| part.parse::<u32>().ok());
+    let major = numbers.next()?;
+    Some((major, numbers.next().unwrap_or(0)))
+}
+
+/// Adaptive thinking and `output_config.effort` exist on Claude 4.6 and later
+/// (Haiku from 5); older models (Sonnet 4.5, Opus 4.5, Haiku 4.5, …) answer
+/// either with HTTP 400. An unversioned alias is taken to be current.
+pub fn supports_adaptive(model: &str) -> bool {
+    match (family(model), model_version(model)) {
+        (Family::Fable, _) => true,
+        (Family::Haiku, Some(version)) => version >= (5, 0),
+        (Family::Opus | Family::Sonnet, Some(version)) => version >= (4, 6),
+        (Family::Haiku | Family::Opus | Family::Sonnet, None) => true,
+        (Family::Other, _) => false,
+    }
+}
+
+/// Models that think when `thinking` is omitted — Opus and Sonnet 5 and
+/// later, Haiku 5.5, Fable — at their own default effort (`medium` or
+/// `high`). An instant answer must say `low` on these, or it waits for that.
+pub fn thinks_by_default(model: &str) -> bool {
+    match (family(model), model_version(model)) {
+        (Family::Fable, _) => true,
+        (Family::Haiku, Some(version)) => version >= (5, 5),
+        (Family::Opus | Family::Sonnet, Some(version)) => version >= (5, 0),
+        (Family::Haiku | Family::Opus | Family::Sonnet, None) => true,
+        (Family::Other, _) => false,
+    }
+}
+
+/// Effort (`output_config.effort`) is for models with adaptive thinking.
 pub fn is_effort_capable(model: &str) -> bool {
-    family(model) != Family::Haiku
+    supports_adaptive(model)
+}
+
+/// Extra `max_tokens` a request needs for thinking at `effort`: thinking
+/// tokens count against the cap, so without it a short answer is cut off.
+pub fn thinking_allowance(effort: &str) -> u32 {
+    match effort {
+        "low" => 2_048,
+        "medium" => 4_096,
+        "high" => 8_192,
+        _ => 16_384,
+    }
 }
 
 /// The `max_tokens` Claude Code sends per model line.
@@ -425,6 +481,7 @@ pub fn catalog_models(entries: &[(String, String)]) -> Vec<CatalogModel> {
                     label.clone()
                 },
                 capabilities: ModelCapabilities {
+                    fast_tier: false,
                     vision: true,
                     tools: true,
                     reasoning_levels: if is_effort_capable(id) {
@@ -488,19 +545,29 @@ pub fn effort_for(reasoning: ReasoningLevel, latency: LatencyBudget) -> Option<&
     }
 }
 
-/// Adaptive thinking the way the CLI sends it, when Bluey asked for reasoning
-/// and the model takes it: `thinking`, `output_config.effort`,
-/// `context_management` — and no sampling knob next to thinking.
+/// Adaptive thinking the way the CLI sends it: `thinking`,
+/// `output_config.effort`, `context_management`. It applies when Bluey asked
+/// for reasoning on a model that takes it, and — at effort `low` — to every
+/// request on a model that thinks by default ([`thinks_by_default`]), so an
+/// instant answer is not held up by the model's default depth. `max_tokens`
+/// grows by [`thinking_allowance`] (never past [`max_tokens_for`]).
+///
+/// Sampling knobs never go out: `temperature`, `top_p` and `top_k` are a 400
+/// on Opus 4.7 and later, Sonnet 5, Fable, and (non-default values) Sonnet /
+/// Haiku 5.5. Returns the effort applied.
 pub fn apply_thinking(
     body: &mut Value,
     model: &str,
     reasoning: ReasoningLevel,
     latency: LatencyBudget,
-) {
-    let Some(map) = body.as_object_mut() else {
-        return;
-    };
-    let effort = effort_for(reasoning, latency).filter(|_| is_effort_capable(model));
+) -> Option<&'static str> {
+    let map = body.as_object_mut()?;
+    map.remove("temperature");
+    map.remove("top_p");
+    map.remove("top_k");
+    let effort = effort_for(reasoning, latency)
+        .or_else(|| thinks_by_default(model).then_some("low"))
+        .filter(|_| supports_adaptive(model));
     match effort {
         Some(effort) => {
             map.insert(
@@ -517,9 +584,11 @@ pub fn apply_thinking(
                 "context_management".into(),
                 json!({ "edits": [ { "type": "clear_thinking_20251015", "keep": "all" } ] }),
             );
-            map.remove("temperature");
-            map.remove("top_p");
-            map.remove("top_k");
+            if let Some(max) = map.get("max_tokens").and_then(Value::as_u64) {
+                let cap = u64::from(max_tokens_for(model));
+                let raised = (max + u64::from(thinking_allowance(effort))).min(cap);
+                map.insert("max_tokens".into(), json!(raised.max(max)));
+            }
         }
         None => {
             map.remove("thinking");
@@ -536,6 +605,7 @@ pub fn apply_thinking(
             }
         }
     }
+    effort
 }
 
 /// `max_tokens` as the CLI sends it unless the caller asked for a specific cap.
@@ -1352,9 +1422,15 @@ mod tests {
         );
         let curated = curated_catalog();
         assert_eq!(curated.len(), CURATED_MODELS.len());
-        assert!(curated
-            .iter()
-            .any(|m| m.id == "claude-sonnet-5" && m.suggested_roles.contains(&ModelRole::Default)));
+        let curated_role = |role: ModelRole| {
+            curated
+                .iter()
+                .find(|m| m.suggested_roles.contains(&role))
+                .map(|m| m.id.as_str())
+        };
+        assert_eq!(curated_role(ModelRole::Default), Some("claude-sonnet-5-5"));
+        assert_eq!(curated_role(ModelRole::Reasoning), Some("claude-opus-5-5"));
+        assert_eq!(curated_role(ModelRole::Fast), Some("claude-haiku-5-5"));
         assert!(catalog_from_models_response(r#"{"data":[]}"#)
             .unwrap()
             .is_empty());
@@ -1388,7 +1464,7 @@ mod tests {
         );
         apply_thinking(
             &mut body,
-            "claude-sonnet-5",
+            "claude-sonnet-4-6",
             ReasoningLevel::None,
             LatencyBudget::Fast,
         );
@@ -1433,6 +1509,79 @@ mod tests {
         assert_eq!(capped["max_tokens"], 128_000);
         normalise_max_tokens(&mut capped, "claude-opus-5", Some(64));
         assert_eq!(capped["max_tokens"], 64);
+    }
+
+    #[test]
+    fn model_versions_and_thinking_rules_follow_the_model_generation() {
+        assert_eq!(model_version("claude-opus-5-5"), Some((5, 5)));
+        assert_eq!(model_version("claude-sonnet-5"), Some((5, 0)));
+        assert_eq!(model_version("claude-haiku-4-5-20251001"), Some((4, 5)));
+        assert_eq!(model_version("claude-3-5-sonnet-20241022"), Some((3, 5)));
+        assert_eq!(model_version("claude-sonnet-latest"), None);
+        for adaptive in [
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-opus-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+        ] {
+            assert!(supports_adaptive(adaptive), "{adaptive}");
+        }
+        for legacy in [
+            "claude-sonnet-4-5-20250929",
+            "claude-opus-4-5-20251101",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-1",
+        ] {
+            assert!(!supports_adaptive(legacy), "{legacy}");
+        }
+        assert!(thinks_by_default("claude-sonnet-5"));
+        assert!(thinks_by_default("claude-opus-5-5"));
+        assert!(thinks_by_default("claude-haiku-5-5"));
+        assert!(!thinks_by_default("claude-opus-4-8"));
+        assert!(!thinks_by_default("claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn instant_answers_think_at_low_effort_and_never_carry_sampling_knobs() {
+        // Sonnet 5 would think at its default effort with `thinking` omitted.
+        let mut body = json!({ "model": "claude-sonnet-5", "temperature": 0.3, "max_tokens": 1200, "messages": [] });
+        let effort = apply_thinking(
+            &mut body,
+            "claude-sonnet-5",
+            ReasoningLevel::None,
+            LatencyBudget::UltraFast,
+        );
+        assert_eq!(effort, Some("low"));
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert_eq!(body["max_tokens"], 1200 + 2_048, "room for the thinking");
+        assert!(body.get("temperature").is_none());
+
+        // Legacy models keep plain requests — still without sampling knobs.
+        let mut legacy = json!({ "model": "claude-sonnet-4-5-20250929", "temperature": 0.3, "max_tokens": 600, "messages": [] });
+        let effort = apply_thinking(
+            &mut legacy,
+            "claude-sonnet-4-5-20250929",
+            ReasoningLevel::Deep,
+            LatencyBudget::Balanced,
+        );
+        assert_eq!(effort, None, "no adaptive thinking before 4.6");
+        assert!(legacy.get("thinking").is_none());
+        assert!(legacy.get("temperature").is_none());
+        assert_eq!(legacy["max_tokens"], 600);
+
+        // The allowance never pushes past the model line's cap.
+        let mut near_cap =
+            json!({ "model": "claude-sonnet-4-6", "max_tokens": 63_000, "messages": [] });
+        apply_thinking(
+            &mut near_cap,
+            "claude-sonnet-4-6",
+            ReasoningLevel::Deep,
+            LatencyBudget::Deep,
+        );
+        assert_eq!(near_cap["max_tokens"], 64_000);
     }
 
     #[test]
@@ -1557,7 +1706,6 @@ mod tests {
                 ],
                 stream: true,
                 max_output_tokens: None,
-                temperature: Some(0.3),
                 output_schema: None,
                 schema_as_prompt_fallback: false,
             });

@@ -94,10 +94,23 @@ visionRequired, preferredRole)` over the user's role assignments
   (balanced/deep) · coding → default · system design → reasoning (when reasoning ≥ light) ·
   research → research (fallback reasoning → default) · summarization → fast. All model
   identifiers are configuration.
+- **Failover and deadlines** (`AiManager::run_stream`, `router::failover`): a provider that
+  fails *before its first token* — network, 5xx/overload, a rate or plan limit, a refused key,
+  a model it no longer offers, a refusal — does not cost the question its answer: the same
+  request reruns on the next usable provider (the role's other assignments first, then the
+  API-key stand-in), at most twice, and the WebView receives a second `started` chunk naming
+  it. A provider that has produced no token after 12 s (ultra-fast), 15 s (fast), 45 s
+  (balanced) or 150 s (deep) — however many of its own retries are pending — counts as down
+  the same way, and a stream that goes quiet for 45 s after it started ends with
+  `network.timeout`. Once text has streamed, a failure stands.
 - **Provider presets** (`bluey_core::presets`): one table of reserved provider ids
   (`gemini`, `azure-foundry`, `anthropic`, `openai`), display names and the recommended model
   per role. `ai_apply_provider_presets { providerId, overwrite }` points roles at a provider's
-  presets (`overwrite = false` fills only unassigned roles); the `.env` import
+  presets (`overwrite = false` fills only unassigned roles) — each preset model is first checked
+  against the provider's live model list (`presets::live_replacement`; Gemini and Anthropic) and
+  replaced by the newest listed model of the same line when the key cannot call it; at launch,
+  text roles a preset assigned are re-checked the same way (models the user chose are left
+  alone); the `.env` import
   (`app::env_import`, planned by `presets::plan_env_import`) applies the nominated provider's
   presets at boot and honours `BLUEY_MODEL_*` overrides. `ai_list_models { providerId, role? }`
   narrows a provider's catalogue to models fit for a role.

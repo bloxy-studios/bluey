@@ -184,7 +184,12 @@ so `system[]` holds exactly the billing header and the identity block (`cache_co
 the settings table (`accounts:device_id`) and one UUID per Bluey session. `max_tokens` = 128 000 for
 Opus 5 / Sonnet 5 / Fable 5.1, 64 000 otherwise, unless the request set a cap; reasoning *light* /
 *deep* → `thinking: adaptive` + `output_config.effort` (`low`–`max` from level + latency) +
-`context_management`, never for Haiku, never with `temperature`; Fable 5.1 carries
+`context_management`, only on models with adaptive thinking (Opus/Sonnet 4.6 and later, Haiku 5,
+Fable — Sonnet 4.5 / Opus 4.5 / Haiku 4.5 answer it with a 400); models that think when
+`thinking` is omitted (Opus/Sonnet 5+, Haiku 5.5, Fable) get effort `low` on plain answers so an
+instant answer is not held at the model's default depth; `max_tokens` grows by a thinking
+allowance (2–16 K by effort, capped per line). `temperature`/`top_p`/`top_k` are never sent
+(a 400 on Opus 4.7+, Sonnet 5, Fable, non-default values on Sonnet/Haiku 5.5); Fable 5.1 carries
 `fallbacks: [{model: claude-opus-5}]`. Catalog: `GET /v1/models?limit=100` with the OAuth beta, falling
 back to the curated id list (`CatalogSource::Curated`) when the endpoint refuses the token; presets
 `default`/`vision` = newest Sonnet, `reasoning`/`research` = newest Opus, `fast` = newest Haiku.
