@@ -2,7 +2,8 @@
 
 ## Principles
 1. **Nothing happens silently.** Capture and listening only start on explicit user action
-   (shortcut, HUD button, menu bar) and are always visible (HUD pill, menu bar item).
+   (shortcut, HUD button, menu bar) and are always visible (HUD pill; the menu bar item too,
+   except in Privacy mode, which hides it on purpose — ADR 0006 addendum).
 2. **Secrets never reach the renderer.** API keys and the sign-in tokens are stored in the
    macOS Keychain by the Rust process (`security-framework`, ADR 0011). The WebView can only
    `set`, `has`, `delete` (and see the saved/locked/absent state of)

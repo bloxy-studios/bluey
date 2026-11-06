@@ -819,6 +819,37 @@ impl AccountsManager {
         let _ = self.set_account(account).await;
     }
 
+    /// Accounts still marked rate-limited whose window has reset go back to
+    /// `Connected` (persisted and announced, so Settings and the HUD stop
+    /// saying "rate limited"). Before this, only a successful request cleared
+    /// the mark, and an account nobody sent a request through kept it after
+    /// its plan limit had long reset. Returns how many were cleared.
+    pub async fn clear_expired_rate_limits(&self) -> usize {
+        let now = Utc::now();
+        let expired: Vec<ProviderAccount> = self
+            .accounts
+            .read()
+            .iter()
+            .filter(|account| rules::rate_limit_expired(account, now))
+            .cloned()
+            .collect();
+        let mut cleared = 0;
+        for mut account in expired {
+            let id = account.account_id.clone();
+            account.status = AccountStatus::Connected;
+            match self.set_account(account).await {
+                Ok(_) => {
+                    tracing::info!(account = %id, "plan limit reset; the account is connected again");
+                    cleared += 1;
+                }
+                Err(error) => {
+                    tracing::warn!(account = %id, code = %error.code, "cannot clear the reset rate limit")
+                }
+            }
+        }
+        cleared
+    }
+
     /// A request through the account succeeded: a rate-limit window it was
     /// waiting out is over.
     pub async fn note_request_success(&self, account_id: &str) {

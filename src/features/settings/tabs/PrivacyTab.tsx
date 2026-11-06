@@ -127,9 +127,9 @@ export default function PrivacyTab() {
       <SettingRow
         icon={Eye}
         title="Display mode"
-        description={
+        description={`${
           protection?.note ?? "Privacy mode hides Bluey from screen sharing where macOS supports it."
-        }
+        } It also hides the menu bar icon; your Bluey shortcut and Settings still open it.`}
       >
         <SegmentedTabs
           aria-label="Display mode"

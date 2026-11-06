@@ -18,6 +18,7 @@ import { usePanelStore } from "@/stores/panelStore";
 import { cancelLiveSuggestion, QUESTION_STALE_MS, useProactiveStore } from "@/stores/proactive";
 import type * as ProactiveModule from "@/stores/proactive";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useTranscriptStore } from "@/stores/transcriptStore";
 import { makeResponse, ProactiveFakeEngine, setupMockApp } from "./helpers";
 
 // Pass-through spy: which cancellations count as the user dismissing a suggestion.
@@ -40,6 +41,11 @@ function detected(id: string): DetectedEvent {
 }
 
 const flush = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+/** "Why us?" is the newest heard question (no live suggestion running for it). */
+function heardWhyUs(): void {
+  useTranscriptStore.setState({ questions: [{ ...detected("q-why"), text: "Why us?" }] });
+}
 
 function patchStatus(patch: Partial<NonNullable<ReturnType<typeof useAppStore.getState>["status"]>>): void {
   const status = useAppStore.getState().status;
@@ -133,6 +139,7 @@ describe("live suggestion races", () => {
     act(() => {
       result.current.ask({ trigger: "typed", instruction: "Slow question" });
     });
+    heardWhyUs();
     engine.preparedQueue.push(makeResponse({ id: "prep-x", prompt: "Why us?", prepared: true }));
 
     act(() => result.current.generateOrTakePrepared());
@@ -143,6 +150,44 @@ describe("live suggestion races", () => {
     expect(engine.cancelled).toBe(true);
     expect(engine.committed.map((response) => response.id)).toEqual(["prep-x"]);
     expect(engine.committed[0]?.prepared).toBeUndefined();
+  });
+
+  it("⌘⇧↵ never shows an answer prepared for an older question once a newer one was heard", async () => {
+    const { result } = renderHook(() => useAsk());
+    // Answered earlier: "Tell me about yourself"; the interviewer has since asked something else.
+    useTranscriptStore.setState({
+      questions: [
+        { ...detected("q-old"), text: "Tell me about yourself?" },
+        { ...detected("q-new"), text: "Why cleaning?" },
+      ],
+    });
+    useChatStore.getState().setPrepared(makeResponse({ id: "prep-old", prompt: "Tell me about yourself?", prepared: true }));
+
+    act(() => result.current.generateOrTakePrepared());
+    await flush();
+
+    expect(engine.takeCalls).toEqual(["q-new"]);
+    expect(engine.committed).toEqual([]);
+    expect(engine.asks.at(-1)).toMatchObject({ trigger: "shortcut_generate" });
+  });
+
+  it("⌘⇧↵ with no heard question pending skips a prepared answer older than the answer on screen", async () => {
+    const { result } = renderHook(() => useAsk());
+    useTranscriptStore.setState({ questions: [] });
+    // "Tell me about yourself" was answered at 07:09:25; this copy was prepared before that.
+    useChatStore.getState().showResponse(
+      makeResponse({ id: "shown", prompt: "Tell me about yourself?", createdAt: "2026-11-06T07:09:25.000Z" }),
+      { promptLabel: "Tell me about yourself?" },
+    );
+    engine.preparedQueue.push(
+      makeResponse({ id: "prep-stale", prompt: "Tell me about yourself?", prepared: true, createdAt: "2026-11-06T07:09:20.000Z" }),
+    );
+
+    act(() => result.current.generateOrTakePrepared());
+    await flush();
+
+    expect(engine.committed).toEqual([]);
+    expect(engine.asks.at(-1)).toMatchObject({ trigger: "shortcut_generate" });
   });
 
   it("⌘⇧↵ while the newest question's suggestion streams keeps it and brings it into view", async () => {
@@ -168,6 +213,7 @@ describe("live suggestion races", () => {
   it("taking the prepared answer or starting a new chat is not a dismissal; Stop is", async () => {
     const { result } = renderHook(() => useAsk());
     const cancel = vi.mocked(cancelLiveSuggestion);
+    heardWhyUs();
     engine.preparedQueue.push(makeResponse({ id: "prep-z", prompt: "Why us?", prepared: true }));
     cancel.mockClear();
 
@@ -235,6 +281,7 @@ describe("live suggestion races", () => {
 
   it("Regenerate and Retry on a prepared answer send its heard question as heard, not as typed", async () => {
     const { result } = renderHook(() => useAsk());
+    heardWhyUs();
     engine.preparedQueue.push(makeResponse({ id: "prep-y", prompt: "Why us?", prepared: true }));
     act(() => result.current.generateOrTakePrepared());
     await flush();

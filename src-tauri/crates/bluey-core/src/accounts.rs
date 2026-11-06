@@ -94,13 +94,21 @@ pub fn is_usable(account: &ProviderAccount, now: DateTime<Utc>) -> bool {
     }
 }
 
-/// A rate-limit window is active until its reset time; an unparsable reset
-/// time counts as active (the provider said stop — believe it).
+/// A rate-limit window is active until its reset time. An unparsable reset
+/// time is not trusted to last: counting it as active kept an account
+/// "rate limited" forever, while the next request simply finds out (a still
+/// limited plan answers 429 again, with a reset time).
 pub fn rate_limit_active(until: &str, now: DateTime<Utc>) -> bool {
     match DateTime::parse_from_rfc3339(until) {
         Ok(reset) => reset.with_timezone(&Utc) > now,
-        Err(_) => true,
+        Err(_) => false,
     }
+}
+
+/// An account still marked rate-limited whose window has reset: it is
+/// connected again, without waiting for a request to prove it.
+pub fn rate_limit_expired(account: &ProviderAccount, now: DateTime<Utc>) -> bool {
+    matches!(&account.status, AccountStatus::RateLimited { until, .. } if !rate_limit_active(until, now))
 }
 
 /// The status an account moves to when a request through it fails with
@@ -325,8 +333,8 @@ mod tests {
             now
         ));
         assert!(
-            rate_limit_active("not a time", now),
-            "unparsable reset counts as active"
+            !rate_limit_active("not a time", now),
+            "an unparsable reset never keeps the account limited: the next request finds out"
         );
     }
 
@@ -542,5 +550,27 @@ mod tests {
         let mut connected = account(AccountStatus::Connected);
         normalise_after_restart(&mut connected);
         assert!(connected.status.is_connected());
+    }
+
+    #[test]
+    fn a_rate_limit_ends_at_its_reset_time_and_an_unreadable_one_does_not_last() {
+        let now = DateTime::parse_from_rfc3339("2026-11-06T17:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let limited = |until: &str| {
+            account(AccountStatus::RateLimited {
+                until: until.into(),
+                window: Some("5 h".into()),
+            })
+        };
+        assert!(rate_limit_active("2026-11-06T18:00:00Z", now));
+        assert!(!rate_limit_expired(&limited("2026-11-06T18:00:00Z"), now));
+        assert!(rate_limit_expired(&limited("2026-11-06T16:59:59Z"), now));
+        assert!(
+            !rate_limit_active("soon", now),
+            "unreadable: the next request finds out"
+        );
+        assert!(rate_limit_expired(&limited("soon"), now));
+        assert!(!rate_limit_expired(&account(AccountStatus::Connected), now));
     }
 }

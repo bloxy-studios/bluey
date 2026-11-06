@@ -62,7 +62,10 @@ the plan — together they keep the two right-hand columns true after every offi
    A failed request's error carries `details.fallbackProviderId` only when such a provider
    exists, so the copy says *Bluey uses your API key meanwhile* only then; with none the router
    returns `config.provider_unusable` (`cause: account_<state>`). A rate-limited account is
-   skipped until its window resets.
+   skipped until its window resets, and goes back to `Connected` by itself at that time (a
+   sweep at launch and every minute, `AccountsManager::clear_expired_rate_limits`), not only
+   after a request succeeds. A reset time that does not parse is not believed to last, and a
+   reset further than 8 days out (a millisecond value read as seconds) is capped.
 
 ## Verified wire facts
 

@@ -39,5 +39,8 @@ reproduced here; until a runtime self-test exists, Bluey reports the weaker clai
 * It is applied before the HUD is first shown at boot, never a few seconds later (SEC-012).
 * The tray's *Toggle Privacy Mode* patches `settings.privacy.displayMode`, the single source
   of truth, so the tray, the HUD and the Privacy Center always agree.
+* *Addendum 2026-11-06:* Privacy mode also hides the menu-bar item (at launch and as soon as the
+  mode changes), so nothing in the menu bar gives Bluey away; the HUD shortcut and Settings
+  still reach it, and the HUD's status pill remains the visible capture/listening indicator.
 
 Bluey's own captures still exclude its windows through the ScreenCaptureKit content filter.

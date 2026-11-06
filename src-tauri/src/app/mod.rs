@@ -454,6 +454,9 @@ async fn handle_deep_links(app: AppHandle, urls: Vec<String>) {
     }
 }
 
+/// How often reset subscription plan limits are cleared.
+const RATE_LIMIT_SWEEP: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Async part of bootstrap: shortcuts, helper spawn, permission snapshot and
 /// the side effects of the persisted settings.
 async fn finish_boot(app: &AppHandle) {
@@ -467,6 +470,21 @@ async fn finish_boot(app: &AppHandle) {
     let accounts_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         accounts_handle.state::<AppCore>().accounts.restore().await;
+    });
+    // A subscription plan limit that has reset (at launch, or later while Bluey runs)
+    // shows as connected again within a minute, not only after a request succeeds.
+    let limits_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(RATE_LIMIT_SWEEP);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            limits_handle
+                .state::<AppCore>()
+                .accounts
+                .clear_expired_rate_limits()
+                .await;
+        }
     });
     // Preset models a key can no longer call move before the first question.
     let models_handle = app.clone();

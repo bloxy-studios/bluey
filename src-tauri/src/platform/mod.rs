@@ -209,6 +209,8 @@ pub fn build_tray(app: &AppHandle) -> BlueyResult<()> {
     // (black + alpha, 44 px = 22 pt @2x, `icons/tray/`): macOS tints a template
     // image for light/dark menu bars and the highlighted state. The full-colour
     // app icon must not be used here — as a template it collapses to a blob.
+    // Privacy mode starts without it (`set_tray_visible`).
+    let visible = tray_visible_in(app.state::<AppCore>().settings.get().privacy.display_mode);
     let tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -218,6 +220,11 @@ pub fn build_tray(app: &AppHandle) -> BlueyResult<()> {
         .on_menu_event(|app, event| on_menu_event(app, event.id().as_ref()))
         .build(app)
         .map_err(tray_err)?;
+    if !visible {
+        if let Err(e) = tray.set_visible(false) {
+            tracing::warn!(error = %e, "cannot hide the menu bar item in privacy mode");
+        }
+    }
 
     // Keep the listening label and tooltip current.
     let core = app.state::<AppCore>();
@@ -280,6 +287,23 @@ fn on_menu_event(app: &AppHandle, id: &str) {
     });
 }
 
+/// Show or hide the menu-bar item. Privacy (undetectable) mode hides it, so
+/// nothing in the menu bar gives Bluey away on a shared screen; the HUD
+/// shortcut (⌘\ by default) and Settings still reach Bluey.
+pub fn set_tray_visible(app: &AppHandle, visible: bool) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    if let Err(e) = tray.set_visible(visible) {
+        tracing::warn!(visible, error = %e, "cannot change the menu bar item's visibility");
+    }
+}
+
+/// Whether the menu-bar item shows in `mode`.
+pub fn tray_visible_in(mode: DisplayMode) -> bool {
+    mode != DisplayMode::Privacy
+}
+
 fn tray_err(e: tauri::Error) -> BlueyError {
     BlueyError::internal(format!("menu bar setup failed: {e}"))
 }
@@ -326,5 +350,11 @@ mod tests {
             state_tooltip(&status(AppState::Error, false)),
             "Bluey — Needs attention"
         );
+    }
+
+    #[test]
+    fn privacy_mode_hides_the_menu_bar_item() {
+        assert!(tray_visible_in(DisplayMode::Standard));
+        assert!(!tray_visible_in(DisplayMode::Privacy));
     }
 }

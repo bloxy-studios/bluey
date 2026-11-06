@@ -24,16 +24,28 @@ from release_metadata import (CHECKSUMS, SEMVER, TARGETS, UPDATER_FEED, UPDATER_
                               updater_name_for, validate_commit, validate_feed, version_tag, write_json)
 
 NIGHTLY_TAG = "nightly"
-NIGHTLY_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-nightly\.(20[0-9]{6})\Z", re.ASCII)
+NIGHTLY_VERSION = re.compile(
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-nightly\.(20[0-9]{6})(?:\.([2-9]|[1-9][0-9]{1,2}))?\Z",
+    re.ASCII)
 MARKER = re.compile(r"<!-- bluey-nightly commit=([0-9a-f]{40}) version=([0-9A-Za-z.+-]{1,64}) -->")
 
 
-def nightly_version(source_version, date):
-    """`X.Y.(Z+1)-nightly.YYYYMMDD`: above the sources' version, below the next stable release."""
+def nightly_version(source_version, date, previous=None):
+    """`X.Y.(Z+1)-nightly.YYYYMMDD`: above the sources' version, below the next stable release.
+
+    A further build the same day (`previous` is that day's nightly) gets `.2`, `.3`, …: a
+    second `…-nightly.YYYYMMDD` would not be newer than the first, so installed apps would
+    never be offered it. SemVer ranks `20261106.2` above `20261106` and below `20261107`."""
     version, _ = version_tag(source_version)
     match = SEMVER.fullmatch(version)
     require(re.fullmatch(r"20[0-9]{6}", date) is not None, "Nightly date must be YYYYMMDD")
-    return f"{match.group(1)}.{match.group(2)}.{int(match.group(3)) + 1}-nightly.{date}"
+    base = f"{match.group(1)}.{match.group(2)}.{int(match.group(3)) + 1}-nightly.{date}"
+    earlier = NIGHTLY_VERSION.fullmatch(previous) if isinstance(previous, str) else None
+    if earlier is None or previous.split("-nightly.")[0] + "-nightly." + earlier.group(4) != base:
+        return base
+    build = int(earlier.group(5) or 1) + 1
+    require(build <= 999, "Too many nightlies in one day")
+    return f"{base}.{build}"
 
 
 def check_version(version):
@@ -67,8 +79,8 @@ def plan(root, commit, api, force, today=None):
     """`skipped` says why no build is needed ("" when one is)."""
     commit = validate_commit(commit)
     date = (today or datetime.datetime.now(datetime.timezone.utc)).strftime("%Y%m%d")
-    version = check_version(nightly_version(source_metadata(root)["version"], date))
-    previous_commit, _ = last_nightly(api.find_release(NIGHTLY_TAG))
+    previous_commit, previous_version = last_nightly(api.find_release(NIGHTLY_TAG))
+    version = check_version(nightly_version(source_metadata(root)["version"], date, previous_version))
     skipped = ""
     if not force and previous_commit == commit:
         skipped = "main unchanged since the last nightly"
@@ -102,7 +114,7 @@ def collect(incoming, output, version, source):
         updaters.append(updater_entry(target, archive, signature))
     with (output / CHECKSUMS).open("x", encoding="utf-8") as stream:
         stream.write("".join(f"{e['sha256']}  {e['asset']}\n" for e in installers + updaters))
-    notes = f"Bluey nightly {version} — built from main; unsigned developer build (see the release notes)."
+    notes = f"Bluey nightly {version} — built from main; developer build, not notarized (see the release notes)."
     feed = updater_feed(version, NIGHTLY_TAG, updaters, now_rfc3339(), notes)
     write_json(output / UPDATER_FEED, feed)
     validate_feed(feed, version, NIGHTLY_TAG, updaters)
@@ -113,7 +125,8 @@ def collect(incoming, output, version, source):
 
 def body_for(version, commit, run_id):
     return (f"## Bluey nightly {version}\n\n"
-            f"Built from `main` @ `{commit[:12]}` by run {run_id}. **Unsigned developer build** — not notarized; "
+            f"Built from `main` @ `{commit[:12]}` by run {run_id}. **Developer build** — not notarized "
+            "(signed with the owner's development certificate when configured, else ad hoc); "
             "macOS asks you to confirm the first launch (right-click → Open). This release is rebuilt every night "
             "`main` changed and is what the **Nightly** update channel installs; it can break. Stable builds are "
             "the versioned releases.\n\n"

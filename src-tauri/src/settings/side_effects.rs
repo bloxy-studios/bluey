@@ -33,11 +33,16 @@ pub async fn apply(core: &State<'_, AppCore>, old: &Settings, new: &Settings) {
     }
 
     // Privacy: display mode → content protection on every Bluey window.
+    // Undetectable also means no menu-bar item to give Bluey away.
     if old.privacy.display_mode != new.privacy.display_mode {
         let enabled = new.privacy.display_mode == DisplayMode::Privacy;
         if let Err(e) = core.capture.set_protection(enabled) {
             report(&core.bus, "privacy", e);
         }
+        crate::platform::set_tray_visible(
+            &core.panel.app_handle(),
+            crate::platform::tray_visible_in(new.privacy.display_mode),
+        );
     }
 
     // Privacy: Cloud AI off → live transcription leaves the cloud route.

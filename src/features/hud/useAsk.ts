@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import type { EngineHandle, EnginePhase } from "@/lib/engine-contract";
+import type { BlueyResponse, DetectedEvent } from "@/lib/types";
 import { bluey } from "@/lib/tauri/api";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -83,6 +84,30 @@ function findTurn(turnId?: string): ChatTurn | undefined {
   return turnId ? turns.find((turn) => turn.id === turnId) : turns.at(-1);
 }
 
+/** The answer prepared for `question` (the newest heard one), and no other. */
+function preparedForQuestion(question: DetectedEvent): BlueyResponse | null {
+  const fromEngine = getEngine().takePrepared(question.id);
+  if (fromEngine) return fromEngine;
+  const announced = useChatStore.getState().prepared;
+  return announced && announced.prompt === question.text ? announced : null;
+}
+
+/**
+ * With no heard question pending (the last one's answer is on screen), the
+ * suggestion the HUD offers — unless it was prepared before the newest
+ * answer in the thread: then the interview has moved past it.
+ */
+function preparedStillCurrent(): BlueyResponse | null {
+  const candidate = getEngine().takePrepared() ?? useChatStore.getState().prepared;
+  if (!candidate) return null;
+  const lastAnswer = useChatStore
+    .getState()
+    .turns.findLast((turn) => turn.response && turn.response.id !== candidate.id)?.response;
+  const preparedAt = Date.parse(candidate.createdAt);
+  const answeredAt = lastAnswer ? Date.parse(lastAnswer.createdAt) : Number.NEGATIVE_INFINITY;
+  return Number.isFinite(preparedAt) && preparedAt < answeredAt ? null : candidate;
+}
+
 /**
  * Engine glue: turns UI intents into `engine.ask` calls and mirrors the
  * streaming lifecycle into the chat store (generation-guarded, so a stale
@@ -142,8 +167,10 @@ export function useAsk() {
   const stop = useCallback(() => cancelStreaming({ dismissed: true }), []);
 
   /**
-   * ⌘⇧↵ — show the response prepared for the question currently surfaced
-   * (then any other prepared response); otherwise generate from the transcript.
+   * ⌘⇧↵ — show the response prepared for the newest heard question; otherwise
+   * generate from the transcript. An answer prepared for an older question is
+   * never shown in its place: once the interview has moved on, re-showing it
+   * answered the first question again and again.
    */
   const generateOrTakePrepared = useCallback((triggeredAtMs?: number) => {
     // The suggestion for the newest question is already streaming: keep it and bring it
@@ -155,18 +182,12 @@ export function useAsk() {
       return;
     }
     const engine = getEngine();
-    const preparedEventId = useProactiveStore.getState().preparedEventId;
-    const prepared =
-      (preparedEventId ? engine.takePrepared(preparedEventId) : null) ??
-      engine.takePrepared() ??
-      useChatStore.getState().prepared;
+    const prepared = latestQuestion ? preparedForQuestion(latestQuestion) : preparedStillCurrent();
     if (prepared) {
       // A turn still streaming is stopped, never left spinning above the answer (LIVE-011).
       void cancelStreaming({ dismissed: false });
       // Shown as a suggestion turn: the question it answers (and who asked, when known).
-      const detected = preparedEventId
-        ? useTranscriptStore.getState().questions.find((question) => question.id === preparedEventId)
-        : undefined;
+      const detected = latestQuestion;
       const question = prepared.prompt ?? detected?.text;
       useChatStore.getState().showResponse(prepared, {
         promptLabel: question ?? "Suggestion",
