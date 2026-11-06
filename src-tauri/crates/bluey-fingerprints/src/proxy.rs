@@ -541,7 +541,7 @@ mod tests {
         let mut proxy = start_for(Provider::Chatgpt, closed, tmp.path()).await;
         let (status, _, body) = send_raw(
             proxy.addr,
-            b"GET /backend-api/codex/models?client_version=0.154.0 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjEifQ.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJlLXNpZ25hdHVyZQ\r\n\r\n",
+            b"GET /backend-api/codex/models?client_version=0.167.0 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjEifQ.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJlLXNpZ25hdHVyZQ\r\n\r\n",
         )
         .await;
         assert_eq!(status, 502);

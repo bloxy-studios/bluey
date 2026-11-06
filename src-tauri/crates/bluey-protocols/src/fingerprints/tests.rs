@@ -71,10 +71,13 @@ fn provider_ids_hosts_and_versions() {
     );
     assert_eq!(Provider::for_host("example.com"), None);
     assert_eq!(Provider::Claude.info().version, "claude_code/2.1.258");
-    assert_eq!(Provider::Chatgpt.info().version, "codex/0.154.0");
+    assert_eq!(Provider::Chatgpt.info().version, "codex/0.167.0");
     assert_eq!(Provider::Antigravity.info().version, "antigravity/2.12.2");
+    assert_eq!(Provider::Chatgpt.info().captured_on, "2026-11-06");
     for p in Provider::ALL {
-        assert_eq!(p.info().captured_on, "2026-09-11");
+        if p != Provider::Chatgpt {
+            assert_eq!(p.info().captured_on, "2026-09-11");
+        }
         assert!(p.rules().endpoint_for("POST", "/nope").is_none());
     }
     assert_eq!(

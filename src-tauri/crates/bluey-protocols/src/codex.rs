@@ -10,7 +10,8 @@
 //! capture cannot disagree (a test diffs one against the other).
 //!
 //! Every wire fact here is a row of `docs/PROVIDER_ACCOUNTS.md › ChatGPT`
-//! (verified 2026-09-11 against `openai/codex` rust-v0.154.0).
+//! (verified 2026-11-06 from the source of `openai/codex` rust-v0.167.0; paths
+//! in comments are relative to its `codex-rs/`).
 
 use std::path::{Path, PathBuf};
 
@@ -57,41 +58,95 @@ pub const DEFAULT_DEVICE_INTERVAL_SECS: u64 = 5;
 /// PKCE verifier entropy of the CLI (64 bytes → 86 characters).
 pub const PKCE_VERIFIER_BYTES: usize = 64;
 
+/// The loopback redirect: `127.0.0.1`, not `localhost`, since 0.167.0
+/// (`login/src/server.rs:197`) — the address Bluey's listener binds anyway.
 pub fn redirect_uri(port: u16) -> String {
-    format!("http://localhost:{port}{CALLBACK_PATH}")
+    format!("http://127.0.0.1:{port}{CALLBACK_PATH}")
 }
 
-/// The authorization URL, parameters in the CLI's order (`login/src/server.rs:576-612`).
+/// The authorization URL, parameters in the CLI's order: the standard ones
+/// (`login/src/oauth/authorization.rs:21-42`), then the issuer extensions
+/// (`login/src/server.rs:580-620`).
 pub fn authorize_url(redirect_uri: &str, code_challenge: &str, state: &str) -> String {
     let mut url = url::Url::parse(AUTHORIZE_URL).expect("constant URL parses");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", CLIENT_ID)
         .append_pair("redirect_uri", redirect_uri)
-        .append_pair("scope", SCOPES)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256")
+        .append_pair("state", state)
+        .append_pair("scope", SCOPES)
         .append_pair("id_token_add_organizations", "true")
         .append_pair("codex_cli_simplified_flow", "true")
-        .append_pair("state", state)
         .append_pair("originator", fp::ORIGINATOR);
     url.to_string()
 }
 
-/// Form body of the code exchange (`application/x-www-form-urlencoded`).
+/// Form body of the code exchange (`application/x-www-form-urlencoded`), in
+/// the CLI's field order (`login/src/oauth/client.rs:79-95`).
 pub fn token_exchange_form(
     code: &str,
     redirect_uri: &str,
     code_verifier: &str,
 ) -> Vec<(&'static str, String)> {
-    oauth::token_exchange_form(CLIENT_ID, code, redirect_uri, code_verifier)
+    vec![
+        ("grant_type", "authorization_code".to_string()),
+        ("client_id", CLIENT_ID.to_string()),
+        ("code", code.to_string()),
+        ("redirect_uri", redirect_uri.to_string()),
+        ("code_verifier", code_verifier.to_string()),
+    ]
 }
 
-/// JSON body of a refresh (the refresh grant is JSON, unlike the exchange).
-pub fn refresh_body(refresh_token: &str) -> Value {
+/// Why a refresh runs — the CLI's `refresh_reason` (`login/src/oauth/client.rs:47-63`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshReason {
+    /// The access token expires within [`ACCESS_TOKEN_REFRESH_WINDOW_SECS`].
+    ProactiveExpiry,
+    /// The last refresh is more than 8 days old.
+    Scheduled,
+    /// The backend answered 401 to a token that had not expired.
+    UnauthorizedRecovery,
+    /// An explicit refresh.
+    Forced,
+}
+
+impl RefreshReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProactiveExpiry => "proactive_expiry",
+            Self::Scheduled => "scheduled",
+            Self::UnauthorizedRecovery => "unauthorized_recovery",
+            Self::Forced => "forced",
+        }
+    }
+}
+
+/// The CLI refreshes proactively once the access token's `exp` is this close
+/// (`login/src/auth/manager.rs:222,3528-3546`).
+pub const ACCESS_TOKEN_REFRESH_WINDOW_SECS: u64 = 5 * 60;
+
+/// The reason the CLI would give for a refresh of a token expiring at
+/// `expires_at`. Bluey refreshes only ahead of expiry or after a 401, so a
+/// token not yet in the expiry window is being refreshed because of a 401.
+pub fn refresh_reason_for(expires_at: Option<u64>, now_unix: u64) -> RefreshReason {
+    match expires_at {
+        Some(at) if at <= now_unix.saturating_add(ACCESS_TOKEN_REFRESH_WINDOW_SECS) => {
+            RefreshReason::ProactiveExpiry
+        }
+        _ => RefreshReason::UnauthorizedRecovery,
+    }
+}
+
+/// JSON body of a refresh (the refresh grant is JSON, unlike the exchange);
+/// `refresh_reason` since 0.167.0 (`login/src/oauth/client.rs:97-113`,
+/// `login/src/auth/manager.rs:1774-1796`).
+pub fn refresh_body(refresh_token: &str, reason: RefreshReason) -> Value {
     json!({
         "client_id": CLIENT_ID,
         "grant_type": "refresh_token",
+        "refresh_reason": reason.as_str(),
         "refresh_token": refresh_token,
     })
 }
@@ -268,14 +323,18 @@ pub fn identity_from_tokens(id_token: Option<&str>, access_token: &str) -> Ident
     identity
 }
 
-/// Human label for a plan type.
+/// Human label for a plan type, in the CLI's names (`protocol/src/auth.rs:135-158`:
+/// `prolite` is now "Pro", `pro` "Pro (More)", `promax` "Pro (Max)").
 pub fn plan_label(plan_type: &str) -> String {
     match plan_type.trim().to_ascii_lowercase().as_str() {
         "free" => "ChatGPT Free".into(),
         "go" => "ChatGPT Go".into(),
         "plus" => "ChatGPT Plus".into(),
-        "pro" => "ChatGPT Pro".into(),
-        "prolite" => "ChatGPT Pro Lite".into(),
+        "prolite" => "ChatGPT Pro".into(),
+        "pro" => "ChatGPT Pro (More)".into(),
+        "promax" => "ChatGPT Pro (Max)".into(),
+        "sci" => "ChatGPT Academic Researchers".into(),
+        "sci_plus" => "ChatGPT Academic Researchers Plus".into(),
         "team" => "ChatGPT Team".into(),
         "business" => "ChatGPT Business".into(),
         "enterprise" => "ChatGPT Enterprise".into(),
@@ -483,12 +542,39 @@ pub fn drift_reason(status: u16, body: &str) -> Option<UnavailableReason> {
     }
 }
 
+/// Move a top-level `instructions` into a leading `developer` item, where the
+/// CLI carries its base instructions since 0.167.0 (`codex-api/src/common.rs:281-306`
+/// has no `instructions` field). An empty value is dropped.
+fn move_instructions_into_input(map: &mut Map<String, Value>) {
+    let Some(instructions) = map.remove("instructions") else {
+        return;
+    };
+    let Some(text) = instructions.as_str().filter(|t| !t.trim().is_empty()) else {
+        return;
+    };
+    let item = developer_item(text);
+    match map.get_mut("input") {
+        Some(Value::Array(items)) => items.insert(0, item),
+        Some(Value::String(prompt)) => {
+            let user = message_item(
+                "user",
+                vec![json!({ "type": "input_text", "text": prompt.as_str() })],
+            );
+            map.insert("input".into(), Value::Array(vec![item, user]));
+        }
+        _ => {
+            map.insert("input".into(), Value::Array(vec![item]));
+        }
+    }
+}
+
 /// Bring a `/responses` body to the shape the CLI sends: stateless, streaming,
-/// encrypted reasoning kept, no sampling knobs.
+/// encrypted reasoning kept, no sampling knobs, instructions inside `input`.
 pub fn normalise_responses_body(body: &mut Value, prompt_cache_key: &str) {
     let Some(map) = body.as_object_mut() else {
         return;
     };
+    move_instructions_into_input(map);
     map.insert("store".into(), Value::Bool(false));
     map.insert("stream".into(), Value::Bool(true));
     for key in [
@@ -616,16 +702,16 @@ pub fn models_request(
 // Request body
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// What goes into `instructions`. The CLI sends the model's
-/// `instructions_template` from the catalog (13–21 KB); whether `""` or a
-/// short prompt also passes is the replay experiment of the doc — until then
-/// Bluey ships the template and carries its own prompt as a `developer` item.
+/// What leads `input` as the base instructions. The CLI sends the model's
+/// `instructions_template` from the catalog (13–21 KB) as a leading
+/// `developer` item, never as top-level `instructions` (0.167.0); whether a
+/// short prompt also passes there is the replay experiment of the doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstructionsPolicy<'a> {
-    /// The catalog's template as `instructions`; Bluey's system messages become
-    /// `developer` input items.
+    /// The catalog's template as the first `developer` item, Bluey's system
+    /// messages as the second — the CLI's shape exactly.
     Template(&'a str),
-    /// Bluey's system messages as `instructions` (never empty — the backend rejects that).
+    /// Bluey's system messages as the only `developer` item (never empty).
     Own,
 }
 
@@ -658,6 +744,15 @@ fn message_item(role: &str, content: Vec<Value>) -> Value {
     json!({ "type": "message", "role": role, "content": content })
 }
 
+/// A `developer` message of one `input_text` part — the shape of the CLI's
+/// base-instructions item (`core/src/context/base_instructions.rs:42-61`).
+pub fn developer_item(text: &str) -> Value {
+    message_item(
+        "developer",
+        vec![json!({ "type": "input_text", "text": text })],
+    )
+}
+
 fn input_parts(message: &AiMessage, image_detail: &str) -> Vec<Value> {
     message
         .content
@@ -673,9 +768,30 @@ fn input_parts(message: &AiMessage, image_detail: &str) -> Vec<Value> {
         .collect()
 }
 
+/// The leading `developer` items that carry the instructions. The CLI sends
+/// no top-level `instructions` since 0.167.0: its base instructions are the
+/// first `input` item (`core/src/client.rs:1075-1085`). Never none — with no
+/// template and no system message, [`DEFAULT_INSTRUCTIONS`] stands in.
+fn instruction_items(policy: InstructionsPolicy<'_>, system_text: &str) -> Vec<Value> {
+    let texts = match policy {
+        InstructionsPolicy::Template(template) => vec![template, system_text],
+        InstructionsPolicy::Own => vec![system_text],
+    };
+    let items: Vec<Value> = texts
+        .into_iter()
+        .filter(|text| !text.trim().is_empty())
+        .map(developer_item)
+        .collect();
+    if items.is_empty() {
+        vec![developer_item(DEFAULT_INSTRUCTIONS)]
+    } else {
+        items
+    }
+}
+
 /// Build the `/responses` body. Roles map to Responses API items: system →
-/// `developer` (template policy) or `instructions`, user → `input_text` /
-/// `input_image`, assistant → `output_text`.
+/// the leading `developer` item(s) (see [`InstructionsPolicy`]), user →
+/// `input_text` / `input_image`, assistant → `output_text`.
 pub fn build_responses_body(opts: &ResponsesBodyOptions<'_>) -> Value {
     let system_text = opts
         .messages
@@ -685,25 +801,7 @@ pub fn build_responses_body(opts: &ResponsesBodyOptions<'_>) -> Value {
         .filter(|t| !t.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let mut input: Vec<Value> = Vec::new();
-    let instructions = match opts.instructions {
-        InstructionsPolicy::Template(template) => {
-            if !system_text.is_empty() {
-                input.push(message_item(
-                    "developer",
-                    vec![json!({ "type": "input_text", "text": system_text })],
-                ));
-            }
-            template.to_string()
-        }
-        InstructionsPolicy::Own => {
-            if system_text.is_empty() {
-                DEFAULT_INSTRUCTIONS.to_string()
-            } else {
-                system_text
-            }
-        }
-    };
+    let mut input = instruction_items(opts.instructions, &system_text);
     for message in opts.messages {
         match message.role {
             AiRole::System => {}
@@ -739,7 +837,6 @@ pub fn build_responses_body(opts: &ResponsesBodyOptions<'_>) -> Value {
     }
     let mut body = json!({
         "model": opts.model,
-        "instructions": instructions,
         "input": input,
         "tools": [],
         "tool_choice": "auto",
@@ -1726,12 +1823,12 @@ mod tests {
                 "response_type",
                 "client_id",
                 "redirect_uri",
-                "scope",
                 "code_challenge",
                 "code_challenge_method",
+                "state",
+                "scope",
                 "id_token_add_organizations",
                 "codex_cli_simplified_flow",
-                "state",
                 "originator"
             ]
         );
@@ -1743,11 +1840,15 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(value("client_id"), CLIENT_ID);
-        assert_eq!(value("redirect_uri"), "http://localhost:1455/auth/callback");
+        assert_eq!(value("redirect_uri"), "http://127.0.0.1:1455/auth/callback");
         assert_eq!(value("scope"), SCOPES);
         assert_eq!(value("originator"), "codex_cli_rs");
         assert_eq!(value("codex_cli_simplified_flow"), "true");
-        assert_eq!(redirect_uri(1457), "http://localhost:1457/auth/callback");
+        assert!(
+            url.contains("&scope=openid+profile+email+offline_access+api.connectors.read+"),
+            "form-encoded like the CLI's url::form_urlencoded"
+        );
+        assert_eq!(redirect_uri(1457), "http://127.0.0.1:1457/auth/callback");
         assert_eq!(LOOPBACK_PORTS, [1455, 1457]);
         let (verifier, _) = oauth::pkce_pair_from(&[9u8; PKCE_VERIFIER_BYTES]);
         assert_eq!(verifier.len(), 86, "the CLI's 64-byte verifier");
@@ -1755,12 +1856,57 @@ mod tests {
 
     #[test]
     fn token_bodies_use_form_for_the_exchange_and_json_for_the_refresh() {
-        let form = token_exchange_form("code", "http://localhost:1455/auth/callback", "ver");
-        assert_eq!(form[0], ("grant_type", "authorization_code".to_string()));
-        assert_eq!(form[3], ("client_id", CLIENT_ID.to_string()));
+        let form = token_exchange_form("code", &redirect_uri(1455), "ver");
+        let keys: Vec<&str> = form.iter().map(|(k, _)| *k).collect();
         assert_eq!(
-            refresh_body("rt"),
-            json!({ "client_id": CLIENT_ID, "grant_type": "refresh_token", "refresh_token": "rt" })
+            keys,
+            vec![
+                "grant_type",
+                "client_id",
+                "code",
+                "redirect_uri",
+                "code_verifier"
+            ]
+        );
+        assert_eq!(form[0].1, "authorization_code");
+        assert_eq!(form[1].1, CLIENT_ID);
+        assert_eq!(form[3].1, "http://127.0.0.1:1455/auth/callback");
+        assert_eq!(
+            refresh_body("rt", RefreshReason::ProactiveExpiry),
+            json!({
+                "client_id": CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_reason": "proactive_expiry",
+                "refresh_token": "rt"
+            })
+        );
+        assert_eq!(
+            refresh_body("rt", RefreshReason::UnauthorizedRecovery)["refresh_reason"],
+            "unauthorized_recovery"
+        );
+        assert_eq!(RefreshReason::Scheduled.as_str(), "scheduled");
+        assert_eq!(RefreshReason::Forced.as_str(), "forced");
+        // Bluey's two refresh triggers: inside the CLI's 5-minute window, or a 401.
+        let now = 1_800_000_000;
+        assert_eq!(
+            refresh_reason_for(Some(now + 30), now),
+            RefreshReason::ProactiveExpiry
+        );
+        assert_eq!(
+            refresh_reason_for(Some(now + ACCESS_TOKEN_REFRESH_WINDOW_SECS), now),
+            RefreshReason::ProactiveExpiry
+        );
+        assert_eq!(
+            refresh_reason_for(Some(now - 10), now),
+            RefreshReason::ProactiveExpiry
+        );
+        assert_eq!(
+            refresh_reason_for(Some(now + 3_600), now),
+            RefreshReason::UnauthorizedRecovery
+        );
+        assert_eq!(
+            refresh_reason_for(None, now),
+            RefreshReason::UnauthorizedRecovery
         );
         assert_eq!(
             revoke_body("rt"),
@@ -1854,8 +2000,10 @@ mod tests {
             account_identity(&fallback).plan_label.as_deref(),
             Some("ChatGPT")
         );
-        assert_eq!(plan_label("pro"), "ChatGPT Pro");
-        assert_eq!(plan_label("prolite"), "ChatGPT Pro Lite");
+        assert_eq!(plan_label("prolite"), "ChatGPT Pro");
+        assert_eq!(plan_label("pro"), "ChatGPT Pro (More)");
+        assert_eq!(plan_label("promax"), "ChatGPT Pro (Max)");
+        assert_eq!(plan_label("sci_plus"), "ChatGPT Academic Researchers Plus");
         assert_eq!(plan_label("team"), "ChatGPT Team");
         assert_eq!(plan_label("edu"), "ChatGPT Edu");
         assert_eq!(plan_label("mystery"), "ChatGPT Mystery");
@@ -1963,20 +2111,32 @@ mod tests {
             image_detail: "auto",
             service_tier: None,
         });
-        assert_eq!(body["instructions"], "TEMPLATE");
-        assert_eq!(body["input"][0]["role"], "developer");
-        assert_eq!(body["input"][0]["content"][0]["text"], "You are Bluey.");
-        assert_eq!(body["input"][1]["role"], "user");
-        assert_eq!(body["input"][1]["content"][0]["type"], "input_text");
-        assert_eq!(body["input"][1]["content"][1]["type"], "input_image");
+        assert!(
+            body.get("instructions").is_none(),
+            "the CLI sends no top-level instructions since 0.167.0"
+        );
         assert_eq!(
-            body["input"][1]["content"][1]["image_url"],
+            body["input"][0],
+            json!({
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": "TEMPLATE" }]
+            }),
+            "the base instructions lead input"
+        );
+        assert_eq!(body["input"][1]["role"], "developer");
+        assert_eq!(body["input"][1]["content"][0]["text"], "You are Bluey.");
+        assert_eq!(body["input"][2]["role"], "user");
+        assert_eq!(body["input"][2]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][2]["content"][1]["type"], "input_image");
+        assert_eq!(
+            body["input"][2]["content"][1]["image_url"],
             "data:image/png;base64,iVBORw0KGgo="
         );
-        assert_eq!(body["input"][1]["content"][1]["detail"], "auto");
-        assert_eq!(body["input"][2]["role"], "assistant");
-        assert_eq!(body["input"][2]["content"][0]["type"], "output_text");
-        assert_eq!(body["input"][3]["content"][0]["text"], "Summarise it.");
+        assert_eq!(body["input"][2]["content"][1]["detail"], "auto");
+        assert_eq!(body["input"][3]["role"], "assistant");
+        assert_eq!(body["input"][3]["content"][0]["type"], "output_text");
+        assert_eq!(body["input"][4]["content"][0]["text"], "Summarise it.");
         assert_eq!(body["store"], false);
         assert_eq!(body["stream"], true);
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
@@ -2014,12 +2174,14 @@ mod tests {
             image_detail: "high",
             service_tier: None,
         });
-        assert_eq!(own["instructions"], "You are Bluey.");
+        assert!(own.get("instructions").is_none());
         assert_eq!(
-            own["input"][0]["role"], "user",
-            "no developer item under the own policy"
+            own["input"][0],
+            developer_item("You are Bluey."),
+            "Bluey's prompt is the only developer item under the own policy"
         );
-        assert_eq!(own["input"][0]["content"][1]["detail"], "high");
+        assert_eq!(own["input"][1]["role"], "user");
+        assert_eq!(own["input"][1]["content"][1]["detail"], "high");
         assert_eq!(own["text"]["format"]["type"], "json_schema");
         assert_eq!(own["text"]["format"]["strict"], true);
         assert_eq!(
@@ -2039,9 +2201,53 @@ mod tests {
             service_tier: None,
         });
         assert_eq!(
-            no_system["instructions"], DEFAULT_INSTRUCTIONS,
+            no_system["input"][0],
+            developer_item(DEFAULT_INSTRUCTIONS),
             "never empty"
         );
+        let empty_template = build_responses_body(&ResponsesBodyOptions {
+            instructions: InstructionsPolicy::Template("  "),
+            ..ResponsesBodyOptions {
+                model: "m",
+                messages: &[AiMessage::text(AiRole::User, "hi")],
+                instructions: InstructionsPolicy::Own,
+                effort: "low",
+                verbosity: "low",
+                prompt_cache_key: "k",
+                output_schema: None,
+                image_detail: "auto",
+                service_tier: None,
+            }
+        });
+        assert_eq!(
+            empty_template["input"][0],
+            developer_item(DEFAULT_INSTRUCTIONS),
+            "a blank template is skipped like the CLI's, never leaving no instructions"
+        );
+        assert_eq!(empty_template["input"][1]["role"], "user");
+    }
+
+    #[test]
+    fn the_shaper_moves_top_level_instructions_into_input() {
+        let mut body = json!({
+            "model": "m",
+            "instructions": "legacy",
+            "input": [{ "type": "message", "role": "user", "content": [] }]
+        });
+        normalise_responses_body(&mut body, "k");
+        assert!(body.get("instructions").is_none());
+        assert_eq!(body["input"][0], developer_item("legacy"));
+        assert_eq!(body["input"][1]["role"], "user");
+
+        let mut text_input = json!({ "model": "m", "instructions": "legacy", "input": "hi" });
+        normalise_responses_body(&mut text_input, "k");
+        assert_eq!(text_input["input"][0], developer_item("legacy"));
+        assert_eq!(text_input["input"][1]["content"][0]["text"], "hi");
+
+        let mut blank = json!({ "model": "m", "instructions": "", "input": [] });
+        normalise_responses_body(&mut blank, "k");
+        assert!(blank.get("instructions").is_none());
+        assert_eq!(blank["input"], json!([]), "a blank value is dropped");
     }
 
     #[test]
@@ -2646,9 +2852,9 @@ mod tests {
         assert!(!refused.ok);
         assert_eq!(refused.message, "HTTP 403: blocked");
         let body = probe_body("gpt-5.6-luna", "k", "low", Some("T"));
-        assert_eq!(body["instructions"], "T");
+        assert_eq!(body["input"][0], developer_item("T"));
         assert_eq!(
-            body["input"][0]["content"][0]["text"],
+            body["input"][1]["content"][0]["text"],
             "Reply with the single word: ok"
         );
         assert_eq!(body["text"]["verbosity"], "low");
@@ -2757,9 +2963,11 @@ mod tests {
         assert_eq!(request.header("version"), Some(fp::CLIENT_VERSION));
         assert_eq!(
             request.header("user-agent"),
-            Some("codex_cli_rs/0.154.0 (Mac OS 26.0; arm64) Bluey")
+            Some("codex_cli_rs/0.167.0 (Mac OS 26.0; arm64) Bluey")
         );
         assert_eq!(request.header("x-openai-fedramp"), None);
+        assert!(request.body.get("instructions").is_none());
+        assert_eq!(request.body["input"][0]["role"], "developer");
         assert_eq!(shaper.fingerprint(), fp::INFO);
 
         let capture = capture_of(&request);
@@ -2796,7 +3004,7 @@ mod tests {
         assert_eq!(models.method, "GET");
         assert_eq!(models.header("accept"), Some("application/json"));
         assert_eq!(models.header("content-type"), None);
-        assert!(models.url.ends_with("/models?client_version=0.154.0"));
+        assert!(models.url.ends_with("/models?client_version=0.167.0"));
         let report = diff(
             Provider::Chatgpt.rules(),
             &documented("models"),

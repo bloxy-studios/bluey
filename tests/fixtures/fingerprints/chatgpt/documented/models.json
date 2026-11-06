@@ -2,15 +2,15 @@
   "schema": 1,
   "provider": "chatgpt",
   "source": "documented",
-  "capturedAt": "2026-09-11T00:00:00Z",
+  "capturedAt": "2026-11-06T00:00:00Z",
   "fingerprint": {
-    "version": "codex/0.154.0",
-    "capturedOn": "2026-09-11"
+    "version": "codex/0.167.0",
+    "capturedOn": "2026-11-06"
   },
-  "client": "codex_cli_rs/0.154.0",
+  "client": "codex_cli_rs/0.167.0",
   "request": {
     "method": "GET",
-    "url": "https://chatgpt.com/backend-api/codex/models?client_version=0.154.0",
+    "url": "https://chatgpt.com/backend-api/codex/models?client_version=0.167.0",
     "headers": [
       {
         "name": "authorization",
@@ -38,11 +38,11 @@
       },
       {
         "name": "user-agent",
-        "value": "codex_cli_rs/0.154.0 (Mac OS 26.0; arm64) <TERMINAL>"
+        "value": "codex_cli_rs/0.167.0 (Mac OS 26.0; arm64) <TERMINAL>"
       },
       {
         "name": "version",
-        "value": "0.154.0"
+        "value": "0.167.0"
       },
       {
         "name": "x-client-request-id",

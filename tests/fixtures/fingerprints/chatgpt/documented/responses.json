@@ -2,12 +2,12 @@
   "schema": 1,
   "provider": "chatgpt",
   "source": "documented",
-  "capturedAt": "2026-09-11T00:00:00Z",
+  "capturedAt": "2026-11-06T00:00:00Z",
   "fingerprint": {
-    "version": "codex/0.154.0",
-    "capturedOn": "2026-09-11"
+    "version": "codex/0.167.0",
+    "capturedOn": "2026-11-06"
   },
-  "client": "codex_cli_rs/0.154.0",
+  "client": "codex_cli_rs/0.167.0",
   "request": {
     "method": "POST",
     "url": "https://chatgpt.com/backend-api/codex/responses",
@@ -38,11 +38,11 @@
       },
       {
         "name": "user-agent",
-        "value": "codex_cli_rs/0.154.0 (Mac OS 26.0; arm64) <TERMINAL>"
+        "value": "codex_cli_rs/0.167.0 (Mac OS 26.0; arm64) <TERMINAL>"
       },
       {
         "name": "version",
-        "value": "0.154.0"
+        "value": "0.167.0"
       },
       {
         "name": "x-client-request-id",
@@ -67,6 +67,16 @@
           {
             "content": [
               {
+                "text": "<INSTRUCTIONS_TEMPLATE>",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
                 "text": "<TEXT 5>",
                 "type": "input_text"
               }
@@ -75,7 +85,6 @@
             "type": "message"
           }
         ],
-        "instructions": "<INSTRUCTIONS_TEMPLATE>",
         "model": "gpt-6-astra",
         "parallel_tool_calls": true,
         "prompt_cache_key": "<UUID>",

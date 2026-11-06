@@ -581,10 +581,18 @@ impl ProviderProfile for ChatgptProfile {
             .refresh_token
             .clone()
             .ok_or_else(codex::needs_reauth)?;
+        // The CLI names why it refreshes (0.167.0); Bluey refreshes ahead of
+        // expiry or after a 401, which the token's expiry tells apart.
+        let reason = codex::refresh_reason_for(
+            tokens
+                .expires_at
+                .or_else(|| codex::jwt_exp(&tokens.access_token)),
+            unix_now(),
+        );
         let response = http
             .post(codex::TOKEN_URL)
             .timeout(HTTP_TIMEOUT)
-            .json(&codex::refresh_body(&refresh_token))
+            .json(&codex::refresh_body(&refresh_token, reason))
             .send()
             .await
             .map_err(|e| network("the ChatGPT token refresh", &e))?;

@@ -6,14 +6,16 @@
 //! The pure parts — body, SSE events, error mapping, the shaper — are
 //! `bluey_protocols::codex`; this file is the HTTP around them.
 //!
-//! `instructions`: Bluey's own prompt is sent as `instructions`
-//! (`InstructionsPolicy::Own`) so the model is primed by Bluey, not by the
-//! 13–21 KB Codex CLI agent prompt. The backend's acceptance of that shape is
-//! the open replay of docs/PROVIDER_ACCOUNTS.md; it is probed in production:
-//! a 400 on the own-prompt shape is retried once with the catalog template
-//! (Bluey's prompt as a `developer` item), and a stream that finishes without
-//! a single text delta switches the next request to the template. Either
-//! switch is sticky for the process and logged once.
+//! Instructions: like the CLI since 0.167.0, no top-level `instructions` —
+//! the base instructions are the leading `developer` item of `input`. Bluey's
+//! own prompt is that item (`InstructionsPolicy::Own`) so the model is primed
+//! by Bluey, not by the 13–21 KB Codex CLI agent prompt. The backend's
+//! acceptance of that shape is the open replay of docs/PROVIDER_ACCOUNTS.md;
+//! it is probed in production: a 400 on the own-prompt shape is retried once
+//! with the catalog template as the leading item (Bluey's prompt as a second
+//! `developer` item — the CLI's shape exactly), and a stream that finishes
+//! without a single text delta switches the next request to the template.
+//! Either switch is sticky for the process and logged once.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -38,7 +40,7 @@ use crate::accounts::chatgpt::{client_environment, send_shaped, templates};
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Whether the Codex backend has refused Bluey's own prompt as `instructions`
+/// Whether the Codex backend has refused Bluey's own prompt as the base instructions
 /// in this process (module docs). Shared by every adapter instance, since one
 /// is built per request.
 static OWN_INSTRUCTIONS_REJECTED: LazyLock<Arc<AtomicBool>> =
@@ -121,7 +123,7 @@ impl ChatgptProvider {
         }
     }
 
-    /// Whether this process has seen the backend refuse Bluey's prompt as `instructions`.
+    /// Whether this process has seen the backend refuse Bluey's prompt as the base instructions.
     pub fn own_instructions_rejected(&self) -> bool {
         self.own_instructions_rejected.load(Ordering::Relaxed)
     }
@@ -130,7 +132,7 @@ impl ChatgptProvider {
         if !flag.swap(true, Ordering::Relaxed) {
             tracing::warn!(
                 reason,
-                "the Codex backend did not accept Bluey's prompt as `instructions`; sending the catalog template with Bluey's prompt as a developer item from now on"
+                "the Codex backend did not accept Bluey's prompt as the base instructions; sending the catalog template first with Bluey's prompt as a second developer item from now on"
             );
         }
     }
@@ -283,7 +285,7 @@ impl AiProvider for ChatgptProvider {
             catalog.is_some_and(|c| codex::model_fast_tier(&c.models, &request.model)),
             self.fast_tier_refused.load(Ordering::Relaxed),
         );
-        // Bluey's prompt as `instructions` first (module docs). The catalog
+        // Bluey's prompt as the base instructions first (module docs). The catalog
         // template is needed only once the backend has refused that shape, so
         // a cold template cache never costs a live answer a catalog round trip.
         let mut template = if self.own_instructions_rejected() {
@@ -387,7 +389,7 @@ impl AiProvider for ChatgptProvider {
 
 /// Flip the shared verdict when a stream on the own-instructions shape
 /// finishes without a single text delta — the quiet way the backend can
-/// refuse Bluey's prompt as `instructions`. This reply still flows through
+/// refuse Bluey's prompt as the base instructions. This reply still flows through
 /// unchanged (the WebView shows its failure state); the next request carries
 /// the template.
 fn watch_for_empty_output(stream: ChunkStream, rejected: Arc<AtomicBool>) -> ChunkStream {
@@ -640,10 +642,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
         let body: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(body["model"], "gpt-6-astra");
         // Bluey's system prompt primes the model; the Codex agent template does not.
-        assert_eq!(body["instructions"], "You are Bluey.");
-        assert_eq!(body["input"][0]["role"], "user");
-        assert_eq!(body["input"][0]["content"][0]["text"], "hello");
-        assert_eq!(body["input"].as_array().map(Vec::len), Some(1));
+        // No top-level `instructions` (the CLI's 0.167.0 shape): it leads `input`.
+        assert!(body.get("instructions").is_none());
+        assert_eq!(body["input"][0]["role"], "developer");
+        assert_eq!(body["input"][0]["content"][0]["text"], "You are Bluey.");
+        assert_eq!(body["input"][1]["role"], "user");
+        assert_eq!(body["input"][1]["content"][0]["text"], "hello");
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
         assert_eq!(body["store"], false);
         assert_eq!(body["stream"], true);
         assert!(body.get("max_output_tokens").is_none());
@@ -674,13 +679,16 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
             "one own-instructions attempt, one template retry"
         );
         let first: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
-        assert_eq!(first["instructions"], "You are Bluey.");
-        assert_eq!(first["input"][0]["role"], "user");
+        assert!(first.get("instructions").is_none());
+        assert_eq!(first["input"][0]["content"][0]["text"], "You are Bluey.");
+        assert_eq!(first["input"][1]["role"], "user");
         let second: serde_json::Value = serde_json::from_str(&seen[1].1).unwrap();
-        assert_eq!(second["instructions"], "You are Codex.");
+        assert!(second.get("instructions").is_none());
         assert_eq!(second["input"][0]["role"], "developer");
-        assert_eq!(second["input"][0]["content"][0]["text"], "You are Bluey.");
-        assert_eq!(second["input"][1]["content"][0]["text"], "hello");
+        assert_eq!(second["input"][0]["content"][0]["text"], "You are Codex.");
+        assert_eq!(second["input"][1]["role"], "developer");
+        assert_eq!(second["input"][1]["content"][0]["text"], "You are Bluey.");
+        assert_eq!(second["input"][2]["content"][0]["text"], "hello");
     }
 
     #[tokio::test]
@@ -721,7 +729,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
         assert_eq!(first["service_tier"], "priority");
         let second: serde_json::Value = serde_json::from_str(&seen[1].1).unwrap();
         assert!(second.get("service_tier").is_none());
-        assert_eq!(second["instructions"], "You are Bluey.");
+        assert_eq!(second["input"][0]["content"][0]["text"], "You are Bluey.");
     }
 
     #[tokio::test]
@@ -750,10 +758,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
 
         let seen = seen.await.unwrap();
         let first: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
-        assert_eq!(first["instructions"], "You are Bluey.");
+        assert_eq!(first["input"][0]["content"][0]["text"], "You are Bluey.");
         let second: serde_json::Value = serde_json::from_str(&seen[1].1).unwrap();
-        assert_eq!(second["instructions"], "You are Codex.");
-        assert_eq!(second["input"][0]["role"], "developer");
+        assert_eq!(second["input"][0]["content"][0]["text"], "You are Codex.");
+        assert_eq!(second["input"][1]["content"][0]["text"], "You are Bluey.");
     }
 
     #[tokio::test]

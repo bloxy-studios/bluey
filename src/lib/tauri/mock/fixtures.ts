@@ -493,8 +493,8 @@ export function createMockAccounts(): ProviderAccount[] {
       kind: "chatgpt_codex",
       method: "oauth_subscription",
       status: { state: "disconnected" },
-      fingerprintVersion: "codex/0.154.0",
-      fingerprintCapturedOn: "2026-09-11",
+      fingerprintVersion: "codex/0.167.0",
+      fingerprintCapturedOn: "2026-11-06",
     },
     {
       accountId: "claude",
