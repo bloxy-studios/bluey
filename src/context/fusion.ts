@@ -102,11 +102,37 @@ export function currentQuestionText(snapshot: ContextSnapshot, opts: FuseOptions
   if (opts.instruction && opts.instruction.trim().length > 0) return opts.instruction.trim();
   if (opts.detectedEvent) return opts.detectedEvent.text;
   const segments = snapshot.transcript?.segments ?? [];
+  // The other side's lines after the newest question, oldest first.
+  const remarks: string[] = [];
   for (let i = segments.length - 1; i >= 0; i -= 1) {
     const segment = segments[i];
-    if (segment && looksLikeQuestion(segment.text)) return segment.text;
+    if (!segment) continue;
+    if (looksLikeQuestion(segment.text)) {
+      // The newest question stays the topic until it has been answered and the other
+      // side has spoken since: then the current topic is what they said last, not the
+      // old question answered again ("Tell me about yourself" re-answered after the
+      // interviewer had moved on to describing the company).
+      if (remarks.length === 0 || !answeredSince(snapshot, segment)) return segment.text;
+      break;
+    }
+    if (!isOwnLine(segment)) remarks.unshift(segment.text.trim());
   }
-  return "";
+  return remarks.slice(-MAX_CURRENT_REMARKS).join(" ");
+}
+
+/** Lines of the other side's latest remarks that stand in for a question. */
+const MAX_CURRENT_REMARKS = 3;
+
+/** The user's own words (their microphone, or a line labelled as theirs). */
+function isOwnLine(segment: TranscriptSegment): boolean {
+  return segment.speaker === "You" || (segment.speaker === undefined && segment.source === "microphone");
+}
+
+/** A chat answer was produced after `question` was heard. */
+function answeredSince(snapshot: ContextSnapshot, question: TranscriptSegment): boolean {
+  const heardAt = Date.parse(question.createdAt);
+  if (!Number.isFinite(heardAt)) return false;
+  return (snapshot.conversation ?? []).some((turn) => Date.parse(turn.createdAt) > heardAt);
 }
 
 function transcriptItem(

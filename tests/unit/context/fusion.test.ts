@@ -1,4 +1,4 @@
-import { estimateTokens, fuseContext, keywordOverlap, looksLikeQuestion } from "@/context/fusion";
+import { currentQuestionText, estimateTokens, fuseContext, keywordOverlap, looksLikeQuestion } from "@/context/fusion";
 import type { RetrievedChunk } from "@/lib/types";
 import { makeSegment, makeSnapshot } from "../../fixtures/helpers/builders";
 
@@ -161,5 +161,47 @@ describe("keywordOverlap", () => {
   it("is 0 with no shared keywords and grows with overlap", () => {
     expect(keywordOverlap("alpha beta", "gamma delta")).toBe(0);
     expect(keywordOverlap("alpha beta", "alpha delta")).toBeCloseTo(0.5);
+  });
+});
+
+describe("currentQuestionText follows the conversation, not the first question", () => {
+  // The 2026-11-06 interview: "Tell me about yourself" was answered at 07:09:25, then the
+  // interviewer moved on; ⌘⇧↵ at 07:10:26 answered "Tell me about yourself" again.
+  const line = (id: string, text: string, at: string, speaker = "Interviewer") =>
+    makeSegment({ id, text, speaker, source: "system", createdAt: `2026-11-06T07:${at}.000Z` });
+  const segments = [
+    line("s1", "Hello Abdul.", "09:12"),
+    line("s2", "Can you tell me about yourself?", "09:14"),
+    line("s3", "Okay, that's nice.", "09:57"),
+    line("s4", "We JK cleaning and in-home.", "10:00"),
+    line("s5", "YJK Cleaning and in-home house service.", "10:58"),
+  ];
+  const answered = [{ id: "r1", content: "Hi, I'm Abdul…", createdAt: "2026-11-06T07:09:25.000Z" }];
+
+  it("moves on to what the interviewer said last once the question was answered", () => {
+    const snapshot = makeSnapshot({ transcript: { segments, windowSeconds: 180 }, conversation: answered });
+    expect(currentQuestionText(snapshot, {})).toBe(
+      "Okay, that's nice. We JK cleaning and in-home. YJK Cleaning and in-home house service.",
+    );
+  });
+
+  it("keeps an unanswered question as the topic even when more was said after it", () => {
+    const snapshot = makeSnapshot({ transcript: { segments, windowSeconds: 180 } });
+    expect(currentQuestionText(snapshot, {})).toBe("Can you tell me about yourself?");
+  });
+
+  it("answers a question that is still the last thing said, and ignores the user's own lines", () => {
+    const own = makeSegment({ id: "s6", text: "Thanks.", speaker: "You", source: "microphone", createdAt: "2026-11-06T07:11:00.000Z" });
+    const question = line("s7", "Why do you want to work here?", "11:05");
+    const snapshot = makeSnapshot({
+      transcript: { segments: [...segments, own, question], windowSeconds: 180 },
+      conversation: answered,
+    });
+    expect(currentQuestionText(snapshot, {})).toBe("Why do you want to work here?");
+    const afterOwnLine = makeSnapshot({
+      transcript: { segments: [...segments.slice(0, 2), own], windowSeconds: 180 },
+      conversation: answered,
+    });
+    expect(currentQuestionText(afterOwnLine, {})).toBe("Can you tell me about yourself?");
   });
 });
