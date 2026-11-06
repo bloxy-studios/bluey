@@ -1,9 +1,10 @@
 //! ChatGPT — the Codex CLI's ChatGPT-auth backend, as data.
 //!
 //! Every constant and rule below is a row of `docs/PROVIDER_ACCOUNTS.md › ChatGPT`
-//! (verified 2026-09-11 against `openai/codex` rust-v0.154.0). PR 3a's `CodexShaper`
-//! reads these constants; `fingerprints:diff` compares a capture of the real CLI
-//! against [`documented`].
+//! (verified 2026-11-06 from the source of `openai/codex` rust-v0.167.0 — read, not
+//! captured; `docs/reference/verification-2026-11-06/codex.md` has every path). PR 3a's
+//! `CodexShaper` reads these constants; `fingerprints:diff` compares a capture of the
+//! real CLI against [`documented`].
 
 use serde_json::json;
 
@@ -12,9 +13,14 @@ use super::rules::{Endpoint, FieldRule, HeaderRule, Placeholder, ProviderRules, 
 use super::{documented_capture, Provider};
 use crate::request_shaper::FingerprintInfo;
 
-pub const VERSION: &str = "codex/0.154.0";
-pub const CAPTURED_ON: &str = "2026-09-11";
-pub const CLIENT_VERSION: &str = "0.154.0";
+pub const VERSION: &str = "codex/0.167.0";
+pub const CAPTURED_ON: &str = "2026-11-06";
+/// The workspace version of the CLI (`codex-rs/Cargo.toml:173`): the `version` header,
+/// the User-Agent's version and the catalog's `client_version` query. The backend leaves
+/// out of `/models` every model whose `minimal_client_version` is newer, so bump this
+/// with each Codex release (0.167.0's bundled catalog already needs 0.155.0 for
+/// `gpt-6-sol` / `gpt-6-luna`).
+pub const CLIENT_VERSION: &str = "0.167.0";
 pub const INFO: FingerprintInfo = FingerprintInfo {
     version: VERSION,
     captured_on: CAPTURED_ON,
@@ -25,7 +31,7 @@ pub const HOSTS: &[&str] = &["chatgpt.com", "chat.openai.com", "chatgpt-staging.
 pub const BASE_PATH: &str = "/backend-api/codex";
 pub const ORIGINATOR: &str = "codex_cli_rs";
 /// `<TERMINAL>` stands for the terminal name the CLI appends (scrubbed captures keep it).
-pub const USER_AGENT_EXAMPLE: &str = "codex_cli_rs/0.154.0 (Mac OS 26.0; arm64) <TERMINAL>";
+pub const USER_AGENT_EXAMPLE: &str = "codex_cli_rs/0.167.0 (Mac OS 26.0; arm64) <TERMINAL>";
 pub const USER_AGENT_PATTERN: &str =
     r"^codex_cli_rs/\d+\.\d+\.\d+ \(Mac OS [^;)]+; (arm64|x86_64)\)( .+)?$";
 pub const VERSION_PATTERN: &str = r"^\d+\.\d+\.\d+$";
@@ -148,6 +154,11 @@ pub static RULES: ProviderRules = ProviderRules {
             doc: "Headers",
         },
         HeaderRule {
+            name: "x-openai-account-routing-override",
+            rule: Rule::Optional,
+            doc: "Headers",
+        },
+        HeaderRule {
             name: "host",
             rule: Rule::Exact,
             doc: "Backend",
@@ -186,7 +197,7 @@ pub static RULES: ProviderRules = ProviderRules {
         },
         FieldRule {
             path: "instructions",
-            rule: Rule::Info,
+            rule: Rule::Absent,
             doc: "`instructions`",
         },
         FieldRule {
@@ -384,8 +395,8 @@ pub fn documented() -> Vec<Capture> {
         Body::Json {
             value: json!({
                 "model": "gpt-6-astra",
-                "instructions": "<INSTRUCTIONS_TEMPLATE>",
                 "input": [
+                    { "type": "message", "role": "developer", "content": [ { "type": "input_text", "text": "<INSTRUCTIONS_TEMPLATE>" } ] },
                     { "type": "message", "role": "user", "content": [ { "type": "input_text", "text": "<TEXT 5>" } ] }
                 ],
                 "tools": [],
