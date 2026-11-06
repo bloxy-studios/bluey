@@ -1538,6 +1538,7 @@ pub fn rate_limit_info(
         .resets_at
         .or_else(|| body.resets_in_seconds.map(|s| now_unix.saturating_add(s)))
         .or_else(|| header_secs("x-codex-primary-reset-at"))
+        .map(|reset| plausible_reset(reset, now_unix))
         .map(iso_from_unix);
     let window = header_secs("x-codex-primary-window-minutes")
         .filter(|m| *m > 0)
@@ -1547,6 +1548,21 @@ pub fn rate_limit_info(
         window,
         plan_type: body.plan_type.clone(),
     }
+}
+
+/// The longest plan window (weekly) plus a day: a reset further out is a
+/// misread value, never a reason to keep the account limited for years.
+const MAX_RESET_AHEAD_SECS: u64 = 8 * 24 * 3600;
+
+/// A reset time in Unix seconds, read defensively: a millisecond timestamp is
+/// scaled down, and anything beyond [`MAX_RESET_AHEAD_SECS`] is capped.
+fn plausible_reset(reset: u64, now_unix: u64) -> u64 {
+    let secs = if reset > 100_000_000_000 {
+        reset / 1000
+    } else {
+        reset
+    };
+    secs.min(now_unix.saturating_add(MAX_RESET_AHEAD_SECS))
 }
 
 pub fn needs_reauth() -> BlueyError {
@@ -2618,6 +2634,26 @@ mod tests {
             .map(|m| m.id)
             .collect();
         assert_eq!(team, vec!["a"], "Team and Business are one plan");
+    }
+
+    #[test]
+    fn a_misread_reset_time_never_keeps_the_account_limited_for_years() {
+        let now = 1_700_000_000;
+        assert_eq!(
+            plausible_reset(1_700_007_200, now),
+            1_700_007_200,
+            "seconds stay"
+        );
+        assert_eq!(
+            plausible_reset(1_700_007_200_000, now),
+            1_700_007_200,
+            "milliseconds are scaled down"
+        );
+        assert_eq!(
+            plausible_reset(now + 365 * 24 * 3600, now),
+            now + MAX_RESET_AHEAD_SECS,
+            "capped at the weekly window plus a day"
+        );
     }
 
     #[test]
