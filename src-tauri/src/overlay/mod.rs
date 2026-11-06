@@ -60,22 +60,21 @@ fn hud_level(pinned: bool, always_on_top: bool) -> HudLevel {
     }
 }
 
-/// What a press of the toggle-panel shortcut does (UX-015).
+/// What a press of the toggle-panel shortcut does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShortcutToggle {
     Show,
-    FocusInput,
     Hide,
 }
 
-/// A hidden HUD is shown. A visible HUD that does not have the keyboard
-/// takes it, so typing lands in its input; only a HUD that already has the
-/// keyboard is hidden.
-fn shortcut_toggle(visible: bool, key: bool) -> ShortcutToggle {
-    match (visible, key) {
-        (false, _) => ShortcutToggle::Show,
-        (true, false) => ShortcutToggle::FocusInput,
-        (true, true) => ShortcutToggle::Hide,
+/// One press always flips visibility: a visible HUD hides even while another
+/// app has the keyboard. (UX-015 made the first press over another app focus
+/// the HUD instead, so hiding it took two presses; the input is a click away.)
+fn shortcut_toggle(visible: bool) -> ShortcutToggle {
+    if visible {
+        ShortcutToggle::Hide
+    } else {
+        ShortcutToggle::Show
     }
 }
 
@@ -301,42 +300,10 @@ impl PanelManager {
     /// stays non-activating, so the other app remains the active app.
     pub async fn toggle_from_shortcut(&self) -> BlueyResult<PanelState> {
         let _mutation = self.mutation_lock.lock().await;
-        let visible = self.state().visible;
-        let key = visible && self.has_keyboard();
-        let action = shortcut_toggle(visible, key);
-        if action == ShortcutToggle::FocusInput {
-            self.make_key();
-            self.bus.publish(BlueyEvent::PanelFocusInput);
-            return Ok(self.state());
-        }
-        let visible = action == ShortcutToggle::Show;
+        let visible = shortcut_toggle(self.state().visible) == ShortcutToggle::Show;
         self.state.lock().visible = visible;
         self.set_native_visible(visible);
         Ok(self.commit().await)
-    }
-
-    /// Whether the HUD is the key window (receives typing).
-    fn has_keyboard(&self) -> bool {
-        self.window()
-            .and_then(|window| window.is_focused().map_err(window_err))
-            .unwrap_or(false)
-    }
-
-    /// Make the (already visible) HUD the key window without activating Bluey.
-    /// `makeKeyWindow` keeps the webview as first responder.
-    fn make_key(&self) {
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(panel) = self.panel.lock().clone() {
-                let _ = self.app.run_on_main_thread(move || panel.make_key_window());
-                return;
-            }
-        }
-        if let Ok(window) = self.window() {
-            if let Err(e) = window.set_focus() {
-                tracing::warn!(error = %e, "cannot focus the HUD");
-            }
-        }
     }
 
     fn set_native_visible(&self, visible: bool) {
@@ -678,10 +645,8 @@ mod level_tests {
     }
 
     #[test]
-    fn the_toggle_shortcut_focuses_a_visible_hud_before_hiding_it() {
-        assert_eq!(shortcut_toggle(false, false), ShortcutToggle::Show);
-        assert_eq!(shortcut_toggle(false, true), ShortcutToggle::Show);
-        assert_eq!(shortcut_toggle(true, false), ShortcutToggle::FocusInput);
-        assert_eq!(shortcut_toggle(true, true), ShortcutToggle::Hide);
+    fn one_press_of_the_toggle_shortcut_shows_or_hides_the_hud() {
+        assert_eq!(shortcut_toggle(false), ShortcutToggle::Show);
+        assert_eq!(shortcut_toggle(true), ShortcutToggle::Hide);
     }
 }
