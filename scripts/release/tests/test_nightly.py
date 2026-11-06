@@ -94,7 +94,7 @@ class NightlyPlanTests(ReleaseFixture):
         body = nightly.body_for(self.expected_version(), COMMIT, "1")
         api = NightlyFakeAPI({"id": 77, "body": body, "prerelease": True, "draft": False, "assets": []})
         result = nightly.plan(self.root, COMMIT, api, False, TODAY)
-        self.assertEqual(result, {"build": False, "version": self.expected_version(), "commit": COMMIT,
+        self.assertEqual(result, {"build": False, "version": self.expected_version() + ".2", "commit": COMMIT,
                                   "skipped": "main unchanged since the last nightly"})
         self.assertTrue(nightly.plan(self.root, COMMIT, api, True, TODAY)["build"])
         self.assertTrue(nightly.plan(self.root, "b" * 40, api, False, TODAY)["build"])
@@ -107,6 +107,26 @@ class NightlyPlanTests(ReleaseFixture):
             with self.subTest(commit=commit), self.assertRaises(metadata.ReleaseError):
                 nightly.plan(self.root, commit, api, False, TODAY)
         self.assertEqual(api.calls, [])
+
+    def test_a_second_nightly_the_same_day_sorts_above_the_first(self):
+        # A rebuild on the same date must be newer, or installed apps are never offered it.
+        first = nightly.nightly_version(self.version, "20260913")
+        second = nightly.nightly_version(self.version, "20260913", first)
+        third = nightly.nightly_version(self.version, "20260913", second)
+        self.assertEqual(second, first + ".2")
+        self.assertEqual(third, first + ".3")
+        for version in (second, third):
+            self.assertEqual(nightly.check_version(version), version)
+        # Another day, or new sources, starts again without a suffix.
+        self.assertEqual(nightly.nightly_version(self.version, "20260914", third),
+                         nightly.nightly_version(self.version, "20260914"))
+        self.assertEqual(nightly.nightly_version("0.2.0", "20260913", third), "0.2.1-nightly.20260913")
+        for bad in ("0.1.3-nightly.20260913.1", "0.1.3-nightly.20260913.0", "0.1.3-nightly.20260913.1000"):
+            with self.subTest(bad=bad), self.assertRaises(metadata.ReleaseError):
+                nightly.check_version(bad)
+        body = nightly.body_for(second, "b" * 40, "1")
+        api = NightlyFakeAPI({"id": 77, "body": body, "prerelease": True, "draft": False, "assets": []})
+        self.assertEqual(nightly.plan(self.root, COMMIT, api, False, TODAY)["version"], third)
 
     def test_plan_skips_a_commit_whose_ci_did_not_pass(self):
         # TEST-006: nightlies auto-install, so only a commit with a green CI run is built.

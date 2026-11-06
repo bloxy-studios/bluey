@@ -20,7 +20,9 @@ newest **non-prerelease** release, so the Latest channel never sees a nightly or
 
 Nightly versions are the next patch version plus the build date, `X.Y.(Z+1)-nightly.YYYYMMDD`
 (sources at `0.1.2` build `0.1.3-nightly.20260913`): SemVer-greater than the current stable,
-smaller than the next stable. A user who switches from Nightly back to Latest is offered the
+smaller than the next stable. A further nightly the same day gets `.2`, `.3`, …
+(`0.1.3-nightly.20260913.2`), which sorts above that day's earlier one and below the next day's,
+so installed apps are offered every rebuild. A user who switches from Nightly back to Latest is offered the
 next stable when it ships; a Latest user is never offered a nightly.
 
 ## Signing
