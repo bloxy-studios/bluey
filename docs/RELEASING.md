@@ -212,7 +212,7 @@ on that channel. The **Nightly** channel reads the rolling `nightly` prerelease,
    skips the night unless dispatched with `force`, and so does a commit whose latest `ci.yml`
    push run on `main` has not concluded `success` (failed, cancelled or still running) — even
    when forced, since nightly users auto-install the result.
-2. `build` (macos-14 matrix, `macos-build` environment): the ordinary developer path of
+2. `build` (macos-15 matrix, `macos-build` environment): the ordinary developer path of
    `scripts/release.sh` — ad-hoc Apple signature, **no Apple secrets**, minisign-signed updater
    bundle — with `BLUEY_BUILD_VERSION` overriding the version. Nightlies are therefore
    unsigned/un-notarized builds until Apple credentials exist; the release body says so. Each
